@@ -5,6 +5,7 @@ import { createHash } from 'node:crypto'
 import { Distribution } from '../apps/cli/dist/release-distribution.js'
 import { bootstrapChannelText } from './generate-bootstrap-metadata.mjs'
 import { signReleaseChannel } from './sign-release-records.mjs'
+import { compareReleasePrecedence } from '../apps/cli/dist/version.js'
 import { nativeGithubClient, verifyPublishedNativeAssets } from './publish-native-assets.mjs'
 
 const sha = value => { assert.match(value ?? '', /^[a-f0-9]{40}$/, 'Invalid Git object identity'); return value }
@@ -28,13 +29,41 @@ export async function advanceNativeChannel({ bundle, sourceRevision, channel, to
   const previousHead = ref ? sha(ref.object.sha) : null
   const read = async (file, revision) => contents(await api(`/contents/${file}?ref=${revision}`, { missing: true }))
   const previous = previousHead ? await read(`${channel}.json`, previousHead) : null
+  const otherChannel = channel === 'stable' ? 'beta' : 'stable'
+  const otherPrevious = previousHead ? await read(`${otherChannel}.json`, previousHead) : null
+  const other = otherPrevious === null ? null : distribution.verifyChannel(otherPrevious, otherChannel)
+  assert.ok(!other?.withdrawn_versions.includes(bundle.inventory.version), 'Cannot recommend a withdrawn release')
+  if (other?.version === bundle.inventory.version) {
+    assert.equal(other.inventory_sha256, digest(bundle.signedInventory), 'A published version cannot change its signed inventory')
+  }
+  if (channel === 'beta' && other) {
+    assert.notEqual(compareReleasePrecedence(bundle.inventory.version, other.version), 'before', 'Native beta cannot fall behind stable')
+  }
   assert.ok(previous !== null || initialize, 'Channel initialization must be explicit; never silently reset its sequence')
   const signed = signReleaseChannel({ ...signing, channel, signedInventory: bundle.signedInventory, previous, withdraw, allowRollback })
   const view = bootstrapChannelText(distribution, signed, channel, bundle.signedInventory)
   const oldView = previousHead ? await read(`${channel}.bootstrap.tsv`, previousHead) : null
-  if (signed === previous && view === oldView) return { ...published, channel, changed: false, metadata_commit: previousHead,
+  const files = [[`${channel}.json`, signed], [`${channel}.bootstrap.tsv`, view]]
+  let betaChanged = false
+  if (channel === 'stable' && (!other || compareReleasePrecedence(other.version, bundle.inventory.version) === 'before')) {
+    assert.ok(otherPrevious !== null || initialize, 'Beta channel initialization must be explicit')
+    // Beta has its own sequence and withdrawal history; never copy stable's
+    // envelope or overwrite a genuinely newer prerelease.
+    const betaSigned = signReleaseChannel({ ...signing, channel: 'beta', signedInventory: bundle.signedInventory,
+      previous: otherPrevious })
+    files.push(['beta.json', betaSigned], ['beta.bootstrap.tsv', bootstrapChannelText(distribution, betaSigned, 'beta', bundle.signedInventory)])
+    betaChanged = true
+  }
+  const finalRecords = files.filter(([name]) => name.endsWith('.json')).map(([name, bytes]) =>
+    distribution.verifyChannel(bytes, name.slice(0, -5)))
+  if (other && !betaChanged) finalRecords.push(other)
+  for (const record of finalRecords) {
+    assert.ok(!finalRecords.some(other => other.withdrawn_versions.includes(record.version)),
+      'Cannot leave a channel recommending a withdrawn release')
+  }
+  if (signed === previous && view === oldView && !betaChanged) return { ...published, channel, changed: false, metadata_commit: previousHead,
     channel_sha256: digest(signed), sequence: distribution.verifyChannel(signed, channel).sequence }
-  const additions = [[`${channel}.json`, signed], [`${channel}.bootstrap.tsv`, view]]
+  const additions = files
     .map(([name, bytes]) => ({ path: name, contents: Buffer.from(bytes).toString('base64') }))
   if (previousHead) {
     const result = await api('', { method: 'POST', graphql: true, body: {
@@ -64,8 +93,9 @@ export async function advanceNativeChannel({ bundle, sourceRevision, channel, to
   const actualRef = await api('/git/ref/heads/release-metadata')
   assert.equal(actualRef.object?.type, 'commit')
   const actual = sha(actualRef.object.sha)
-  assert.equal(await read(`${channel}.json`, actual), signed, 'Channel changed before publication readback; inspect before retrying')
-  assert.equal(await read(`${channel}.bootstrap.tsv`, actual), view, 'Channel view differs after publication')
+  for (const [name, bytes] of files) {
+    assert.equal(await read(name, actual), bytes, 'Channel changed before publication readback; inspect before retrying')
+  }
   return { ...published, channel, changed: true, metadata_commit: actual, channel_sha256: digest(signed),
     sequence: distribution.verifyChannel(signed, channel).sequence }
 }

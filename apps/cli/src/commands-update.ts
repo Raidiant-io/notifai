@@ -124,7 +124,7 @@ function failed(
       : null)
   const recoveryCommand = explicitRecovery ?? (recoveryMessage === null
     ? updateRetryCommand(flags)
-    : `npx --yes ${cliPackageSpec(flags.channel === 'beta' ? 'beta' : 'latest')} doctor --json`)
+    : `npx --yes ${cliPackageSpec('latest')} doctor --json`)
   if (flags.json === true) {
     deps.io.out(JSON.stringify({
       ok: false,

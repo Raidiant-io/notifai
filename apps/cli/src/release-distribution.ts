@@ -1,6 +1,6 @@
 import { createHash, createPublicKey, verify } from 'node:crypto'
 import { releaseMaterialPath } from './release-path.js'
-import { isPrerelease, isSemVer } from './version.js'
+import { compareReleasePrecedence, isPrerelease, isSemVer } from './version.js'
 import { localContinuity, type LocalContinuity } from './local-continuity.js'
 
 export const RELEASE_TARGETS = ['bun-darwin-arm64', 'bun-darwin-x64', 'bun-linux-arm64',
@@ -37,10 +37,11 @@ export interface ChannelRecord {
 }
 export interface ResolvedRelease {
   channel: ReleaseChannel
-  seen: SeenChannel
+  seen: Partial<Record<ReleaseChannel, SeenChannel>>
   inventory: ReleaseInventory
   /** Retained with the immutable version for verification during rollback. */
   signedInventory: string
+  /** The chosen authenticated pointer; beta may choose the stable record. */
   signedChannel: string
   artifact: ReleaseArtifact
 }
@@ -161,18 +162,29 @@ export class Distribution {
   }
 
   async resolveRelease(options: { channel: ReleaseChannel; target: ReleaseTarget;
-    version?: string; seen?: SeenChannel; acceptChannel?: (bytes: string) => void }): Promise<ResolvedRelease> {
+    version?: string; seen?: Partial<Record<ReleaseChannel, SeenChannel>>;
+    acceptChannel?: (channel: ReleaseChannel, bytes: string) => void }): Promise<ResolvedRelease> {
     if (!['stable', 'beta'].includes(options.channel)) throw new Error('Unknown release channel')
     if (!RELEASE_TARGETS.includes(options.target)) throw new Error('Unsupported release target')
-    const bytes = (await this.download(`https://raw.githubusercontent.com/${REPOSITORY}/release-metadata/${options.channel}.json`, MAX_METADATA)).toString('utf8')
-    const channel = this.verifyChannel(bytes, options.channel, options.seen)
-    options.acceptChannel?.(bytes)
+    const records = []
+    const seen: Partial<Record<ReleaseChannel, SeenChannel>> = {}
+    for (const name of options.channel === 'beta' ? ['beta', 'stable'] as const : ['stable'] as const) {
+      const bytes = (await this.download(`https://raw.githubusercontent.com/${REPOSITORY}/release-metadata/${name}.json`, MAX_METADATA)).toString('utf8')
+      const record = this.verifyChannel(bytes, name, options.seen?.[name])
+      options.acceptChannel?.(name, bytes)
+      seen[name] = Object.freeze({ sequence: record.sequence, digest: sha256(bytes) })
+      records.push({ record, bytes })
+    }
+    // Authenticate and persist each channel independently before selection.
+    // A failed stable lookup is uncertainty, never permission to serve old beta.
+    const chosen = records.reduce((best, next) => compareReleasePrecedence(next.record.version, best.record.version) === 'after' ? next : best)
+    const { record: channel, bytes } = chosen
     const selected = options.version ?? channel.version
     if (!version(selected)) throw new Error('Invalid exact release version')
     if (options.channel === 'stable' && isPrerelease(selected)) throw new Error('Prerelease cannot enter the stable channel')
-    if (channel.withdrawn_versions.includes(selected)) throw new Error('This release has been withdrawn')
+    if (records.some(entry => entry.record.withdrawn_versions.includes(selected))) throw new Error('This release has been withdrawn')
     const signedInventory = (await this.download(releaseUrl(selected, 'inventory.json'), MAX_METADATA)).toString('utf8')
-    if (selected === channel.version && sha256(signedInventory) !== channel.inventory_sha256) {
+    if (records.some(entry => selected === entry.record.version && sha256(signedInventory) !== entry.record.inventory_sha256)) {
       throw new Error('Release inventory integrity mismatch')
     }
     const inventory = this.verifyInventory(signedInventory)
@@ -180,7 +192,7 @@ export class Distribution {
     const artifact = inventory.artifacts.find(item => item.target === options.target)
     if (!artifact) throw new Error('Release does not contain the requested target')
     return Object.freeze({ channel: options.channel,
-      seen: Object.freeze({ sequence: channel.sequence, digest: sha256(bytes) }), inventory, signedInventory, signedChannel: bytes, artifact })
+      seen: Object.freeze(seen), inventory, signedInventory, signedChannel: bytes, artifact })
   }
 
   verifyArtifact(artifact: ReleaseArtifact, bytes: Uint8Array): void {

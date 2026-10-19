@@ -1,6 +1,6 @@
 import { createHash, generateKeyPairSync, sign } from 'node:crypto'
 import { describe, expect, it } from 'vitest'
-import { Distribution, releaseSigningMessage, type ReleaseInventory } from './release-distribution.js'
+import { Distribution, releaseSigningMessage, type ReleaseInventory, type ReleaseChannel } from './release-distribution.js'
 
 const { privateKey, publicKey } = generateKeyPairSync('ed25519')
 const keys = { fixture: publicKey.export({ format: 'pem', type: 'spki' }).toString() }
@@ -32,7 +32,56 @@ function setup(options: { inventory?: ReleaseInventory; sequence?: number; chann
   return { distribution: new Distribution(keys, fetcher), urls }
 }
 
+function twoChannels(betaVersion = '12.0.0-beta.1') {
+  const manifests = new Map([betaVersion, '12.0.0'].map(version => [version, signed('inventory', {
+    ...inventory, version, artifacts: inventory.artifacts.map(artifact =>
+      ({ ...artifact, filename: artifact.filename.replace('12.0.0', version) })),
+  })]))
+  const channels = {
+    beta: { schema: 1, channel: 'beta', sequence: 4, version: betaVersion, inventory_sha256: digest(manifests.get(betaVersion)!), withdrawn_versions: [] as string[] },
+    stable: { schema: 1, channel: 'stable', sequence: 8, version: '12.0.0', inventory_sha256: digest(manifests.get('12.0.0')!), withdrawn_versions: [] as string[] },
+  }
+  const state: { unavailable: ReleaseChannel | null; corrupt: ReleaseChannel | null } = { unavailable: null, corrupt: null }
+  const distribution = new Distribution(keys, async input => {
+    const url = String(input)
+    if (!url.endsWith('/inventory.json')) {
+      const name = url.endsWith('/beta.json') ? 'beta' : 'stable'
+      if (state.unavailable === name) return new Response(null, { status: 503 })
+      const bytes = signed('channel', channels[name])
+      return new Response(state.corrupt === name ? bytes.replace('fixture', 'unknown') : bytes)
+    }
+    return new Response(manifests.get(url.split('/v')[1]!.split('/')[0]!))
+  })
+  return { distribution, channels, state }
+}
+
 describe('verified release distribution', () => {
+  it('beta selects the newest authenticated beta or stable and keeps its audience', async () => {
+    for (const [betaVersion, expected] of [['12.0.0-beta.1', '12.0.0'], ['13.0.0-beta.1', '13.0.0-beta.1']]) {
+      const release = await twoChannels(betaVersion).distribution.resolveRelease({ channel: 'beta', target: 'bun-windows-x64' })
+      expect(release.inventory.version).toBe(expected)
+      expect(release.channel).toBe('beta')
+    }
+  })
+  it('beta refuses uncertainty or replay on either channel and unions withdrawals and inventory bindings', async () => {
+    const options = { channel: 'beta', target: 'bun-windows-x64' } as const
+    for (const name of ['beta', 'stable'] as const) {
+      const unavailable = twoChannels(); unavailable.state.unavailable = name
+      await expect(unavailable.distribution.resolveRelease(options)).rejects.toThrow(/503/)
+      const corrupt = twoChannels(); corrupt.state.corrupt = name
+      await expect(corrupt.distribution.resolveRelease(options)).rejects.toThrow(/key/)
+      const replay = twoChannels()
+      const accepted = await replay.distribution.resolveRelease(options)
+      replay.channels[name].sequence--
+      await expect(replay.distribution.resolveRelease({ ...options, seen: accepted.seen })).rejects.toThrow(/sequence/)
+    }
+    const withdrawn = twoChannels(); withdrawn.channels.beta.withdrawn_versions.push('12.0.0')
+    await expect(withdrawn.distribution.resolveRelease(options)).rejects.toThrow(/withdrawn/)
+    const pinned = twoChannels(); pinned.channels.stable.withdrawn_versions.push('12.0.0-beta.1')
+    await expect(pinned.distribution.resolveRelease({ ...options, version: '12.0.0-beta.1' })).rejects.toThrow(/withdrawn/)
+    const mismatched = twoChannels('12.0.0'); mismatched.channels.beta.inventory_sha256 = 'e'.repeat(64)
+    await expect(mismatched.distribution.resolveRelease(options)).rejects.toThrow(/integrity/)
+  })
   it('acquires a carried exact inventory without mutable channel selection', async () => {
     const { distribution, urls } = setup()
     const options = { signedInventory: signed('inventory', inventory), version: inventory.version,
@@ -52,7 +101,7 @@ describe('verified release distribution', () => {
     const { distribution, urls } = setup()
     const release = await distribution.resolveRelease({ channel: 'stable', target: 'bun-windows-x64' })
     expect(release.inventory.version).toBe('12.0.0')
-    expect(release.seen.sequence).toBe(3)
+    expect(release.seen.stable?.sequence).toBe(3)
     expect(await distribution.downloadArtifact(release)).toEqual(artifact)
     expect(urls).toEqual([
       'https://raw.githubusercontent.com/Raidiant-io/notifai/release-metadata/stable.json',

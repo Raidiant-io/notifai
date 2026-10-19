@@ -252,7 +252,9 @@ test('npm publication stages the unified CLI then separately promotes exact veri
   assert.match(steps[verify].run, /--expected-tarball "\$NPM_TARBALL"/u)
   const promotion = index('Promote only the already-verified npm version')
   assert.ok(index('Admit both immutable distributions before promotion') < promotion)
-  assert.equal(steps[promotion].if, "inputs.mode == 'promote'")
+  assert.equal(steps[promotion].if, "inputs.mode == 'promote' || steps.plan.outputs.package_name == '@raidiant/notifai-protocol'")
+  assert.ok(index('Verify staged candidate discovery') < promotion)
+  assert.match(steps[promotion].run, /verify-npm-distribution\.mjs promote/)
   assert.equal(publishWorkflow.on.workflow_dispatch.inputs.mode.default, 'candidate')
   const retry = steps.find(step => step.name === 'Verify an existing package before declaring a retry successful')
   assert.equal(retry.if, "steps.plan.outputs.publish == 'false'")
@@ -265,6 +267,23 @@ test('native releases begin as tag-addressable drafts and never publish from rel
   assert.equal(releaseConfig.packages['apps/cli']['force-tag-creation'], true)
   assert.notEqual(releaseConfig.packages['packages/protocol'].draft, true)
   assert.doesNotMatch(release, /dispatch_workflow publish-native-release/u)
+})
+
+test('beta repair uses exact main, protected OIDC, shared serialization and receipt retention without publishing bytes', () => {
+  const repair = publishWorkflow.jobs['beta-repair']
+  assert.equal(repair.needs, 'dispatch-integrity')
+  assert.equal(repair.if, "inputs.mode == 'repair-beta'")
+  assert.equal(publishWorkflow.jobs.npm.if, "inputs.mode != 'repair-beta'")
+  assert.equal(repair.environment, 'npm-release')
+  assert.deepEqual(repair.permissions, { contents: 'read', actions: 'read', 'id-token': 'write' })
+  assert.equal(repair.concurrency.group, publishWorkflow.jobs.npm.concurrency.group)
+  assert.equal(repair.concurrency['cancel-in-progress'], false)
+  const integrity = publishWorkflow.jobs['dispatch-integrity'].steps[0].run
+  assert.match(integrity, /if \[ "\$MODE" = repair-beta \]; then\s+test "\$GITHUB_REF" = refs\/heads\/main/)
+  const commands = repair.steps.map(step => step.run ?? '').join('\n')
+  assert.match(commands, /repair-npm-beta\.mjs repair "\$PACKAGE_NAME" "\$VERSION"/)
+  assert.doesNotMatch(commands, /npm (?:publish|pack)\b|build-npm-adapter/)
+  assert.equal(repair.steps.find(step => step.uses?.startsWith('actions/upload-artifact@')).if, 'always()')
 })
 
 test('the rootless combined manifest and release outputs remain exact', () => {

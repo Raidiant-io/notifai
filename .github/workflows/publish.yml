@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       expected_sha:
-        description: Exact tagged commit SHA that this run must publish
+        description: Exact tagged source SHA, or exact main SHA for repair-beta
         required: true
         type: string
       candidate_run_id:
@@ -12,10 +12,19 @@ on:
         required: false
         type: string
       mode:
-        description: Stage exact candidate bytes or explicitly promote verified npm discovery
+        description: Stage candidate bytes, promote verified discovery, or repair beta for an existing latest version
         type: choice
-        options: [candidate, promote]
+        options: [candidate, promote, repair-beta]
         default: candidate
+      repair_package:
+        description: Existing package whose beta discovery needs repair (repair-beta only)
+        type: choice
+        options: ['@raidiant/notifai', '@raidiant/notifai-protocol']
+        default: '@raidiant/notifai'
+      repair_version:
+        description: Already-published stable version currently under npm latest (repair-beta only)
+        type: string
+        required: false
 
 permissions:
   contents: read
@@ -32,6 +41,7 @@ jobs:
         env:
           EXPECTED_SHA: ${{ inputs.expected_sha }}
           ACTUAL_SHA: ${{ github.sha }}
+          MODE: ${{ inputs.mode }}
         shell: bash
         run: |
           set -euo pipefail
@@ -43,19 +53,24 @@ jobs:
             echo "The dispatched tag no longer resolves to expected_sha" >&2
             exit 1
           fi
-          case "$GITHUB_REF" in
-            refs/tags/v*|refs/tags/protocol-v*) ;;
-            *)
-              echo "publish.yml accepts only release tags" >&2
-              exit 1
-              ;;
-          esac
+          if [ "$MODE" = repair-beta ]; then
+            test "$GITHUB_REF" = refs/heads/main
+          else
+            case "$GITHUB_REF" in
+              refs/tags/v*|refs/tags/protocol-v*) ;;
+              *)
+                echo "publish.yml accepts only release tags outside beta repair" >&2
+                exit 1
+                ;;
+            esac
+          fi
 
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
       - name: Require an immutable GitHub release
+        if: inputs.mode != 'repair-beta'
         env:
           GH_TOKEN: ${{ github.token }}
         run: >-
@@ -64,6 +79,7 @@ jobs:
           --expected-sha "${{ inputs.expected_sha }}"
 
       - name: Require successful CI evidence at the exact release SHA
+        if: inputs.mode != 'repair-beta'
         env:
           GH_TOKEN: ${{ github.token }}
         run: node scripts/require-ci-evidence.mjs --expected-sha "${{ inputs.expected_sha }}"
@@ -78,6 +94,7 @@ jobs:
 
   npm:
     needs: dispatch-integrity
+    if: inputs.mode != 'repair-beta'
     runs-on: ubuntu-latest
     timeout-minutes: 30
     environment: npm-release
@@ -213,13 +230,24 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: node scripts/require-unified-publication.mjs "${{ steps.plan.outputs.version }}" "${{ inputs.expected_sha }}"
 
-      - name: Promote only the already-verified npm version
-        if: inputs.mode == 'promote'
+      - name: Verify staged candidate discovery
+        if: inputs.mode == 'candidate'
         env:
           PACKAGE_NAME: ${{ steps.plan.outputs.package_name }}
-          VERSION: ${{ steps.plan.outputs.version }}
           NPM_DIST_TAG: ${{ steps.plan.outputs.npm_dist_tag }}
-        run: npm dist-tag add "$PACKAGE_NAME@$VERSION" "$NPM_DIST_TAG"
+        run: node scripts/verify-npm-distribution.mjs verify "$RUNNER_TEMP/npm-dist-tags-before.json" "$PACKAGE_NAME"
+
+      - name: Snapshot audience tags before promotion
+        if: inputs.mode == 'promote' || steps.plan.outputs.package_name == '@raidiant/notifai-protocol'
+        env:
+          PACKAGE_NAME: ${{ steps.plan.outputs.package_name }}
+        run: node scripts/verify-npm-distribution.mjs snapshot "$RUNNER_TEMP/npm-promotion-before.json" "$PACKAGE_NAME"
+
+      - name: Promote only the already-verified npm version
+        if: inputs.mode == 'promote' || steps.plan.outputs.package_name == '@raidiant/notifai-protocol'
+        env:
+          PACKAGE_NAME: ${{ steps.plan.outputs.package_name }}
+        run: node scripts/verify-npm-distribution.mjs promote "$RUNNER_TEMP/npm-promotion-before.json" "$PACKAGE_NAME"
 
       - name: Retain exact npm candidate bytes
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
@@ -230,10 +258,52 @@ jobs:
           retention-days: 90
 
       - name: Verify npm distribution
+        if: inputs.mode == 'promote' || steps.plan.outputs.package_name == '@raidiant/notifai-protocol'
         env:
           PACKAGE_NAME: ${{ steps.plan.outputs.package_name }}
-          NPM_DIST_TAG: ${{ steps.plan.outputs.npm_dist_tag }}
-        run: node scripts/verify-npm-distribution.mjs verify "$RUNNER_TEMP/npm-dist-tags-before.json" "$PACKAGE_NAME"
+        run: node scripts/verify-npm-distribution.mjs verify "$RUNNER_TEMP/npm-promotion-before.json" "$PACKAGE_NAME"
+
+  beta-repair:
+    needs: dispatch-integrity
+    if: inputs.mode == 'repair-beta'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment: npm-release
+    concurrency:
+      group: npm-publish
+      cancel-in-progress: false
+    permissions:
+      contents: read
+      actions: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '24'
+      - name: Install the pinned OIDC dist-tag client
+        run: npm install --global npm@11.21.0 --ignore-scripts --no-audit --no-fund
+      - run: node scripts/check-npm-trusted-publishing.mjs --dist-tags
+      - name: Check recovery guards before granting registry mutation
+        run: node --test scripts/repair-npm-beta.test.mjs scripts/verify-npm-distribution.test.mjs
+      - name: Repair only verified existing stable discovery
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EXPECTED_SHA: ${{ inputs.expected_sha }}
+          PACKAGE_NAME: ${{ inputs.repair_package }}
+          VERSION: ${{ inputs.repair_version }}
+        run: node scripts/repair-npm-beta.mjs repair "$PACKAGE_NAME" "$VERSION" "$RUNNER_TEMP/beta-repair.json"
+      - name: Retain before and after discovery evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: npm-beta-repair-${{ inputs.repair_version }}-${{ inputs.expected_sha }}
+          path: ${{ runner.temp }}/beta-repair.json
+          if-no-files-found: warn
+          retention-days: 90
 
   adapter-acceptance:
     name: npm adapter (${{ matrix.target }})

@@ -168,7 +168,7 @@ fs.writeFileSync(path.join(pkg, 'dist', 'main.js'), plan.script, { mode: 0o755 }
     expect(cliUpdateCommand(f.deps, { channel: 'beta', json: true })).toBe(1)
     expect(JSON.parse(f.io.outLines.at(-1)!)).toMatchObject({
       code: 'effective_command_not_target',
-      recovery_command: 'npx --yes @raidiant/notifai@beta update --channel beta',
+      recovery_command: 'npx --yes @raidiant/notifai@latest update --channel beta',
     })
   })
 
@@ -180,7 +180,7 @@ fs.writeFileSync(path.join(pkg, 'dist', 'main.js'), plan.script, { mode: 0o755 }
     expect(JSON.parse(f.io.outLines.at(-1)!)).toMatchObject({
       ok: false,
       code: 'update_would_downgrade',
-      recovery_command: 'npx --yes @raidiant/notifai@beta update --channel beta',
+      recovery_command: 'npx --yes @raidiant/notifai@latest update --channel beta',
       target: { version: '3.0.1', dist_tag: 'latest' },
     })
     expect(f.npmCalls().some((args) => args[0] === 'install')).toBe(false)
@@ -243,7 +243,7 @@ fs.writeFileSync(path.join(pkg, 'dist', 'main.js'), plan.script, { mode: 0o755 }
     expect(JSON.parse(f.io.outLines.at(-1)!)).toMatchObject({
       ok: false,
       code: 'release_versions_unavailable',
-      recovery_command: 'npx --yes @raidiant/notifai@beta update --channel beta',
+      recovery_command: 'npx --yes @raidiant/notifai@latest update --channel beta',
     })
     expect(f.npmCalls().some((args) => args[0] === 'install')).toBe(false)
     expect(f.installedVersion()).toBe('3.0.1')
@@ -311,7 +311,7 @@ fs.writeFileSync(path.join(pkg, 'dist', 'main.js'), plan.script, { mode: 0o755 }
     expect(cliUpdateCommand(f.deps, { json: true, channel: build.channel })).toBe(1)
     expect(JSON.parse(f.io.outLines[0]!)).toMatchObject({
       ok: false, code: 'package_manager_prefix_not_on_path',
-      recovery_command: `npx --yes @raidiant/notifai@${build.distTag} doctor --json`,
+      recovery_command: 'npx --yes @raidiant/notifai@latest doctor --json',
       message: expect.stringContaining('not on PATH'),
     })
     expect(f.io.outLines.join('\n')).not.toContain(`@raidiant/notifai@${build.distTag} update`)
