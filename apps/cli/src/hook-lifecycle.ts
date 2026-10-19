@@ -73,6 +73,7 @@ import {
   readSessionState,
   readSessionIncarnation,
   readSessionEndMarker,
+  recordDroppedAnswersUnlocked,
   sessionHasEnded,
   sessionStatePath,
   updateSessionState,
@@ -2135,6 +2136,34 @@ function observableQuestions(state: SessionState, submitted: PendingQuestion[], 
   })
 }
 
+/**
+ * The observer that sees its session close holds a client, so it records the
+ * end with the service at once instead of leaving the expiry to the next
+ * hook: the service expires the session's open questions, drops answers the
+ * agent never read, and retires them silently from every device. Only the
+ * incarnation this close ended is reported. The service accepts an end from
+ * the lease holder alone and ending twice changes nothing, so this and the
+ * Session Attendant's own report never conflict.
+ */
+async function reportSessionClosed(ctx: HookContext, sessionId: string, notes: string[]): Promise<void> {
+  const marker = readSessionEndMarker(sessionId, ctx.env)
+  const incarnation = readSessionIncarnation(sessionId, ctx.env)
+  if (marker === null || incarnation === null || marker.ends !== incarnation.key) return
+  try {
+    await ctx.client.attend(sessionId, { incarnation: incarnation.incarnation, state: 'ended' }, { waitSeconds: 0 })
+    notes.push('recorded the closed session with the service; its questions expire now')
+    ctx.log?.info('hook.retirement', { session_closed: true, attempted: true, proven: true })
+  } catch (err) {
+    // The queued retirements and the attendant's report remain the fallback.
+    ctx.log?.info('hook.retirement', {
+      session_closed: true,
+      attempted: true,
+      proven: false,
+      message: err instanceof Error ? err.message : String(err),
+    })
+  }
+}
+
 /** The escalation itself, split out so the claim is released on every path. */
 async function escalate(
   ctx: HookContext,
@@ -2255,6 +2284,7 @@ async function escalate(
     }
     if (waited.interrupted === 'ownership-ended') {
       notes.push('answer ownership ended locally; stopping this observer without delivering into a closed session')
+      if (sessionHasEnded(sessionId, ctx.env)) await reportSessionClosed(ctx, sessionId, notes)
       return { notes }
     }
     const currentRequestIds = new Set(
@@ -2391,12 +2421,15 @@ async function escalate(
  * retirement queue, because this file was the only record of those ids and no
  * hook for this session will ever run again. A question whose
  * agent just exited can receive no answer, so it is orphaned as `expired`.
+ *
+ * A closed session is closed: nothing is kept for it to resume. An answer the
+ * agent never read is dropped and named in the end marker, and owed Agent
+ * Acknowledgements are cancelled, because a closed session cannot write one.
  */
 export function handleSessionEnd(
   env: NodeJS.ProcessEnv,
   envelope: HookEnvelope,
   now: number = Date.now(),
-  preserveAccepted = true,
 ): HookOutcome {
   const notes: string[] = []
   const sessionId = envelope.session_id
@@ -2463,56 +2496,71 @@ export function handleSessionEnd(
         (readSessionIncarnation(sessionId, env)?.key ?? null) !== ending.ends) {
       return { notes, log: { outcome: 'preserved', reason: 'session-resumed-during-cleanup' } }
     }
-    // A committed receipt can arrive after the end marker. Preserve the fresh
-    // obligation state rather than restoring the earlier cleanup snapshot.
+    // Re-read under the lock: a receipt committed after the end marker
+    // belongs to this close too.
     const state = readSessionState(sessionId, env)
-    stateWithHistory = { ...state, ...(stateWithHistory.question_history === undefined ? {} : { question_history: stateWithHistory.question_history }) }
-    if (
-      (preserveAccepted && state.accepted !== undefined) ||
-      (state.acknowledgement_due?.length ?? 0) > 0 ||
-      (state.message_acknowledgement_due?.length ?? 0) > 0 ||
-      (state.native_answer_operations?.length ?? 0) > 0 ||
-      (state.codex_question_bindings?.length ?? 0) > 0
-    ) {
-      const preserved: SessionState = { ...stateWithHistory }
-      if (!preserveAccepted) delete preserved.accepted
-      if (!preserveAccepted) delete preserved.waiting_answers
-      delete preserved.input_wake
-      delete preserved.pending
-      delete preserved.retiring
-      delete preserved.acknowledgement_blocks
-      if ((preserved.acknowledgement_due?.length ?? 0) === 0) {
-        delete preserved.acknowledgement_due
-      }
-      if ((preserved.message_acknowledgement_due?.length ?? 0) === 0) {
-        delete preserved.message_acknowledgement_due
-      }
-      writeSessionStateUnlocked(sessionStatePath(sessionId, env), sessionId, preserved)
-      notes.push(
-        preserveAccepted && state.accepted !== undefined
-          ? 'preserved an accepted device answer for this exact session to resume'
-          : 'preserved required Agent Acknowledgement obligations for this exact session',
-      )
-      return {
-        notes,
-        log: {
-          outcome: preserveAccepted && state.accepted !== undefined ? 'answer-preserved' : 'acknowledgement-preserved',
-          queued_retirements: orphans.length,
-          accepted_answers: state.accepted?.answers.length ?? 0,
-          acknowledgement_due: state.acknowledgement_due?.length ?? 0,
-          ...(state.message_acknowledgement_due === undefined
-            ? {}
-            : { message_acknowledgement_due: state.message_acknowledgement_due.length }),
-        },
-      }
-    }
     const history = stateWithHistory.question_history
+    const dropped = unreadAnswerRequestIds(state)
+    if (dropped.length > 0) {
+      recordDroppedAnswersUnlocked(sessionId, env, ending, dropped)
+      notes.push(
+        `dropped ${dropped.length} unread device answer${dropped.length === 1 ? '' : 's'} with the closed session`,
+      )
+    }
+    const log = {
+      queued_retirements: orphans.length,
+      ...(dropped.length === 0 ? {} : { dropped_answers: dropped.length }),
+    }
+    if ((state.native_answer_operations?.length ?? 0) > 0 || (state.codex_question_bindings?.length ?? 0) > 0) {
+      // An agent-reported terminal answer still owes its own report; it is
+      // not a delivery into this session. Everything owed to the agent goes.
+      const preserved: SessionState = {
+        ...state,
+        ...(history === undefined ? {} : { question_history: history }),
+      }
+      for (const field of CLOSED_SESSION_DROPS) delete preserved[field]
+      writeSessionStateUnlocked(sessionStatePath(sessionId, env), sessionId, preserved)
+      notes.push('preserved native answer reports for this exact session')
+      return { notes, log: { outcome: 'native-report-preserved', ...log } }
+    }
     clearSessionStateUnlocked(sessionId, env)
     if ((history?.length ?? 0) > 0) {
       writeSessionStateUnlocked(sessionStatePath(sessionId, env), sessionId, { question_history: history! })
     }
-    return { notes, log: { outcome: 'cleaned', queued_retirements: orphans.length } }
+    return { notes, log: { outcome: 'cleaned', ...log } }
   })
+}
+
+/** What a closed session never keeps: live questions, answers and owed acknowledgements. */
+const CLOSED_SESSION_DROPS = [
+  'accepted',
+  'waiting_answers',
+  'delivered_answers',
+  'acknowledgement_due',
+  'message_acknowledgement_due',
+  'acknowledgement_blocks',
+  'input_wake',
+  'pending',
+  'retiring',
+] as const satisfies ReadonlyArray<keyof SessionState>
+
+/**
+ * Accepted device answers the agent never read: journaled but not yet handed
+ * to the harness. An answer whose delivery committed may have been read; it
+ * is not called dropped.
+ */
+function unreadAnswerRequestIds(state: SessionState): string[] {
+  const accepted = state.accepted
+  const unread = [
+    ...(accepted !== undefined && accepted.delivered_at === undefined && accepted.delivery_committed_at === undefined
+      ? accepted.answers
+      : []),
+    ...(state.waiting_answers ?? []),
+  ]
+  return [...new Set(unread.flatMap(({ pending }) => {
+    const requestId = pending.request_id ?? pending.submission?.request_id
+    return requestId === undefined ? [] : [requestId]
+  }))]
 }
 
 // ---------------------------------------------------------------------------

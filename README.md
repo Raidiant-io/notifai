@@ -391,10 +391,15 @@ that local state and, after promotion, links the downstream request evidence.
 Inspect or close the original identity when delivery is uncertain; registering
 again creates a separate question.
 
-**SessionEnd** (`session-end`) runs when the Agent Session closes. It drops this
-Agent Session's local state and queues any leftover questions for retirement so
-they do not sit on your devices after the agent is gone. It has to run here
-because no later hook for this Agent Session will fire.
+**SessionEnd** (`session-end`) runs when the Agent Session closes. A closed
+session's questions are closed too: it drops this Agent Session's local state
+and queues any leftover questions for retirement so they do not sit on your
+devices after the agent is gone. It has to run here because no later hook for
+this Agent Session will fire. An answer you gave that the agent had not read
+yet is dropped, never delivered later, and your devices show it as not
+delivered. Acknowledgements the agent still owed are cancelled. If a hook is
+still waiting for an answer when the session closes, it tells the Notifai
+service right away, so the questions expire on your devices at once.
 
 **Session Attendant** (`attend`, Claude Code and Codex on macOS and Linux) is a second,
 asynchronous handler on SessionStart, UserPromptSubmit, and Stop. It keeps one
