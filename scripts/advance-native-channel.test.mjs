@@ -95,6 +95,12 @@ test('channel initialization is explicit; one commit publishes JSON and view whi
   f.git.calls = []
   assert.equal((await advanceNativeChannel(f.args)).changed, false)
   assert.ok(f.git.calls.every(call => call.method === 'GET'))
+  f.seed('beta', '0.9.0-beta.1')
+  f.git.calls = []
+  const repaired = await advanceNativeChannel(f.args)
+  assert.equal(repaired.sequence, 1, 'unchanged stable must retain its sequence while repairing beta')
+  assert.equal(f.distribution.verifyChannel(f.files().get('beta.json'), 'beta').sequence, 8)
+  assert.equal(f.git.calls.filter(call => call.route === '/graphql').length, 1)
 })
 
 test('stable co-promotion keeps beta sequence and withdrawals, while a newer beta remains byte-identical', async () => {

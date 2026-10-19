@@ -132,6 +132,15 @@ changes. Admission and parity reject a present beta older than stable/latest.
 Never move a source tag, overwrite an asset, or republish a version
 to repair a failed gate.
 
+Existing beta discovery can be repaired through `publish.yml` on exact `main`
+with `mode: repair-beta`, `repair_package`, and `repair_version`. The version must
+already be stable under npm latest. The protected, serialized OIDC job verifies
+the immutable release tag, source CI, registry bytes and npm-verified provenance
+including its exact workflow signer before changing beta alone. It never publishes
+or repacks bytes, changes latest, or moves native pointers. CLI repair retires an
+older beta tag; protocol repair advances it to latest; a newer beta stays intact.
+Retain the before/after artifact and existing pointer-change authorization.
+
 Keep the candidate's version bump, beta changelog section, README markers, and
 lockfile **off `main`**. Merge or cherry-pick the actual product changes into
 `main` as ordinary Conventional Commits. The next public release uses the

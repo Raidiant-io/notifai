@@ -22,6 +22,7 @@ export function requireReleasePair({ version, sourceRevision, native, adapter })
     'npm and native distribution authenticate different inventories')
 }
 export function requireNpmDiscovery({ version, cliTags, protocolTags }) {
+  assert.ok(typeof protocolTags.latest === 'string', 'Protocol latest discovery is required')
   requireCurrentNpmChannels('@raidiant/notifai', cliTags)
   requireCurrentNpmChannels('@raidiant/notifai-protocol', protocolTags)
   assert.equal(cliTags[publicationLane(version)], version, 'Promote npm discovery before native discovery')

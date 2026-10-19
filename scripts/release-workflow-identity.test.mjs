@@ -269,6 +269,23 @@ test('native releases begin as tag-addressable drafts and never publish from rel
   assert.doesNotMatch(release, /dispatch_workflow publish-native-release/u)
 })
 
+test('beta repair uses exact main, protected OIDC, shared serialization and receipt retention without publishing bytes', () => {
+  const repair = publishWorkflow.jobs['beta-repair']
+  assert.equal(repair.needs, 'dispatch-integrity')
+  assert.equal(repair.if, "inputs.mode == 'repair-beta'")
+  assert.equal(publishWorkflow.jobs.npm.if, "inputs.mode != 'repair-beta'")
+  assert.equal(repair.environment, 'npm-release')
+  assert.deepEqual(repair.permissions, { contents: 'read', actions: 'read', 'id-token': 'write' })
+  assert.equal(repair.concurrency.group, publishWorkflow.jobs.npm.concurrency.group)
+  assert.equal(repair.concurrency['cancel-in-progress'], false)
+  const integrity = publishWorkflow.jobs['dispatch-integrity'].steps[0].run
+  assert.match(integrity, /if \[ "\$MODE" = repair-beta \]; then\s+test "\$GITHUB_REF" = refs\/heads\/main/)
+  const commands = repair.steps.map(step => step.run ?? '').join('\n')
+  assert.match(commands, /repair-npm-beta\.mjs repair "\$PACKAGE_NAME" "\$VERSION"/)
+  assert.doesNotMatch(commands, /npm (?:publish|pack)\b|build-npm-adapter/)
+  assert.equal(repair.steps.find(step => step.uses?.startsWith('actions/upload-artifact@')).if, 'always()')
+})
+
 test('the rootless combined manifest and release outputs remain exact', () => {
   assert.equal(releaseConfig.packages['.'], undefined)
   assert.equal(releaseConfig['group-pull-request-title-pattern'], undefined)
