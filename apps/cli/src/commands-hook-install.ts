@@ -35,6 +35,7 @@ import {
   findObsoleteNotifaiPluginWiring,
   handlerEvent,
   isTomlSettingsPath,
+  handlerCommandLine,
   loadCursorSettings,
   loadSettings,
   machineHookFiles,
@@ -449,12 +450,13 @@ function machineInstallationIsCurrent(deps: CommandDeps, harness: HookInstallabl
   return requiredHookEvents(harness, deps.hookPlatform).every((event) => installed.has(event))
 }
 
-function foreignStopHandlers(document: { hooks?: Record<string, { hooks?: { command: string }[] }[]> }): { command: string }[] {
+function foreignStopHandlers(document: { hooks?: Record<string, { hooks?: { command: string; args?: unknown }[] }[]> }): { command: string }[] {
   const groups = document.hooks?.['Stop']
   if (!Array.isArray(groups)) return []
   return groups
     .flatMap((group) => group.hooks ?? [])
-    .filter((handler) => handlerEvent(handler.command) === null)
+    // Exec-form handlers carry their argv in `args`: read the whole line.
+    .filter((handler) => handlerEvent(handlerCommandLine(handler)) === null)
 }
 
 /**

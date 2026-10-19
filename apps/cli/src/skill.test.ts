@@ -360,7 +360,7 @@ describe('Notifai agent skill', () => {
     const claude = harnessFile('claude-code')
     const answerRoute = claude.slice(claude.indexOf('## How the answer gets back'), claude.indexOf('## Linked question picker'))
 
-    expect(answerRoute).toMatch(/\*\*Claude Code:\*\* a detached observer.*inbox\s+socket/is)
+    expect(answerRoute).toMatch(/\*\*Claude Code:\*\*.*hub waits.*session\s+child.*inbox\s+socket/is)
     expect(answerRoute).toMatch(/socket on macOS and Linux.*named pipe on Windows/is)
     expect(answerRoute).toMatch(/older Claude Code.*next turn/is)
     expect(answerRoute).not.toMatch(/stays held|decision: block/i)

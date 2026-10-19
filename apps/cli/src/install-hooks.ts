@@ -50,7 +50,6 @@ import {
 import { accountHome } from './platform.js'
 import { sameLocalPath } from './local-path.js'
 import {
-  CLAUDE_HUB_STOP_TIMEOUT_SECONDS,
   NON_ROUTING_STOP_TIMEOUT_SECONDS,
   QUESTION_STOP_TIMEOUT_SECONDS,
 } from './question-timing.js'
@@ -289,21 +288,6 @@ export function stopHandlerIsDetached(harness: HookInstallableHarness | undefine
 }
 
 /**
- * The declared lifetime of a detached Stop handler. Codex keeps the complete
- * answer window (its hook bytes must not change, and its own successor owns the
- * wait). Claude Code with the hub only submits and hands the window to the hub,
- * so its Stop needs the submission allowance alone.
- */
-export function stopTimeoutSeconds(
-  harness: HookInstallableHarness | undefined,
-  platform?: NodeJS.Platform | HookHostPlatform,
-): number {
-  return harness === 'claude-code' && hookHostPlatform(platform) === 'posix'
-    ? CLAUDE_HUB_STOP_TIMEOUT_SECONDS
-    : QUESTION_STOP_TIMEOUT_SECONDS
-}
-
-/**
  * The turn-end handler, whose shape is the whole per-harness difference.
  *
  * Claude Code takes the answer over its own inbox socket and Codex takes it
@@ -322,7 +306,7 @@ function stopHandler(
 ): HookHandler {
   const command = hookCommandFields(adapterPath, 'stop', harness, options)
   if (stopHandlerIsDetached(harness)) {
-    return { type: 'command', ...command, timeout: stopTimeoutSeconds(harness, options.platform), async: true }
+    return { type: 'command', ...command, timeout: QUESTION_STOP_TIMEOUT_SECONDS, async: true }
   }
   if (harness === 'grok') {
     return { type: 'command', ...command, timeout: QUESTION_STOP_TIMEOUT_SECONDS }

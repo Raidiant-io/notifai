@@ -53,7 +53,6 @@ import {
 import { hookAdapterPath, installHookAdapter } from './hook-adapter.js'
 import { OWNER_STEP_BUDGETS, hookInvocation, hookStepBudgets, hookSteps, hookTimeoutSeconds, hookWorkAllowanceMs } from './hook-budgets.js'
 import { HOOK_INSTALLABLE_HARNESSES } from './harnesses.js'
-import { CLAUDE_HUB_STOP_TIMEOUT_SECONDS } from './question-timing.js'
 import {
   CODEX_ATTEND_TIMEOUT_SECONDS,
   NON_ROUTING_BLOCKING_STOP_TIMEOUT_SECONDS,
@@ -79,7 +78,6 @@ import {
   handlerEvent,
   harnessAccountHome,
   hookCommand,
-  stopTimeoutSeconds,
   quoteWindowsArg,
   loadSettings,
   mergeCursorHooks,
@@ -240,25 +238,25 @@ describe('hook config', () => {
     expect(QUESTION_STOP_TIMEOUT_SECONDS).toBeGreaterThan(REPLY_MAX_WINDOW_SECONDS)
   })
 
-  it('gives Claude Code an asynchronous exec-form Stop on POSIX that only submits, then hands the window to the hub', () => {
+  it('gives Claude Code an asynchronous exec-form Stop on POSIX that keeps the complete answer window', () => {
     const claude = buildHookConfig({ adapterPath: ADAPTER, harness: 'claude-code', platform: 'darwin' })
 
-    // `async: true` frees the turn. The Stop serves terminal-first grace and
-    // submission, then the hub (through the session child) owns the answer
-    // window, so the declared budget is the submission allowance, not 72 hours.
+    // `async: true` frees the turn. When the hub attends the session the Stop
+    // hands the window to it and ends early; when it does not (no session
+    // child, a refused child, a faulted hub) the Stop itself keeps the whole
+    // window, so the declared budget never shrinks.
     expect(claude['Stop']?.[0]?.hooks[0]).toEqual({
       type: 'command',
       command: ADAPTER,
       args: ['hook', 'stop', '--owner', 'notifai', '--harness', 'claude-code', '--integration-revision', expect.stringMatching(/^[a-f0-9]{64}$/)],
-      timeout: CLAUDE_HUB_STOP_TIMEOUT_SECONDS,
+      timeout: QUESTION_STOP_TIMEOUT_SECONDS,
       async: true,
     })
-    expect(CLAUDE_HUB_STOP_TIMEOUT_SECONDS).toBeLessThan(QUESTION_STOP_TIMEOUT_SECONDS)
     expect(claude['UserPromptSubmit']?.[0]?.hooks[0]?.async).toBeUndefined()
     expect(claude['SessionEnd']?.[0]?.hooks[0]?.async).toBeUndefined()
   })
 
-  it('keeps the complete-window Claude Code Stop on Windows until the hub is verified there', () => {
+  it('keeps the shell-form Claude Code Stop on Windows until the hub is verified there', () => {
     const options = {
       adapterPath: 'C:\\Users\\Ada\\.notifai\\bin\\hook-adapter',
       harness: 'claude-code' as const,
@@ -462,7 +460,7 @@ describe('hook config', () => {
       expect(groups.flatMap((group) => group.hooks)).toHaveLength(attends ? 2 : 1)
     }
     expect(migrated.document.hooks?.['Stop']?.[0]?.hooks[0]).toMatchObject({
-      timeout: stopTimeoutSeconds('claude-code'),
+      timeout: QUESTION_STOP_TIMEOUT_SECONDS,
       async: true,
     })
     expect(migrated.replaced.sort()).toEqual([

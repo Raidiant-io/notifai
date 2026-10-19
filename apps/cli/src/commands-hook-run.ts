@@ -926,8 +926,17 @@ export async function hookRunCommand(
         logger.info('attendant.lease', { event: 'ended-by-session-end', outcome: reported })
       }
       if ((harness === 'codex' || harness === 'claude-code') && envelope.session_id !== undefined) {
-        // The hub reports the end and retires what it queued at once.
-        await notifyHubSessionEnded(deps.env, envelope.session_id)
+        // The hub reports the end and retires what it queued at once. With no
+        // hub running, a detached process retires the queue now instead.
+        const handed = await notifyHubSessionEnded(deps.env, envelope.session_id)
+        const queued = (outcome.log as { queued_retirements?: unknown }).queued_retirements
+        if (!handed && typeof queued === 'number' && queued > 0) {
+          try {
+            deps.spawnRetirement?.({ cwd, harness, ...(workAllowanceMs === null ? {} : { detachTimeoutMs: Math.min(5_000, workAllowanceMs) }) })
+          } catch (err) {
+            logger.error('hook.retirement', { stage: 'spawn', ...failureData(err) })
+          }
+        }
       }
       return EXIT.ok
     }
