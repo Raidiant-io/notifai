@@ -57,6 +57,9 @@ static int active_build(const char *record, char *build) {
 #include "windows-user-path.h"
 #include "windows-file-users.h"
 #include "windows-npm-process.h"
+#ifdef NOTIFAI_WINDOWS_SESSION_CHILD
+#include "windows-session-child.h"
+#endif
 
 static int failure(const char *message) {
     fprintf(stderr, "notifai: %s (Windows error %lu)\n", message, GetLastError());
@@ -270,6 +273,11 @@ int wmain(int argc, wchar_t **argv) {
         return 1;
     }
 
+#ifdef NOTIFAI_WINDOWS_SESSION_CHILD
+    /* UNVERIFIED on Windows; not built into releases until W1-Win. */
+    if (argc >= 3 && !wcscmp(argv[1], L"hook") && !wcscmp(argv[2], L"attend"))
+        return win_session_child_main(argc, argv, module_path);
+#endif
     LPWCH environment = GetEnvironmentStringsW();
     if (!environment) return failure("cannot inspect runtime controls");
     for (wchar_t *entry = environment; *entry; entry += wcslen(entry) + 1) {
