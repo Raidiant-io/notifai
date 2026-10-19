@@ -77,7 +77,15 @@ export async function promoteDistribution(candidate, { lookup = registryDistTags
   const current = await lookup(candidate.name)
   const keys = new Set([...Object.keys(current), ...Object.keys(candidate.before)])
   if ([...keys].some(tag => current[tag] !== candidate.before[tag])) throw new Error('npm tags changed since the promotion snapshot')
-  for (const write of npmPromotion(candidate)) await writeTag(candidate.name, write)
+  for (const write of npmPromotion(candidate)) {
+    try { await writeTag(candidate.name, write) } catch (error) {
+      const detail = [error?.stderr, error?.stdout, error?.message].filter(Boolean).map(String).join('\n')
+      if (/trusted publisher cannot manage dist-tags|enable Allow npm dist-tag/i.test(detail)) {
+        throw new Error(`${candidate.name}: a package maintainer must enable "Allow npm dist-tag" for this package's publish.yml trusted publisher on npmjs.com, then retry the same verified version ${candidate.version}.`)
+      }
+      throw error
+    }
+  }
 }
 
 // A successful npm write can briefly expose old or intermediate planned tags.
@@ -129,7 +137,7 @@ async function main() {
   if (command === 'promote') {
     await promoteDistribution({ name, version, before }, { writeTag: async (pkg, write) => {
       const args = write.version === null ? ['dist-tag', 'rm', pkg, write.tag] : ['dist-tag', 'add', `${pkg}@${write.version}`, write.tag]
-      execFileSync('npm', args, { stdio: 'inherit', timeout: 60_000 })
+      execFileSync('npm', args, { encoding: 'utf8', stdio: 'pipe', timeout: 60_000 })
     } })
     return
   }

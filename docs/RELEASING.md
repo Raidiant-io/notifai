@@ -141,6 +141,15 @@ or repacks bytes, changes latest, or moves native pointers. CLI repair retires a
 older beta tag; protocol repair advances it to latest; a newer beta stays intact.
 Retain the before/after artifact and existing pointer-change authorization.
 
+Before promotion or repair, enable **Allow npm dist-tag** on the `publish.yml`
+trusted publisher for each npm package: both `@raidiant/notifai` and
+`@raidiant/notifai-protocol`. OIDC permission to publish package bytes does not
+grant permission to manage tags. A package maintainer must enable this setting
+on npmjs.com; retry the same verified version after an explicit tag-permission
+refusal. For main-branch repair, `npm-release` must also permit literal branch
+`main` alongside its release-tag policies. Handle that exact run's existing
+environment approval under the release-owner procedure.
+
 Keep the candidate's version bump, beta changelog section, README markers, and
 lockfile **off `main`**. Merge or cherry-pick the actual product changes into
 `main` as ordinary Conventional Commits. The next public release uses the
