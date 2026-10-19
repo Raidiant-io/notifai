@@ -347,7 +347,7 @@ export function recordSessionNotified(sessionId: string, env: NodeJS.ProcessEnv,
     // The hub attends a session only once it notified; tell it now.
     finishBeforeExit(import('./hub-client.js').then(({ notifyHubSessionNotified }) => notifyHubSessionNotified(env, sessionId)))
   } catch {
-    // The marker only wakes a dormant attendant; the notification already left.
+    // The marker and hub hint only start attendance; the notification already left.
   }
 }
 

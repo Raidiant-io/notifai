@@ -267,7 +267,7 @@ function submitQuestion(
         )
       }
       recordConfirmedNativeAnswerTarget(sessionId, ctx.env, { ...entry, request_id: receipt.request_id })
-      // Wakes this session's dormant Session Attendant.
+      // Starts attendance: the hub (or, off macOS and Linux, the dormant attendant) begins watching for answers.
       recordSessionNotified(sessionId, ctx.env, ctx.now())
       return receipt
     }, ctx.service_identity)
