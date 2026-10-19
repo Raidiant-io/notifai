@@ -1,6 +1,7 @@
 import type { connectCodexAnswerControl } from './codex-answer-control.js'
 import type { connectCodexQueue } from './codex-queue-control.js'
 import type { ReadCodexDaemonVersion } from './codex-shared-server-health.js'
+import type { CheckCodexCommandRules } from './codex-command-rules.js'
 import {
   NOTIFICATION_CONTRACT_FINGERPRINT,
   SHIPPED_CLI_CAPABILITIES,
@@ -107,6 +108,8 @@ export interface CommandDeps {
   codexAnswerControl?: typeof connectCodexAnswerControl
   /** Test seam for doctor's shared Codex app-server report. */
   codexDaemonVersion?: ReadCodexDaemonVersion
+  /** Test seam for doctor's `codex execpolicy check` of the Notifai rules file. */
+  codexRuleCheck?: CheckCodexCommandRules
   codexSourcePid?: number
   /** Test seam for detached immediate submission and native answer ownership. */
   spawnQuestionSettlement?: (launch: QuestionSettlementLaunch) => void

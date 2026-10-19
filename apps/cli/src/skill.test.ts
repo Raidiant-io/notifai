@@ -535,6 +535,8 @@ describe('Notifai agent skill', () => {
     }
     expect(harnessFile('claude-code')).not.toMatch(/\*\*Codex:\*\*|OpenClaw|Hermes/)
     expect(harnessFile('claude-code')).toContain('notifai init --claude-commands --json')
+    expect(harnessFile('codex')).toContain('notifai init --codex-commands --json')
+    expect(harnessFile('codex')).toMatch(/--body-file <path>/)
   })
 
   it('moves per-harness mechanics into progressive disclosure', () => {

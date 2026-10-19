@@ -121,7 +121,7 @@ Use one-way blocked only when no User reply would resume the work.
   Summary plus useful detail; focused views show Body or Summary, never both.
   Omit it when Summary suffices.
 
-Use `--body-file <path|->` for long content.
+Use `--body-file <path>` for long content.
 
 Images (`--image`, referenced in Body as `media:1`), grouping, replacement,
 and the User-owned `--sound`, `--level`, and `--device`:
@@ -196,7 +196,7 @@ For native answers or a `native_question` from `ask`, read
 **Never say where the answer must arrive** ("tell me here").
 
 Use `--multi` for combined answers, `--body-file` for Body, `--image` for
-evidence, or `--form <path|->` for up to 10 questions with one `summary`.
+evidence, or `--form <path>` for up to 10 questions with one `summary`.
 
 Register independent questions separately. Retire obsolete questions or unlinked
 ones answered in the conversation with

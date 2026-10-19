@@ -335,6 +335,17 @@ offered once Claude Code is wired and written only on a yes; setup,
 configuration and sign-out commands keep their prompt, and
 `notifai hooks uninstall` removes the rules with the wiring.
 
+Codex's default sandbox has no network, and outside full-access mode Codex
+asks before a command runs outside it. `notifai init --codex-commands` writes
+`rules/notifai.rules` in the Codex home (`~/.codex`, or `CODEX_HOME`) with a
+`prefix_rule` that lets the same commands run outside the sandbox without a
+prompt. It is offered once Codex is wired and written only on a yes, and
+`notifai hooks uninstall --harness codex` removes it. Codex loads rules at
+startup, matches only a literal `notifai …` argument list, and applies the most
+restrictive rule, so `notifai doctor` reports a session that predates the rule,
+a rule the installed Codex rejects, and an organization rule that forbids it,
+each as per-command approval rather than a fault.
+
 **SessionStart** (`session-start`) gives the main owner the small model-visible
 activation context that makes it evaluate Notifai proactively. **SubagentStart**
 (`subagent-start`) gives ordinary Claude and Codex workers a reporting-only

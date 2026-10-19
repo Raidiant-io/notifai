@@ -28,8 +28,9 @@ import {
   readLiveProjectSessionPointers,
   readProjectSessionPointer,
 } from './hook-project-sessions.js'
-import { readSessionState } from './hook-session-state.js'
+import { readSessionIncarnation, readSessionState } from './hook-session-state.js'
 import { codexSharedServerState } from './codex-shared-server-health.js'
+import { assessCodexCommandRules } from './codex-command-rules.js'
 import { openclawGatewayReady } from './openclaw-gateway-readiness.js'
 import {
   NON_ROUTING_BLOCKING_STOP_TIMEOUT_SECONDS,
@@ -573,6 +574,7 @@ export async function assessReadiness(
           reused.auth,
           ...hookStates(deps),
           ...await codexSharedServerStates(deps),
+          ...await codexCommandStates(deps),
           await skillReadiness(deps, options.skillScope, options.skillHarnesses),
           reused.devices,
           reused.proof,
@@ -666,6 +668,7 @@ export async function assessReadiness(
   // are reachable without a phone.
   states.push(...hookStates(deps))
   states.push(...await codexSharedServerStates(deps))
+  states.push(...await codexCommandStates(deps))
   states.push(await skillReadiness(deps, options.skillScope, options.skillHarnesses))
 
   if (!credential || !reachable) {
@@ -1053,6 +1056,25 @@ async function codexSharedServerStates(deps: CommandDeps): Promise<ReadinessStat
   if (!findInstallations(deps.env, deps.hookAdapterHome, deps.hookPlatform).some(item => item.harness === 'codex')) return []
   const state = await codexSharedServerState(deps.env, deps.hookPlatform ?? process.platform, deps.codexDaemonVersion)
   return state === null ? [] : [{ ...state, harnesses: ['codex'] }]
+}
+
+/**
+ * Whether Codex may run the commands an away User depends on outside its
+ * sandbox without a terminal approval. Reported only once Codex is wired, and
+ * never a blocker: full-access sessions do not need the rule, and hooks work
+ * without it.
+ */
+async function codexCommandStates(deps: CommandDeps): Promise<ReadinessState[]> {
+  if (!findInstallations(deps.env, deps.hookAdapterHome, deps.hookPlatform).some(item => item.harness === 'codex')) return []
+  const { active, contested } = resolveActiveHarness(deps.env, deps.cwd, (deps.now ?? Date.now)())
+  const session = contested.length <= 1 && active?.harness === 'codex' && active.sessionId !== undefined
+    ? readSessionIncarnation(active.sessionId, deps.env)
+    : null
+  return [await assessCodexCommandRules(deps.env, {
+    platform: deps.hookPlatform ?? process.platform,
+    ...(deps.codexRuleCheck === undefined ? {} : { check: deps.codexRuleCheck }),
+    sessionStartedAt: session?.start.wall ?? null,
+  })]
 }
 
 function hookStates(deps: CommandDeps): ReadinessState[] {

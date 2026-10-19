@@ -58,6 +58,40 @@ Verified queue control can remove a stale wake owned by Notifai; unavailable
 control leaves the harmless wake in place and preserves human prompts.
 Keep the original question and request identities when investigating a delay.
 
+## Command approval
+
+Codex's default sandbox has no network, and outside full-access mode Codex
+asks before running a command outside it. A question, its wake-up and its
+acknowledgement are all commands, so an away User's first question can wait
+at a terminal approval nobody sees. Readiness reports this as
+`codex-commands` once Codex is wired; it never blocks setup. On the User's yes:
+
+```bash
+notifai init --codex-commands --json
+```
+
+That writes `rules/notifai.rules` in the Codex home (`~/.codex`, or
+`CODEX_HOME`) with an allow rule for `send`, `ask`, `receive`, `acknowledge`,
+`status`, `replies`, `close`, `guidance` and `session rename` only. Setup,
+configuration and guidance edits keep their prompt.
+`notifai hooks uninstall --harness codex` removes the file. Never write it
+unasked, and never edit Codex rules by hand.
+
+The rule has three limits, and readiness names each:
+
+- Codex loads rules at startup. A session that started before the rule keeps
+  asking (`session_predates_rule`): approve when Codex asks; new sessions will
+  not ask. Never suggest ending that session while one of its questions is
+  waiting, because closing the session expires the question.
+- Only a literal `notifai …` argument list matches. Call `notifai` by name,
+  never by absolute path or `node …/main.js`, and never through redirection, a
+  heredoc, `$()` or `VAR=…`: Codex cannot split such a script, so nothing
+  matches and the command stays in the sandbox. Put a Markdown body in a file
+  and pass `--body-file <path>`.
+- Rules are experimental, and the most restrictive rule wins. When readiness
+  says the rule check fails, or that your organization forbids it, approve
+  Notifai commands when Codex asks; hooks keep working.
+
 ## Windows command execution
 
 Codex runs hooks through the session's selected shell. Notifai generates one
