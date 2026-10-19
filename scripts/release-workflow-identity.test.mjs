@@ -92,9 +92,9 @@ test('Ubuntu owns consolidated generic evidence while native jobs stay boundary-
   }
 })
 
-test('public hosted workflows exist only for release preparation and publication', () => {
+test('public hosted workflows exist only for release preparation, publication and the Codex card canary', () => {
   assert.deepEqual(
-    ['ci.yml', 'prepare-native-release.yml', 'publish-native-release.yml', 'publish.yml', 'release-please.yml', 'standalone-candidate.yml', 'windows-access.yml'],
+    ['ci.yml', 'codex-card-canary.yml', 'prepare-native-release.yml', 'publish-native-release.yml', 'publish.yml', 'release-please.yml', 'standalone-candidate.yml', 'windows-access.yml'],
     readdirSync('.github/workflows').filter(name => name.endsWith('.yml')).sort(),
   )
   assert.equal(ciWorkflow.jobs['dependency-review'], undefined)
@@ -103,6 +103,25 @@ test('public hosted workflows exist only for release preparation and publication
   assert.deepEqual(workflow.permissions, {contents: 'read'})
   assert.equal(workflow.on.workflow_dispatch.inputs.expected_sha.required, true)
   assert.equal(workflow.on.workflow_call.inputs.expected_sha.required, true)
+})
+
+test('the Codex card canary is the only clock-driven workflow and watches an external dependency without secrets', () => {
+  const text = read('.github/workflows/codex-card-canary.yml')
+  const canary = parse(text)
+  assert.deepEqual(Object.keys(canary.on).sort(), ['schedule', 'workflow_dispatch'])
+  assert.deepEqual(canary.permissions, { contents: 'read' })
+  assert.equal(canary.concurrency['cancel-in-progress'], false)
+  assert.doesNotMatch(text, /\bsecrets\.|\bvars\./u)
+  assert.deepEqual(Object.keys(canary.jobs), ['canary'])
+  assert.equal(canary.jobs.canary['runs-on'], 'ubuntu-latest')
+  assert.ok(canary.jobs.canary['timeout-minutes'] <= 20)
+  const run = canary.jobs.canary.steps.map(step => step.run ?? '').join('\n')
+  assert.match(run, /npm install -g @openai\/codex@latest/u)
+  assert.ok(run.indexOf('pnpm build') < run.indexOf('scripts/codex-card-canary.test.mjs'))
+  assert.ok(run.indexOf('scripts/codex-card-canary.test.mjs') < run.indexOf('scripts/codex-card-canary.mjs'))
+  for (const name of readdirSync('.github/workflows').filter(name => name.endsWith('.yml') && name !== 'codex-card-canary.yml')) {
+    assert.doesNotMatch(read(`.github/workflows/${name}`), /\n  schedule:/u, name)
+  }
 })
 
 test('native finalization and publication retain exact artifacts across independent retries', () => {

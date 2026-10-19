@@ -53,7 +53,10 @@ GitHub-hosted CI is release evidence, not the development feedback loop. It
 runs only when release automation explicitly dispatches an exact-SHA candidate,
 and scans that candidate's current tree and full Git history after proving
 redacted detection with ephemeral positive controls. Routine commits, pull
-requests, pushes, and clocks do not start hosted workflows. Local
+requests, and pushes do not start hosted workflows. The one clock is the daily
+Codex card canary (`.github/workflows/codex-card-canary.yml`): it watches the
+newest published Codex, an external dependency, rather than re-checking this
+tree; `docs/CODEX-CARD-CANARY.md` owns what it proves. Local
 `pnpm check:secrets` retains the same tree/history evidence for ordinary work.
 
 Before pushing to the public `origin`, use the repository-owned `pre-push`
