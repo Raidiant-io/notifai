@@ -11,7 +11,7 @@ import { repositoryRoot } from './cross-platform.mjs'
 import { verifyPackedAdapter } from './verify-packed-npm-adapter.mjs'
 import { verifyNativePublication } from './verify-native-publication.mjs'
 import { registryDistTags } from './verify-npm-distribution.mjs'
-import { publicationLane } from './publication-lane.mjs'
+import { publicationLane, requireCurrentNpmChannels } from './publication-lane.mjs'
 
 export function requireReleasePair({ version, sourceRevision, native, adapter }) {
   assert.equal(native.version, version, 'Native publication version differs')
@@ -20,6 +20,11 @@ export function requireReleasePair({ version, sourceRevision, native, adapter })
   assert.equal(adapter.manifest.native.source_revision, sourceRevision, 'npm adapter source differs')
   assert.equal(createHash('sha256').update(adapter.signedInventory).digest('hex'), native.inventory_sha256,
     'npm and native distribution authenticate different inventories')
+}
+export function requireNpmDiscovery({ version, cliTags, protocolTags }) {
+  requireCurrentNpmChannels('@raidiant/notifai', cliTags)
+  requireCurrentNpmChannels('@raidiant/notifai-protocol', protocolTags)
+  assert.equal(cliTags[publicationLane(version)], version, 'Promote npm discovery before native discovery')
 }
 export async function requireUnifiedPublication({ version, sourceRevision, requireNpmPointer = false }) {
   const runCommand = (file, args) => execFileSync(file, args, { cwd: repositoryRoot, encoding: 'utf8', timeout: 60_000 })
@@ -31,8 +36,10 @@ export async function requireUnifiedPublication({ version, sourceRevision, requi
       '--artifact-output', tarball])
     const adapter = verifyPackedAdapter({ tarball, sourceRevision, version })
     requireReleasePair({ version, sourceRevision, native, adapter })
-    if (requireNpmPointer) assert.equal((await registryDistTags('@raidiant/notifai'))[publicationLane(version)], version,
-      'Promote npm discovery before native discovery')
+    if (requireNpmPointer) {
+      const [cliTags, protocolTags] = await Promise.all(['@raidiant/notifai', '@raidiant/notifai-protocol'].map(name => registryDistTags(name)))
+      requireNpmDiscovery({ version, cliTags, protocolTags })
+    }
     return { version, source_revision: sourceRevision, inventory_sha256: native.inventory_sha256,
       npm_tarball_sha256: createHash('sha256').update(readFileSync(tarball)).digest('hex') }
   } finally { rmSync(root, { recursive: true, force: true }) }

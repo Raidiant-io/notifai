@@ -213,13 +213,24 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: node scripts/require-unified-publication.mjs "${{ steps.plan.outputs.version }}" "${{ inputs.expected_sha }}"
 
-      - name: Promote only the already-verified npm version
-        if: inputs.mode == 'promote'
+      - name: Verify staged candidate discovery
+        if: inputs.mode == 'candidate'
         env:
           PACKAGE_NAME: ${{ steps.plan.outputs.package_name }}
-          VERSION: ${{ steps.plan.outputs.version }}
           NPM_DIST_TAG: ${{ steps.plan.outputs.npm_dist_tag }}
-        run: npm dist-tag add "$PACKAGE_NAME@$VERSION" "$NPM_DIST_TAG"
+        run: node scripts/verify-npm-distribution.mjs verify "$RUNNER_TEMP/npm-dist-tags-before.json" "$PACKAGE_NAME"
+
+      - name: Snapshot audience tags before promotion
+        if: inputs.mode == 'promote' || steps.plan.outputs.package_name == '@raidiant/notifai-protocol'
+        env:
+          PACKAGE_NAME: ${{ steps.plan.outputs.package_name }}
+        run: node scripts/verify-npm-distribution.mjs snapshot "$RUNNER_TEMP/npm-promotion-before.json" "$PACKAGE_NAME"
+
+      - name: Promote only the already-verified npm version
+        if: inputs.mode == 'promote' || steps.plan.outputs.package_name == '@raidiant/notifai-protocol'
+        env:
+          PACKAGE_NAME: ${{ steps.plan.outputs.package_name }}
+        run: node scripts/verify-npm-distribution.mjs promote "$RUNNER_TEMP/npm-promotion-before.json" "$PACKAGE_NAME"
 
       - name: Retain exact npm candidate bytes
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
@@ -230,10 +241,10 @@ jobs:
           retention-days: 90
 
       - name: Verify npm distribution
+        if: inputs.mode == 'promote' || steps.plan.outputs.package_name == '@raidiant/notifai-protocol'
         env:
           PACKAGE_NAME: ${{ steps.plan.outputs.package_name }}
-          NPM_DIST_TAG: ${{ steps.plan.outputs.npm_dist_tag }}
-        run: node scripts/verify-npm-distribution.mjs verify "$RUNNER_TEMP/npm-dist-tags-before.json" "$PACKAGE_NAME"
+        run: node scripts/verify-npm-distribution.mjs verify "$RUNNER_TEMP/npm-promotion-before.json" "$PACKAGE_NAME"
 
   adapter-acceptance:
     name: npm adapter (${{ matrix.target }})

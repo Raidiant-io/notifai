@@ -1373,6 +1373,34 @@ it('keeps the accepted channel sequence after a failed inventory fetch and refus
   expect(f.installation.inspect().active?.active).toBe(second)
 })
 
+it('beta discovery persists independent replay fences for both channels before inventory failure', async () => {
+  let beta = '', stable = ''
+  const f = fixture(async input => {
+    const url = String(input)
+    return url.endsWith('/beta.json') ? new Response(beta) : url.endsWith('/stable.json') ? new Response(stable) : new Response(null, { status: 503 })
+  })
+  beta = f.channel(4, [], 'beta-inventory', '2.0.0-beta.1', 'beta')
+  stable = f.channel(8, [], 'stable-inventory', '2.0.0')
+  await expect(f.installation.resolveRelease('beta')).rejects.toThrow(/503/)
+  expect(readFileSync(path.join(f.options.root, 'channels/beta.json'), 'utf8')).toBe(beta)
+  expect(readFileSync(path.join(f.options.root, 'channels/stable.json'), 'utf8')).toBe(stable)
+  stable = f.channel(7, [], 'stable-inventory', '2.0.0')
+  await expect(f.installation.resolveRelease('beta')).rejects.toThrow(/sequence/)
+  stable = f.channel(8, [], 'stable-inventory', '2.0.0')
+  beta = f.channel(3, [], 'beta-inventory', '2.0.0-beta.1', 'beta')
+  await expect(f.installation.resolveRelease('beta')).rejects.toThrow(/sequence/)
+})
+
+it('read-only beta discovery authenticates both channels without saving either', async () => {
+  let beta = '', stable = '', inventory = ''
+  const f = fixture(async input => new Response(String(input).endsWith('/beta.json') ? beta : String(input).endsWith('/stable.json') ? stable : inventory))
+  inventory = f.candidate('2.0.0').signedInventory
+  beta = f.channel(4, [], 'older-inventory', '2.0.0-beta.1', 'beta')
+  stable = f.channel(8, [], inventory, '2.0.0')
+  expect((await f.installation.resolveRelease('beta', undefined, { readOnly: true })).inventory.version).toBe('2.0.0')
+  expect(existsSync(f.options.root)).toBe(false)
+})
+
 
 it('requires explicit stable return and admits only the signed stable target for downgrade', async () => {
   let channel = '', inventory = ''
@@ -1481,7 +1509,8 @@ it('native update keeps the saved beta channel and reports incomplete integratio
   let record = '', inventory = ''
   const f = fixture((async (url: string) => {
     requested.push(url)
-    return new Response(url.endsWith('inventory.json') ? inventory : record)
+    return new Response(url.endsWith('inventory.json') ? inventory : url.endsWith('/stable.json')
+      ? f.channel(2, [], 'older-stable-inventory', '0.9.0') : record)
   }) as typeof fetch)
   const first = f.installation.stage(f.candidate('1.0.0-beta.1'))
   f.installation.activate({ build: first, expectedGeneration: 0, source: 'npm', channel: 'beta' })

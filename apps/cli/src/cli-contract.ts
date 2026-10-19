@@ -29,6 +29,6 @@ export function cliUpdateChannel(version: string | null): CliUpdateChannel {
  */
 export function cliUpdateRecoveryCommand(channel: CliUpdateChannel = 'stable'): string {
   return channel === 'beta'
-    ? `npx --yes ${cliPackageSpec('beta')} update --channel beta`
+    ? `npx --yes ${cliPackageSpec('latest')} update --channel beta`
     : `npx --yes ${cliPackageSpec('latest')} update`
 }

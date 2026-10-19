@@ -52,6 +52,18 @@ retain their version and channel until explicit `notifai update` or rollback.
 Removing/updating the npm launcher does not remove/update the native runtime.
 Historical npm product artifacts remain immutable registry history.
 
+Beta includes the newest stable release. Native stable promotion advances an
+older beta record and both bootstrap views in one metadata CAS commit; it keeps
+a newer beta intact. Native beta discovery authenticates both channels, retains
+their independent replay fences, and selects the newer version.
+
+The npm CLI beta tag stays prerelease-only for installed clients that reject
+stable versions there. Stable promotion removes an older beta tag automatically;
+absence makes existing clients fall back to latest. A newer prerelease beta tag
+is preserved. Use the native beta installer or `notifai update --channel beta`,
+and npm latest for bootstrap/recovery; do not depend on a literal npm beta tag
+being present. Protocol beta can point to stable and never trails latest.
+
 The native-launcher npm contract is a breaking change: prepare a major CLI
 release, beta first, after verifying version availability and authorization.
 Do not advertise a new stable npm route until stable native and npm artifacts
@@ -112,7 +124,12 @@ transaction. Interrupted npm publication leaves native assets unpromoted.
 
 Protocol beta releases use `protocol-vX.Y.Z-beta.N` and their independent npm
 lane. They retain exact-tag, OIDC, packed-boundary, service-contract and registry
-verification. Never move a source tag, overwrite an asset, or republish a version
+verification. Like the CLI, protocol bytes first publish to a version-specific
+candidate tag. After verification the same workflow promotes protocol discovery,
+advancing beta before latest for stable versions unless beta is already newer.
+The serialized publisher rechecks its snapshot and verifies only planned tag
+changes. Admission and parity reject a present beta older than stable/latest.
+Never move a source tag, overwrite an asset, or republish a version
 to repair a failed gate.
 
 Keep the candidate's version bump, beta changelog section, README markers, and

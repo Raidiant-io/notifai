@@ -10,7 +10,7 @@ import { windowsUninstallCommand } from './windows-uninstall.js'
 import { atomicWriteFileSync } from './atomic-file.js'
 import { installationAccess, type InstallationAccess } from './installation-access.js'
 import { withFileLock } from './file-lock.js'
-import type { Distribution, ReleaseArtifact, ReleaseChannel, ReleaseInventory, ReleaseTarget, ChannelRecord, ResolvedRelease } from './release-distribution.js'
+import type { Distribution, ReleaseArtifact, ReleaseChannel, ReleaseInventory, ReleaseTarget, ChannelRecord, ResolvedRelease, SeenChannel } from './release-distribution.js'
 import { compareReleasePrecedence, isPrerelease } from './version.js'
 import { ShellPathInstallation } from './installation-path.js'
 import { WindowsPathInstallation, nativeUserPathRegistry } from './installation-windows-path.js'
@@ -746,11 +746,15 @@ export class Installation {
    * failed download cannot make a later lower sequence acceptable again. */
   async resolveRelease(channel: ReleaseChannel, version?: string, options: { readOnly?: boolean } = {}): Promise<ResolvedRelease> {
     if (!['stable', 'beta'].includes(channel)) throw new Error('Unknown release channel')
-    const cached = this.channelRecord(channel)
+    const seen: Partial<Record<ReleaseChannel, SeenChannel>> = {}
+    for (const name of channel === 'beta' ? ['beta', 'stable'] as const : ['stable'] as const) {
+      const cached = this.channelRecord(name)
+      if (cached) seen[name] = { sequence: cached.record.sequence, digest: hash(cached.signed) }
+    }
     return this.options.distribution.resolveRelease({ channel, target: this.options.target,
       ...(version === undefined ? {} : { version }),
-      ...(cached ? { seen: { sequence: cached.record.sequence, digest: hash(cached.signed) } } : {}),
-      acceptChannel: signed => {
+      seen,
+      acceptChannel: (channel, signed) => {
         if (options.readOnly) {
           const latest = this.channelRecord(channel)
           this.options.distribution.verifyChannel(signed, channel, latest ? { sequence: latest.record.sequence, digest: hash(latest.signed) } : undefined)

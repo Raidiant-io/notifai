@@ -1,10 +1,11 @@
 #!/usr/bin/env node
 import { readFileSync, writeFileSync } from 'node:fs'
+import { execFileSync } from 'node:child_process'
 import { setTimeout as delay } from 'node:timers/promises'
 import path from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { repositoryRoot } from './cross-platform.mjs'
-import { publicationLane, requireBetaAheadOfLatest } from './publication-lane.mjs'
+import { publicationLane, requireBetaAheadOfLatest, npmPromotion, requireCurrentNpmChannels } from './publication-lane.mjs'
 
 const PACKAGES = new Map([
   ['@raidiant/notifai', 'apps/cli/package.json'],
@@ -45,8 +46,18 @@ export function verifyDistribution({ name, version, before, after, distTag = pub
     return
   }
   if (distTag !== lane) throw new Error('Promotion must use the version audience')
+  const expected = { ...before }
+  for (const write of npmPromotion({ name, version, before })) {
+    if (write.version === null) delete expected[write.tag]
+    else expected[write.tag] = write.version
+  }
   for (const tag of new Set([...Object.keys(before), ...Object.keys(after)])) {
-    if (tag !== lane && before[tag] !== after[tag]) throw new Error(`Promotion changed unrelated npm ${tag}`)
+    if (tag !== lane && expected[tag] !== after[tag]) {
+      if (tag === 'beta' && lane === 'latest' && after.beta === before.beta) {
+        throw new DistributionNotVisibleError(`${name}@${version}: npm beta has not caught up with latest`)
+      }
+      throw new Error(`Promotion changed unrelated npm ${tag}`)
+    }
   }
   if (lane === 'beta') {
     if (before.latest !== undefined) requireBetaAheadOfLatest(version, before.latest)
@@ -59,10 +70,18 @@ export function verifyDistribution({ name, version, before, after, distTag = pub
   } else if (after.latest !== version) {
     throw new DistributionNotVisibleError(`${name}@${version} did not become npm latest`)
   }
+  requireCurrentNpmChannels(name, after)
 }
 
-// A successful npm write can briefly leave the old target tag visible. Retry
-// only that exact unchanged snapshot; unrelated mutations and failed lookups
+export async function promoteDistribution(candidate, { lookup = registryDistTags, writeTag } = {}) {
+  const current = await lookup(candidate.name)
+  const keys = new Set([...Object.keys(current), ...Object.keys(candidate.before)])
+  if ([...keys].some(tag => current[tag] !== candidate.before[tag])) throw new Error('npm tags changed since the promotion snapshot')
+  for (const write of npmPromotion(candidate)) await writeTag(candidate.name, write)
+}
+
+// A successful npm write can briefly expose old or intermediate planned tags.
+// Retry only those planned values; unrelated mutations and failed lookups
 // remain immediate failures. Six bounded lookups plus delays take at most 70s.
 export async function waitForDistribution(candidate, {
   lookup = registryDistTags,
@@ -76,7 +95,14 @@ export async function waitForDistribution(candidate, {
       return after
     } catch (error) {
       if (!(error instanceof DistributionNotVisibleError)) throw error
-      if (after[distTag] !== candidate.before[distTag]) {
+      const expected = { ...candidate.before }
+      if (!distTag.startsWith('candidate-')) {
+        for (const write of npmPromotion(candidate)) {
+          if (write.version === null) delete expected[write.tag]
+          else expected[write.tag] = write.version
+        }
+      } else expected[distTag] = candidate.version
+      if (['latest', 'beta', distTag].some(tag => after[tag] !== candidate.before[tag] && after[tag] !== expected[tag])) {
         throw new Error(`npm ${distTag} changed to an unexpected version during publication`)
       }
       if (attempt === 5) throw error
@@ -87,8 +113,8 @@ export async function waitForDistribution(candidate, {
 
 async function main() {
   const [command, file, name] = process.argv.slice(2)
-  if (!['snapshot', 'verify'].includes(command) || !file || !PACKAGES.has(name)) {
-    throw new Error('usage: verify-npm-distribution.mjs snapshot|verify <snapshot-file> <package-name>')
+  if (!['snapshot', 'promote', 'verify'].includes(command) || !file || !PACKAGES.has(name)) {
+    throw new Error('usage: verify-npm-distribution.mjs snapshot|promote|verify <snapshot-file> <package-name>')
   }
   if (command === 'snapshot') {
     const snapshot = { [name]: await registryDistTags(name) }
@@ -100,6 +126,13 @@ async function main() {
   const before = JSON.parse(readFileSync(file, 'utf8'))[name]
   if (before === undefined) throw new Error(`missing npm distribution snapshot for ${name}`)
   const { version } = JSON.parse(readFileSync(path.join(repositoryRoot, PACKAGES.get(name)), 'utf8'))
+  if (command === 'promote') {
+    await promoteDistribution({ name, version, before }, { writeTag: async (pkg, write) => {
+      const args = write.version === null ? ['dist-tag', 'rm', pkg, write.tag] : ['dist-tag', 'add', `${pkg}@${write.version}`, write.tag]
+      execFileSync('npm', args, { stdio: 'inherit', timeout: 60_000 })
+    } })
+    return
+  }
   await waitForDistribution({ name, version, before, distTag: process.env.NPM_DIST_TAG ?? publicationLane(version) })
   console.log(`Verified npm ${publicationLane(version)} distribution for ${name}@${version}`)
 }

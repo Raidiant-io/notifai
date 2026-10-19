@@ -2,13 +2,14 @@ import assert from 'node:assert/strict'
 import { createHash, generateKeyPairSync, sign } from 'node:crypto'
 import { test } from 'node:test'
 import { RELEASE_TARGETS, releaseSigningMessage } from '../apps/cli/dist/release-distribution.js'
-import { verifyNativePublication } from './verify-native-publication.mjs'
+import { verifyNativePublication, verifyNativeChannels } from './verify-native-publication.mjs'
 
 const version = '11.8.0-beta.4'
 const tagSha = 'a'.repeat(40)
 const hash = value => createHash('sha256').update(value).digest('hex')
 
-function fixture() {
+function fixture(releaseVersion = version) {
+  const version = releaseVersion
   const { publicKey, privateKey } = generateKeyPairSync('ed25519')
   const keys = { fixture: publicKey.export({ type: 'spki', format: 'pem' }) }
   const signed = (kind, value) => {
@@ -21,24 +22,25 @@ function fixture() {
       filename: `notifai-${version}-${target.slice(4)}.${target.includes('windows') ? 'zip' : 'tar.gz'}`,
       bytes: 10, sha256: 'b'.repeat(64), runtime_sha256: 'c'.repeat(64), launcher_sha256: 'd'.repeat(64), materials: [] })) }
   let inventoryBytes = signed('inventory', inventory)
-  const channel = { schema: 1, channel: 'beta', sequence: 3, version,
+  const channel = { schema: 1, channel: version.includes('-') ? 'beta' : 'stable', sequence: 3, version,
     inventory_sha256: hash(inventoryBytes), withdrawn_versions: [] }
-  const release = { tag_name: `v${version}`, immutable: true, draft: false, prerelease: true,
+  const release = { tag_name: `v${version}`, immutable: true, draft: false, prerelease: version.includes('-'),
     assets: [{ name: 'inventory.json', state: 'uploaded', digest: `sha256:${hash(inventoryBytes)}`, size: Buffer.byteLength(inventoryBytes) },
       ...inventory.artifacts.map(artifact => ({ name: artifact.filename, state: 'uploaded', digest: `sha256:${artifact.sha256}`, size: artifact.bytes }))] }
-  const state = { channelBytes: null, stable: null, remoteSha: tagSha }
+  const state = { channelBytes: null, stable: version.includes('-') ? { ...channel, channel: 'stable', version: '11.7.0' } : channel,
+    beta: version.includes('-') ? null : { ...channel, channel: 'beta', sequence: 9 }, remoteSha: tagSha }
   const runCommand = (binary, args) => {
     assert.equal(binary, 'gh')
     if (args[0] === 'release') return inventoryBytes
     const endpoint = args[1].replace('repos/Raidiant-io/notifai/', '')
     if (endpoint.startsWith('releases/')) return JSON.stringify(release)
+    if (endpoint === 'git/ref/heads/release-metadata') return JSON.stringify({ object: { type: 'commit', sha: 'e'.repeat(40) } })
     if (endpoint.startsWith('git/ref/')) return JSON.stringify({ object: { type: 'commit', sha: state.remoteSha } })
-    if (endpoint === 'contents?ref=release-metadata') return JSON.stringify(state.stable ? [{ name: 'stable.json' }] : [])
-    if (endpoint === 'contents/beta.json?ref=release-metadata') return JSON.stringify({ content: Buffer.from(state.channelBytes ?? signed('channel', channel)).toString('base64') })
-    if (endpoint === 'contents/stable.json?ref=release-metadata') return JSON.stringify({ content: Buffer.from(signed('channel', state.stable)).toString('base64') })
+    if (endpoint === `contents/beta.json?ref=${'e'.repeat(40)}`) return JSON.stringify({ content: Buffer.from(state.channelBytes ?? signed('channel', state.beta ?? channel)).toString('base64') })
+    if (endpoint === `contents/stable.json?ref=${'e'.repeat(40)}`) return JSON.stringify({ content: Buffer.from(signed('channel', state.stable)).toString('base64') })
     throw new Error(`Unexpected endpoint ${endpoint}`)
   }
-  return { release, channel, state, inventory, signed,
+  return { release, channel, state, inventory, signed, runCommand, keys,
     setInventory: bytes => { inventoryBytes = bytes },
     verify: (options = {}) => verifyNativePublication({ version, tagSha, runCommand, keys, ...options }) }
 }
@@ -47,6 +49,14 @@ test('native publication admits all signed targets and exact asset bytes without
   const f = fixture()
   assert.equal(f.verify().distribution, 'native')
   assert.equal(f.verify().inventory_sha256, f.channel.inventory_sha256)
+})
+
+test('a stable release is admissible through beta with that channels own sequence', () => {
+  const f = fixture('13.0.0')
+  const evidence = f.verify({ channel: 'beta' })
+  assert.equal(evidence.version, '13.0.0')
+  assert.equal(evidence.channel_sequence, 9)
+  assert.equal(f.verify().channel_sequence, 3)
 })
 
 test('native publication refuses unpublished, mutable or wrong-channel releases', () => {
@@ -78,9 +88,20 @@ test('native publication refuses withdrawn and superseded betas', () => {
   const newer = fixture(); newer.channel.version = '11.8.0-beta.5'
   assert.throws(newer.verify, /superseded or withdrawn/u)
   const withdrawn = fixture(); withdrawn.channel.withdrawn_versions.push(version)
-  assert.throws(withdrawn.verify, /superseded or withdrawn/u)
+  assert.throws(withdrawn.verify, /withdrawn/u)
   const stable = fixture(); stable.state.stable = { ...stable.channel, channel: 'stable', version: '11.8.0' }
-  assert.throws(stable.verify, /superseded by the signed stable/u)
+  assert.throws(stable.verify, /beta is behind stable/u)
+})
+
+test('native parity checks both authenticated pointers at one commit and preserves newer beta', () => {
+  const f = fixture()
+  assert.equal(verifyNativeChannels(f).beta.version, version)
+  f.state.stable.version = '11.8.0'
+  assert.throws(() => verifyNativeChannels(f), /beta is behind stable/)
+  f.channel.version = '11.9.0-beta.1'
+  assert.equal(verifyNativeChannels(f).beta.version, '11.9.0-beta.1')
+  f.channel.withdrawn_versions.push('11.8.0')
+  assert.throws(() => verifyNativeChannels(f), /withdrawn/)
 })
 
 test('historical native entries may be superseded but still require signatures and assets', () => {

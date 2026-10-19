@@ -15,7 +15,7 @@ export function planPublish({ head, refName, packages, tagCommits, published, mo
   }
   const lane = publicationLane(trigger.version)
   if (!['candidate', 'promote'].includes(mode)) throw new Error('Choose candidate publication or explicit promotion')
-  const npmDistTag = trigger.name === '@raidiant/notifai' && mode === 'candidate' ? `candidate-${trigger.version}` : lane
+  const npmDistTag = mode === 'candidate' ? `candidate-${trigger.version}` : lane
   if (mode === 'promote' && !published.has(`${trigger.name}@${trigger.version}`)) {
     throw new Error('Promotion requires an already verified published version')
   }

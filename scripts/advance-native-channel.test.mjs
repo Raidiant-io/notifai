@@ -39,7 +39,6 @@ async function setup() {
       assert.deepEqual(change.branch, { repositoryNameWithOwner: 'Raidiant-io/notifai', branchName: 'release-metadata' })
       if (git.race) return response({ errors: [{ message: 'Expected head differs' }] })
       const tree = new Map(git.trees.get(git.commits.get(git.head).tree))
-      assert.deepEqual(change.fileChanges.additions.map(item => item.path).sort(), ['stable.bootstrap.tsv', 'stable.json'])
       for (const file of change.fileChanges.additions) tree.set(file.path, Buffer.from(file.contents, 'base64').toString())
       const treeId = id(), commitId = id()
       git.trees.set(treeId, tree); git.commits.set(commitId, { tree: treeId, parents: [git.head] }); git.head = commitId
@@ -58,7 +57,6 @@ async function setup() {
     if (route === '/git/blobs') { const sha = id(); git.blobs.set(sha, Buffer.from(body.content, 'base64').toString()); return response({ sha }, 201) }
     if (route === '/git/trees') {
       const sha = id(), tree = new Map(git.trees.get(body.base_tree))
-      assert.deepEqual(body.tree.map(item => item.path).sort(), ['stable.bootstrap.tsv', 'stable.json'])
       for (const item of body.tree) tree.set(item.path, git.blobs.get(item.sha))
       git.trees.set(sha, tree); return response({ sha }, 201)
     }
@@ -71,7 +69,16 @@ async function setup() {
     throw new Error(`Unexpected channel fixture request ${method} ${route}`)
   }
   const files = () => git.trees.get(git.commits.get(git.head).tree)
-  return { git, files, distribution, args: { ...f.args, fetchImpl, channel: 'stable', privateKey, trustedKeys, keyId: 'fixture' } }
+  const seed = (channel, version, sequence = 7, withdrawn_versions = []) => {
+    const payload = Buffer.from(JSON.stringify({ schema: 1, channel, version, sequence,
+      withdrawn_versions, inventory_sha256: hash(signedInventory) }))
+    const bytes = JSON.stringify({ key_id: 'fixture', payload: payload.toString('base64'),
+      signature: sign(null, releaseSigningMessage('channel', payload), privateKey).toString('base64') })
+    files().set(`${channel}.json`, bytes)
+    files().set(`${channel}.bootstrap.tsv`, `retained ${channel} view`)
+    return bytes
+  }
+  return { git, files, seed, distribution, args: { ...f.args, fetchImpl, channel: 'stable', privateKey, trustedKeys, keyId: 'fixture' } }
 }
 test('channel initialization is explicit; one commit publishes JSON and view while preserving other metadata; retries do not write', async () => {
   const f = await setup()
@@ -82,9 +89,44 @@ test('channel initialization is explicit; one commit publishes JSON and view whi
   assert.equal(f.files().get('README.md'), 'preserve this metadata file')
   assert.match(f.files().get('stable.bootstrap.tsv'), /^notifai-channel-v1\tstable\t1\t/)
   assert.equal(f.distribution.verifyChannel(f.files().get('stable.json'), 'stable').version, '1.0.0')
+  assert.equal(f.distribution.verifyChannel(f.files().get('beta.json'), 'beta').version, '1.0.0')
+  assert.match(f.files().get('beta.bootstrap.tsv'), /^notifai-channel-v1\tbeta\t1\t/)
+  assert.equal(f.git.calls.filter(call => call.route === '/graphql').length, 1)
   f.git.calls = []
   assert.equal((await advanceNativeChannel(f.args)).changed, false)
   assert.ok(f.git.calls.every(call => call.method === 'GET'))
+})
+
+test('stable co-promotion keeps beta sequence and withdrawals, while a newer beta remains byte-identical', async () => {
+  const stale = await setup()
+  stale.seed('beta', '1.0.0-beta.1', 7, ['0.8.0-beta.1'])
+  await advanceNativeChannel({ ...stale.args, initialize: true })
+  assert.deepEqual(stale.distribution.verifyChannel(stale.files().get('beta.json'), 'beta'), {
+    schema: 1, channel: 'beta', version: '1.0.0', sequence: 8,
+    inventory_sha256: hash(stale.args.bundle.signedInventory), withdrawn_versions: ['0.8.0-beta.1'],
+  })
+  assert.equal(stale.git.calls.filter(call => call.route === '/graphql').length, 1)
+  const newer = await setup(), betaBytes = newer.seed('beta', '1.1.0-beta.1')
+  await advanceNativeChannel({ ...newer.args, initialize: true })
+  assert.equal(newer.files().get('beta.json'), betaBytes)
+  assert.equal(newer.files().get('beta.bootstrap.tsv'), 'retained beta view')
+  assert.deepEqual(newer.git.calls.find(call => call.route === '/graphql').body.variables.input.fileChanges.additions.map(file => file.path).sort(),
+    ['stable.bootstrap.tsv', 'stable.json'])
+})
+
+test('beta cannot be promoted below stable, and stable cannot reintroduce a beta-withdrawn release', async () => {
+  const lagging = await setup()
+  lagging.seed('stable', '1.1.0')
+  await assert.rejects(advanceNativeChannel({ ...lagging.args, channel: 'beta', initialize: true, allowRollback: true }), /beta cannot fall behind/)
+  assert.ok(lagging.git.calls.every(call => call.method === 'GET'))
+  const withdrawn = await setup()
+  withdrawn.seed('beta', '1.0.0-beta.1', 4, ['1.0.0'])
+  await assert.rejects(advanceNativeChannel({ ...withdrawn.args, initialize: true }), /withdrawn/)
+  assert.ok(withdrawn.git.calls.every(call => call.method === 'GET'))
+  const opposite = await setup()
+  opposite.seed('beta', '1.1.0-beta.1')
+  await assert.rejects(advanceNativeChannel({ ...opposite.args, initialize: true, withdraw: ['1.1.0-beta.1'] }), /recommending a withdrawn/)
+  assert.ok(opposite.git.calls.every(call => call.method === 'GET'))
 })
 test('a competing metadata ref update is not overwritten or retried with force', async () => {
   const f = await setup(), previousHead = f.git.head
