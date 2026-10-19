@@ -61,6 +61,9 @@ export class ApiCallError extends Error {
 
 export class NetworkError extends Error {}
 
+/** The caller cancelled the request itself (a cut long-poll, a credential change); not a fault. */
+export class RequestCancelledError extends NetworkError {}
+
 /**
  * Whether a replies-poll failure is temporary while the durable request stays
  * live. Transport faults, throttling, request timeouts, and server failures
@@ -255,6 +258,10 @@ export function createClient(
       })
       return result
     } catch (err) {
+      if (err instanceof RequestCancelledError) {
+        logger?.debug('http.call', { method, path: apiPath, ok: false, cancelled: true, duration_ms: Date.now() - startedAt })
+        throw err
+      }
       logger?.error('http.call', {
         method,
         path: apiPath,
@@ -302,6 +309,10 @@ export function createClient(
         ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
       })
     } catch (err) {
+      // Cancelled by the caller, not timed out: say so, and log it as such.
+      if ((abort?.aborted === true || options.signal?.aborted === true) && !timeout.aborted) {
+        throw new RequestCancelledError(`${method} ${apiPath} was cancelled by the caller`)
+      }
       throw networkFailure(err, root, limitMs)
     }
     if (!response.ok) {

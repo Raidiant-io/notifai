@@ -1336,6 +1336,7 @@ export class Hub {
   touch(): void {
     if (this.busy()) {
       this.idleSince = this.clock.monotonic()
+      this.statusChanged()
       return
     }
     const idleFor = this.clock.monotonic() - this.idleSince
@@ -1353,8 +1354,12 @@ export class Hub {
   private disconnectedTicks = 0
 
   private busy(): boolean {
-    return this.children > 0 || this.ended.size > 0 || this.settlements.size > 0 ||
-      [...this.sessions.values()].some((session) => session.lease.final !== null) || this.endRecords().length > 0
+    if (this.children > 0 || this.settlements.size > 0) return true
+    // Owed end reports keep the hub only while it can send them. Signed out
+    // (or refused), they stay on disk and the next signed-in hub sends them.
+    const canSend = this.credential !== null && !this.unauthorizedState
+    return canSend && (this.ended.size > 0 || [...this.sessions.values()].some((session) => session.lease.final !== null) ||
+      this.endRecords().length > 0)
   }
 
   statusChanged(): void {

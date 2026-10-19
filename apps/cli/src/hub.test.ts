@@ -274,6 +274,25 @@ describe('hub exchange driver', () => {
     await running
   })
 
+  it('never cuts an exchange that is already answering, so an end report is sent once', async () => {
+    const service = fakeService()
+    service.hold = true
+    const ending = new FakeSession(SESSION)
+    ending.lease.generation = 2
+    ending.lease.final = 'ended'
+    const driver = new ExchangeDriver(driverHost(service, [ending]))
+    const running = driver.run()
+    await until(() => service.batches.length >= 1)
+    driver.poke()
+    await new Promise((resolve) => setTimeout(resolve, 50))
+    service.hold = false
+    service.release()
+    await until(() => ending.outcomes.includes('reported'))
+    expect(service.batches.filter((batch) => batch.body.sessions.some((entry) => entry.state === 'ended'))).toHaveLength(1)
+    driver.stop()
+    await running
+  })
+
   it('falls back when the batch route answers 404 even though the capability was listed', async () => {
     const service = fakeService({ batch: () => new ApiCallError(404, 'not_found', 'no route') })
     const driver = new ExchangeDriver(driverHost(service, [new FakeSession(SESSION)]))
@@ -552,6 +571,28 @@ describe('hub', () => {
     expect(hub.waiterSignal().aborted).toBe(false)
     hub.requestExit('test')
     await done
+  })
+
+  it('leaves when idle after logout even with an end report it cannot send', async () => {
+    const env = hubEnv()
+    writeDescriptor(env, SESSION)
+    recordSessionNotified(SESSION, env, Date.now())
+    const service = fakeService()
+    const store = memoryStore()
+    const peers = new Map<number, PeerCredentials>()
+    const { done } = startHub(env, service, peers, store, 100)
+    await hubListening(env)
+    const child = await registered(env, SESSION, 900050, peerOf(900050, { pid: HARNESS.pid, comm: 'claude', start: HARNESS.start }), peers)
+    await until(() => service.batches.length >= 2)
+    store.clear()
+    writeFileSync(credentialGenerationPath(env), 'signed-out\n')
+    expect(await requestHub(env, { type: 'credential-changed' })).toEqual({ type: 'ack' })
+    const after = service.batches.length
+    child.send({ type: 'ended', session_id: SESSION, harness_pid: HARNESS.pid, reason: 'harness-gone' })
+    child.socket.destroy()
+    service.release()
+    expect(await done).toBe(0)
+    expect(service.batches.length).toBe(after)
   })
 
   it('renews a lone session again once an uncertain read clears', async () => {

@@ -69,6 +69,8 @@ export class ExchangeDriver {
   private lastMono: number
   /** Every exchange in flight; a change cuts each one short. */
   private readonly inFlight = new Set<AbortController>()
+  /** Held long-polls only: a poke cuts these, never an exchange that is already answering. */
+  private readonly held = new Set<AbortController>()
   private readonly wakers = new Set<() => void>()
   private readonly stopping = new AbortController()
   private readonly perSession = new Map<string, Promise<void>>()
@@ -96,7 +98,7 @@ export class ExchangeDriver {
    * activity, or has local input): cut a held exchange and look again.
    */
   poke(): void {
-    for (const exchange of this.inFlight) exchange.abort()
+    for (const exchange of this.held) exchange.abort()
     const waiting = [...this.wakers]
     this.wakers.clear()
     for (const resolve of waiting) resolve()
@@ -106,11 +108,14 @@ export class ExchangeDriver {
   reset(): void {
     this.mode = 'unknown'
     this.cursor = undefined
+    // A credential change ends every exchange, held or not.
+    for (const exchange of this.inFlight) exchange.abort()
     this.poke()
   }
 
   stop(): void {
     this.stopping.abort()
+    for (const exchange of this.inFlight) exchange.abort()
     this.poke()
   }
 
@@ -227,6 +232,7 @@ export class ExchangeDriver {
       chosen.length === finals.length + running.length
     const current = new AbortController()
     this.inFlight.add(current)
+    if (hold) this.held.add(current)
     const sentAt = this.host.clock.monotonic()
     const sentEpoch = this.epoch
     const credential = this.host.credentialKey()
@@ -239,6 +245,7 @@ export class ExchangeDriver {
       )
     } catch (err) {
       this.inFlight.delete(current)
+      this.held.delete(current)
       if (this.stopping.signal.aborted || current.signal.aborted) return
       if (this.isUnauthorized(err)) return
       if (err instanceof ApiCallError && (err.status === 404 || (err.status === 409 && err.code === 'feature_unavailable'))) {
@@ -254,6 +261,7 @@ export class ExchangeDriver {
       return
     }
     this.inFlight.delete(current)
+    this.held.delete(current)
     this.backoff = 1_000
     this.lastSuccessAt = this.host.clock.wall()
     this.cursor = response.message_cursor
@@ -331,6 +339,7 @@ export class ExchangeDriver {
       if (this.stopping.signal.aborted) return
       const current = new AbortController()
       this.inFlight.add(current)
+      if (hold) this.held.add(current)
       const sentAt = this.host.clock.monotonic()
       const sentEpoch = this.epoch
       const credential = this.host.credentialKey()
@@ -352,6 +361,7 @@ export class ExchangeDriver {
         backoff = Math.min(backoff * 2, MAX_NETWORK_BACKOFF_MS)
       } finally {
         this.inFlight.delete(current)
+        this.held.delete(current)
       }
     }
   }
