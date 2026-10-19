@@ -567,10 +567,9 @@ export function resetCursorStopActivation(sessionId: string, env: NodeJS.Process
  * hundred sessions a day that is tens of thousands of files a year, none of
  * which anything reads.
  *
- * Opportunistic rather than scheduled: hooks are the only thing that runs, so
- * a hook is where this has to live. It is rate-limited by its own stamp file
- * so the common case costs one `stat`, not a directory walk — a Stop hook is
- * on the critical path of every turn.
+ * It runs in the detached daily hook maintenance process (`hook-maintenance.ts`),
+ * never inside a hook's harness timeout: the walk has no useful bound. It is
+ * also rate-limited by its own stamp file.
  */
 const SESSION_PRUNE_AFTER_MS = 7 * 24 * 3600 * 1000
 

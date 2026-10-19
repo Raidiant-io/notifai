@@ -4,7 +4,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { promisify } from 'node:util'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { agentUpdateNotice } from './agent-update-notice.js'
+import { agentUpdateNotice, cachedAgentUpdateNotice, refreshAgentUpdateState } from './agent-update-notice.js'
 import { stateDir } from './config.js'
 import { packageVersion } from './release.js'
 
@@ -70,5 +70,32 @@ describe('automatic update notice', () => {
       process.stdout.write(JSON.stringify(notice ?? null));`
     const runs = await Promise.all(Array.from({ length: 4 }, () => promisify(execFile)(process.execPath, ['--input-type=module', '-e', code])))
     expect(runs.map(run => JSON.parse(run.stdout)).filter(Boolean)).toHaveLength(1)
+  })
+})
+
+describe('update notice on the prompt path', () => {
+  it('reads only what the off-path lookup recorded and never consults the registry itself', async () => {
+    const f = fixture()
+    const read = (now = NOW, currentVersion?: string) =>
+      cachedAgentUpdateNotice({ env: f.env, now, updateCommand: 'notifai update', ...(currentVersion === undefined ? {} : { currentVersion }) })
+    expect(read()).toBeUndefined()
+    expect(f.fetchImpl).not.toHaveBeenCalled()
+
+    await refreshAgentUpdateState({ env: f.env, now: NOW, fetchImpl: f.fetchImpl })
+    expect(f.fetchImpl).toHaveBeenCalledTimes(1)
+    // A User who already moved to that release is offered nothing.
+    expect(read(NOW, '99.0.0')).toBeUndefined()
+    expect(read(NOW)).toContain('A newer Notifai is available.')
+    expect(read(NOW + 1)).toBeUndefined()
+    expect(f.fetchImpl).toHaveBeenCalledTimes(1)
+  })
+
+  it('keeps a known release when a later lookup cannot reach the registry', async () => {
+    const f = fixture()
+    await refreshAgentUpdateState({ env: f.env, now: NOW, fetchImpl: f.fetchImpl })
+    f.fetchImpl.mockRejectedValue(new Error('offline'))
+    await refreshAgentUpdateState({ env: f.env, now: NOW + DAY, fetchImpl: f.fetchImpl })
+    expect(f.fetchImpl).toHaveBeenCalledTimes(2)
+    expect(cachedAgentUpdateNotice({ env: f.env, now: NOW + DAY, updateCommand: 'notifai update' })).toContain('notifai update')
   })
 })

@@ -197,7 +197,7 @@ export interface ClientOptions {
 }
 
 /** Generous enough for a slow link, short enough that nothing hangs for ever. */
-const DEFAULT_TIMEOUT_MS = 20_000
+export const DEFAULT_TIMEOUT_MS = 20_000
 
 export function createClient(
   baseUrl: string,

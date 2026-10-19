@@ -45,9 +45,12 @@ export const QUESTION_STOP_TIMEOUT_SECONDS =
 
 /**
  * Short Stop budget for harnesses that cannot own asynchronous Question
- * Routing. They retire/refuse promptly and never wait through an answer window.
+ * Routing (Cursor, and every event the OpenCode and OpenClaw plugins run).
+ * They retire/refuse promptly and never wait through an answer window, so
+ * they get the same ceiling as the prompt hook rather than nine minutes. The
+ * value is a proposal; `hook-budgets.ts` derives every nested step from it.
  */
-export const NON_ROUTING_STOP_TIMEOUT_SECONDS = 540
+export const NON_ROUTING_STOP_TIMEOUT_SECONDS = 15
 
 /**
  * Pre-PID claim files came only from the former eight-minute owner. Retain that

@@ -13,6 +13,8 @@ export interface QuestionSettlementLaunch {
   purpose?: 'submission'
   /** Internal callers already inside the session lock must not reacquire it. */
   sessionLockHeld?: boolean
+  /** A hook's share of its harness timeout for the Windows detach hand-off. */
+  detachTimeoutMs?: number
 }
 
 /**
@@ -26,6 +28,7 @@ export function spawnQuestionSettlement(launch: QuestionSettlementLaunch): void 
     '--owner', 'notifai', '--harness', launch.harness], {
     cwd: launch.envelope.cwd ?? process.cwd(),
     env: { ...process.env, [QUESTION_SETTLEMENT_INPUT_ENV]: JSON.stringify(launch.envelope) },
+    ...(launch.detachTimeoutMs === undefined ? {} : { detachTimeoutMs: launch.detachTimeoutMs }),
     retain(reference) {
       if (reference === null) return
       if (!launch.envelope.session_id) throw new Error('Resident work requires an Agent Session')

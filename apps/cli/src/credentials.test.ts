@@ -783,3 +783,50 @@ describe('WindowsDpapiStore', () => {
     expect(calls).toEqual([])
   })
 })
+
+describe('credential helpers inside a hook', () => {
+  it('bounds every store helper by the caller\'s ceiling, never above its own', () => {
+    const { env } = sandbox('helper-budget')
+    const dpapi = mockDpapi()
+    new WindowsDpapiStore(env, { run: dpapi.runner }).save(SAMPLE)
+    const bounded = mockDpapi()
+    // A hook passes its share of the harness timeout.
+    const inHook = new WindowsDpapiStore(env, { run: bounded.runner, helperTimeoutMs: 5_000 })
+    inHook.load()
+    expect(dpapi.calls.map((call) => call.timeoutMs)).toEqual([30_000])
+    expect(bounded.calls.map((call) => call.timeoutMs)).toEqual([5_000])
+
+    const seen: Array<number | undefined> = []
+    const runner: ProcessRunner = { run(spec) { seen.push(spec.timeoutMs); return { status: 1, stdout: Buffer.alloc(0) } } }
+    new KeychainStore({ run: runner, helperTimeoutMs: 1_000 }).load()
+    new KeychainStore({ run: runner, helperTimeoutMs: 60_000 }).load()
+    new SecretServiceStore(env, { platform: 'linux', run: runner, helperTimeoutMs: 2_500 }).load()
+    expect(seen).toEqual([1_000, 15_000, 2_500])
+  })
+
+  it('chooses the macOS store on first use instead of probing `security` for every command', () => {
+    const calls: RunCommandSpec[] = []
+    const runner: ProcessRunner = {
+      run(spec) {
+        calls.push(spec)
+        return { status: 0, stdout: Buffer.from(JSON.stringify(SAMPLE)) }
+      },
+    }
+    const store = defaultCredentialStore({}, { platform: 'darwin', run: runner, helperTimeoutMs: 4_000 })
+    expect(calls).toEqual([])
+    expect(store.load()).toEqual(SAMPLE)
+    expect(calls.map((call) => [call.command, call.args[0], call.timeoutMs])).toEqual([
+      ['security', 'help', 4_000],
+      ['security', 'find-generic-password', 4_000],
+    ])
+    expect(store.describe()).toBe('macOS Keychain (io.notifai.cli)')
+    expect(calls).toHaveLength(2)
+  })
+
+  it('falls back to the file store when the lazy macOS probe fails', () => {
+    const { env } = sandbox('lazy-darwin-file')
+    const runner: ProcessRunner = { run: () => ({ status: 1, stdout: Buffer.alloc(0) }) }
+    const store = defaultCredentialStore(env, { platform: 'darwin', run: runner })
+    expect(store.describe()).toMatch(/plaintext file/)
+  })
+})

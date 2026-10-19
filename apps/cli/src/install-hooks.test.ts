@@ -51,9 +51,11 @@ import {
   WORKER_ACTIVATION_CONTEXT,
 } from './session-activation.js'
 import { hookAdapterPath, installHookAdapter } from './hook-adapter.js'
+import { OWNER_STEP_BUDGETS, hookInvocation, hookStepBudgets, hookSteps, hookTimeoutSeconds, hookWorkAllowanceMs } from './hook-budgets.js'
 import { HOOK_INSTALLABLE_HARNESSES } from './harnesses.js'
 import {
   CODEX_ATTEND_TIMEOUT_SECONDS,
+  NON_ROUTING_BLOCKING_STOP_TIMEOUT_SECONDS,
   QUESTION_STOP_TIMEOUT_SECONDS,
   applyPlan,
   detectHarness,
@@ -207,7 +209,7 @@ describe('hook config', () => {
 
   it('uses one fixed blocking process budget rather than accepting mutable timing inputs', () => {
     const config = buildHookConfig({ adapterPath: ADAPTER })
-    expect(config['Stop']?.[0]?.hooks[0]?.timeout).toBe(540)
+    expect(config['Stop']?.[0]?.hooks[0]?.timeout).toBe(15)
     expect(config['Stop']?.[0]?.hooks[0]?.async).toBeUndefined()
     // Claude Code defaults UserPromptSubmit to 30s; Codex gives SessionEnd 1-3s.
     expect(config['UserPromptSubmit']?.[0]?.hooks[0]?.timeout).toBe(15)
@@ -481,7 +483,7 @@ describe('merging into existing settings', () => {
       SCRIPT,
     )
     expect(twice.document.hooks?.['Stop']).toHaveLength(1)
-    expect(twice.document.hooks?.['Stop']?.[0]?.hooks[0]?.timeout).toBe(540)
+    expect(twice.document.hooks?.['Stop']?.[0]?.hooks[0]?.timeout).toBe(15)
     expect(twice.replaced).toContain('Stop')
   })
 
@@ -2231,5 +2233,92 @@ describe('obsolete native plugin enablement', () => {
         keys: ['notifai@local'],
       },
     ])
+  })
+})
+
+describe('hook step budgets', () => {
+  interface GeneratedHook { harness: (typeof HOOK_INSTALLABLE_HARNESSES)[number]; event: string; document: string; timeout: number | undefined }
+
+  /** Every hook this build generates, with the timeout its definition declares. */
+  function generatedHooks(): GeneratedHook[] {
+    const hooks: GeneratedHook[] = []
+    for (const platform of ['darwin', 'linux', 'win32'] as const) {
+      for (const harness of ['claude-code', 'codex', 'grok'] as const) {
+        const config = buildHookConfig({ adapterPath: ADAPTER, harness, platform })
+        for (const [document, groups] of Object.entries(config)) {
+          for (const handler of groups.flatMap((group) => group.hooks)) {
+            hooks.push({ harness, event: handlerEvent(handler.command)!, document, timeout: handler.timeout })
+          }
+        }
+      }
+      for (const [document, handlers] of Object.entries(buildCursorHookConfig({ adapterPath: ADAPTER, harness: 'cursor', platform }))) {
+        for (const handler of handlers) {
+          hooks.push({ harness: 'cursor', event: handlerEvent(handler.command)!, document, timeout: handler.timeout })
+        }
+      }
+      // The installer and repair write both plugins with this child timeout.
+      const plugins = [
+        ['opencode', opencodePluginSource({ adapterPath: ADAPTER, timeoutSeconds: NON_ROUTING_BLOCKING_STOP_TIMEOUT_SECONDS, platform }), opencodePluginTarget],
+        ['openclaw', openclawPluginSource({ adapterPath: ADAPTER, timeoutSeconds: NON_ROUTING_BLOCKING_STOP_TIMEOUT_SECONDS, platform }), openclawPluginTarget],
+      ] as const
+      for (const [harness, source, target] of plugins) {
+        const timeout = target(source)?.timeoutSeconds
+        // Every hook the generated module runs under its child timeout.
+        const events = new Set([...source.matchAll(/runHook\(([^,]*?),/g)]
+          .flatMap((call) => [...call[1]!.matchAll(/"([a-z-]+)"/g)].map((name) => name[1]!)))
+        expect(events.size).toBeGreaterThan(2)
+        for (const event of events) hooks.push({ harness, event, document: event, timeout })
+      }
+    }
+    return hooks
+  }
+
+  it('gives no generated hook a nested step longer than the hook\'s own timeout', () => {
+    const hooks = generatedHooks()
+    expect(hooks.length).toBeGreaterThan(40)
+    for (const hook of hooks) {
+      const declared = hook.timeout === undefined || hook.timeout <= 0 ? null : hook.timeout
+      // The runtime reads the same timeout the definition declares.
+      expect(hookTimeoutSeconds(hook.event, hook.harness, hook.document), `${hook.harness} ${hook.document}`).toBe(declared)
+      if (declared === null) continue
+      // What the process actually uses: it knows its event and harness, not the document.
+      const budgets = hookStepBudgets(hook.event, hook.harness)
+      for (const step of hookSteps(hook.event, hook.document)) {
+        expect(budgets[step], `${hook.harness} ${hook.document} ${step}`).toBeLessThanOrEqual(declared * 1000)
+      }
+      const allowance = hookWorkAllowanceMs(hook.event, hook.harness)
+      if (allowance !== null) expect(allowance).toBeLessThan(declared * 1000)
+    }
+  })
+
+  it('shrinks the steps that would outlive a short hook and keeps owners unchanged', () => {
+    // The credential helper (DPAPI: 30 s) used to run inside the 15 s prompt hook.
+    expect(OWNER_STEP_BUDGETS.credentialHelperMs).toBeGreaterThan(15_000)
+    expect(hookStepBudgets('user-prompt-submit', 'claude-code')).toEqual({
+      credentialHelperMs: 5_000, serviceRequestMs: 4_000, logLockWaitMs: 0, detachedLaunchMs: 5_000,
+    })
+    expect(hookStepBudgets('stop', 'cursor').credentialHelperMs).toBe(5_000)
+    expect(hookStepBudgets('session-end', 'codex').credentialHelperMs).toBe(1_000)
+    // Out-of-band owners keep every ordinary ceiling.
+    for (const [event, harness] of [['stop', 'claude-code'], ['stop', 'codex'], ['question-settlement', 'cursor'],
+      ['attend', 'claude-code'], ['attend', 'openclaw'], ['openclaw-settlement', 'openclaw'], ['maintenance', undefined]] as const) {
+      expect(hookStepBudgets(event, harness), `${event} ${harness}`).toEqual(OWNER_STEP_BUDGETS)
+      expect(hookWorkAllowanceMs(event, harness)).toBeNull()
+    }
+  })
+
+  it('reads the event and harness a hook process was started for', () => {
+    expect(hookInvocation(['hook', 'stop', '--owner', 'notifai', '--harness', 'cursor', '--integration-revision', 'a'.repeat(64)]))
+      .toEqual({ event: 'stop', harness: 'cursor' })
+    expect(hookInvocation(['hook', 'user-prompt-submit', '--harness=codex'])).toEqual({ event: 'user-prompt-submit', harness: 'codex' })
+    expect(hookInvocation(['hook', 'stop', '--harness', 'unknown'])).toEqual({ event: 'stop', harness: undefined })
+    expect(hookInvocation(['send', 'hello'])).toBeNull()
+  })
+
+  it('gives non-routing Stop handlers the short budget', () => {
+    expect(NON_ROUTING_BLOCKING_STOP_TIMEOUT_SECONDS).toBe(15)
+    expect(buildCursorHookConfig({ adapterPath: ADAPTER })['stop']?.find((handler) =>
+      handlerEvent(handler.command) === 'stop')?.timeout).toBe(15)
+    expect(opencodePluginTarget(opencodePluginSource({ adapterPath: ADAPTER, timeoutSeconds: NON_ROUTING_BLOCKING_STOP_TIMEOUT_SECONDS }))?.timeoutSeconds).toBe(15)
   })
 })

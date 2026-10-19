@@ -25,6 +25,7 @@ import type { CodexSessionTitleLookup } from './harness-session-title.js'
 import type { OrcaSessionTitleLookup } from './orca-session-title.js'
 import type { ProcessIdentity } from './process-identity.js'
 import type { QuestionSettlementLaunch } from './question-settlement-process.js'
+import type { HookMaintenanceLaunch } from './hook-maintenance.js'
 import { packageVersion } from './release.js'
 import { buildIdentity } from './distribution.js'
 import type { Tone } from './ui/theme.js'
@@ -109,6 +110,11 @@ export interface CommandDeps {
   codexSourcePid?: number
   /** Test seam for detached immediate submission and native answer ownership. */
   spawnQuestionSettlement?: (launch: QuestionSettlementLaunch) => void
+  /**
+   * Starts the detached daily hook maintenance (prune, update lookup). Absent,
+   * hooks start none; the production entry point supplies the real launcher.
+   */
+  spawnHookMaintenance?: (launch: HookMaintenanceLaunch) => void
   /** Test seam and production adapter for the external native skills installer. */
   nativeSkills?: NativeSkills
   /** Test seam for Orca's exact-pane Agent Session title lookup. */

@@ -1,9 +1,12 @@
 import { observeLoadedIntegration } from './integration-revision.js'
 /** Fail-open CLI adapter from harness input to hook lifecycle handlers. */
-import { agentUpdateNotice } from './agent-update-notice.js'
-import { integrationFaultNotice } from './integration-health.js'
+import { cachedAgentUpdateNotice } from './agent-update-notice.js'
+import { cachedIntegrationFaultNotice, refreshIntegrationHealth } from './integration-health.js'
 import { claudeWakeRoute } from './claude-wake.js'
-import { ApiCallError } from './client.js'
+import { ApiCallError, NetworkError, type ApiClient } from './client.js'
+import { type MachineCredential } from './credentials.js'
+import { OWNER_STEP_BUDGETS, hookStepBudgets, hookWorkAllowanceMs } from './hook-budgets.js'
+import { claimHookMaintenance, runHookMaintenance } from './hook-maintenance.js'
 import { codexWakeRoute } from './codex-wake.js'
 import { deliverCodexToolMessage } from './codex-tool-messages.js'
 import {
@@ -36,7 +39,6 @@ import {
   claimCursorStopActivation,
   confirmCursorStopActivation,
   lifecycleStamp,
-  pruneAbandonedSessions,
   readSessionIncarnation,
   readSessionState,
   updateSessionState,
@@ -86,8 +88,35 @@ const INTERNAL_HOOK_EVENTS = [
   'question-submission', 'question-settlement', 'openclaw-lifecycle', 'openclaw-generation',
   'openclaw-turn-start', 'openclaw-turn-end', 'openclaw-list-pending',
   'openclaw-attendance-ready', 'openclaw-settlement',
-  'openclaw-verify-prepared',
+  'openclaw-verify-prepared', 'maintenance',
 ] as const
+
+/**
+ * The credential is read on the first authenticated call, not at hook start.
+ * Most prompt and Stop hooks have nothing to send, so they never start a
+ * credential helper. It is a NetworkError so that every caller already treats
+ * it as "not now" and keeps local state, exactly as for an unreachable server.
+ */
+class MachineNotPairedError extends NetworkError {
+  constructor() {
+    super('this machine is not paired')
+  }
+}
+
+/** A client whose credential and connection are resolved on its first call. */
+function lazyClient(resolve: () => ApiClient): ApiClient {
+  return new Proxy({} as ApiClient, {
+    get(_target, property) {
+      // Never thenable, never inspectable: only API methods resolve.
+      if (typeof property !== 'string' || property === 'then') return undefined
+      return async (...args: unknown[]) => {
+        const client = resolve()
+        const method = client[property as keyof ApiClient] as unknown as (...values: unknown[]) => Promise<unknown>
+        return method.apply(client, args)
+      }
+    },
+  })
+}
 
 /** Keep diagnostic context in the same document as an answer or Session Note. */
 function appendIntegrationContext(output: string | undefined, notice: string | undefined,
@@ -148,23 +177,40 @@ export async function hookRunCommand(
   // Taken before stdin is read: an end the harness recorded before this
   // invocation began belongs to an earlier incarnation of the session.
   const invokedAt = lifecycleStamp(now())
+  // Every nested step shares the timeout the generated definition declares.
+  const budgets = hookStepBudgets(event, harness)
+  const workAllowanceMs = hookWorkAllowanceMs(event, harness)
   // One owner lifetime covers startup and the longest answer window. Native
   // observers run detached; held Stop routes keep stdout. The delivery mechanism does not
-  // change how long the exact Agent Session remains reachable.
-  const processDeadlineAt = now() + QUESTION_WAITER_CEILING_SECONDS * 1000
+  // change how long the exact Agent Session remains reachable. A short hook
+  // (UserPromptSubmit, a non-routing Stop) ends inside its own harness timeout.
+  const processDeadlineAt = now() + (workAllowanceMs ?? QUESTION_WAITER_CEILING_SECONDS * 1000)
 
   const logger = log(deps)
   logger.bind({ cmd: `hook ${event}` })
+  const failureData = (err: unknown): Record<string, unknown> =>
+    err instanceof ApiCallError
+      ? { status: err.status, code: err.code, message: err.message, details: err.details }
+      : { message: err instanceof Error ? err.message : String(err) }
+
+  // Daily housekeeping, started detached by a prompt-path hook.
+  if (event === 'maintenance') {
+    logger.info('hook.start', { hook: event, harness: harness ?? 'unknown' })
+    try {
+      const result = await runHookMaintenance({ env: deps.env, now: now(),
+        ...(deps.fetchImpl === undefined ? {} : { fetchImpl: deps.fetchImpl }) })
+      logger.info('hook.end', { hook: event, outcome: 'maintained', decided: false, ...result })
+    } catch (err) {
+      logger.error('hook.end', { hook: event, outcome: 'failed', ...failureData(err) })
+    }
+    return EXIT.ok
+  }
   let started = false
   const start = (data: Record<string, unknown> = {}): void => {
     if (started) return
     started = true
     logger.info('hook.start', { hook: event, harness: harness ?? 'unknown', ...data })
   }
-  const failureData = (err: unknown): Record<string, unknown> =>
-    err instanceof ApiCallError
-      ? { status: err.status, code: err.code, message: err.message, details: err.details }
-      : { message: err instanceof Error ? err.message : String(err) }
 
   // Cursor may load ~/.claude/settings.json in addition to its own native
   // hooks. Cursor guarantees CURSOR_PROJECT_DIR to hook processes, so a Claude
@@ -383,6 +429,8 @@ export async function hookRunCommand(
         const spawnSettlement = deps.spawnQuestionSettlement ?? spawnQuestionSettlement
         spawnSettlement({
           envelope: { session_id: sessionId, cwd }, harness, sessionLockHeld: true,
+          ...(budgets.detachedLaunchMs < OWNER_STEP_BUDGETS.detachedLaunchMs
+            ? { detachTimeoutMs: budgets.detachedLaunchMs } : {}),
         })
         return true
       })
@@ -407,6 +455,22 @@ export async function hookRunCommand(
     } catch (err) {
       logger.error('hook.end', { hook: event, outcome: 'enablement-unavailable', ...failureData(err) })
       return false
+    }
+  }
+  // Prune and the update lookup run in one detached process at most daily; a
+  // prompt-path hook only checks its stamp.
+  const startDueMaintenance = (): void => {
+    if (deps.spawnHookMaintenance === undefined) return
+    try {
+      if (!claimHookMaintenance(deps.env)) return
+      deps.spawnHookMaintenance({
+        cwd,
+        ...(harness === undefined ? {} : { harness }),
+        ...(budgets.detachedLaunchMs < OWNER_STEP_BUDGETS.detachedLaunchMs
+          ? { detachTimeoutMs: budgets.detachedLaunchMs } : {}),
+      })
+    } catch (err) {
+      logger.error('hook.gate', { stage: 'maintenance', outcome: 'ignored', ...failureData(err) })
     }
   }
   if (harness === 'grok' && (event === 'post-tool-use' || event === 'post-compact')) {
@@ -466,7 +530,7 @@ export async function hookRunCommand(
     try {
       const cardContext = harness === 'codex' ? await codexCardPostToolUse(deps, envelope, logger) : null
       if (harness === 'codex' && lifecycleEnabled()) {
-        const notice = [cardContext, integrationFaultNotice({ ...deps, cwd }, harness)].filter(Boolean).join('\n\n') || undefined
+        const notice = [cardContext, cachedIntegrationFaultNotice({ ...deps, cwd }, harness)].filter(Boolean).join('\n\n') || undefined
         let wrote = false
         const io = { ...deps.io, out: (line: string) => {
           wrote = true
@@ -507,6 +571,8 @@ export async function hookRunCommand(
         ...state, last_stop_at: now(),
       }))
     }
+    // Turn end, not the prompt path, refreshes what the next prompt reads.
+    if (harness === 'openclaw') refreshIntegrationHealth({ ...deps, cwd }, harness)
     return EXIT.ok
   }
   if (event === 'openclaw-list-pending') {
@@ -547,6 +613,7 @@ export async function hookRunCommand(
   // every run so disabling takes effect without reinstalling anything.
   if (event === 'session-start' || event === 'subagent-start') {
     start({ cwd, source: envelope.source ?? null })
+    if (event === 'session-start') startDueMaintenance()
     if (!lifecycleEnabled()) {
       logger.info('hook.end', {
         hook: event,
@@ -567,13 +634,15 @@ export async function hookRunCommand(
         })
       }
     }
+    // Both notices are read from records written off the prompt path: the
+    // update lookup by the detached daily maintenance, the integration
+    // assessment at turn end and by the Session Attendant.
     const updateNotice = event === 'session-start' &&
       ['claude-code', 'codex', 'opencode', 'openclaw'].includes(harness ?? '')
-      ? await agentUpdateNotice({ env: deps.env, now: now(), updateCommand: updateCliCommand(deps),
-          ...(deps.fetchImpl === undefined ? {} : { fetchImpl: deps.fetchImpl }) })
+      ? cachedAgentUpdateNotice({ env: deps.env, now: now(), updateCommand: updateCliCommand(deps) })
       : undefined
     const faultNotice = event === 'session-start' && harness !== undefined && harness !== 'grok'
-      ? integrationFaultNotice({ ...deps, cwd }, harness) : undefined
+      ? cachedIntegrationFaultNotice({ ...deps, cwd }, harness) : undefined
     const notice = [updateNotice, faultNotice].filter(part => part !== undefined).join('\n\n') || undefined
     if (harness === 'openclaw' && envelope.session_id !== undefined) {
       try {
@@ -764,9 +833,8 @@ export async function hookRunCommand(
       decided: claimed,
     })
     if (claimed) {
-      const updateNotice = await agentUpdateNotice({ env: deps.env, now: now(), updateCommand: updateCliCommand(deps),
-        ...(deps.fetchImpl === undefined ? {} : { fetchImpl: deps.fetchImpl }) })
-      const notice = [updateNotice, integrationFaultNotice({ ...deps, cwd }, 'cursor')].filter(Boolean).join('\n\n') || undefined
+      const updateNotice = cachedAgentUpdateNotice({ env: deps.env, now: now(), updateCommand: updateCliCommand(deps) })
+      const notice = [updateNotice, cachedIntegrationFaultNotice({ ...deps, cwd }, 'cursor')].filter(Boolean).join('\n\n') || undefined
       deps.io.out(cursorStopActivationOutput(cwd, deps.env, notice))
     }
     return EXIT.ok
@@ -806,10 +874,11 @@ export async function hookRunCommand(
   try {
     if (sessionEnd) {
       // Codex gives SessionEnd one second total. Do every durable cleanup write
-      // before lifecycle diagnostics: the log lock is deliberately allowed to
-      // wait that long, and a busy log must never preserve ended-session state
-      // or its inherited configuration. The resolved config above is retained
-      // in memory so logging still uses the ending session's settings afterwards.
+      // before lifecycle diagnostics: a busy log must never preserve
+      // ended-session state or its inherited configuration. (A hook never waits
+      // for the log lock; a busy lock means an unlocked append.) The resolved
+      // config above is retained in memory so logging still uses the ending
+      // session's settings afterwards.
       const outcome = harness === 'openclaw' && envelope.session_id !== undefined
         ? withFileLock(openclawGenerationLockPath(envelope.session_id, deps.env), (): HookOutcome => {
             const sessionKey = envelope.session_id!
@@ -854,34 +923,45 @@ export async function hookRunCommand(
 
     // Non-SessionEnd hooks cannot reach here without resolved configuration.
     const resolved = config!
-    const credential = deps.store.load()
-    if (!credential) {
-      logger.error('hook.end', { hook: event, outcome: 'not-paired' })
-      deps.io.err(`notifai: hook skipped: this machine is not paired; run \`${SETUP_COMMAND}\``)
-      return EXIT.ok
+    // No credential is read until the first authenticated call: a prompt or
+    // Stop with nothing to send never starts a credential helper.
+    let authenticated: { credential: MachineCredential; client: ApiClient } | null | undefined
+    const authenticate = (): { credential: MachineCredential; client: ApiClient } => {
+      if (authenticated === undefined) {
+        const credential = deps.store.load()
+        if (credential === null) authenticated = null
+        else {
+          // Pin authenticated traffic to the origin the credential was issued
+          // for. A repository can commit `.notifai/config.toml`, and honouring a
+          // base_url from it would hand this machine's bearer token to whatever
+          // host it names.
+          diagnoseIgnoredOriginOverride(deps.io, resolved, credential)
+          // A short hook (UserPromptSubmit in front of the User's own prompt,
+          // a non-routing Stop) can make two calls, so each gets a slice of its
+          // harness timeout and all of them end with the hook. Owners keep the
+          // ordinary budget.
+          authenticated = {
+            credential,
+            client: makeClient(deps, credential.baseUrl, `Bearer nfm_${credential.machineId}.${credential.secret}`, {
+              timeoutMs: budgets.serviceRequestMs,
+              ...(event === 'stop' || event === 'question-settlement' || workAllowanceMs !== null
+                ? { deadlineAt: processDeadlineAt, now }
+                : {}),
+            }),
+          }
+        }
+      }
+      if (authenticated === null) throw new MachineNotPairedError()
+      return authenticated
     }
-    // Pin authenticated traffic to the origin the credential was issued for. A
-    // repository can commit `.notifai/config.toml`, and honouring a base_url
-    // from it would hand this machine's bearer token to whatever host it names.
-    const baseUrl = credential.baseUrl
-    diagnoseIgnoredOriginOverride(deps.io, resolved, credential)
-    // UserPromptSubmit runs in front of the user's own prompt under a 15s
-    // harness ceiling and can make two calls, so each gets a small slice of it;
-    // Stop is allowed to block and keeps the ordinary budget.
-    const client = makeClient(
-      deps,
-      baseUrl,
-      `Bearer nfm_${credential.machineId}.${credential.secret}`,
-      {
-        timeoutMs: event === 'user-prompt-submit' ? 4_000 : 20_000,
-        ...(event === 'stop' || event === 'question-settlement'
-          ? { deadlineAt: processDeadlineAt, now }
-          : {}),
-      },
-    )
+    const notPaired = (): boolean => authenticated === null
+    const client = lazyClient(() => authenticate().client)
     const ctx: HookContext = {
       client,
-      service_identity: { base_url: credential.baseUrl, machine_id: credential.machineId },
+      get service_identity() {
+        const { credential } = authenticate()
+        return { base_url: credential.baseUrl, machine_id: credential.machineId }
+      },
       config: resolved,
       env: deps.env,
       now,
@@ -926,21 +1006,15 @@ export async function hookRunCommand(
       return EXIT.ok
     }
 
-    // Real clock, deliberately, not `deps.now`. This compares against file
-    // mtimes, which are wall-clock facts — handing it a virtual or skewed clock
-    // would have it delete live session state as "abandoned".
-    // Daily state pruning is housekeeping, not part of the Stop delivery
-    // contract. Its directory scan has no useful bound, so keep it on the
-    // short prompt path and never spend the answer owner's finite budget on it.
-    if (event !== 'stop' && event !== 'question-settlement' && event !== 'openclaw-settlement') {
-      pruneAbandonedSessions(deps.env)
-    }
+    // Daily state pruning moved off the prompt path into the detached hook
+    // maintenance process; this only checks its stamp.
+    if (event === 'user-prompt-submit') startDueMaintenance()
 
     let outcome: HookOutcome
     if (event === 'user-prompt-submit') {
       if (envelope.session_id !== undefined) observeSessionInputWake(envelope.session_id, deps.env, envelope.prompt)
       const notice = lifecycleEnabled() && harness !== undefined && harness !== 'grok'
-        ? integrationFaultNotice({ ...deps, cwd }, harness) : undefined
+        ? cachedIntegrationFaultNotice({ ...deps, cwd }, harness) : undefined
       // Claude wakes carry a token; Codex prompts with one keep their own path.
       outcome = envelope.session_id !== undefined && (envelope.prompt === sessionInputWake() ||
           (harness === 'claude-code' && inputWakeToken(envelope.prompt) !== null))
@@ -983,8 +1057,10 @@ export async function hookRunCommand(
       decided: outcome.decided ?? outcome.stdout !== undefined,
       ...(notes.length === 0 ? {} : { notes }),
       ...outcome.log,
+      ...(notPaired() ? { credential: 'not-paired' } : {}),
     })
     for (const note of outcome.notes) deps.io.err(`notifai: ${note}`)
+    if (notPaired()) deps.io.err(`notifai: this machine is not paired; run \`${SETUP_COMMAND}\``)
     let inputWritten = false
     if (event === 'user-prompt-submit' && (harness === 'codex' || harness === 'claude-code') &&
         envelope.session_id !== undefined && outcome.commitStdout === undefined &&
@@ -1009,11 +1085,19 @@ export async function hookRunCommand(
         deps.io.err('notifai: the Agent Session ended before answer delivery; no continuation was written')
       }
     }
+    // Turn end, not the prompt path, refreshes the integration assessment the
+    // next prompt reads. It scans at most once per check interval.
+    if (event === 'stop' && harness !== undefined && harness !== 'grok') refreshIntegrationHealth({ ...deps, cwd }, harness)
     return EXIT.ok
   } catch (err) {
     // SessionEnd defers its start record until after cleanup; if cleanup itself
     // fails, begin the after-the-fact lifecycle here before recording why.
     if (sessionEnd) start({ cwd, stop_hook_active: envelope.stop_hook_active ?? null })
+    if (err instanceof MachineNotPairedError) {
+      logger.error('hook.end', { hook: event, outcome: 'not-paired' })
+      deps.io.err(`notifai: hook skipped: this machine is not paired; run \`${SETUP_COMMAND}\``)
+      return EXIT.ok
+    }
     // The hook still exits 0 — handing the terminal back is always right. What
     // this adds is that the reason survives, including the server's own words.
     logger.error('hook.end', {

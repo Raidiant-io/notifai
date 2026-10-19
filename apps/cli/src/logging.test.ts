@@ -10,6 +10,7 @@ import {
 import os from 'node:os'
 import path from 'node:path'
 import { describe, expect, it } from 'vitest'
+import { withFileLock } from './file-lock.js'
 import {
   LOG_SCHEMA_VERSION,
   activeLogPath,
@@ -563,5 +564,35 @@ describe('rendering', () => {
     })
     expect(line).not.toContain('\n')
     expect(line.length).toBeLessThan(200)
+  })
+})
+
+describe('logging inside a hook', () => {
+  it('never waits for a busy log lock and keeps every record', () => {
+    const env = sandbox()
+    const logger = createLogger({ env, lockWaitMs: 0 })
+    logger.info('hook.start', { hook: 'user-prompt-submit' })
+    const started = Date.now()
+    // Another writer holds the shared lock for the whole of this hook's records.
+    withFileLock(`${activeLogPath(env)}.lock`, () => {
+      logger.info('hook.end', { hook: 'user-prompt-submit', outcome: 'busy-log' })
+      logger.error('hook.end', { hook: 'user-prompt-submit', outcome: 'still-writing' })
+    })
+    expect(Date.now() - started).toBeLessThan(500)
+    expect(logger.enabled).toBe(true)
+    logger.info('hook.end', { hook: 'user-prompt-submit', outcome: 'after' })
+    expect(lines(env).map((record) => record.data?.['outcome'] ?? record.event)).toEqual([
+      'hook.start', 'busy-log', 'still-writing', 'after',
+    ])
+  })
+
+  it('still waits for the lock outside a hook', () => {
+    const env = sandbox()
+    const logger = createLogger({ env })
+    const started = Date.now()
+    withFileLock(`${activeLogPath(env)}.lock`, () => logger.info('hook.end', { outcome: 'waited' }))
+    // The ordinary bound elapses, then the logger stops rather than writing unlocked.
+    expect(Date.now() - started).toBeGreaterThanOrEqual(900)
+    expect(logger.enabled).toBe(false)
   })
 })
