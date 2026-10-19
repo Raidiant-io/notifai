@@ -14,7 +14,10 @@ import {
   type WriteGuard,
 } from './wake-support.js'
 
-/** Claude Code's currently observed inbox protocol. Unknown versions fail closed. */
+/**
+ * The version of Claude Code's documented cross-session messaging protocol
+ * that this build speaks. Unknown versions fail closed.
+ */
 export const CLAUDE_PEER_PROTOCOL = 1
 
 /** The first Claude Code release that publishes a session inbox socket. */

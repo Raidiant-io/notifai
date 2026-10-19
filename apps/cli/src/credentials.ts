@@ -46,6 +46,20 @@ export interface CredentialStoreOptions {
   run?: ProcessRunner
   keychainAvailable?: boolean
   secretServiceAvailable?: boolean
+  /**
+   * Ceiling for one OS store helper run (Keychain `security`, DPAPI
+   * PowerShell, `secret-tool`). A hook passes its own share of the harness
+   * timeout so no helper can outlive the hook that started it.
+   */
+  helperTimeoutMs?: number
+}
+
+/** The helper ceiling a store uses: its own default, never above the caller's. */
+function helperTimeout(defaultMs: number, options: CredentialStoreOptions): number {
+  const requested = options.helperTimeoutMs
+  return requested === undefined || !Number.isFinite(requested) || requested <= 0
+    ? defaultMs
+    : Math.min(defaultMs, Math.floor(requested))
 }
 
 const SERVICE = 'io.notifai.cli'
@@ -61,10 +75,11 @@ const DPAPI_FORMAT = 'notifai.dpapi.current-user.v1'
 const DPAPI_ENTROPY = 'io.notifai.cli'
 // Inbox Windows PowerShell can have a slow first start on a newly provisioned
 // or heavily loaded machine. Keep the helper bounded without rejecting a
-// valid DPAPI operation during that cold-start window.
-const DPAPI_TIMEOUT_MS = 30_000
+// valid DPAPI operation during that cold-start window. This is the explicit
+// CLI's ceiling; a hook passes its own smaller `helperTimeoutMs`.
+export const DPAPI_TIMEOUT_MS = 30_000
 const DPAPI_FILE = 'credentials.dpapi'
-const KEYCHAIN_TIMEOUT_MS = 15_000
+export const KEYCHAIN_TIMEOUT_MS = 15_000
 
 // Use .NET directly: loading PowerShell's Utility module for Add-Type or
 // New-Object can exceed the helper timeout under Git Bash on Windows ARM.
@@ -138,9 +153,11 @@ export const defaultProcessRunner: ProcessRunner = {
  */
 export class KeychainStore implements CredentialStore {
   private readonly run: ProcessRunner
+  private readonly timeoutMs: number
 
   constructor(options: CredentialStoreOptions = {}) {
     this.run = options.run ?? defaultProcessRunner
+    this.timeoutMs = helperTimeout(KEYCHAIN_TIMEOUT_MS, options)
   }
 
   load(): MachineCredential | null {
@@ -148,7 +165,7 @@ export class KeychainStore implements CredentialStore {
       command: 'security',
       args: ['find-generic-password', '-s', SERVICE, '-a', 'machine', '-w'],
       input: Buffer.alloc(0),
-      timeoutMs: KEYCHAIN_TIMEOUT_MS,
+      timeoutMs: this.timeoutMs,
     })
     if (result.status !== 0) return null
     return parseCredentialJson(keychainPassword(result.stdout.toString('utf8').trim()))
@@ -164,7 +181,7 @@ export class KeychainStore implements CredentialStore {
       command: 'security',
       args: ['-q', '-i'],
       input: command,
-      timeoutMs: KEYCHAIN_TIMEOUT_MS,
+      timeoutMs: this.timeoutMs,
     })
     if (result.status !== 0) {
       throw new Error('macOS Keychain credential save failed')
@@ -175,6 +192,7 @@ export class KeychainStore implements CredentialStore {
     try {
       execFileSync('security', ['delete-generic-password', '-s', SERVICE, '-a', 'machine'], {
         stdio: 'ignore',
+        timeout: this.timeoutMs,
       })
     } catch {
       // nothing stored
@@ -307,10 +325,12 @@ export class FileStore implements CredentialStore {
 export class WindowsDpapiStore implements CredentialStore {
   private readonly env: NodeJS.ProcessEnv
   private readonly run: ProcessRunner
+  private readonly timeoutMs: number
 
   constructor(env: NodeJS.ProcessEnv = process.env, options: CredentialStoreOptions = {}) {
     this.env = env
     this.run = options.run ?? defaultProcessRunner
+    this.timeoutMs = helperTimeout(DPAPI_TIMEOUT_MS, options)
   }
 
   private filePath(): string | null {
@@ -385,12 +405,12 @@ export class WindowsDpapiStore implements CredentialStore {
       command: invocation.command,
       args: invocation.args,
       input,
-      timeoutMs: DPAPI_TIMEOUT_MS,
+      timeoutMs: this.timeoutMs,
     })
   }
 }
 
-const SECRET_TOOL_TIMEOUT_MS = 15_000
+export const SECRET_TOOL_TIMEOUT_MS = 15_000
 const SECRET_ATTRIBUTES = ['service', SERVICE, 'account', 'machine'] as const
 
 /**
@@ -407,11 +427,13 @@ export class SecretServiceStore implements CredentialStore {
   private readonly run: ProcessRunner
   private readonly file: FileStore
   private readonly available: boolean
+  private readonly timeoutMs: number
 
   constructor(env: NodeJS.ProcessEnv = process.env, options: CredentialStoreOptions = {}) {
     this.run = options.run ?? defaultProcessRunner
     this.file = new FileStore(env, { platform: options.platform ?? 'linux' })
     this.available = options.secretServiceAvailable ?? true
+    this.timeoutMs = helperTimeout(SECRET_TOOL_TIMEOUT_MS, options)
   }
 
   load(): MachineCredential | null {
@@ -484,7 +506,7 @@ export class SecretServiceStore implements CredentialStore {
   }
 
   private secretTool(args: readonly string[], input: Buffer): RunCommandResult {
-    return this.run.run({ command: 'secret-tool', args, input, timeoutMs: SECRET_TOOL_TIMEOUT_MS })
+    return this.run.run({ command: 'secret-tool', args, input, timeoutMs: this.timeoutMs })
   }
 }
 
@@ -573,12 +595,47 @@ function isBase64(value: string): boolean {
   return value.length > 0 && value.length % 4 === 0 && /^[A-Za-z0-9+/]+={0,2}$/.test(value)
 }
 
-function keychainProbeSucceeds(): boolean {
-  try {
-    execFileSync('security', ['help'], { stdio: 'ignore' })
-    return true
-  } catch {
-    return false
+/** Whether the first-party Keychain client runs here, within the caller's helper ceiling. */
+function keychainProbeSucceeds(options: CredentialStoreOptions): boolean {
+  const result = (options.run ?? defaultProcessRunner).run({
+    command: 'security',
+    args: ['help'],
+    input: Buffer.alloc(0),
+    timeoutMs: helperTimeout(KEYCHAIN_TIMEOUT_MS, options),
+  })
+  return result.status === 0
+}
+
+/**
+ * A store chosen on its first use.
+ *
+ * Choosing the macOS store runs a `security` probe. Most invocations, and
+ * most hook runs, never read the credential, so they no longer pay for one.
+ */
+class LazyCredentialStore implements CredentialStore {
+  private chosen: CredentialStore | null = null
+
+  constructor(private readonly choose: () => CredentialStore) {}
+
+  private store(): CredentialStore {
+    this.chosen ??= this.choose()
+    return this.chosen
+  }
+
+  load(): MachineCredential | null {
+    return this.store().load()
+  }
+
+  save(credential: MachineCredential): void {
+    this.store().save(credential)
+  }
+
+  clear(): void {
+    this.store().clear()
+  }
+
+  describe(): string {
+    return this.store().describe()
   }
 }
 
@@ -599,10 +656,10 @@ export function defaultCredentialStore(
       ? new SecretServiceStore(env, { ...options, secretServiceAvailable: secretService })
       : file
   }
-  const keychain =
-    options.keychainAvailable !== undefined
-      ? options.keychainAvailable
-      : platform === 'darwin' && keychainProbeSucceeds()
-  if (keychain) return new KeychainStore(options)
-  return new FileStore(env, { platform })
+  if (options.keychainAvailable !== undefined) {
+    return options.keychainAvailable ? new KeychainStore(options) : new FileStore(env, { platform })
+  }
+  if (platform !== 'darwin') return new FileStore(env, { platform })
+  return new LazyCredentialStore(() =>
+    keychainProbeSucceeds(options) ? new KeychainStore(options) : new FileStore(env, { platform }))
 }

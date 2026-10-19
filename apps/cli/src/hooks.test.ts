@@ -1374,14 +1374,17 @@ describe('what the hook leaves behind', () => {
     const h = harness()
     const deps: CommandDeps = {
       ...recording(h),
-      clientFactory: () => {
+      // The credential and client are resolved on first use, so the server's
+      // rejection reaches the hook through its first request.
+      clientFactory: () => new Proxy({}, { get: (_target, property) => property === 'then' ? undefined : async () => {
         throw new ApiCallError(422, 'validation_failed', 'draft rejected', null, [
           { path: '/draft/lifecycle' },
         ])
-      },
+      } }) as ApiClient,
     }
-    registerQuestion('broken', h.env, { question: 'Ship it?' })
+    // Presence first: writing state after registering would drop the question.
     writeSessionState('broken', h.env, { last_prompt_at: AWAY })
+    registerQuestion('broken', h.env, { question: 'Ship it?' })
 
     await hookRunCommand(deps, 'stop', stdin({ session_id: 'broken', cwd: h.deps.cwd }))
 
@@ -3915,11 +3918,16 @@ describe('session-start hook', () => {
     const h = harness()
     const lookup = vi.fn(async () => new Response(JSON.stringify({ latest: '99.0.0' })))
     h.deps.fetchImpl = lookup
+    // The registry lookup runs in the detached daily maintenance, never in SessionStart.
+    const maintain = () => hookRunCommand(h.deps, 'maintenance', stdin({}))
     const start = async (id: string) => {
       h.io.outLines = []
       await hookRunCommand(h.deps, 'session-start', stdin({ session_id: id }), 'codex')
       return h.io.outLines.join('\n')
     }
+    expect(await start('before-lookup')).not.toContain('A newer Notifai is available.')
+    expect(lookup).not.toHaveBeenCalled()
+    await maintain()
     expect(await start('first')).toContain('A newer Notifai is available.')
     expect(await start('second')).not.toContain('A newer Notifai is available.')
     const other = mkdtempSync(path.join(os.tmpdir(), 'notifai-other-project-'))
@@ -3929,8 +3937,10 @@ describe('session-start hook', () => {
     enableProject(binding)
     h.deps.cwd = other
     h.advanceClock(7 * 24 * 60 * 60 * 1000 - 1)
+    await maintain()
     expect(await start('before-week')).not.toContain('A newer Notifai is available.')
     h.advanceClock(1)
+    await maintain()
     expect(await start('next-week')).toContain('A newer Notifai is available.')
     expect(lookup).toHaveBeenCalledTimes(2)
     expect(h.recorder.submitted).toEqual([])
@@ -3940,9 +3950,9 @@ describe('session-start hook', () => {
     const h = harness()
     const lookup = vi.fn(async () => new Response('{"latest":"99.0.0"}'))
     h.deps.fetchImpl = lookup
+    await hookRunCommand(h.deps, 'maintenance', stdin({}))
     await hookRunCommand(h.deps, 'subagent-start', stdin({ session_id: 'worker' }), 'codex')
     await hookRunCommand(h.deps, 'session-start', stdin({ conversation_id: 'cursor' }), 'cursor')
-    expect(lookup).not.toHaveBeenCalled()
     h.io.outLines = []
     await hookRunCommand(h.deps, 'activation-stop', stdin({ conversation_id: 'cursor', loop_count: 0, status: 'completed' }), 'cursor')
     expect(h.io.outLines.join('\n')).toContain('offer to perform the update')
@@ -4457,12 +4467,64 @@ describe('user-prompt-submit hook', () => {
   it('explains when a missing machine credential makes a hook skip routing', async () => {
     const h = harness()
     h.deps.store.load = () => null
+    // Routing work needs the service: a live question the prompt checks for a late answer.
+    registerQuestion('unpaired', h.env, { question: 'Ship it?', summary: 'Ship it?', request_id: 'req_unpaired', asked_at: NOW })
 
     expect(
-      await hookRunCommand(h.deps, 'user-prompt-submit', stdin({ session_id: 'unpaired' })),
+      await hookRunCommand(h.deps, 'user-prompt-submit', stdin({ session_id: 'unpaired', cwd: h.deps.cwd })),
     ).toBe(EXIT.ok)
 
     expect(h.io.errLines.join('\n')).toMatch(/not paired|credential/i)
+    // Nothing reached the service, and the question is kept for a paired machine.
+    expect(h.recorder.closed).toEqual([])
+    expect(readSessionState('unpaired', h.env).pending?.map((entry) => entry.request_id)).toEqual(['req_unpaired'])
+  })
+
+  it('reads no credential for a prompt or Stop with nothing to send', async () => {
+    const h = harness()
+    const load = vi.fn(h.deps.store.load)
+    h.deps.store.load = load
+    const envelope = { session_id: 'idle-session', cwd: h.deps.cwd }
+
+    for (const event of ['user-prompt-submit', 'stop'] as const) {
+      expect(await hookRunCommand(h.deps, event, stdin(envelope), 'claude-code')).toBe(EXIT.ok)
+    }
+
+    expect(load).not.toHaveBeenCalled()
+    expect(h.io.errLines.join('\n')).not.toMatch(/not paired|hook failed/i)
+    expect(readSessionState('idle-session', h.env).last_prompt_at).toBe(NOW)
+  })
+
+  it('keeps prune and the update lookup off the prompt path', async () => {
+    const h = harness()
+    const fetchImpl = vi.fn(async () => new Response(JSON.stringify({ latest: '99.0.0' })))
+    const launches: unknown[] = []
+    const deps = { ...h.deps, fetchImpl, spawnHookMaintenance: (launch: unknown) => { launches.push(launch) } }
+    // Abandoned state that the daily prune would remove.
+    const abandoned = path.join(stateDir(h.env), 'sessions', 'abandoned.json')
+    mkdirSync(path.dirname(abandoned), { recursive: true })
+    writeFileSync(abandoned, '{}')
+    const old = new Date(Date.now() - 30 * 86_400_000)
+    utimesSync(abandoned, old, old)
+
+    await hookRunCommand(deps, 'session-start', stdin({ session_id: 'housekeeping', cwd: h.deps.cwd }), 'claude-code')
+    await hookRunCommand(deps, 'user-prompt-submit', stdin({ session_id: 'housekeeping', cwd: h.deps.cwd }), 'claude-code')
+
+    expect(fetchImpl).not.toHaveBeenCalled()
+    expect(existsSync(abandoned)).toBe(true)
+    // One detached launch for the day, with a hand-off budget inside SessionStart's 5 s.
+    expect(launches).toEqual([{ cwd: h.deps.cwd, harness: 'claude-code', detachTimeoutMs: 1_666 }])
+
+    // The detached process does the work.
+    await hookRunCommand(deps, 'maintenance', stdin({}), 'claude-code')
+    expect(existsSync(abandoned)).toBe(false)
+    expect(fetchImpl).toHaveBeenCalledTimes(1)
+
+    // The next session start reads what the lookup recorded.
+    h.io.outLines.length = 0
+    await hookRunCommand(deps, 'session-start', stdin({ session_id: 'next-session', cwd: h.deps.cwd }), 'claude-code')
+    expect(h.io.outLines.join('\n')).toContain('A newer Notifai is available.')
+    expect(fetchImpl).toHaveBeenCalledTimes(1)
   })
 
   it('preserves a delivered question through a second ask and an unrelated prompt', async () => {
@@ -4913,7 +4975,7 @@ describe('session-end hook', () => {
     })
   })
 
-  it('runs the real Codex SessionEnd cleanup before contended diagnostics and exits fail-open', async () => {
+  it('runs the real Codex SessionEnd cleanup and diagnostics without waiting for a held log lock', async () => {
     const h = harness()
     const sessionId = 'session-end-budget'
     writeSessionState(sessionId, h.env, { last_prompt_at: NOW })
@@ -4948,31 +5010,17 @@ describe('session-end hook', () => {
       expect(readdirSync(logLock).filter((name) => name.startsWith('ticket-'))).toHaveLength(1)
 
       cli = runSessionEndCli(h.env, h.deps.cwd, sessionId)
-      await waitUntil(
-        () =>
-          readdirSync(logLock).filter((name) => name.startsWith('ticket-')).length >= 2,
-        5_000,
-        'the real Codex hook did not reach contended diagnostics before its deadline',
-      )
-      const contendedAt = Date.now()
-
-      // Reaching the second bakery ticket proves program.ts preAction did not write
-      // first. Every durable cleanup must already be visible while diagnostics
-      // are still blocked behind the live holder.
+      const result = await cli.done
+      expect(result).toMatchObject({ code: EXIT.ok, signal: null, stdout: '', stderr: '' })
+      // A hook never waits for the shared log lock: the real CLI finished its
+      // cleanup and its diagnostics while the holder still held the lock.
+      expect(readdirSync(logLock).filter((name) => name.startsWith('ticket-'))).toHaveLength(1)
       expect(existsSync(stateFile)).toBe(false)
       expect(existsSync(configFile)).toBe(false)
       expect(existsSync(projectPointer)).toBe(false)
-
-      const result = await cli.done
-      expect(result).toMatchObject({ code: EXIT.ok, signal: null, stdout: '', stderr: '' })
-      expect(result.durationMs).toBeGreaterThanOrEqual(900)
-      // Bound only the lock wait: Node startup on a loaded runner is not part
-      // of it. From joining the contended lock, the hook gave up after its
-      // bounded wait instead of waiting for the live holder.
-      expect(result.exitedAt - contendedAt).toBeLessThan(2_000)
-      // The diagnostic contender timed out rather than stealing the held lock,
-      // disabled its sink, and still let the real CLI exit successfully.
-      expect(existsSync(activeLogPath(h.env))).toBe(false)
+      // Its records were appended unlocked instead of being dropped.
+      const records = readFileSync(activeLogPath(h.env), 'utf8')
+      expect(records).toContain('"hook":"session-end"')
 
       writeFileSync(holder.releasePath, 'release')
       await holder.done
@@ -7178,6 +7226,8 @@ describe('Codex Stop wake route', () => {
       envelope: { session_id: CODEX_THREAD, cwd: h.deps.cwd },
       harness: 'codex',
       sessionLockHeld: true,
+      // The Windows hand-off stays inside the prompt hook's 15 s.
+      detachTimeoutMs: 5_000,
     })
     expect(h.deps.now?.()).toBe(NOW)
     expect(h.recorder.submitted).toEqual([])

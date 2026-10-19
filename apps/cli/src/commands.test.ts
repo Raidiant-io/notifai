@@ -4389,7 +4389,7 @@ describe('harness activation guidance', () => {
     expect(io.outLines.join('\n')).not.toMatch(/Permission prompts|exactly-once continuation/)
     const pluginFile = path.join(cwd, 'opencode-home', 'plugins', 'notifai.js')
     const plugin = readFileSync(pluginFile, 'utf8')
-    expect(plugin).toContain('const TIMEOUT_MS = 540000')
+    expect(plugin).toContain('const TIMEOUT_MS = 15000')
 
     io.outLines = []
     expect(await doctorCommand(deps, {})).toBe(EXIT.failed)

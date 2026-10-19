@@ -75,7 +75,10 @@ export interface OpencodePluginOptions {
   integrationScope?: string
   /** The same stable user-level adapter every command-hook harness invokes. */
   adapterPath: string
-  /** Child-process lifetime; covers grace, reply wait, and teardown headroom. */
+  /**
+   * Child-process lifetime for every hook the plugin runs. OpenCode cannot
+   * continue a session with an answer, so no hook waits through a reply window.
+   */
   timeoutSeconds: number
   platform?: NodeJS.Platform | HookHostPlatform
   /** Registered Node used to interpret the Windows adapter. Ignored on POSIX. */

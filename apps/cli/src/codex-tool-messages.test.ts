@@ -31,7 +31,7 @@ import { enableProject, projectBinding } from './project-enablement.js'
 import { attendantClaimPath, attendantStatusPath, currentCodexTurn, recordTurnEnd, recordTurnStart, readTurnActivity, turnActivityPath, writeAttendantStatus } from './session-attendant-state.js'
 import { acquireDeliveryLock, readDeliveryJournal, deliveryJournalPath, recoverDeliveryJournal } from './session-delivery.js'
 import { handOffSessionMessages } from './session-message-handoff.js'
-import { localIntegrationAssessment } from './integration-health.js'
+import { localIntegrationAssessment, refreshIntegrationHealth } from './integration-health.js'
 import { nativeQuestionTitle, reserveCodexQuestion } from './codex-question-bindings.js'
 import { readNativeQuestionSnapshot } from './codex-native-turn.js'
 
@@ -949,6 +949,8 @@ describe('Codex tool-boundary Session Messages', () => {
     const h = setup()
     h.deps.store.load = () => { throw new Error('must not read credentials') }
     writeFileSync(path.join(h.env.CODEX_HOME, 'config.toml'), '')
+    // Turn end records the assessment; the tool hook only reads it.
+    refreshIntegrationHealth(h.deps, 'codex')
     await h.hook()
     await h.hook()
     expect(h.claims).toEqual([])

@@ -368,6 +368,13 @@ export interface LoggerOptions {
   now?: () => number
   cmd?: string
   runId?: string
+  /**
+   * How long a record may wait for the shared log lock. Omitted, it waits the
+   * ordinary file-lock bound. A hook passes its own share (zero): when another
+   * writer holds the lock, the record is appended unlocked instead, and the
+   * next locked writer applies the size cap and rotation.
+   */
+  lockWaitMs?: number
 }
 
 export const DEFAULT_LOG_SETTINGS: LogSettings = {
@@ -403,7 +410,26 @@ export function createLogger(options: LoggerOptions = {}): Logger {
   const dir = logsDir(env)
   const active = activeLogPath(env)
   const lock = `${active}.lock`
+  const lockWaitMs = options.lockWaitMs
   let broken = false
+
+  /**
+   * Run one append transaction under the shared lock. A caller that may not
+   * wait (a hook inside its harness timeout) appends the record unlocked when
+   * the lock is busy: O_APPEND keeps the record whole, and rotation is left to
+   * the next writer that holds the lock.
+   */
+  function appendLocked(lockFile: string, file: string, line: string, transaction: () => void): void {
+    if (lockWaitMs === undefined) {
+      withFileLock(lockFile, transaction)
+      return
+    }
+    try {
+      withFileLock(lockFile, transaction, { waitMs: lockWaitMs })
+    } catch {
+      appendFileSync(file, line, { mode: 0o600, flag: 'a' })
+    }
+  }
 
   function currentSize(): number {
     try {
@@ -456,7 +482,7 @@ export function createLogger(options: LoggerOptions = {}): Logger {
       const line = serialize(record)
       const bytes = Buffer.byteLength(line)
       mkdirSync(dir, { recursive: true, mode: 0o700 })
-      withFileLock(lock, () => {
+      appendLocked(lock, active, line, () => {
         let payload = line
         if (currentSize() + bytes > settings.maxBytes) {
           const rotated = rotate()
@@ -481,7 +507,7 @@ export function createLogger(options: LoggerOptions = {}): Logger {
       })
       if (isDurableEvent(event, data)) {
         const events = durableEventsPath(env)
-        withFileLock(`${events}.lock`, () => {
+        appendLocked(`${events}.lock`, events, line, () => {
           let size = 0
           try {
             size = statSync(events).size
@@ -553,7 +579,7 @@ export function logConfigResolved(logger: Logger, config: CliConfig): void {
  * been discovered. A config that throws leaves the defaults in place; it is
  * reported by the command that needed it, not silently swallowed here.
  */
-export function bootstrapLogger(options: { env?: NodeJS.ProcessEnv; cwd?: string } = {}): Logger {
+export function bootstrapLogger(options: { env?: NodeJS.ProcessEnv; cwd?: string; lockWaitMs?: number } = {}): Logger {
   const env = options.env ?? process.env
   let settings: Partial<LogSettings> = {}
   let project: string | null = null
@@ -567,7 +593,7 @@ export function bootstrapLogger(options: { env?: NodeJS.ProcessEnv; cwd?: string
   // Keep a real, mutable logger even when this bootstrap directory says off.
   // Harness payloads can resolve a more-specific project or session later and
   // adopt settings that legitimately re-enable the same invocation.
-  const logger = createLogger({ env, settings })
+  const logger = createLogger({ env, settings, ...(options.lockWaitMs === undefined ? {} : { lockWaitMs: options.lockWaitMs }) })
   if (project !== null) logger.bind({ project })
   return logger
 }

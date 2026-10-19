@@ -12,8 +12,10 @@ import { nativeSkills } from './native-skills.js'
 import { argvFlagNames, bootstrapLogger, nullLogger } from './logging.js'
 import { buildProgram } from './program.js'
 import { spawnQuestionSettlement } from './question-settlement-process.js'
+import { spawnHookMaintenance } from './hook-maintenance.js'
 import { buildIdentity } from './distribution.js'
 import { consumeNpmAdapterLocator } from './cli-bin.js'
+import { OWNER_STEP_BUDGETS, hookInvocation, hookStepBudgets } from './hook-budgets.js'
 
 /**
  * The local record for this invocation.
@@ -27,14 +29,20 @@ const compiled = buildIdentity() !== null
 const invokingNpmAdapterArtifact = consumeNpmAdapterLocator(process.env)
 const diagnostic = ['doctor', 'self-check', '--help', '-h', '--version', '-V', 'help'].includes(process.argv[2] ?? '')
 const logger = nullLogger()
+// A hook's nested steps live inside the timeout its harness enforces. The
+// store is chosen lazily, so a hook that never reads the credential pays for
+// no store probe at all.
+const hook = hookInvocation(process.argv.slice(2))
+const budgets = hook === null ? null : hookStepBudgets(hook.event, hook.harness)
 
 const deps: CommandDeps = {
   io: realIo(),
-  store: defaultCredentialStore(),
+  store: defaultCredentialStore(process.env, budgets === null ? {} : { helperTimeoutMs: budgets.credentialHelperMs }),
   env: process.env,
   cwd: process.cwd(),
   nativeSkills,
   spawnQuestionSettlement,
+  spawnHookMaintenance,
   logger,
   ...(invokingNpmAdapterArtifact ? { invokingNpmAdapterArtifact } : {}),
 }
@@ -49,6 +57,8 @@ process.on('exit', (code) => {
 })
 
 await buildProgram(deps, { beforeAction(admission) {
-  if (compiled && (admission === 'managed' || admission === 'retained-owner')) deps.logger = bootstrapLogger()
-  else if (!compiled && !diagnostic && process.argv[2] !== 'install') deps.logger = bootstrapLogger()
+  const logging = budgets === null || budgets.logLockWaitMs === OWNER_STEP_BUDGETS.logLockWaitMs
+    ? {} : { lockWaitMs: budgets.logLockWaitMs }
+  if (compiled && (admission === 'managed' || admission === 'retained-owner')) deps.logger = bootstrapLogger(logging)
+  else if (!compiled && !diagnostic && process.argv[2] !== 'install') deps.logger = bootstrapLogger(logging)
 } }).parseAsync(process.argv)

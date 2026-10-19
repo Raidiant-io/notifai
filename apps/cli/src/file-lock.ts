@@ -34,7 +34,7 @@ import path from 'node:path'
  * Acquisition is deliberately bounded because both harness hooks and logging
  * must fail open rather than hold an agent turn indefinitely.
  */
-const FILE_LOCK_WAIT_MS = 1_000
+export const FILE_LOCK_WAIT_MS = 1_000
 const FILE_LOCK_POLL_MS = 5
 const FILE_LOCK_TOKEN_BYTES = 12
 const ENTRY_PATTERN = /^(choosing|ticket-(\d+))-(\d+)-([0-9a-f]+)$/

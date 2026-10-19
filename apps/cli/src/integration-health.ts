@@ -140,6 +140,49 @@ function healthScope(deps: CommandDeps, cli: ReturnType<typeof integrationCli>, 
     installations: integrationInstallations(deps).map(({ installation }) => resolved(installation.file)) }
 }
 
+/** The notice text. No file contents, paths, settings, or trust evidence enter agent copy. */
+function faultNoticeText(faults: readonly IntegrationFault[]): string {
+  const codes = [...new Set(faults.map(fault => fault.code))].join(', ')
+  return `Notifai local integration needs attention (${codes}). Run \`notifai doctor --json\` for the exact lost capability and remedy before relying on prompt note delivery. This diagnostic does not block ordinary sends. Report actionable faults to the Notification Request owner; honor User deferrals. Do not change installations, settings or native trust without authorization, restart unnecessarily, or send repeated warnings.`
+}
+
+function healthDir(deps: CommandDeps): string {
+  return path.join(stateDir(deps.env), 'integration-health')
+}
+
+/**
+ * Where a hook finds the assessment for its harness and directory without
+ * scanning anything: a pointer named only from values already in memory. The
+ * assessment's own key needs the scan; the pointer records which key it was.
+ */
+function scopePointerFile(deps: CommandDeps, harness?: HookInstallableHarness): string {
+  const key = createHash('sha256').update(JSON.stringify({
+    schema: 1, harness: harness ?? null, cwd: deps.cwd, build: buildIdentity(), executable: process.execPath,
+    adapterHome: deps.hookAdapterHome ?? null, codexHome: deps.env['CODEX_HOME'] ?? null,
+  })).digest('hex')
+  return path.join(healthDir(deps), `scope-${key}.json`)
+}
+
+interface HealthRecord { checked_at?: number; reported?: string; fingerprint?: string; faults?: IntegrationFault[] }
+
+function readHealthRecord(file: string): HealthRecord {
+  const value: unknown = JSON.parse(readFileSync(file, 'utf8'))
+  return typeof value === 'object' && value !== null ? value as HealthRecord : {}
+}
+
+/** The assessment record a scope pointer names, or null when there is none yet. */
+function pointedHealthRecord(deps: CommandDeps, harness?: HookInstallableHarness): { file: string; record: HealthRecord } | null {
+  try {
+    const pointer: unknown = JSON.parse(readFileSync(scopePointerFile(deps, harness), 'utf8'))
+    const scope = typeof pointer === 'object' && pointer !== null ? (pointer as { scope?: unknown }).scope : undefined
+    if (typeof scope !== 'string' || !/^[0-9a-f]{64}$/.test(scope)) return null
+    const file = path.join(healthDir(deps), `${scope}.json`)
+    return { file, record: readHealthRecord(file) }
+  } catch {
+    return null
+  }
+}
+
 /** Once per changed fault, across repeated callbacks and Projects on a machine. */
 export function integrationFaultNotice(deps: CommandDeps, harness?: HookInstallableHarness, consume = true, force = false): string | undefined {
   try {
@@ -147,11 +190,11 @@ export function integrationFaultNotice(deps: CommandDeps, harness?: HookInstalla
     if (!current()) return undefined
     const cli = integrationCli(deps)
     const key = createHash('sha256').update(JSON.stringify(healthScope(deps, cli, harness))).digest('hex')
-    const file = path.join(stateDir(deps.env), 'integration-health', `${key}.json`)
+    const file = path.join(healthDir(deps), `${key}.json`)
     return withFileLock(`${file}.lock`, () => {
       if (!current()) return undefined
-      let previous: { checked_at?: number; reported?: string; fingerprint?: string; faults?: IntegrationFault[] } = {}
-      try { previous = JSON.parse(readFileSync(file, 'utf8')) } catch { /* first check */ }
+      let previous: HealthRecord = {}
+      try { previous = readHealthRecord(file) } catch { /* first check */ }
       const now = (deps.now ?? Date.now)()
       const cached = !force && typeof previous.checked_at === 'number' && now >= previous.checked_at &&
         now - previous.checked_at < CHECK_INTERVAL_MS && Array.isArray(previous.faults)
@@ -168,10 +211,56 @@ export function integrationFaultNotice(deps: CommandDeps, harness?: HookInstalla
         checked_at: cached ? previous.checked_at : now, fingerprint, faults,
         reported: faults.length === 0 || (consume && shouldReport) ? fingerprint : previous.reported,
       }))
+      // Let hooks find this assessment without repeating the scan.
+      if (!cached) atomicWriteFileSync(scopePointerFile(deps, harness), JSON.stringify({ scope: key }))
       if (!shouldReport) return undefined
-      // No file contents, paths, settings, or trust evidence enter agent copy.
-      const codes = [...new Set(faults.map(fault => fault.code))].join(', ')
-      return `Notifai local integration needs attention (${codes}). Run \`notifai doctor --json\` for the exact lost capability and remedy before relying on prompt note delivery. This diagnostic does not block ordinary sends. Report actionable faults to the Notification Request owner; honor User deferrals. Do not change installations, settings or native trust without authorization, restart unnecessarily, or send repeated warnings.`
+      return faultNoticeText(faults)
+    }, { waitMs: 0 })
+  } catch {
+    // Diagnostics never hold a turn, fail a hook, or block ordinary sending.
+    return undefined
+  }
+}
+
+/**
+ * Refresh the assessment a later prompt will read, off the prompt path: turn
+ * end runs this. It scans only when the recorded assessment is older than the
+ * check interval, and never consumes the notice.
+ */
+export function refreshIntegrationHealth(deps: CommandDeps, harness?: HookInstallableHarness): void {
+  const pointed = pointedHealthRecord(deps, harness)
+  const now = (deps.now ?? Date.now)()
+  const checkedAt = pointed?.record.checked_at
+  if (typeof checkedAt === 'number' && now >= checkedAt && now - checkedAt < CHECK_INTERVAL_MS) return
+  integrationFaultNotice(deps, harness, false)
+}
+
+/** A recorded assessment older than this no longer speaks for the installation. */
+const CACHED_NOTICE_MAX_AGE_MS = 60 * 60_000
+
+/**
+ * The fault notice for a prompt-path hook, read from the last assessment of
+ * this harness and directory. It never scans the installation: turn end and
+ * the Session Attendant refresh it. The notice lock is taken without waiting,
+ * and only when there is a notice to emit.
+ */
+export function cachedIntegrationFaultNotice(deps: CommandDeps, harness?: HookInstallableHarness): string | undefined {
+  try {
+    const pointed = pointedHealthRecord(deps, harness)
+    if (pointed === null) return undefined
+    const now = (deps.now ?? Date.now)()
+    const owed = (record: HealthRecord): record is HealthRecord & { faults: IntegrationFault[]; fingerprint: string } =>
+      typeof record.checked_at === 'number' && now >= record.checked_at && now - record.checked_at < CACHED_NOTICE_MAX_AGE_MS &&
+      Array.isArray(record.faults) && record.faults.length > 0 && typeof record.fingerprint === 'string' &&
+      record.reported !== record.fingerprint
+    if (!owed(pointed.record)) return undefined
+    const current = healthPublicationCurrent(deps)
+    if (!current()) return undefined
+    return withFileLock(`${pointed.file}.lock`, () => {
+      const record = readHealthRecord(pointed.file)
+      if (!owed(record) || !current()) return undefined
+      atomicWriteFileSync(pointed.file, JSON.stringify({ ...record, reported: record.fingerprint }))
+      return faultNoticeText(record.faults)
     }, { waitMs: 0 })
   } catch {
     // Diagnostics never hold a turn, fail a hook, or block ordinary sending.

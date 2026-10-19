@@ -8,7 +8,7 @@ import { hooksInstallCommand } from './commands-hook-install.js'
 import { updateResumeCommand } from './commands-update-resume.js'
 import { installHookAdapter, inspectHookAdapter } from './hook-adapter.js'
 import { codexHookIdentityHash, codexTrustKey, findInstallations } from './install-hooks.js'
-import { integrationFaultNotice, localIntegrationAssessment } from './integration-health.js'
+import { cachedIntegrationFaultNotice, integrationFaultNotice, localIntegrationAssessment, refreshIntegrationHealth } from './integration-health.js'
 import { nativeSkills } from './native-skills.js'
 import { packageVersion } from './release.js'
 import { markSessionEnded, readSessionState, writeSessionState } from './hook-session-state.js'
@@ -296,6 +296,35 @@ it('keeps healthy callbacks silent and deduplicates later faults across callback
   removeToolHook(f.installation.file)
   f.tick()
   expect(integrationFaultNotice(f.deps, 'codex')).toContain('hooks-drift')
+})
+
+it('lets a prompt hook read the turn-end assessment without scanning, once per changed fault', () => {
+  const f = fixture()
+  removeToolHook(f.installation.file)
+  const scan = vi.spyOn(nativeSkills, 'inspect')
+  // Nothing recorded yet: the prompt path stays silent rather than scanning.
+  expect(cachedIntegrationFaultNotice(f.deps, 'codex')).toBeUndefined()
+  expect(scan).not.toHaveBeenCalled()
+  // Turn end refreshes, at most once per check interval.
+  refreshIntegrationHealth(f.deps, 'codex')
+  refreshIntegrationHealth(f.deps, 'codex')
+  expect(scan).toHaveBeenCalledTimes(1)
+  scan.mockClear()
+  expect(cachedIntegrationFaultNotice(f.deps, 'codex')).toContain('hooks-drift')
+  expect(cachedIntegrationFaultNotice(f.deps, 'codex')).toBeUndefined()
+  expect(scan).not.toHaveBeenCalled()
+  // A changed fault is reported again once turn end has seen it.
+  rmSync(f.installation.file)
+  f.tick()
+  refreshIntegrationHealth(f.deps, 'codex')
+  expect(cachedIntegrationFaultNotice(f.deps, 'codex')).toContain('hooks-missing')
+  // An assessment nobody has refreshed for an hour no longer speaks for the installation.
+  expect(hooksInstallCommand(f.deps, { harness: 'codex', narrate: false })).toBe(0)
+  removeToolHook(f.installation.file)
+  f.tick()
+  refreshIntegrationHealth(f.deps, 'codex')
+  for (let minute = 0; minute < 61; minute += 1) f.tick()
+  expect(cachedIntegrationFaultNotice(f.deps, 'codex')).toBeUndefined()
 })
 
 it('lets a resident observer detect missing wiring without consuming the agent notice or changing trust', () => {

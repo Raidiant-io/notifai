@@ -15,8 +15,9 @@ export type SourceContextHarness = (typeof SOURCE_CONTEXT_HARNESSES)[number]
  * Harnesses whose lifecycle Notifai can install and manage.
  *
  * Source Context is the broader vocabulary. Managed hook installation is a
- * narrower, independently proven cell. Hermes owns a native prompt plugin,
- * while its Question Routing remains unsupported.
+ * narrower, independently proven cell. Hermes owns a native prompt plugin; its
+ * Question Routing is proven only for the attended local classic CLI
+ * (`HERMES_CLASSIC_CLI_LOCAL_CAPABILITY`).
  */
 export const HOOK_INSTALLABLE_HARNESSES = [
   'claude-code',

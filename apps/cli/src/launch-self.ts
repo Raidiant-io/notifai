@@ -40,10 +40,14 @@ export function currentRuntimeBuild(env: NodeJS.ProcessEnv = process.env): Runti
   return reference
 }
 
+/** Ceiling for the Windows launcher's synchronous detach hand-off. A hook
+ * passes its own smaller `detachTimeoutMs`. */
+export const WINDOWS_DETACH_TIMEOUT_MS = 20_000
+
 /** Deliberate detached launch only. Persist the caller's existing owner record
  * before starting a child. No install lock, mutable PATH command, or shell. */
 export function launchSelf(args: readonly string[], options: { cwd: string; env: NodeJS.ProcessEnv;
-  retain: (reference: RuntimeBuildReference | null) => void }): { pid: number } {
+  retain: (reference: RuntimeBuildReference | null) => void; detachTimeoutMs?: number }): { pid: number } {
   const reference = currentRuntimeBuild(options.env)
   assertNativeLaunchAllowed(options.env)
   const env = { ...options.env }
@@ -57,7 +61,8 @@ export function launchSelf(args: readonly string[], options: { cwd: string; env:
   assertNativeLaunchAllowed(options.env)
   if (reference && process.platform === 'win32') {
     const output = execFileSync(executable, ['--internal-detach', ...argv], { cwd: options.cwd, env,
-      encoding: 'utf8', timeout: 20_000, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] })
+      encoding: 'utf8', timeout: Math.min(WINDOWS_DETACH_TIMEOUT_MS, options.detachTimeoutMs ?? WINDOWS_DETACH_TIMEOUT_MS),
+      windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] })
     const pid = Number(output.trim())
     if (!Number.isSafeInteger(pid) || pid <= 0) throw new Error('Detached owner did not return a process identity')
     return { pid }

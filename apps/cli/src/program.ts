@@ -207,7 +207,7 @@ export function buildProgram(deps: CommandDeps, options: BuildProgramOptions = {
       const logger = deps.logger
       logger?.bind({ cmd: commandPath(actionCommand) })
       // SessionEnd uses the hook policy shared with commands.ts: local cleanup
-      // precedes every diagnostic that can wait on the shared log lock.
+      // precedes every diagnostic that touches the shared log.
       const deferDiagnostics =
         actionCommand.name() === 'hook' &&
         hookDefersDiagnosticsUntilAfterCleanup(actionCommand.processedArgs[0])

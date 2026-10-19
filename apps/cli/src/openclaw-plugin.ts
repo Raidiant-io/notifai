@@ -29,8 +29,9 @@ import {
  *   session_start      -> openclaw-lifecycle              (generation observation)
  *   before_reset       -> openclaw-lifecycle              (retire the old generation)
  *   before_prompt_build -> session-start / subagent-start (context once per generation)
+ *   before_prompt_build -> openclaw-turn-start             (the turn began)
  *   message_received    -> user-prompt-submit              (User is present)
- *   agent_end           -> stop                            (the turn ended)
+ *   agent_end           -> openclaw-turn-end               (the turn ended)
  *   session_end         -> session-end                     (retire local state)
  *   resolve_exec_env    -> NOTIFAI_ACTIVE_* markers        (exact Source Context)
  *
@@ -99,6 +100,10 @@ export function legacyOpenclawProjectPluginPath(cwd: string): string {
 export interface OpenclawPluginOptions {
   integrationScope?: string
   adapterPath: string
+  /**
+   * Child-process lifetime for every short hook the plugin runs. The Gateway
+   * service's answer owner (`openclaw-settlement`) is not bound by it.
+   */
   timeoutSeconds: number
   platform?: NodeJS.Platform | HookHostPlatform
   nodePath?: string
