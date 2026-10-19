@@ -1,5 +1,6 @@
 /** A process named by PID *and* start time, so a reused PID is never mistaken for it. */
 import { execFileSync } from 'node:child_process'
+import { readFileSync } from 'node:fs'
 import path from 'node:path'
 import { buildIdentity } from './distribution.js'
 
@@ -121,6 +122,42 @@ export function normalizeProcessStart(value: string): string {
   // Claude Code descriptors use bare FILETIME; the native helper tags its
   // clock. Compare the same kernel value across those two explicit producers.
   return /^windows-filetime:\d+$/.test(normalized) ? normalized.slice('windows-filetime:'.length) : normalized
+}
+
+/**
+ * A Linux process's start in clock ticks since boot (field 22 of
+ * `/proc/<pid>/stat`), or null. No clock step moves it, and it is what Claude
+ * Code writes as `procStart` in its Linux session descriptor.
+ */
+export function linuxStartTicks(pid: number, read: (file: string) => string = (file) => readFileSync(file, 'utf8')): string | null {
+  if (!Number.isInteger(pid) || pid <= 0) return null
+  try {
+    const stat = read(`/proc/${pid}/stat`)
+    // The name may hold spaces and parentheses; fields resume after the last ')'.
+    const fields = stat.slice(stat.lastIndexOf(')') + 2).split(' ')
+    const ticks = fields[22 - 3]
+    return ticks !== undefined && /^\d+$/.test(ticks) ? ticks : null
+  } catch {
+    return null
+  }
+}
+
+/**
+ * Whether a Claude Code descriptor's `procStart` names this process's start:
+ * `ps -o lstart` text on macOS, a FILETIME on Windows, start ticks on Linux.
+ * `ticks` is the process's Linux start when the caller already has it from the
+ * kernel; otherwise it is read now, for the same PID.
+ */
+export function descriptorStartMatches(
+  procStart: string,
+  identity: ProcessIdentity,
+  ticks?: string | null,
+  platform: NodeJS.Platform = process.platform,
+): boolean {
+  const start = normalizeProcessStart(procStart)
+  if (start === normalizeProcessStart(identity.start)) return true
+  if (platform !== 'linux' || !/^\d+$/.test(start)) return false
+  return (ticks ?? linuxStartTicks(identity.pid)) === start
 }
 
 /** Signal 0 only asks whether the PID exists; EPERM still means it does. */

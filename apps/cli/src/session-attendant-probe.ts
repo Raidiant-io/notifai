@@ -10,6 +10,7 @@ import path from 'node:path'
 import { claudeDescriptorDir, parseDescriptor } from './claude-wake.js'
 import type { HookHarness } from './hook-types.js'
 import {
+  descriptorStartMatches,
   normalizeProcessStart,
   pidExists,
   processIdentityLiveness,
@@ -159,8 +160,9 @@ export function systemClaudeProbeAdapters(
  * - The descriptor is missing: Claude Code 2.1.282 removes it about a second
  *   *before* SessionEnd and exit, so with the process alive this is
  *   `uncertain`.
- * - The descriptor's `procStart` (UTC `ps` text) differs from the harness
- *   start read the same way: the evidence disagrees, `uncertain`.
+ * - The descriptor's `procStart` (UTC `ps` text; start ticks on Linux)
+ *   differs from the harness start read the same way: the evidence
+ *   disagrees, `uncertain`.
  *
  * Activity comes from the descriptor `status`: `idle` is idle, anything else
  * (busy, waiting on a permission prompt) is working.
@@ -191,7 +193,7 @@ export function claudeAttendanceProbe(options: {
     if (descriptor === null || descriptor.pid !== harness.pid) {
       return { state: 'uncertain', reason: 'descriptor-unrecognised' }
     }
-    if (normalizeProcessStart(descriptor.procStart) !== expectedStart) {
+    if (normalizeProcessStart(descriptor.procStart) !== expectedStart && !descriptorStartMatches(descriptor.procStart, harness)) {
       // A stale descriptor, or a clock format this build does not know.
       return { state: 'uncertain', reason: 'process-start-mismatch' }
     }

@@ -509,7 +509,7 @@ int main(int argc, char **argv) {
     const char *retrying = getenv("NOTIFAI_NATIVE_RETRY");
     if (!detached && !(stable_entry && retrying && (!strcmp(retrying, "1") || !strcmp(retrying, "2"))) &&
         session_child_requested(argc, argv))
-        return session_child_main(argc, argv, launcher);
+        return session_child_main(argc, argv, launcher, executable);
     for (size_t i = 0; environ[i];) {
         char *entry = environ[i];
         if (!strncmp(entry, "BUN_", 4) || !strncmp(entry, "JSC_", 4) ||

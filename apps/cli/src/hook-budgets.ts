@@ -14,7 +14,7 @@ import { DPAPI_TIMEOUT_MS } from './credentials.js'
 import { FILE_LOCK_WAIT_MS } from './file-lock.js'
 import { isHookInstallableHarness, type HookInstallableHarness } from './harnesses.js'
 import { HOOK_EVENT_TABLE } from './hook-events.js'
-import { CODEX_ATTEND_TIMEOUT_SECONDS, CODEX_INTERRUPT_TIMEOUT_SECONDS, stopHandlerIsDetached, stopTimeoutSeconds } from './install-hooks.js'
+import { CODEX_ATTEND_TIMEOUT_SECONDS, CODEX_INTERRUPT_TIMEOUT_SECONDS, stopHandlerIsDetached } from './install-hooks.js'
 import { WINDOWS_DETACH_TIMEOUT_MS } from './launch-self.js'
 import { NON_ROUTING_STOP_TIMEOUT_SECONDS, QUESTION_STOP_TIMEOUT_SECONDS } from './question-timing.js'
 
@@ -54,7 +54,7 @@ const SHORT_HOOK_REQUEST_MS = 4_000
  * plugin's child-process ceiling.
  */
 const DETACHED_EVENTS: ReadonlySet<string> = new Set([
-  'question-submission', 'question-settlement', 'openclaw-settlement', 'maintenance', 'retirement',
+  'question-submission', 'question-settlement', 'openclaw-settlement', 'maintenance',
 ])
 
 /**
@@ -69,7 +69,6 @@ export function hookTimeoutSeconds(
   event: string,
   harness: HookInstallableHarness | undefined,
   document?: string,
-  platform: NodeJS.Platform = process.platform,
 ): number | null {
   if (DETACHED_EVENTS.has(event)) return null
   // The Session Attendant: Codex times it out, Claude Code backgrounds it and
@@ -84,8 +83,9 @@ export function hookTimeoutSeconds(
     // A command without a harness stamp came from a definition this build did
     // not write; its declared timeout is unknown, so it keeps owner budgets.
     if (harness === undefined) return null
-    if (stopHandlerIsDetached(harness)) return stopTimeoutSeconds(harness, platform)
-    return harness === 'grok' ? QUESTION_STOP_TIMEOUT_SECONDS : NON_ROUTING_STOP_TIMEOUT_SECONDS
+    return stopHandlerIsDetached(harness) || harness === 'grok'
+      ? QUESTION_STOP_TIMEOUT_SECONDS
+      : NON_ROUTING_STOP_TIMEOUT_SECONDS
   }
   if (event === 'permission-request') return QUESTION_STOP_TIMEOUT_SECONDS
   const row = HOOK_EVENT_TABLE.find((candidate) => candidate.notifai === event)
@@ -102,9 +102,8 @@ export function hookTimeoutSeconds(
 export function hookStepBudgets(
   event: string,
   harness: HookInstallableHarness | undefined,
-  platform: NodeJS.Platform = process.platform,
 ): HookStepBudgets {
-  const timeout = hookTimeoutSeconds(event, harness, undefined, platform)
+  const timeout = hookTimeoutSeconds(event, harness)
   if (timeout === null) return { ...OWNER_STEP_BUDGETS }
   const share = Math.floor((timeout * 1000) / 3)
   if (Object.values(OWNER_STEP_BUDGETS).every((budget) => budget <= share)) return { ...OWNER_STEP_BUDGETS }
@@ -121,12 +120,8 @@ export function hookStepBudgets(
  * start of the hook command: its declared timeout less a margin for output and
  * exit. Null for processes the harness does not time out.
  */
-export function hookWorkAllowanceMs(
-  event: string,
-  harness: HookInstallableHarness | undefined,
-  platform: NodeJS.Platform = process.platform,
-): number | null {
-  const timeout = hookTimeoutSeconds(event, harness, undefined, platform)
+export function hookWorkAllowanceMs(event: string, harness: HookInstallableHarness | undefined): number | null {
+  const timeout = hookTimeoutSeconds(event, harness)
   if (timeout === null) return null
   const ms = timeout * 1000
   const share = Math.floor(ms / 3)

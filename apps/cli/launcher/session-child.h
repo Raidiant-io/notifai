@@ -40,13 +40,51 @@ struct notifai_peer_credentials { pid_t pid; uid_t uid; gid_t gid; };
 
 #include "session-child-common.h"
 
+/* main.c: whether an uninstall has closed admission for this installation. */
+static int uninstall_pending(const char *executable);
+
 /* ---- identities ----------------------------------------------------------- */
 
-typedef struct { pid_t pid, ppid; char comm[64]; long long start; } proc_record;
+typedef struct { pid_t pid, ppid; char comm[64]; long long start; char ticks[32]; } proc_record;
+
+#ifndef __APPLE__
+/* `btime` from /proc/stat, read whole: the interrupt line before it can run
+ * far past any fixed buffer on a large host. */
+static long long linux_boot_seconds(void) {
+    int fd = open("/proc/stat", O_RDONLY | O_CLOEXEC);
+    if (fd < 0) return -1;
+    size_t capacity = 65536, n = 0;
+    char *text = malloc(capacity + 1);
+    long long result = -1;
+    while (text) {
+        if (n == capacity) {
+            if (capacity >= 16 * 1024 * 1024) break;
+            char *grown = realloc(text, capacity * 2 + 1);
+            if (!grown) break;
+            text = grown;
+            capacity *= 2;
+        }
+        ssize_t got = read(fd, text + n, capacity - n);
+        if (got < 0 && errno == EINTR) continue;
+        if (got <= 0) {
+            text[n] = 0;
+            char *btime = strstr(text, "\nbtime ");
+            if (btime) result = strtoll(btime + 7, NULL, 10);
+            break;
+        }
+        n += (size_t)got;
+    }
+    free(text);
+    close(fd);
+    return result;
+}
+#endif
 
 /* The kernel's record of one process: parent, short name, start in epoch
- * seconds. Seconds, because that is what `ps -o lstart` and Claude's
- * descriptor carry. */
+ * seconds (what `ps -o lstart` shows, and Claude's macOS descriptor) and, on
+ * Linux, the raw start in clock ticks since boot (field 22 of
+ * /proc/<pid>/stat, which is what Claude's Linux descriptor carries and which
+ * no clock step moves). */
 static int proc_lookup(pid_t pid, proc_record *out) {
     memset(out, 0, sizeof(*out));
     if (pid <= 0) return 0;
@@ -77,27 +115,22 @@ static int proc_lookup(pid_t pid, proc_record *out) {
     char *cursor = close_paren + 2;
     unsigned long long starttime = 0;
     long ppid = 0;
+    int seen = 0;
     for (int field = 3; field <= 22 && *cursor; field++) {
         char *end;
         if (field == 4) ppid = strtol(cursor, &end, 10);
-        else if (field == 22) starttime = strtoull(cursor, &end, 10);
+        else if (field == 22) { starttime = strtoull(cursor, &end, 10); seen = 1; }
         end = strchr(cursor, ' ');
         if (!end) { if (field != 22) return 0; break; }
         cursor = end + 1;
     }
-    fd = open("/proc/stat", O_RDONLY | O_CLOEXEC);
-    if (fd < 0) return 0;
-    char stat[16384];
-    n = read(fd, stat, sizeof(stat) - 1);
-    close(fd);
-    if (n <= 0) return 0;
-    stat[n] = 0;
-    char *btime = strstr(stat, "\nbtime ");
+    long long boot = linux_boot_seconds();
     long ticks = sysconf(_SC_CLK_TCK);
-    if (!btime || ticks <= 0) return 0;
+    if (!seen || boot < 0 || ticks <= 0) return 0;
     out->pid = pid;
     out->ppid = (pid_t)ppid;
-    out->start = strtoll(btime + 7, NULL, 10) + (long long)(starttime / (unsigned long long)ticks);
+    out->start = boot + (long long)(starttime / (unsigned long long)ticks);
+    snprintf(out->ticks, sizeof(out->ticks), "%llu", starttime);
     return 1;
 #endif
 }
@@ -125,10 +158,10 @@ static void normalize_spaces(char *text) {
 static void boot_identity(char *out, size_t size) {
     out[0] = 0;
 #ifdef __APPLE__
-    struct timeval boot;
-    size_t length = sizeof(boot);
-    int mib[2] = { CTL_KERN, KERN_BOOTTIME };
-    if (!sysctl(mib, 2, &boot, &length, NULL, 0)) snprintf(out, size, "darwin:%lld.%06ld", (long long)boot.tv_sec, (long)boot.tv_usec);
+    /* A boot's own UUID: `kern.boottime` moves when the calendar clock is set. */
+    char uuid[64] = {0};
+    size_t length = sizeof(uuid) - 1;
+    if (!sysctlbyname("kern.bootsessionuuid", uuid, &length, NULL, 0) && uuid[0]) snprintf(out, size, "darwin:%s", uuid);
 #else
     int fd = open("/proc/sys/kernel/random/boot_id", O_RDONLY | O_CLOEXEC);
     if (fd < 0) return;
@@ -264,9 +297,10 @@ static int connect_unix(const char *path, int timeout_ms) {
 typedef struct {
     char session[512], harness[16], event[64], source[64], cwd[PATH_MAX], transcript[PATH_MAX];
     char state[PATH_MAX], run[PATH_MAX], socket_path[PATH_MAX], self[PATH_MAX];
-    char harness_start[64], boot[128];
+    char harness_start[64], harness_ticks[32], boot[128];
     char inbox_socket[PATH_MAX], token[1024];
     pid_t harness_pid;
+    int refusals;
     long long stamp_wall;
     unsigned long long stamp_mono;
     int hub, lock;
@@ -314,7 +348,15 @@ static void child_start_hub(child_state *child) {
         if (second != 0) _exit(second < 0);
         int null = open("/dev/null", O_RDWR);
         if (null >= 0) { dup2(null, 0); dup2(null, 1); dup2(null, 2); if (null > 2) close(null); }
-        /* Only the start lock outlives exec, so a racing child waits for this hub. */
+        /* The child ignores or blocks its stop signals; the hub must not
+         * inherit that (a blocked mask survives exec and Bun keeps it). */
+        int stop_signals[] = { SIGTERM, SIGHUP, SIGINT, SIGPIPE };
+        for (int i = 0; i < 4; i++) signal(stop_signals[i], SIG_DFL);
+        sigset_t none;
+        sigemptyset(&none);
+        sigprocmask(SIG_SETMASK, &none, NULL);
+        /* The start lock is close-on-exec: the parent child holds it until
+         * this hub answers, so a racing child waits instead of starting another. */
         static const char *keep[] = { "HOME", "PATH", "USER", "LOGNAME", "SHELL", "LANG", "TMPDIR",
             "XDG_CONFIG_HOME", "XDG_STATE_HOME", "XDG_DATA_HOME", "XDG_CACHE_HOME", "XDG_RUNTIME_DIR",
             "DBUS_SESSION_BUS_ADDRESS", NULL };
@@ -365,6 +407,7 @@ static int child_register(child_state *child) {
     jb_field(&reg, "harness", child->harness);
     jb_number(&reg, "harness_pid", child->harness_pid);
     jb_field(&reg, "harness_start", child->harness_start);
+    if (child->harness_ticks[0]) jb_field(&reg, "harness_ticks", child->harness_ticks);
     jb_field(&reg, "boot", child->boot);
     jb_number(&reg, "stamp_wall", child->stamp_wall);
     jb_field(&reg, "stamp_mono", mono);
@@ -406,8 +449,11 @@ static int child_connect(child_state *child, int start) {
  * the line the hub prepared. Never offered to any socket but the one Claude
  * exported with that token. */
 static void child_write_inbox(child_state *child, const char *frame, size_t length) {
-    char id[32] = "0", deadline_text[32] = "0", socket_b64[PATH_MAX * 2], line_b64[CHILD_MAX_FRAME];
-    unsigned char line[CHILD_MAX_FRAME], socket_raw[PATH_MAX];
+    /* Static: one write at a time, and two megabytes do not belong on the stack. */
+    static char line_b64[CHILD_MAX_FRAME];
+    static unsigned char line[CHILD_MAX_FRAME];
+    char id[32] = "0", deadline_text[32] = "0", socket_b64[PATH_MAX * 2];
+    unsigned char socket_raw[PATH_MAX];
     size_t line_length = 0, socket_length = 0;
     const char *stage = "before-write", *error = NULL;
     unsigned long long began = monotonic_ns();
@@ -460,15 +506,28 @@ static void child_write_inbox(child_state *child, const char *frame, size_t leng
 static int child_handle(child_state *child, const char *frame, size_t length) {
     char type[32];
     if (json_field(frame, length, "type", type, sizeof(type)) != 1) return 1;
-    if (!strcmp(type, "bye") || !strcmp(type, "refused")) return 0;
+    if (!strcmp(type, "bye")) return 0;
+    if (!strcmp(type, "refused")) {
+        /* A passing refusal (the hub is exiting, its peer check timed out, an
+         * older attendant still hands over): try again later. */
+        char retry[8] = "";
+        if (json_field(frame, length, "retry", retry, sizeof(retry)) == 2 && !strcmp(retry, "true")) {
+            child->refusals++;
+            return -1;
+        }
+        return 0;
+    }
+    if (!strcmp(type, "registered")) child->refusals = 0;
     if (!strcmp(type, "write")) child_write_inbox(child, frame, length);
     return 1;
 }
 
 static int harness_alive(child_state *child) {
     proc_record now;
-    char start[64];
     if (!proc_lookup(child->harness_pid, &now)) return 0;
+    /* Ticks where the kernel has them: no clock step moves them. */
+    if (child->harness_ticks[0]) return !strcmp(now.ticks, child->harness_ticks);
+    char start[64];
     format_start(now.start, start, sizeof(start));
     normalize_spaces(start);
     return !strcmp(start, child->harness_start);
@@ -509,7 +568,7 @@ static int child_read(child_state *child, char *buffer, size_t *buffered) {
         *buffered -= 4 + length;
         int keep = child_handle(child, frame, length);
         free(frame);
-        if (!keep) return 0;
+        if (keep <= 0) return keep;
     }
 }
 
@@ -538,7 +597,9 @@ static int claude_descriptor_matches(const char *session, const proc_record *can
     format_start(candidate->start, expected, sizeof(expected));
     normalize_spaces(expected);
     normalize_spaces(start);
-    if (strcmp(named, session) || strtol(pid, NULL, 10) != (long)candidate->pid || strcmp(start, expected)) return 0;
+    /* macOS: `ps -o lstart` text. Linux: the raw start ticks. */
+    int same_start = !strcmp(start, expected) || (candidate->ticks[0] && !strcmp(start, candidate->ticks));
+    if (strcmp(named, session) || strtol(pid, NULL, 10) != (long)candidate->pid || !same_start) return 0;
     if (socket && json_field(text, (size_t)n, "messagingSocketPath", socket, socket_size) != 1) socket[0] = 0;
     return 1;
 }
@@ -567,6 +628,7 @@ static int identify_harness(child_state *child) {
     }
     if (!chosen) return 0;
     child->harness_pid = chosen->pid;
+    snprintf(child->harness_ticks, sizeof(child->harness_ticks), "%s", chosen->ticks);
     format_start(chosen->start, child->harness_start, sizeof(child->harness_start));
     normalize_spaces(child->harness_start);
     return child->harness_start[0] != 0;
@@ -639,7 +701,7 @@ static void child_hint(child_state *child) {
     close(fd);
 }
 
-static int session_child_main(int argc, char **argv, const char *self) {
+static int session_child_main(int argc, char **argv, const char *self, const char *runtime) {
     static child_state child;
     memset(&child, 0, sizeof(child));
     child.hub = -1;
@@ -710,8 +772,10 @@ static int session_child_main(int argc, char **argv, const char *self) {
         kevent(queue, &change, 1, NULL, 0, NULL);
     }
 #else
+    /* pidfd_open needs Linux 5.3; before it, the child looks once a second. */
     int watch = (int)syscall(SYS_pidfd_open, child.harness_pid, 0);
-    if (watch < 0) { if (errno == ESRCH) child_ended(&child); return 0; }
+    if (watch < 0 && errno == ESRCH) { child_ended(&child); return 0; }
+    if (watch < 0 && errno != ENOSYS) return 0;
     sigset_t stops;
     sigemptyset(&stops);
     sigaddset(&stops, SIGTERM);
@@ -726,9 +790,14 @@ static int session_child_main(int argc, char **argv, const char *self) {
     static char buffer[CHILD_MAX_FRAME + 8];
     size_t buffered = 0;
     int backoff_ms = 1000, stopping = 0;
-    child_connect(&child, 1);
+    unsigned long long next_connect = 0;
+    if (!child_connect(&child, 1)) next_connect = monotonic_ns() + (unsigned long long)backoff_ms * 1000000ULL;
     for (;;) {
-        int timeout = child.hub < 0 ? backoff_ms : stopping ? 2000 : -1;
+        int timeout = stopping ? 2000 : -1;
+        if (child.hub < 0 && !stopping) {
+            unsigned long long now = monotonic_ns();
+            timeout = now >= next_connect ? 0 : (int)((next_connect - now) / 1000000ULL) + 1;
+        }
 #ifdef __APPLE__
         struct kevent events[4];
         int registered = child.hub >= 0;
@@ -748,10 +817,11 @@ static int session_child_main(int argc, char **argv, const char *self) {
         }
 #else
         struct pollfd waits[3] = { { watch, POLLIN, 0 }, { signals, POLLIN, 0 }, { child.hub, POLLIN, 0 } };
+        if (watch < 0 && (timeout < 0 || timeout > 1000)) timeout = 1000;
         int n = poll(waits, child.hub >= 0 ? 3 : 2, timeout);
         if (n < 0 && errno == EINTR) continue;
         if (n < 0) return 0;
-        int exited = waits[0].revents != 0, signalled = waits[1].revents != 0;
+        int exited = watch >= 0 ? waits[0].revents != 0 : !harness_alive(&child), signalled = waits[1].revents != 0;
         int readable = child.hub >= 0 && waits[2].revents != 0;
         if (signalled) { struct signalfd_siginfo info; if (read(signals, &info, sizeof(info)) < 0) { /* drained */ } }
 #endif
@@ -770,13 +840,21 @@ static int session_child_main(int argc, char **argv, const char *self) {
                 child.hub = -1;
                 buffered = 0;
                 backoff_ms = 1000;
+                for (int i = 0; i < child.refusals && backoff_ms < 60000; i++) backoff_ms *= 2;
+                if (backoff_ms > 60000) backoff_ms = 60000;
+                next_connect = monotonic_ns() + (unsigned long long)backoff_ms * 1000000ULL;
                 continue;
             }
         }
-        if (child.hub < 0 && n == 0) {
+        if (child.hub < 0 && !stopping && monotonic_ns() >= next_connect) {
             if (!harness_alive(&child)) { child_ended(&child); return 0; }
+            /* An uninstall waits for this image to close; never start a hub into it. */
+            if (uninstall_pending(runtime)) return 0;
             if (child_connect(&child, 1)) backoff_ms = 1000;
-            else backoff_ms = backoff_ms >= 60000 ? 60000 : backoff_ms * 2;
+            else {
+                backoff_ms = backoff_ms >= 60000 ? 60000 : backoff_ms * 2;
+                next_connect = monotonic_ns() + (unsigned long long)backoff_ms * 1000000ULL;
+            }
         }
     }
 }
@@ -798,6 +876,7 @@ static void json_process(jbuf *b, const char *key, pid_t pid) {
     jb_number(&nested, "ppid", record.ppid);
     jb_field(&nested, "comm", record.comm);
     jb_field(&nested, "start", start);
+    if (record.ticks[0]) jb_field(&nested, "ticks", record.ticks);
     jb_text(&nested, "}");
     if (nested.failed) b->failed = 1;
     else jb_raw(b, nested.data, nested.length);
