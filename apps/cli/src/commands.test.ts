@@ -6403,6 +6403,49 @@ describe('init', () => {
     expect(JSON.parse(readFileSync(settings, 'utf8'))).toEqual({ model: 'kept', permissions: { deny: ['Read(.env)'] } })
   })
 
+  it('grants Codex command approval only when asked, checks it with Codex, and removes it with the wiring', async () => {
+    const cwd = mkdtempSync(path.join(os.tmpdir(), 'init-codex-commands-'))
+    mkdirSync(path.join(cwd, '.codex'))
+    const io = new CapturedIo()
+    const checks: string[][] = []
+    const deps: CommandDeps = {
+      ...setupReadyDeps(io, cwd, inertSkills, { submit: 0 }),
+      codexRuleCheck: async (_env, files) => {
+        checks.push([...files])
+        return { decision: 'allow', justifications: ['Notifai notifications and answers'] }
+      },
+    }
+    const rules = path.join(deps.env.CODEX_HOME!, 'rules', 'notifai.rules')
+
+    await initCommand(deps, { hooks: true, skills: false })
+    expect(existsSync(path.join(deps.env.CODEX_HOME!, 'hooks.json'))).toBe(true)
+    expect(existsSync(rules)).toBe(false)
+    expect(io.outLines.join('\n')).toContain('All set.')
+    expect((await assessReadiness(deps)).states.find((state) => state.id === 'codex-commands')).toMatchObject({
+      status: 'optional-gap',
+      harnesses: ['codex'],
+      remedy: { by: 'cli', command: 'notifai init --codex-commands' },
+    })
+    expect(checks).toEqual([])
+
+    await initCommand(deps, { hooks: true, skills: false, codexCommands: false })
+    expect(existsSync(rules)).toBe(false)
+
+    await initCommand(deps, { hooks: true, skills: false, codexCommands: true })
+    expect(readFileSync(rules, 'utf8')).toContain('pattern = ["notifai", ["send", "ask", "receive", "acknowledge", "status", "replies", "close"]]')
+    expect((await assessReadiness(deps)).states.find((state) => state.id === 'codex-commands')).toMatchObject({
+      status: 'ready',
+      technical: { verified: true },
+    })
+    expect(checks.at(-1)).toEqual([rules])
+    // Codex hook bytes are not the rule's business.
+    expect(readFileSync(path.join(deps.env.CODEX_HOME!, 'hooks.json'), 'utf8')).not.toContain('rules')
+
+    expect(hooksUninstallCommand(deps, { harness: 'codex' })).toBe(EXIT.ok)
+    expect(existsSync(rules)).toBe(false)
+    expect(io.outLines.join('\n')).toContain(`Removed the Notifai Codex command rules at ${rules}`)
+  })
+
   it('lets a human keep a subset of the detected harnesses', async () => {
     const cwd = mkdtempSync(path.join(os.tmpdir(), 'init-hooks-pick-'))
     mkdirSync(path.join(cwd, '.claude'))

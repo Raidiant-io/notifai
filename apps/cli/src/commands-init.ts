@@ -55,6 +55,7 @@ import { enableProject, projectBinding } from './project-enablement.js'
 import { inspectCliInstallations } from './cli-bin.js'
 import { hookAdapterTargetsArtifact, inspectHookAdapter, installHookAdapter } from './hook-adapter.js'
 import { installClaudeCommandRules } from './claude-command-approval.js'
+import { installCodexCommandRules } from './codex-command-rules.js'
 import { packageVersion } from './release.js'
 import { HARNESS_LABELS, SOURCE_CONTEXT_HARNESSES, type SourceContextHarness } from './harnesses.js'
 
@@ -91,6 +92,8 @@ export interface InitFlags {
   hooks?: boolean
   /** Same tri-state, for the Claude Code rules that let Notifai commands run unprompted. */
   claudeCommands?: boolean
+  /** Same tri-state, for the Codex rule that lets Notifai commands run outside its sandbox unprompted. */
+  codexCommands?: boolean
 }
 
 /** Long enough for a first controlled Companion install; keep-waiting extends another budget. */
@@ -157,6 +160,16 @@ async function closeGap(
       return 'closed'
     } catch (err) {
       deps.io.err(`Could not update the Claude Code settings: ${err instanceof Error ? err.message : String(err)}`)
+      return 'failed'
+    }
+  }
+
+  if (state.id === 'codex-commands') {
+    try {
+      installCodexCommandRules(deps.env, deps.hookPlatform ?? process.platform)
+      return 'closed'
+    } catch (err) {
+      deps.io.err(`Could not write the Codex rules file: ${err instanceof Error ? err.message : String(err)}`)
       return 'failed'
     }
   }
@@ -619,7 +632,7 @@ async function runSetupProof(deps: CommandDeps): Promise<GapCloseResult> {
 
 /** Closing a local gap cannot have changed the service, the keychain, or devices. */
 function refreshAfterClose(id: string): readonly ReadinessRefresh[] | undefined {
-  return id === 'project-enablement' || id === 'hooks' || id.startsWith('hooks-') || id === 'skill' || id === 'question-routing-settings' || id === 'claude-commands'
+  return id === 'project-enablement' || id === 'hooks' || id.startsWith('hooks-') || id === 'skill' || id === 'question-routing-settings' || id === 'claude-commands' || id === 'codex-commands'
     ? ['local']
     : undefined
 }
@@ -634,8 +647,11 @@ function wantsOptional(deps: CommandDeps, state: ReadinessState, flags: InitFlag
   // Every other hook sub-state is a report line about routing, not an errand
   // with a yes/no question of its own; offering the hooks question for one of
   // them would ask about something the answer does not change.
-  if (state.id !== 'hooks' && state.id !== 'skill' && state.id !== 'claude-commands') return Promise.resolve(false)
-  const explicit = state.id === 'hooks' ? flags.hooks : state.id === 'skill' ? flags.skills : flags.claudeCommands
+  if (state.id !== 'hooks' && state.id !== 'skill' && state.id !== 'claude-commands' && state.id !== 'codex-commands') return Promise.resolve(false)
+  const explicit = state.id === 'hooks' ? flags.hooks
+    : state.id === 'skill' ? flags.skills
+      : state.id === 'claude-commands' ? flags.claudeCommands
+        : flags.codexCommands
   if (explicit !== undefined) return Promise.resolve(explicit)
   // An agent is never asked, and never assumed into a change it did not
   // request: silence means no, and the summary says what was skipped.
@@ -645,7 +661,9 @@ function wantsOptional(deps: CommandDeps, state: ReadinessState, flags: InitFlag
       ? 'Install harness hooks, so questions reach your devices when you are away?'
       : state.id === 'claude-commands'
         ? "Let Claude Code run Notifai's send, ask, receive and acknowledge commands without asking first? Otherwise a question waits for a terminal approval while you are away."
-        : 'Install or update the bundled Notifai skill for your agents?'
+        : state.id === 'codex-commands'
+          ? "Let Codex run Notifai's send, ask, receive and acknowledge commands outside its sandbox without asking first? Otherwise a question waits for a terminal approval while you are away."
+          : 'Install or update the bundled Notifai skill for your agents?'
   return deps.io.confirm(question, true)
 }
 

@@ -71,6 +71,7 @@ import { packageVersion } from './release.js'
 import { CLI_PACKAGE_NAME, cliPackageSpec } from './cli-contract.js'
 import { activeNpmCli } from './npm-invocation.js'
 import { removeClaudeCommandRules } from './claude-command-approval.js'
+import { codexCommandRulesFile, removeCodexCommandRules } from './codex-command-rules.js'
 export interface HooksInstallFlags {
   /** Internal maintenance path: preserve host enablement and loaded owners. */
   refreshOnly?: boolean
@@ -828,6 +829,15 @@ export function hooksUninstallCommand(deps: CommandDeps, flags: HooksInstallFlag
         }
       } else {
         deps.io.out(`No Notifai hooks found in ${result.existing.join(', ')}`)
+      }
+      if (codexPaths !== null) {
+        // The command rule was granted for this wiring; it leaves with it.
+        const rules = removeCodexCommandRules(deps.env, deps.hookPlatform)
+        if (rules === 'removed') {
+          deps.io.out(`Removed the Notifai Codex command rules at ${codexCommandRulesFile(deps.env, deps.hookPlatform)}`)
+        } else if (rules === 'foreign') {
+          deps.io.out(`Left ${codexCommandRulesFile(deps.env, deps.hookPlatform)} alone: Notifai did not write it.`)
+        }
       }
     }
   } catch (err) {

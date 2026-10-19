@@ -1,5 +1,10 @@
 # Sending: the less common controls
 
+Write a long Body to a file and pass `--body-file <path>`. Call `notifai` by
+name as a plain argument list: a heredoc, pipe, redirection or `$()` around it
+stops harness command approval from matching, so the command waits for a
+terminal.
+
 `--thread-id` groups; `--collapse-key` replaces your earlier matching
 notification; `--ttl` bounds useful delivery. Use
 `notifai capabilities --platform <platform>` for destination contracts.
