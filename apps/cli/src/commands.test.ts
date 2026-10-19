@@ -8247,7 +8247,7 @@ describe('asking before the hooks have ever run', () => {
     )
   })
 
-  it.each(['card-hook', 'supported', 'no-transport', 'missing', 'malformed', 'unavailable', 'changed-turn', 'lost-machine', 'changed-machine', 'changed-service', 'machine-lost-in-lock', 'ended', 'ended-unavailable', 'replaced-owner'] as const)('gates native registration on service support and answer transport: %s', async mode => {
+  it.each(['card-hook', 'supported', 'no-transport', 'old-codex', 'missing', 'malformed', 'unavailable', 'changed-turn', 'lost-machine', 'changed-machine', 'changed-service', 'machine-lost-in-lock', 'ended', 'ended-unavailable', 'replaced-owner'] as const)('gates native registration on service support and answer transport: %s', async mode => {
     const cwd = scratchDir('notifai-native-ask-output-')
     const sessionId = '019ff69d-a07f-7161-ab6e-bd06b3b93c8e'
     const env = { HOME: cwd, XDG_CONFIG_HOME: cwd, XDG_STATE_HOME: cwd, CODEX_HOME: path.join(cwd, 'codex'), CODEX_THREAD_ID: sessionId }
@@ -8275,8 +8275,12 @@ describe('asking before the hooks have ever run', () => {
     })
     const spawn = vi.fn()
     const close = vi.fn()
-    const codexAnswerControl = vi.fn(async () => mode === 'no-transport' ? null
-      : { namespace: 'codex', threadId: sessionId, currentTurn: async () => true, steer: async () => {}, close })
+    const codexAnswerControl = vi.fn(async (_session: string, _turn: string, _env: NodeJS.ProcessEnv, _deadline: number, _now?: () => number,
+      unavailable?: (report: { reason: string; version?: string }) => void) => {
+      if (mode === 'old-codex') { unavailable?.({ reason: 'codex_version_unsupported', version: '0.162.0' }); return null }
+      if (mode === 'no-transport') { unavailable?.({ reason: 'no_owning_server_connection' }); return null }
+      return { namespace: 'codex', threadId: sessionId, currentTurn: async () => true, steer: async () => {}, close }
+    })
     const deps = { ...makeDeps(io, { compatibility } as unknown as ApiClient), cwd, env, now: () => 42, spawnQuestionSettlement: spawn, codexAnswerControl }
     mkdirSync(path.join(cwd, '.notifai'))
     writeFileSync(path.join(cwd, '.notifai', 'config.toml'), 'project = "native-ask-test"\n')
@@ -8323,10 +8327,19 @@ describe('asking before the hooks have ever run', () => {
       expect(readSessionState(sessionId, env).codex_question_bindings).toBeUndefined()
       return
     }
-    expect(codexAnswerControl).toHaveBeenCalledWith(sessionId, 'turn-1', env, expect.any(Number))
-    if (mode === 'no-transport') {
+    expect(codexAnswerControl).toHaveBeenCalledWith(sessionId, 'turn-1', env, expect.any(Number), undefined, expect.any(Function))
+    if (mode === 'no-transport' || mode === 'old-codex') {
       expect(output.native_question).toBeUndefined()
-      expect(output.native_question_unavailable).toMatchObject({ reason: 'no_owning_server_connection' })
+      if (mode === 'old-codex') {
+        // Reachable but too old: the agent hears the exact floor so it asks in
+        // plain text instead of retrying, and the registration stays ordinary.
+        expect(output.native_question_unavailable).toMatchObject({ reason: 'codex_version_unsupported', codex_version: '0.162.0', codex_version_floor: '0.163.0' })
+        expect(output.native_question_unavailable.detail).toContain('0.162.0')
+        expect(output.native_question_unavailable.detail).toContain('0.163.0')
+      } else {
+        expect(output.native_question_unavailable).toMatchObject({ reason: 'no_owning_server_connection' })
+        expect(output.native_question_unavailable.codex_version).toBeUndefined()
+      }
       expect(output.native_question_unavailable.detail).toContain('do not open request_user_input_async')
       expect(output.next.answered_outside_notifai).toContain(`notifai close ${output.question_id}`)
       expect(readSessionState(sessionId, env).codex_question_bindings).toBeUndefined()

@@ -1,4 +1,5 @@
 /** Bounded native answer transport. Exact question evidence belongs to bindings. */
+import { codexCardVersionVerdict } from './codex-card-capability.js'
 import { connectCodexControl } from './codex-native-control.js'
 
 export interface CodexAnswerControl {
@@ -11,16 +12,30 @@ export interface CodexAnswerControl {
   close(): void
 }
 
+/** Why no answer transport exists, for the caller's agent-facing explanation. */
+export type CodexAnswerUnavailable =
+  | { reason: 'no_owning_server_connection' }
+  | { reason: 'codex_version_unsupported'; version?: string }
+
 /** Optional bounded-turn capability, independent of queue support. A missing
  * read API returns null before answer bytes; the caller uses ordinary input.
  * The owner, lease and bound question must still be fenced by the caller.
+ * An app-server below the card version floor also returns null: the wake
+ * queue keeps working there, but no card is linked to a device answer.
  */
 export async function connectCodexAnswerControl(
   sessionId: string, turnId: string, env: NodeJS.ProcessEnv, deadlineAt: number,
   now: () => number = () => performance.now(),
+  unavailable?: (report: CodexAnswerUnavailable) => void,
 ): Promise<CodexAnswerControl | null> {
   const control = await connectCodexControl(sessionId, env, deadlineAt, now)
-  if (control === null) return null
+  if (control === null) { unavailable?.({ reason: 'no_owning_server_connection' }); return null }
+  const verdict = codexCardVersionVerdict(control.serverVersion)
+  if (!verdict.supported) {
+    control.close()
+    unavailable?.({ reason: 'codex_version_unsupported', ...(verdict.version === undefined ? {} : { version: verdict.version }) })
+    return null
+  }
   const currentTurn = async (expected: string): Promise<boolean> => {
     // Full thread/read can exceed the response bound in an ordinary long
     // session. Question identity comes from the owned accepted transcript.
@@ -32,7 +47,7 @@ export async function connectCodexAnswerControl(
       result.data[0]?.itemsView === 'notLoaded'
   }
   try {
-    if (!await currentTurn(turnId)) { control.close(); return null }
+    if (!await currentTurn(turnId)) { control.close(); unavailable?.({ reason: 'no_owning_server_connection' }); return null }
     return { namespace: control.namespace, threadId: control.threadId, currentTurn,
       steer: async (expected, text) => {
         const result = await control.call('turn/steer', {
@@ -42,5 +57,5 @@ export async function connectCodexAnswerControl(
       },
       close: () => control.close(),
     }
-  } catch { control.close(); return null }
+  } catch { control.close(); unavailable?.({ reason: 'no_owning_server_connection' }); return null }
 }

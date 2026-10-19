@@ -1,8 +1,8 @@
 {
   "version": 1,
-  "behavior_digest": "sha256:6719ff7fa0ed39363c4af9b22239a830a814909f781ace50590a8a9a630084c7",
+  "behavior_digest": "sha256:15692d3f46b11cc261746e251705083668e2df39260f6963d4eb0c16b808c12d",
   "outcome": "guidance-updated",
-  "reason": "Reviewed lifecycle hooks, the shipped skill and references, harness setup, CLI readiness and domain terms after the User-approved Codex command rule. The Codex reference explains when to offer notifai init --codex-commands, never writing it unasked, and the rule's three limits (startup loading, literal argument lists only, most restrictive rule wins) with the readiness state for each; SKILL.md and send-details pass Markdown bodies and forms by file path and call notifai as a plain argument list; the README documents the rule beside the Claude Code command approval. Doctor reports codex-commands as per-command approval, never a blocker. Earlier closed-session and hook-budget guidance is unchanged.",
+  "reason": "Reviewed lifecycle hooks, the shipped skill and harness references, harness setup, CLI readiness and domain terms after two changes. Codex command approval (#330): the skill, the Codex reference, send details and the README describe the one-time User-approved allow rule written by notifai init --codex-commands, its three limits (rules load at startup, only a literal notifai argument list matches, the most restrictive rule wins), the readiness states doctor reports for each, and the plain --body-file transport; nothing is written unasked. Codex card linking floor: ask now reports native_question_unavailable with reason codex_version_unsupported, the app-server version it saw and the 0.163.0 floor, and tells the agent to ask in plain text without opening request_user_input_async; the native-questions reference already routes every native_question_unavailable reason the same way, so no skill text changed. Lifecycle hook output, domain terms and the ordinary question route are unchanged, and older Codex installs keep every other behaviour. Skill and lifecycle context budgets remain enforced.",
   "surfaces_reviewed": [
     "lifecycle-hooks",
     "notifai-skill",

@@ -22,7 +22,7 @@ import { connectCodexAnswerControl } from './codex-answer-control.js'
 const unixIt = it.skipIf(process.platform === 'win32')
 const cleanup: Array<() => Promise<void>> = []
 afterEach(async () => { for (const close of cleanup.splice(0)) await close(); discovery.mockReset() })
-async function fixture(options: { loaded?: string[]; homeMismatch?: boolean; failList?: boolean; loseReceipt?: boolean; turn?: string; unsupportedTurns?: boolean; wrongSteerReceipt?: boolean } = {}) {
+async function fixture(options: { loaded?: string[]; homeMismatch?: boolean; failList?: boolean; loseReceipt?: boolean; turn?: string; unsupportedTurns?: boolean; wrongSteerReceipt?: boolean; serverVersion?: string } = {}) {
   const root = mkdtempSync(path.join(tmpdir(), 'nfq-'))
   const home = path.join(root, 'home'); mkdirSync(home)
   const socket = path.join(root, 'q.sock'); const alias = path.join(root, 'alias.sock')
@@ -66,7 +66,8 @@ async function fixture(options: { loaded?: string[]; homeMismatch?: boolean; fai
   }))
   await new Promise<void>(resolve => server.listen(socket, resolve))
   symlinkSync(socket, alias)
-  discovery.mockResolvedValue({ stdout: JSON.stringify({ status: 'running', socketPath: alias }) })
+  discovery.mockResolvedValue({ stdout: JSON.stringify({ status: 'running', socketPath: alias,
+    ...('serverVersion' in options ? (options.serverVersion === undefined ? {} : { appServerVersion: options.serverVersion }) : { appServerVersion: '0.163.0' }) }) })
   cleanup.push(async () => {
     for (const client of ws.clients) client.terminate()
     await new Promise<void>(resolve => ws.close(() => resolve()))
@@ -74,7 +75,8 @@ async function fixture(options: { loaded?: string[]; homeMismatch?: boolean; fai
     rmSync(root, { recursive: true, force: true })
   })
   return { root, home, alias, socket, calls, items,
-    connectAnswer: () => connectCodexAnswerControl('owned-thread', 'current', { ...process.env, CODEX_HOME: home }, performance.now() + 2000),
+    connectAnswer: (unavailable?: Parameters<typeof connectCodexAnswerControl>[5]) =>
+      connectCodexAnswerControl('owned-thread', 'current', { ...process.env, CODEX_HOME: home }, performance.now() + 2000, undefined, unavailable),
     connectThread: () => connectCodexControl('owned-thread', { ...process.env, CODEX_HOME: home }, performance.now() + 2000),
     connect: () => connectCodexQueue('owned-thread', { ...process.env, CODEX_HOME: home }, performance.now() + 2000) }
 }
@@ -102,8 +104,36 @@ unixIt('preflights a bounded turn and steers only the exact expected turn withou
 
 unixIt.each([{ unsupportedTurns: true }, { turn: 'newer' }])('falls back before answer bytes when bounded current-turn proof is absent: %j', async options => {
   const f = await fixture(options)
-  expect(await f.connectAnswer()).toBeNull()
+  const reports: unknown[] = []
+  expect(await f.connectAnswer(report => reports.push(report))).toBeNull()
   expect(f.calls.some(call => call.method === 'turn/steer')).toBe(false)
+  expect(reports).toEqual([{ reason: 'no_owning_server_connection' }])
+})
+
+unixIt.each([
+  { serverVersion: '0.162.9', reason: 'codex_version_unsupported', version: '0.162.9' },
+  { serverVersion: '0.163.0-alpha.2', reason: 'codex_version_unsupported', version: '0.163.0-alpha.2' },
+  { serverVersion: undefined, reason: 'codex_version_unsupported' },
+])('withholds the answer transport below the card version floor while the wake queue still works: %j', async ({ serverVersion, reason, version }) => {
+  const f = await fixture({ serverVersion })
+  const reports: unknown[] = []
+  expect(await f.connectAnswer(report => reports.push(report))).toBeNull()
+  expect(reports).toEqual([{ reason, ...(version === undefined ? {} : { version }) }])
+  // Reachable, but never asked about turns and never steered: an older server
+  // keeps the ordinary question route and the content-free wake path only.
+  expect(f.calls.map(call => call.method)).toEqual(['initialize', 'initialized', 'thread/loaded/list'])
+  const queue = (await f.connect())!
+  expect(queue).not.toBeNull()
+  expect(await queue.add('ours', 'content-free wake')).toBe('native-1')
+  queue.close()
+})
+
+unixIt.each(['0.163.0', '0.164.0-alpha.1', '1.0.0'])('links on an app-server at or above the card version floor: %s', async serverVersion => {
+  const f = await fixture({ serverVersion })
+  const control = (await f.connectAnswer())!
+  expect(control).not.toBeNull()
+  expect(await control.currentTurn('current')).toBe(true)
+  control.close()
 })
 
 unixIt.each([{ loseReceipt: true }, { wrongSteerReceipt: true }])('never classifies lost or mismatched native-answer receipts as definitely unsent: %j', async options => {

@@ -11,6 +11,8 @@ export type CodexControlMethod = 'thread/queue/list' | 'thread/queue/add' | 'thr
 export interface CodexControl {
   namespace: string
   threadId: string
+  /** The running app-server's own version report, when it printed one. */
+  serverVersion?: string
   call(method: CodexControlMethod, params: unknown): Promise<unknown>
   close(): void
 }
@@ -32,8 +34,9 @@ export async function connectCodexControl(
     const { stdout } = await execute('codex', ['app-server', 'daemon', 'version'], {
       env, timeout: remaining(), maxBuffer: 16_384,
     })
-    const version = JSON.parse(stdout) as { status?: string; socketPath?: string }
+    const version = JSON.parse(stdout) as { status?: string; socketPath?: string; appServerVersion?: unknown; managedCodexVersion?: unknown }
     if (version.status !== 'running' || typeof version.socketPath !== 'string') throw new Error('No running daemon')
+    const reported = [version.appServerVersion, version.managedCodexVersion].find(value => typeof value === 'string') as string | undefined
     stage = 'endpoint'
     const socketPath = canonicalSocketPath(version.socketPath)
     const endpoint = lstatSync(socketPath)
@@ -90,7 +93,7 @@ export async function connectCodexControl(
       loadedCursor = result.nextCursor
     }
     if (!loaded) throw new Error('Exact owner thread is not loaded; refuse to load it')
-    return { namespace: home, threadId: sessionId, call, close: () => connected.terminate() }
+    return { namespace: home, threadId: sessionId, ...(reported === undefined ? {} : { serverVersion: reported }), call, close: () => connected.terminate() }
   } catch {
     socket?.terminate()
     unavailable?.(stage)
