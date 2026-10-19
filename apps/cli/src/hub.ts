@@ -513,6 +513,8 @@ export class Hub {
   private credentialLoads = 0
   private credentialMarker: string | null = null
   private unauthorizedState = false
+  /** A 401/403 already caused one fresh read of the store for this credential. */
+  private rereadAfterRefusal = false
   private children = 0
   private idleSince: number
   private exiting = false
@@ -665,6 +667,7 @@ export class Hub {
     const marker = this.readCredentialMarker()
     if (marker !== this.credentialMarker) {
       this.credentialMarker = marker
+      this.rereadAfterRefusal = false
       if (this.credential !== undefined) this.dropCredential('credential-marker-changed')
     }
     if (this.credential === undefined) {
@@ -716,8 +719,9 @@ export class Hub {
   }
 
   unauthorized(): void {
-    if (!this.unauthorizedState && this.credentialLoads < 2) {
+    if (!this.unauthorizedState && !this.rereadAfterRefusal) {
       // The store may already hold a newer credential; read it once more.
+      this.rereadAfterRefusal = true
       this.dropCredential('unauthorized-reread')
       return
     }
@@ -833,6 +837,7 @@ export class Hub {
       }
       case 'credential-changed': {
         this.credentialMarker = this.readCredentialMarker()
+        this.rereadAfterRefusal = false
         this.dropCredential('credential-changed')
         reply({ type: 'ack' })
         return
@@ -1039,7 +1044,9 @@ export class Hub {
         this.drainRetirements()
       })
     } else this.drainRetirements()
-    if (reason === 'session-replaced') session.child?.send({ type: 'bye' })
+    // The harness may outlive this session (`/clear`, `/resume`): its child
+    // has nothing left to watch for it.
+    session.child?.send({ type: 'bye' })
     this.logger.info('hub.session', { event: 'ending', session: session.id, reason })
     if (session.notified) {
       session.lease.final = 'ended'
@@ -1231,6 +1238,15 @@ export class Hub {
       const probe = session.probe()
       if (probe.state === 'ended') this.endSession(session, probe.reason)
       else if (probe.state === 'running') session.observeActivity(probe.activity)
+      else if (session.child === null || session.child.closed) {
+        // No kernel watch while no child is connected: ask the process table.
+        // Signal 0 every tick; the start-time read (a `ps`) only now and then.
+        this.disconnectedTicks += 1
+        if (!pidExists(session.harnessProcess.pid) ||
+            (this.disconnectedTicks % 10 === 0 && processIdentityLiveness(session.harnessProcess) === 'gone')) {
+          this.endSession(session, 'harness-gone')
+        }
+      }
       session.checkInput()
     }
     if (now - this.lastHeartbeat >= 60 * 60_000) {
@@ -1263,6 +1279,7 @@ export class Hub {
 
   private idleTimer: ReturnType<typeof setTimeout> | null = null
   private lastHeartbeat = Date.now()
+  private disconnectedTicks = 0
 
   private busy(): boolean {
     return this.children > 0 || this.ended.size > 0 || this.settlements.size > 0 ||
