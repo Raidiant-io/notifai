@@ -190,8 +190,8 @@ States: `local`, `frozen`, `live`, `answered`, `withdrawn`, `retired`.
 **Registering is not the end of the turn.** Say what each answer will make you do
 and continue independent work while background submission proceeds. Dependent
 work waits for the reply.
-Never promise a harness form closes. When `ask` returns `native_question`,
-read [native questions](references/native-questions.md) before emitting it.
+For native answers or a `native_question` from `ask`, read
+[native questions](references/native-questions.md). Never promise form closure.
 
 **Never say where the answer must arrive** ("tell me here").
 

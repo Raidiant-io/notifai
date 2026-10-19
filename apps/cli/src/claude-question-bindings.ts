@@ -34,6 +34,7 @@ import type {
   CodexQuestionBinding,
   CodexQuestionRegistration,
   NativeQuestionAdmission,
+  NativeQuestionShown,
 } from './codex-question-bindings.js'
 import type { AnsweredPending, PendingQuestion, SessionState } from './hook-types.js'
 import { slugify } from './send.js'
@@ -134,18 +135,11 @@ export function pickerDigest(toolInput: unknown): string | null {
   return createHash('sha256').update(JSON.stringify(canonical)).digest('hex')
 }
 
-/** What one device question must map back to: the picker's own text and labels. */
-export interface ClaudePickerShown {
-  title: string
-  /** The picker's option label for each device choice id. */
-  labels: Record<string, string>
-}
-
 export interface PickerForm {
   questions: QuestionT[]
   summary: string
   body?: string
-  shown: ClaudePickerShown[]
+  shown: NativeQuestionShown[]
 }
 
 function chars(text: string): number {
@@ -195,7 +189,7 @@ export function pickerForm(picker: readonly PickerQuestion[]): PickerForm | { er
   if (new Set(picker.map((question) => question.question)).size !== picker.length) return { error: 'duplicate-question' }
   const questionIds = new Set<string>()
   const questions: QuestionT[] = []
-  const shown: ClaudePickerShown[] = []
+  const shown: NativeQuestionShown[] = []
   let detailed = false
   for (const [index, entry] of picker.entries()) {
     const text = fit(entry.question, QUESTION_TEXT_MAX_LENGTH)

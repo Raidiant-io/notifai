@@ -282,6 +282,13 @@ export function buildHookConfig(options: BuildOptions): HookConfig {
   const hooks: HookConfig = Object.create(null)
   for (const row of HOOK_EVENT_TABLE) {
     if (row.document === null) continue
+    if (row.notifai === 'pre-tool-use') {
+      if (options.harness !== 'codex' || !installsSessionAttendant(options.harness, options.platform)) continue
+      hooks[row.document] = [{ matcher: 'request_user_input_async', hooks: [{
+        type: 'command', command: hookCommand(adapterPath, row.notifai, options.harness, commandOptions), timeout: row.timeoutSeconds,
+      }] }]
+      continue
+    }
     if (row.notifai === 'post-compact' && options.harness !== 'grok') continue
     // Grok's SubagentStart fires in the parent and discards output. The child's
     // own tool hook is the place that can teach its Notification Request role.
@@ -1388,6 +1395,7 @@ export function loadCursorSettings(file: string): CursorSettingsDocument {
 /** One of our handlers as it sits in a settings file, with its position. */
 export interface InstalledHandler {
   event: string
+  matcher?: string
   /** Index of the matcher group within the event, as the harness sees it. */
   groupIndex: number
   /** Index of the handler within its group. */
@@ -1454,6 +1462,7 @@ export function codexHookIdentityHash(handler: InstalledHandler): string {
   }
   const normalized = canonicalValue({
     event_name: codexEventName(handler.event),
+    ...(handler.matcher === undefined ? {} : { matcher: handler.matcher }),
     hooks: [command],
   })
   return `sha256:${createHash('sha256').update(JSON.stringify(normalized)).digest('hex')}`
@@ -1560,8 +1569,8 @@ export function codexTrustProblems(
 
 /**
  * Trust defects in the handlers Question Routing runs. The Session Attendant
- * is presence, never a routing gate: an attend handler still awaiting
- * approval is reported by doctor and init and never refuses a question.
+ * is presence, and the card hooks are optional native integration. Their
+ * pending approvals are reported by doctor/init and never refuse an ordinary question.
  */
 export function codexRoutingTrustProblems(
   installations: Installation[],
@@ -1570,7 +1579,7 @@ export function codexRoutingTrustProblems(
   return codexTrustProblems(
     installations.map((installation) => ({
       ...installation,
-      handlers: installation.handlers.filter((handler) => !['attend', 'post-tool-use'].includes(handlerEvent(handler.command) ?? '')),
+      handlers: installation.handlers.filter((handler) => !['attend', 'pre-tool-use', 'post-tool-use'].includes(handlerEvent(handler.command) ?? '')),
     })),
     env,
   )
@@ -1940,6 +1949,7 @@ function locateAllHandlers(document: SettingsDocument): InstalledHandler[] {
         if (typeof handler?.command !== 'string') return
         handlers.push({
           event,
+          ...(group.matcher === undefined ? {} : { matcher: group.matcher }),
           groupIndex,
           handlerIndex,
           command: handler.command,

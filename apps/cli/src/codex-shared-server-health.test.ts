@@ -25,7 +25,6 @@ describe('codexSharedServerState', () => {
     const state = await codexSharedServerState({ CODEX_HOME: codex }, 'darwin', async () => 'not-running')
     expect(state).toMatchObject({ id: CODEX_SHARED_SERVER_STATE_ID, status: 'optional-gap' })
     expect(state!.detail).toContain('`daemon_auto_start = false`')
-    expect(state!.detail).toContain("until the agent's turn ends")
     expect(state!.remedy).toBeUndefined()
   })
 

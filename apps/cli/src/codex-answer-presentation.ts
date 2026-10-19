@@ -12,6 +12,7 @@ import { connectCodexAnswerControl } from './codex-answer-control.js'
 import { CodexControlNotSent } from './codex-native-control.js'
 import type { DeliveryLease } from './session-delivery.js'
 import type { NativeInputAnswers } from './session-inputs.js'
+import { currentCodexTurn } from './session-attendant-state.js'
 
 /** Multipart, malformed and unsupported answers keep the ordinary input path. */
 function boundAnswer(answer: AnsweredPending, state: SessionState, ownerKey: string, service: ServiceIdentity): CodexQuestionRegistration | null {
@@ -46,7 +47,10 @@ export function codexAnswerPresentation(input: {
   const refresh = (state: SessionState) => {
     const snapshot = readNativeQuestionSnapshot(input.transcriptPath, input.sessionId, input.env)
     return { state: observeCodexQuestions(state, input.ownerKey, snapshot),
-      current: snapshot?.latest.id === input.turnId && !snapshot.latest.ended }
+      current: (snapshot?.latest.id === input.turnId && !snapshot.latest.ended) ||
+        (state.codex_question_bindings?.some(registration => registration.card_call_id !== undefined &&
+          registration.owner_key === input.ownerKey && registration.registration_turn_id === input.turnId) === true &&
+          currentCodexTurn(input.sessionId, input.env, input.ownerKey) === input.turnId) }
   }
   const owned = () => input.mayWrite() && readSessionIncarnation(input.sessionId, input.env)?.key === input.ownerKey
   return {
@@ -69,7 +73,7 @@ export function codexAnswerPresentation(input: {
         const reply = answer.reply
         const text = '<send_user_message_question_reply>\n' + JSON.stringify(reply.answers.map(part => {
           const question = binding.questions.find(item => item.question.id === part.question_id)!
-          const selected = part.choice_ids.map(id => question.question.choices!.find(choice => choice.id === id)!.label)
+          const selected = part.choice_ids.map(id => question.card?.labels[id] ?? question.question.choices!.find(choice => choice.id === id)!.label)
           return { questionItemId: JSON.stringify(['request_user_input_async', question.native!.call_id, question.native!.index]),
             question: nativeQuestionTitle(question), answer: [...selected, ...(part.text == null ? [] : [part.text])].join('\n'),
             notifai: { origin: 'companion', request_id: answer.pending.request_id, question_id: part.question_id,

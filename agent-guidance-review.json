@@ -1,8 +1,8 @@
 {
   "version": 1,
-  "behavior_digest": "sha256:01f92ad3f09674dd32019be2975370e250d219806c984b89a1c8a5ac5b44550d",
+  "behavior_digest": "sha256:74cbbdb0af1076ab5739b32d23e97482ad140e91cab4a1286115b01510c0e2b1",
   "outcome": "guidance-updated",
-  "reason": "Reviewed the shipped skill after the question picker change pushed SKILL.md over its read budget. The Claude Code picker rule is now one line that links to harness-claude-code.md, 'never filter ask output' is kept as one sentence, the native-form note is shortened, and the reply-label paragraph drops a redundant clause. Meaning is unchanged: the picker is the Notifai question and is never also asked with ask, harness permission prompts stay in the harness, and a harness form is never promised to close. Hooks, guidance topics, setup and readiness are unchanged.",
+  "reason": "Reviewed lifecycle hooks, the shipped skill/native-question references, harness setup, CLI readiness and domain terms. Codex cards now register their structured input after real acceptance, bind exact call and turn IDs, and use a registered conversation fallback when no native route exists. Guidance follows hook context for IDs and acknowledgement, preserves native/app provenance and independent questions, and keeps permission prompts in the harness. Trust diagnostics include matcher identity without writing trust; optional card-hook approval never blocks ordinary Question Routing. Skill and lifecycle context budgets remain enforced.",
   "surfaces_reviewed": [
     "lifecycle-hooks",
     "notifai-skill",

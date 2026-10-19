@@ -1,7 +1,6 @@
 /** Local association of registered questions with actual accepted Codex forms. */
 import { isDeepStrictEqual } from 'node:util'
 import type { QuestionT, ReplyAnswerT } from '@raidiant/notifai-protocol'
-import type { ClaudePickerShown } from './claude-question-bindings.js'
 import type { ServiceIdentity } from './credentials.js'
 import type { PendingQuestion, SessionState } from './hook-types.js'
 import type { NativeTurnSnapshot } from './codex-native-turn.js'
@@ -10,14 +9,22 @@ import { readSessionIncarnation, sessionHasEnded } from './hook-session-state.js
 import { currentCodexTurn } from './session-attendant-state.js'
 import { processIdentityLiveness } from './process-identity.js'
 
+/** Exact native wording and the native label for each registered choice. */
+export interface NativeQuestionShown {
+  title: string
+  labels: Record<string, string>
+}
+
 export interface CodexQuestionBinding {
   question: QuestionT
   /** Codex cards only. A Claude picker carries none: its hook receives the picker itself. */
   marker?: string
   /** Claude Code pickers only: the picker's own text and labels, which its answers are keyed by. */
-  picker?: ClaudePickerShown
+  picker?: NativeQuestionShown
+  /** Codex hook source: the card's actual text and each device choice's label. */
+  card?: NativeQuestionShown
   native?: { turn_id: string; call_id: string; index: number }
-  /** Recomputed from a fresh full registration-turn snapshot before use. */
+  /** Marker bindings need a fresh snapshot; card hooks retain their accepted callback proof. */
   verified?: true
   /** A second occurrence permanently removes this marker's authority. */
   ambiguous?: true
@@ -30,6 +37,10 @@ export interface CodexQuestionRegistration {
   transcript: { file: string; identity: string; registered_offset: number }
   service_identity: ServiceIdentity
   questions: CodexQuestionBinding[]
+  /** Exact invocation from a root tool callback; no content matching. */
+  card_call_id?: string
+  /** Absent for a card prevented before display because transport was missing. */
+  card_allowed?: true
   /** Positive receipt evidence only; never an unconfirmed reserved ID. */
   confirmed_request_id?: string
   /** Ordinary presentation is sticky, including an uncertain stdout write. */
@@ -40,6 +51,7 @@ export interface CodexQuestionRegistration {
 
 /** The text the native form must show for this question. */
 export function nativeQuestionTitle(binding: CodexQuestionBinding): string {
+  if (binding.card !== undefined) return binding.card.title
   return binding.marker === undefined ? binding.question.text : `[nf:${binding.marker}] ${binding.question.text}`
 }
 
@@ -49,7 +61,8 @@ export interface NativeQuestionAdmission {
   turn_id: string
   service: ServiceIdentity
   /** A Claude Code picker that is this question, one entry per question. */
-  picker?: ClaudePickerShown[]
+  picker?: NativeQuestionShown[]
+  card?: { call_id: string; shown: NativeQuestionShown[]; allow: boolean; accepted?: true }
 }
 
 /** Read-only local eligibility. Registration repeats this under its lock. */
@@ -72,6 +85,24 @@ export function currentCodexQuestionContext(state: SessionState, sessionId: stri
 export function reserveCurrentCodexQuestion(state: SessionState, pending: PendingQuestion, sessionId: string, env: NodeJS.ProcessEnv,
   admission?: NativeQuestionAdmission): SessionState {
   if (admission === undefined || !isDeepStrictEqual(admission.service, pending.service_identity)) return state
+  if (admission.card !== undefined) {
+    const owner = readSessionIncarnation(sessionId, env)
+    if (state.harness !== 'codex' || owner?.key !== admission.owner_key || sessionHasEnded(sessionId, env) ||
+        currentCodexTurn(sessionId, env, owner.key) !== admission.turn_id || pending.question_id === undefined ||
+        pending.questions?.length !== admission.card.shown.length || admission.card.shown.length === 0 ||
+        state.codex_question_bindings?.some(item => item.question_id === pending.question_id)) return state
+    return { ...state, codex_question_bindings: [...(state.codex_question_bindings ?? []), {
+      question_id: pending.question_id, owner_key: owner.key, registration_turn_id: admission.turn_id,
+      transcript: { file: '', identity: 'codex-card-hook', registered_offset: 0 },
+      service_identity: { ...admission.service }, card_call_id: admission.card.call_id,
+      ...(admission.card.allow ? { card_allowed: true as const } : { ordinary_only: true as const }),
+      questions: pending.questions.map((question, index) => ({ question: structuredClone(question),
+        card: structuredClone(admission.card!.shown[index]!),
+        ...(admission.card!.allow && admission.card!.accepted === true ? { verified: true as const,
+          native: { turn_id: admission.turn_id, call_id: admission.card!.call_id, index } } : {}),
+      })),
+    }] }
+  }
   const current = currentCodexQuestionContext(state, sessionId, env)
   if (current === null || current.owner_key !== admission.owner_key || current.snapshot.latest.id !== admission.turn_id) return state
   return reserveCodexQuestion(state, pending, current.owner_key, current.snapshot)
@@ -122,6 +153,9 @@ export function reserveCodexQuestion(
 export function observeCodexQuestions(state: SessionState, key: string, snapshot: NativeTurnSnapshot | null): SessionState {
   if (state.codex_question_bindings === undefined) return state
   return { ...state, codex_question_bindings: state.codex_question_bindings.map(registration => {
+    // A hook-sourced card is verified by its exact PostToolUse acceptance
+    // receipt. A bounded transcript is neither its identity nor its authority.
+    if (registration.card_call_id !== undefined) return registration
     const covered = registration.terminated !== true && registration.owner_key === key && snapshot !== null &&
       snapshot.file === registration.transcript.file && snapshot.identity === registration.transcript.identity &&
       snapshot.size >= registration.transcript.registered_offset && snapshot.positions.has(registration.registration_turn_id)
@@ -166,7 +200,8 @@ export function terminateCodexQuestions(state: SessionState, ids: ReadonlySet<st
  * Apply after matching all pending questions, so sibling ambiguity is preserved.
  */
 export function mayRetireFromPrompt(state: SessionState, pending: PendingQuestion): boolean {
-  return !state.codex_question_bindings?.some(item => item.question_id === pending.question_id)
+  return !state.codex_question_bindings?.some(item => item.question_id === pending.question_id &&
+    (item.card_call_id === undefined || item.card_allowed === true))
 }
 
 /** The caller refreshes observation under the owner fence before admission.

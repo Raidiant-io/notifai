@@ -2,7 +2,7 @@
  *
  * A device answer can close a Codex question form only through the server that
  * owns the session's thread. Whether one session joined such a server is fixed
- * when that session launches, so only `ask` can say it for a session. This
+ * when that session launches, so only its card hook or `ask` can say it for a session. This
  * reports what is true of the effective CODEX_HOME, and never starts, stops or
  * updates a server: those choices, and their costs, belong to the User.
  */
@@ -76,7 +76,7 @@ export async function codexSharedServerState(
       id: CODEX_SHARED_SERVER_STATE_ID,
       title: TITLE,
       status: 'optional-gap',
-      detail: `no shared Codex app-server is running for this CODEX_HOME (${cause}). Device answers still reach the agent; a question form stays in the terminal until the agent's turn ends`,
+      detail: `no shared Codex app-server is running for this CODEX_HOME (${cause}). Device answers still reach the agent; the card hooks use a plain-conversation question when a card cannot be closed. Terminal-only cards remain native`,
     }
   }
   const server = version.appServerVersion ?? version.managedCodexVersion

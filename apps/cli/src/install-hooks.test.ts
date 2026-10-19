@@ -71,6 +71,7 @@ import {
   codexRepresentationProblems,
   codexTrustKey,
   codexTrustProblems,
+  codexRoutingTrustProblems,
   handlerEvent,
   harnessAccountHome,
   hookCommand,
@@ -1062,6 +1063,22 @@ describe('finding what is installed', () => {
     expect(codexTrustProblems(installations, env)).toEqual(
       expect.arrayContaining([expect.stringMatching(/Stop.*disabled.*\/hooks/i)]),
     )
+  })
+
+  it('changes Codex trust identity when a hook matcher changes its coverage', () => {
+    const handler = { event: 'PreToolUse', groupIndex: 0, handlerIndex: 0,
+      command: 'notifai hook pre-tool-use --harness codex', timeout: 10, matcher: 'request_user_input_async' }
+    expect(codexHookIdentityHash(handler)).not.toBe(codexHookIdentityHash({ ...handler, matcher: '*' }))
+    expect(codexHookIdentityHash(handler)).not.toBe(codexHookIdentityHash({ ...handler, matcher: 'Bash' }))
+  })
+
+  it('keeps ordinary Question Routing available while the optional card hook awaits trust', () => {
+    const installation = { harness: 'codex' as const, file: '/fixture/hooks.json', handlers: [{
+      event: 'PreToolUse', groupIndex: 0, handlerIndex: 0, command: 'notifai hook pre-tool-use --harness codex',
+      matcher: 'request_user_input_async', timeout: 10,
+    }] }
+    expect(codexTrustProblems([installation], { CODEX_HOME: '/missing-fixture-home' })).toHaveLength(1)
+    expect(codexRoutingTrustProblems([installation], { CODEX_HOME: '/missing-fixture-home' })).toEqual([])
   })
 
   it('hashes Codex additionalContextLimit except the 2,500-token default', () => {

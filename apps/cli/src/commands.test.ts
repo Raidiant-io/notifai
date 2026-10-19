@@ -8204,7 +8204,7 @@ describe('asking before the hooks have ever run', () => {
     )
   })
 
-  it.each(['supported', 'no-transport', 'missing', 'malformed', 'unavailable', 'changed-turn', 'lost-machine', 'changed-machine', 'changed-service', 'machine-lost-in-lock', 'ended', 'ended-unavailable', 'replaced-owner'] as const)('gates native registration on service support and answer transport: %s', async mode => {
+  it.each(['card-hook', 'supported', 'no-transport', 'missing', 'malformed', 'unavailable', 'changed-turn', 'lost-machine', 'changed-machine', 'changed-service', 'machine-lost-in-lock', 'ended', 'ended-unavailable', 'replaced-owner'] as const)('gates native registration on service support and answer transport: %s', async mode => {
     const cwd = scratchDir('notifai-native-ask-output-')
     const sessionId = '019ff69d-a07f-7161-ab6e-bd06b3b93c8e'
     const env = { HOME: cwd, XDG_CONFIG_HOME: cwd, XDG_STATE_HOME: cwd, CODEX_HOME: path.join(cwd, 'codex'), CODEX_THREAD_ID: sessionId }
@@ -8238,6 +8238,13 @@ describe('asking before the hooks have ever run', () => {
     mkdirSync(path.join(cwd, '.notifai'))
     writeFileSync(path.join(cwd, '.notifai', 'config.toml'), 'project = "native-ask-test"\n')
     expect(hooksInstallCommand(deps, { harness: 'codex', execPath, scriptPath })).toBe(EXIT.ok)
+    if (mode !== 'card-hook') {
+      // The marker route remains the fallback for a host without the card hook.
+      const hookFile = path.join(env.CODEX_HOME, 'hooks.json')
+      const document = JSON.parse(readFileSync(hookFile, 'utf8'))
+      delete document.hooks.PreToolUse
+      writeFileSync(hookFile, JSON.stringify(document))
+    }
     trustInstalledCodexHooks(cwd, env)
     const owner = beginSessionIncarnation(sessionId, env, { stamp: lifecycleStamp(), harnessProcess: currentProcessIdentity()! })
     const file = path.join(env.CODEX_HOME, 'sessions', 'owned.jsonl')
@@ -8255,8 +8262,16 @@ describe('asking before the hooks have ever run', () => {
     io.outLines = []
     const machineChanged = ['lost-machine', 'changed-machine', 'changed-service', 'machine-lost-in-lock'].includes(mode)
     const ownerChanged = ['ended', 'ended-unavailable', 'replaced-owner'].includes(mode)
-    expect(await askCommand(deps, 'Where?', { choice: ['Staging', 'Production'], json: true })).toBe(machineChanged ? EXIT.auth : ownerChanged ? EXIT.failed : EXIT.ok)
+    expect(await askCommand(deps, 'Where?', { choice: ['Staging', 'Production'], json: true })).toBe(mode === 'card-hook' ? EXIT.usage : machineChanged ? EXIT.auth : ownerChanged ? EXIT.failed : EXIT.ok)
     const output = JSON.parse(io.outLines.join('\n'))
+    if (mode === 'card-hook') {
+      expect(output.code).toBe('use_question_card')
+      expect(output.request_user_input_async).toEqual({ questions: [{ title: 'Where?', options: ['Staging', 'Production'] }] })
+      expect(readSessionState(sessionId, env).pending).toBeUndefined()
+      expect(spawn).not.toHaveBeenCalled()
+      expect(compatibility).not.toHaveBeenCalled()
+      return
+    }
     expect(compatibility).toHaveBeenCalledTimes(1)
     if (machineChanged || ownerChanged) {
       expect(output.code).toBe(machineChanged ? 'auth_required' : 'session_changed')
