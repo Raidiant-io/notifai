@@ -22,7 +22,7 @@ import type { AttendanceMessage, SessionActivity } from '@raidiant/notifai-proto
 import { atomicWriteFileSync } from './atomic-file.js'
 import { claudeDescriptorDir, claudeMinInboxVersion, CLAUDE_PEER_PROTOCOL, parseDescriptor } from './claude-wake.js'
 import { claudePickerHolds } from './claude-question-hooks.js'
-import type { ApiClient } from './client.js'
+import { createClient, type ApiClient } from './client.js'
 import { codexInputObserver, refreshCodexInputActivity } from './codex-input-lifecycle.js'
 import { readNativeTurnSnapshot } from './codex-native-turn.js'
 import { inspectCodexQueue, systemCodexWakeAdapters, type CodexWakeAdapters } from './codex-wake.js'
@@ -47,6 +47,7 @@ import {
 } from './hook-session-state.js'
 import { ExchangeDriver, type AttendedSession, type HubClock } from './hub-exchange.js'
 import {
+  childLockPath,
   credentialGenerationPath,
   encodeFrame,
   endedRecordsDir,
@@ -64,7 +65,7 @@ import { SessionLease, type LeaseOutcome } from './hub-lease.js'
 import { currentRuntimeBuild } from './launch-self.js'
 import { bootstrapLogger, type Logger } from './logging.js'
 import { nativeUninstallPending } from './native-uninstall-barrier.js'
-import { normalizeProcessStart, pidExists, processIdentityLiveness, type ProcessIdentity } from './process-identity.js'
+import { descriptorStartMatches, linuxStartTicks, normalizeProcessStart, pidExists, processIdentityLiveness, type ProcessIdentity } from './process-identity.js'
 import { packageVersion } from './release.js'
 import { retainSessionRuntime } from './runtime-build-retention.js'
 import {
@@ -97,15 +98,23 @@ export const HUB_CRASH_WINDOW_MS = 10 * 60_000
 const IDLE_BEFORE_WAKE_REPLACEMENT_MS = 30_000
 /** Safety re-read of activity and pending input; events do the ordinary work. */
 const SAFETY_TICK_MS = 15_000
-/** A child gets this long to answer a write request. */
-const CHILD_WRITE_TIMEOUT_MS = 10_000
-/** A claimed write must begin within this bound (the service's claim window is 30 s). */
-const CHILD_WRITE_DEADLINE_MS = 20_000
+/** A claimed write must begin within this bound of the child reading the request. */
+const CHILD_WRITE_DEADLINE_MS = 8_000
+/**
+ * A child gets this long to answer a write request: past its own deadline
+ * (and its five-second connect), so a write the hub already gave up on cannot
+ * still land; inside the service's 30 s claim window.
+ */
+const CHILD_WRITE_TIMEOUT_MS = 20_000
 /** How long a new hub waits for a replaced attendant to step aside. */
 const HANDOFF_WAIT_MS = 10_000
 const SHELLS: ReadonlySet<string> = new Set(['sh', 'dash', 'bash', 'zsh', 'ksh', 'mksh', 'fish'])
 
-export interface PeerProcess { pid: number; ppid: number; comm: string; start: string }
+export interface PeerProcess { pid: number; ppid: number; comm: string; start: string; ticks?: string }
+
+/** Refusals a child retries later; any other refusal is final for that child. */
+const PASSING_REFUSALS: ReadonlySet<string> = new Set(['hub-exiting', 'peer-unverifiable', 'claim-held', 'incarnation-unavailable',
+  'session-ending', 'descriptor-missing'])
 export interface PeerCredentials {
   uid: number
   pid: number
@@ -121,10 +130,12 @@ export interface HubOptions {
   /** Kernel peer credentials of a connected child; production asks the native launcher. */
   verifyPeer?: PeerVerifier
   idleExitMs?: number
-  /** This boot's identity; production reads `/proc` or `kern.boottime`. */
+  /** This boot's identity; production reads Linux's boot id or macOS's `kern.bootsessionuuid`. */
   bootIdentity?: () => string | null
   /** Install SIGTERM/SIGINT handlers (the real process only). */
   handleSignals?: boolean
+  /** Test seam; production re-reads every 15 s. */
+  safetyTickMs?: number
 }
 
 type ChildReply = { result: 'ok' } | { result: 'failed'; stage: 'before-write' | 'during-write'; error: string }
@@ -195,6 +206,8 @@ interface Registration {
   inboxToken: boolean
   claudeConfigDir: string | null
   codexHome: string | null
+  /** Linux: the harness's start in kernel ticks, which Claude's descriptor carries and no clock step moves. */
+  harnessTicks: string | null
 }
 
 /** One Agent Session the hub attends. */
@@ -230,6 +243,14 @@ class HubSession implements AttendedSession {
       owner.pid === this.harnessProcess.pid && normalizeProcessStart(owner.start) === normalizeProcessStart(this.harnessProcess.start)
   }
 
+  /** Asked of the process table when no kernel watch is connected: ticks on Linux, the start text elsewhere. */
+  harnessGone(): boolean {
+    const ticks = this.registration.harnessTicks
+    if (ticks === null) return processIdentityLiveness(this.harnessProcess) === 'gone'
+    const now = linuxStartTicks(this.harnessProcess.pid)
+    return now === null ? !pidExists(this.harnessProcess.pid) : now !== ticks
+  }
+
   get notified(): boolean {
     return sessionNotified(this.id, this.env)
   }
@@ -247,7 +268,7 @@ class HubSession implements AttendedSession {
     const descriptor = this.descriptor()
     if (descriptor === 'missing') return { state: 'uncertain', reason: 'descriptor-missing' }
     if (descriptor === null) return { state: 'uncertain', reason: 'descriptor-unrecognised' }
-    if (normalizeProcessStart(descriptor.procStart) !== normalizeProcessStart(this.harnessProcess.start)) {
+    if (!descriptorStartMatches(descriptor.procStart, this.harnessProcess, this.registration.harnessTicks)) {
       return { state: 'uncertain', reason: 'process-start-mismatch' }
     }
     if (descriptor.sessionId !== this.id) return { state: 'ended', reason: 'session-replaced' }
@@ -406,7 +427,7 @@ class HubSession implements AttendedSession {
   async writeClaude(text: string): Promise<'written' | 'unavailable' | 'cancelled' | 'failed'> {
     const descriptor = this.descriptor()
     if (descriptor === 'missing' || descriptor === null || descriptor.sessionId !== this.id ||
-        normalizeProcessStart(descriptor.procStart) !== normalizeProcessStart(this.harnessProcess.start) ||
+        !descriptorStartMatches(descriptor.procStart, this.harnessProcess, this.registration.harnessTicks) ||
         descriptor.peerProtocol !== CLAUDE_PEER_PROTOCOL || !['idle', 'busy'].includes(descriptor.status)) return 'unavailable'
     if (this.child === null || !this.mayWrite()) return 'cancelled'
     const reply = await this.child.write(claudeSocketLine(text), descriptor.messagingSocketPath, CHILD_WRITE_DEADLINE_MS)
@@ -512,6 +533,8 @@ export class Hub {
   private client_: ApiClient | null = null
   private credentialLoads = 0
   private credentialMarker: string | null = null
+  /** Aborted when the credential changes: ends every request any in-hub waiter started with it. */
+  private credentialAbort = new AbortController()
   private unauthorizedState = false
   /** A 401/403 already caused one fresh read of the store for this credential. */
   private rereadAfterRefusal = false
@@ -584,7 +607,7 @@ export class Hub {
       this.logger.error('hub.exchange', { event: 'stopped', message: err instanceof Error ? err.message : String(err) })
     })
     this.sweep()
-    this.safetyTimer = setInterval(() => this.safetyTick(), SAFETY_TICK_MS)
+    this.safetyTimer = setInterval(() => this.safetyTick(), this.options.safetyTickMs ?? SAFETY_TICK_MS)
     this.safetyTimer.unref?.()
     await new Promise<void>((resolve) => { this.exitResolve = resolve })
     signals?.()
@@ -689,6 +712,11 @@ export class Hub {
     return this.credential ? `${this.credential.machineId}:${this.credentialLoads}` : null
   }
 
+  /** Ends every request an in-hub waiter makes with the current credential, once it changes. */
+  waiterSignal(): AbortSignal {
+    return this.credentialAbort.signal
+  }
+
   /** The store the in-process question waiters use: the hub's single read, never another helper run. */
   cachedStore(): CredentialStore {
     return {
@@ -707,6 +735,10 @@ export class Hub {
   dropCredential(reason: string): void {
     this.credential = undefined
     this.client_ = null
+    this.credentialAbort.abort()
+    this.credentialAbort = new AbortController()
+    // Waiters stop with the old credential; one more run each picks up a new one (re-pair).
+    for (const running of this.settlements.values()) running.rerun = true
     for (const session of this.sessions.values()) {
       session.lease.lose()
       session.lease.generation = null
@@ -746,7 +778,7 @@ export class Hub {
     const helloTimer = setTimeout(() => { if (role === null) socket.destroy() }, 5_000)
     const refuse = (reason: string): void => {
       this.logger.info('hub.session', { event: 'refused', role, reason })
-      try { socket.end(encodeFrame({ type: 'refused', reason })) } catch { socket.destroy() }
+      try { socket.end(encodeFrame({ type: 'refused', reason, retry: PASSING_REFUSALS.has(reason) })) } catch { socket.destroy() }
     }
     socket.on('error', () => undefined)
     socket.on('close', () => {
@@ -878,6 +910,7 @@ export class Hub {
       stamp: { wall, mono }, hookEvent: text('hook_event', 64) ?? '', source: text('source', 64),
       cwd: absolute('cwd'), transcriptPath: absolute('transcript_path'), inboxSocket: absolute('inbox_socket'),
       inboxToken: frame['inbox_token'] === 'present', claudeConfigDir: absolute('claude_config_dir'), codexHome: absolute('codex_home'),
+      harnessTicks: /^\d{1,30}$/.test(text('harness_ticks', 32) ?? '') ? text('harness_ticks', 32) : null,
     }
   }
 
@@ -904,7 +937,9 @@ export class Hub {
       : peer.parent !== undefined && peer.parent !== null && SHELLS.has(peer.parent.comm) &&
         peer.grandparent?.pid === registration.harnessProcess.pid ? peer.grandparent : null
     if (owner === null || owner === undefined) return 'harness-not-parent'
-    if (normalizeProcessStart(owner.start) !== normalizeProcessStart(registration.harnessProcess.start)) return 'harness-start-mismatch'
+    const sameStart = owner.ticks !== undefined && registration.harnessTicks !== null ? owner.ticks === registration.harnessTicks
+      : normalizeProcessStart(owner.start) === normalizeProcessStart(registration.harnessProcess.start)
+    if (!sameStart) return 'harness-start-mismatch'
     if (registration.harness === 'codex' && owner.comm !== 'codex') return 'harness-not-codex'
     const env = this.sessionEnv(registration)
     if (registration.harness === 'claude-code') {
@@ -912,15 +947,22 @@ export class Hub {
       try { raw = JSON.parse(readFileSync(path.join(claudeDescriptorDir(env), `${owner.pid}.json`), 'utf8')) } catch { return 'descriptor-missing' }
       const descriptor = parseDescriptor(raw)
       if (descriptor === null || descriptor.pid !== owner.pid || descriptor.sessionId !== registration.sessionId ||
-          normalizeProcessStart(descriptor.procStart) !== normalizeProcessStart(owner.start)) return 'descriptor-mismatch'
+          !descriptorStartMatches(descriptor.procStart, owner, owner.ticks ?? registration.harnessTicks)) return 'descriptor-mismatch'
     }
     const existing = this.sessions.get(registration.sessionId)
     if (existing !== undefined) {
+      // The earlier incarnation still owes its `ended` report and holds the
+      // claim: the child comes back once that has gone.
+      if (existing.ending !== null) return 'session-ending'
       if (existing.child !== null && !existing.child.closed && !existing.child.ended) return 'session-already-served'
-      if (existing.harnessProcess.pid !== registration.harnessProcess.pid ||
-          normalizeProcessStart(existing.harnessProcess.start) !== normalizeProcessStart(registration.harnessProcess.start)) {
+      const sameHarness = existing.harnessProcess.pid === registration.harnessProcess.pid &&
+        (existing.registration.harnessTicks !== null && registration.harnessTicks !== null
+          ? existing.registration.harnessTicks === registration.harnessTicks
+          : normalizeProcessStart(existing.harnessProcess.start) === normalizeProcessStart(registration.harnessProcess.start))
+      if (!sameHarness) {
         // Another process now hosts this session id; the old one is gone.
         this.endSession(existing, 'harness-gone')
+        if (this.sessions.get(registration.sessionId) === existing) return 'session-ending'
       } else {
         existing.child = link
         existing.registration = registration
@@ -985,6 +1027,8 @@ export class Hub {
         return token
       }
       const holder = readClaimFile(file)
+      // This hub's own claim (an entry still finishing): never hand it to ourselves.
+      if (holder !== null && holder['pid'] === process.pid) return null
       if (!asked && holder !== null && typeof holder['token'] === 'string' && typeof holder['incarnation'] === 'string') {
         asked = requestClaimHandoff(file, holder['token'], holder['incarnation'])
         if (asked) this.logger.info('hub.session', { event: 'handoff-requested', session: session.id })
@@ -1017,7 +1061,7 @@ export class Hub {
     if (probe.state === 'ended') { this.endSession(session, probe.reason); return }
     // A close nobody reported: the kernel watch went with the child, so ask
     // once (this is rare) whether that exact harness process still runs.
-    if (processIdentityLiveness(session.harnessProcess) === 'gone') {
+    if (session.harnessGone()) {
       this.endSession(session, 'harness-gone')
       return
     }
@@ -1129,8 +1173,23 @@ export class Hub {
       const incarnation = readSessionIncarnation(sessionId, this.env)
       if (incarnation?.harness_process === undefined) continue
       const otherBoot = boot !== null && incarnation.boot !== undefined && incarnation.boot !== boot
-      if (!otherBoot && processIdentityLiveness(incarnation.harness_process) !== 'gone') continue
+      if (!otherBoot && (this.childWatching(sessionId, incarnation.harness_process.pid) ||
+          processIdentityLiveness(incarnation.harness_process) !== 'gone')) continue
       this.queueEnded(sessionId, incarnation.harness_process.pid, [])
+    }
+  }
+
+  /**
+   * Whether a session child still runs for this session and harness process:
+   * it writes `<pid> <harness pid>` into its lock, which it holds for life. A
+   * live child has its own kernel watch and will report the end itself.
+   */
+  private childWatching(sessionId: string, harnessPid: number): boolean {
+    try {
+      const [child, harness] = readFileSync(childLockPath(this.env, sessionId), 'utf8').trim().split(' ').map(Number)
+      return harness === harnessPid && child !== undefined && pidExists(child)
+    } catch {
+      return false
     }
   }
 
@@ -1198,12 +1257,16 @@ export class Hub {
       ...(this.deps.logger?.enabled === true ? { logger: bootstrapLogger({ env,
         ...(typeof envelope?.['cwd'] === 'string' ? { cwd: envelope['cwd'] } : {}) }) } : {}),
       store: this.cachedStore(),
+      // Every client a waiter makes ends with the credential it was made with.
+      clientFactory: (baseUrl, bearer, options) =>
+        (this.deps.clientFactory ?? createClient)(baseUrl, bearer, { ...options, signal: this.waiterSignal() }),
       io: { out: () => undefined, err: (line) => this.logger.debug('hub.session', { note: line }), confirm: async () => false, openUrl: () => undefined },
       spawnQuestionSettlement: (launch) => this.settle(launch.envelope.session_id ?? '', launch.harness,
         launch.envelope.cwd ?? null, launch.purpose === 'submission' ? 'submission' : 'settlement'),
       onSessionInputStaged: (sessionId) => this.inputStaged(sessionId),
     }
     delete deps.spawnHookMaintenance
+    delete deps.spawnRetirement
     return hookRunCommand(deps, event, async () => envelope === null ? '' : JSON.stringify(envelope), harness)
   }
 
@@ -1226,7 +1289,12 @@ export class Hub {
   // -- housekeeping --------------------------------------------------------------
 
   private safetyTick(): void {
-    if (nativeUninstallPending(this.env)) { this.requestExit('uninstall-in-progress'); return }
+    if (nativeUninstallPending(this.env)) {
+      // The uninstall waits for every launcher image: the children go too.
+      for (const session of this.sessions.values()) session.child?.send({ type: 'bye' })
+      this.requestExit('uninstall-in-progress')
+      return
+    }
     const now = this.clock.wall()
     for (const session of this.sessions.values()) {
       if (session.lease.phase === 'dormant' && session.notified) { session.lease.needsFresh = true; this.driver.poke() }
@@ -1237,13 +1305,16 @@ export class Hub {
       }
       const probe = session.probe()
       if (probe.state === 'ended') this.endSession(session, probe.reason)
-      else if (probe.state === 'running') session.observeActivity(probe.activity)
-      else if (session.child === null || session.child.closed) {
+      else if (probe.state === 'running') {
+        session.observeActivity(probe.activity)
+        // Evidence came back after an uncertain read: renew again now.
+        if (session.lease.phase === 'uncertain' && session.notified) this.driver.poke()
+      } else if (session.child === null || session.child.closed) {
         // No kernel watch while no child is connected: ask the process table.
-        // Signal 0 every tick; the start-time read (a `ps`) only now and then.
+        // Signal 0 every tick; the start-time read (a `ps` off Linux) only now and then.
         this.disconnectedTicks += 1
         if (!pidExists(session.harnessProcess.pid) ||
-            (this.disconnectedTicks % 10 === 0 && processIdentityLiveness(session.harnessProcess) === 'gone')) {
+            ((session.registration.harnessTicks !== null || this.disconnectedTicks % 10 === 0) && session.harnessGone())) {
           this.endSession(session, 'harness-gone')
         }
       }
@@ -1363,7 +1434,7 @@ function askLauncher(launcher: string, socket: Socket): Promise<PeerCredentials 
 }
 
 let cachedBoot: string | null | undefined
-/** This boot: Linux's boot id, macOS's boot time. A different value means a reboot or power loss. */
+/** This boot: Linux's boot id, macOS's boot session UUID. A different value means a reboot or power loss. */
 export function currentBootIdentity(): string | null {
   if (cachedBoot !== undefined) return cachedBoot
   cachedBoot = null

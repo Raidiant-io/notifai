@@ -123,6 +123,8 @@ export interface CommandDeps {
    * hooks start none; the production entry point supplies the real launcher.
    */
   spawnHookMaintenance?: (launch: HookMaintenanceLaunch) => void
+  /** Starts a detached retirement of closed sessions' queued questions. Absent, none starts. */
+  spawnRetirement?: (launch: HookMaintenanceLaunch) => void
   /** Test seam and production adapter for the external native skills installer. */
   nativeSkills?: NativeSkills
   /** Test seam for Orca's exact-pane Agent Session title lookup. */

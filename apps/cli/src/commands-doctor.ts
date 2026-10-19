@@ -1929,14 +1929,13 @@ function sessionHubCheck(deps: CommandDeps): HookCheck | null {
   if (!report.running) {
     return { name: 'session hub', ok: true, reportOnly: true, detail: 'not running; it starts with the next Agent Session', technical: report }
   }
-  const watching = sessions.filter((session) => session['watching'] === true).length
+  // Process, transport and timing stay in the JSON detail; the line says what the User gets.
+  const reachable = sessions.filter((session) => session['phase'] === 'attending').length
   return {
     name: 'session hub',
     ok: true,
     reportOnly: true,
-    detail: `running (process ${report.pid}): ${sessions.length} session${sessions.length === 1 ? '' : 's'} attended, ` +
-      `${watching} watched by a session child, ${String(status?.['transport'] ?? 'unknown')} service exchange` +
-      (typeof status?.['last_exchange_at'] === 'string' ? `, last exchange ${status['last_exchange_at']}` : ''),
+    detail: `running: ${sessions.length} Agent Session${sessions.length === 1 ? '' : 's'} attended, ${reachable} reachable now`,
     technical: report,
   }
 }

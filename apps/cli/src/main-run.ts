@@ -12,7 +12,7 @@ import { nativeSkills } from './native-skills.js'
 import { argvFlagNames, bootstrapLogger, nullLogger } from './logging.js'
 import { buildProgram } from './program.js'
 import { spawnQuestionSettlement } from './question-settlement-process.js'
-import { spawnHookMaintenance } from './hook-maintenance.js'
+import { spawnHookMaintenance, spawnRetirement } from './hook-maintenance.js'
 import { buildIdentity } from './distribution.js'
 import { consumeNpmAdapterLocator } from './cli-bin.js'
 import { OWNER_STEP_BUDGETS, hookInvocation, hookStepBudgets } from './hook-budgets.js'
@@ -47,6 +47,7 @@ const deps: CommandDeps = {
   nativeSkills,
   spawnQuestionSettlement,
   spawnHookMaintenance,
+  spawnRetirement,
   logger,
   ...(invokingNpmAdapterArtifact ? { invokingNpmAdapterArtifact } : {}),
 }

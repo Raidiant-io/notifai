@@ -97,6 +97,8 @@ interface FakeService {
   single: { sessionId: string; body: AttendanceRequestT; waitSeconds: number }[]
   /** Release every held exchange now. */
   release(): void
+  /** While set, even an exchange that asked for no wait is held until `release`. */
+  hold: boolean
 }
 
 function fakeService(options: {
@@ -107,7 +109,7 @@ function fakeService(options: {
   const batches: FakeService['batches'] = []
   const single: FakeService['single'] = []
   const held = new Set<() => void>()
-  const hold = (waitSeconds: number, signal?: AbortSignal): Promise<void> => waitSeconds === 0 ? Promise.resolve() : new Promise((resolve, reject) => {
+  const hold = (waitSeconds: number, signal?: AbortSignal): Promise<void> => waitSeconds === 0 && !service.hold ? Promise.resolve() : new Promise((resolve, reject) => {
     const done = (): void => { held.delete(done); resolve() }
     held.add(done)
     signal?.addEventListener('abort', () => { held.delete(done); reject(new Error('aborted')) }, { once: true })
@@ -146,7 +148,8 @@ function fakeService(options: {
       return async () => { throw new Error(`unexpected call ${String(property)}`) }
     },
   })
-  return { client, batches, single, release: () => { for (const done of [...held]) done() } }
+  const service: FakeService = { client, batches, single, hold: false, release: () => { for (const done of [...held]) done() } }
+  return service
 }
 
 class FakeSession implements AttendedSession {
@@ -253,6 +256,19 @@ describe('hub exchange driver', () => {
     expect(service.batches).toEqual([])
     expect(new Set(service.single.map((call) => call.sessionId))).toEqual(new Set([SESSION, OTHER]))
     expect(driver.transport).toBe('per-session')
+    driver.stop()
+    service.release()
+    await running
+  })
+
+  it('paces the per-session fallback to the machine\'s exchange budget', async () => {
+    const service = fakeService({ capabilities: ['session_attendance'] })
+    const sessions = Array.from({ length: 20 }, (_, index) => new FakeSession(`00000000-0000-4000-8000-${String(index).padStart(12, '0')}`))
+    const driver = new ExchangeDriver(driverHost(service, sessions))
+    const running = driver.run()
+    await new Promise((resolve) => setTimeout(resolve, 500))
+    expect(service.single.length).toBeLessThanOrEqual(8)
+    await until(() => service.single.length >= 20, 6_000)
     driver.stop()
     service.release()
     await running
@@ -367,7 +383,7 @@ function peerOf(pid: number, parent: { pid: number; comm: string; start: string 
     parent: { ...parent, ppid: grandparent?.pid ?? 1 }, grandparent: grandparent === undefined ? null : { ...grandparent, ppid: 1 } }
 }
 
-function startHub(env: NodeJS.ProcessEnv, service: FakeService, peers: Map<number, PeerCredentials>, store = memoryStore()): { hub: Hub; done: Promise<number> } {
+function startHub(env: NodeJS.ProcessEnv, service: FakeService, peers: Map<number, PeerCredentials>, store = memoryStore(), safetyTickMs?: number): { hub: Hub; done: Promise<number> } {
   const deps: CommandDeps = {
     io: { out: () => undefined, err: () => undefined, confirm: async () => false, openUrl: () => undefined },
     store, env, cwd: '/tmp', logger: nullLogger(), clientFactory: () => service.client,
@@ -376,7 +392,7 @@ function startHub(env: NodeJS.ProcessEnv, service: FakeService, peers: Map<numbe
     // The fake child's pid is whatever it said in hello; tests map it to a peer.
     void socket
     return peers.get(lastHelloPid) ?? null
-  }, idleExitMs: 400, bootIdentity: () => 'test-boot' })
+  }, idleExitMs: 400, bootIdentity: () => 'test-boot', ...(safetyTickMs === undefined ? {} : { safetyTickMs }) })
   const done = hub.run()
   return { hub, done }
 }
@@ -447,7 +463,7 @@ describe('hub', () => {
     ]
     for (const [reason, peer, overrides] of refusals) {
       const child = await registered(env, (overrides['session_id'] as string | undefined) ?? 'aaaaaaaa-0000-0000-0000-000000000000', peer.pid, peer, peers, overrides)
-      expect(child.frames[0], reason).toEqual({ type: 'refused', reason })
+      expect(child.frames[0], reason).toEqual({ type: 'refused', reason, retry: false })
     }
     // A child that says hello as one process but is another is refused.
     peers.set(900007, peerOf(900099, harness))
@@ -455,7 +471,7 @@ describe('hub', () => {
     const liar = await connectChild(env, 900007)
     liar.send(registration(SESSION))
     await until(() => liar.frames.length > 0)
-    expect(liar.frames[0]).toEqual({ type: 'refused', reason: 'peer-mismatch' })
+    expect(liar.frames[0]).toEqual({ type: 'refused', reason: 'peer-mismatch', retry: false })
     service.release()
     await done
   })
@@ -522,6 +538,63 @@ describe('hub', () => {
     await new Promise((resolve) => setTimeout(resolve, 100))
     expect(service.batches.length).toBe(after)
     child.socket.destroy()
+    await done
+  })
+
+  it('ends the in-hub waiters\' requests when the credential changes', async () => {
+    const env = hubEnv()
+    const { hub, done } = startHub(env, fakeService(), new Map())
+    await hubListening(env)
+    const before = hub.waiterSignal()
+    expect(before.aborted).toBe(false)
+    expect(await requestHub(env, { type: 'credential-changed' })).toEqual({ type: 'ack' })
+    expect(before.aborted).toBe(true)
+    expect(hub.waiterSignal().aborted).toBe(false)
+    hub.requestExit('test')
+    await done
+  })
+
+  it('renews a lone session again once an uncertain read clears', async () => {
+    const env = hubEnv()
+    writeDescriptor(env, SESSION)
+    recordSessionNotified(SESSION, env, Date.now())
+    const service = fakeService()
+    const peers = new Map<number, PeerCredentials>()
+    const { done } = startHub(env, service, peers, memoryStore(), 100)
+    await hubListening(env)
+    const child = await registered(env, SESSION, 900030, peerOf(900030, { pid: HARNESS.pid, comm: 'claude', start: HARNESS.start }), peers)
+    await until(() => service.batches.length >= 2)
+    // The descriptor goes missing for a moment: the held exchange ends and the session is uncertain.
+    rmSync(path.join(claudeDescriptorDir(env), `${HARNESS.pid}.json`))
+    service.release()
+    await new Promise((resolve) => setTimeout(resolve, 300))
+    const during = service.batches.length
+    writeDescriptor(env, SESSION)
+    await until(() => service.batches.length > during)
+    expect(service.batches.at(-1)!.body.sessions).toEqual([expect.objectContaining({ session_id: SESSION, state: 'running' })])
+    child.socket.destroy()
+    service.release()
+    await done
+  })
+
+  it('asks a child to come back later while its session\'s earlier end is still owed', async () => {
+    const env = hubEnv()
+    writeDescriptor(env, SESSION)
+    recordSessionNotified(SESSION, env, Date.now())
+    const service = fakeService()
+    const peers = new Map<number, PeerCredentials>()
+    const { done } = startHub(env, service, peers)
+    await hubListening(env)
+    const first = await registered(env, SESSION, 900040, peerOf(900040, { pid: HARNESS.pid, comm: 'claude', start: HARNESS.start }), peers)
+    await until(() => service.batches.length >= 1)
+    service.hold = true
+    first.send({ type: 'ended', session_id: SESSION, harness_pid: HARNESS.pid, reason: 'harness-gone' })
+    await new Promise((resolve) => setTimeout(resolve, 50))
+    const second = await registered(env, SESSION, 900041, peerOf(900041, { pid: HARNESS.pid, comm: 'claude', start: HARNESS.start }), peers)
+    expect(second.frames[0]).toEqual({ type: 'refused', reason: 'session-ending', retry: true })
+    service.hold = false
+    service.release()
+    first.socket.destroy()
     await done
   })
 

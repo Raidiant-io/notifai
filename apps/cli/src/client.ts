@@ -204,6 +204,12 @@ export interface ClientOptions {
   capabilities?: readonly ClientCapability[]
   /** Complete Notification Request schema this authenticated client will submit. */
   notificationContractFingerprint?: string | null
+  /**
+   * Ends every request of this client, in flight or later, once aborted: the
+   * hub aborts it when the credential changes, so nothing it started with the
+   * old credential is sent afterwards.
+   */
+  signal?: AbortSignal
 }
 
 /** Generous enough for a slow link, short enough that nothing hangs for ever. */
@@ -280,7 +286,8 @@ export function createClient(
         : Math.max(1, options.deadlineAt - now())
     const limitMs = Math.max(1, Math.min(requestBudgetMs, remainingMs))
     const timeout = AbortSignal.timeout(limitMs)
-    const signal = abort === undefined ? timeout : AbortSignal.any([timeout, abort])
+    const signals = [timeout, ...(abort === undefined ? [] : [abort]), ...(options.signal === undefined ? [] : [options.signal])]
+    const signal = signals.length === 1 ? timeout : AbortSignal.any(signals)
     let response: Response
     try {
       response = await fetch(`${root}${apiPath}`, {

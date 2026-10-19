@@ -326,12 +326,15 @@ export class ExchangeDriver {
       const body = (entry.state === 'running' && session.lease.cursor !== undefined
         ? { ...rest, message_cursor: session.lease.cursor } : rest) as AttendanceRequestT
       const hold = final === null && session.lease.cursor !== undefined && !session.lease.needsFresh && session.lease.messageRetries === 0
+      // Every loop shares the machine's exchange budget: take a slot first.
+      for (let wait = this.reserveSlot(); wait > 0 && !this.stopping.signal.aborted; wait = this.reserveSlot()) await this.pause(wait)
+      if (this.stopping.signal.aborted) return
       const current = new AbortController()
       this.inFlight.add(current)
       const sentAt = this.host.clock.monotonic()
       const sentEpoch = this.epoch
       const credential = this.host.credentialKey()
-      this.counted()
+      this.requests += 1
       try {
         const response = await client.attend(session.id, body, { waitSeconds: hold ? ATTENDANCE_MAX_WAIT_SECONDS : 0, signal: current.signal })
         backoff = 1_000
@@ -363,6 +366,21 @@ export class ExchangeDriver {
       this.host.logger.info('hub.exchange', { event: 'paced', exchanges_last_second: this.recent.length })
       await this.pause(1_000)
     }
+  }
+
+  /**
+   * Take one exchange slot now (0), or say how long until one frees. Taken
+   * synchronously, so concurrent per-session loops cannot all pass at once.
+   */
+  private reserveSlot(): number {
+    const now = this.host.clock.monotonic()
+    while (this.recent.length > 0 && now - this.recent[0]! > 1_000) this.recent.shift()
+    if (this.recent.length < MAX_EXCHANGES_PER_SECOND) {
+      this.recent.push(now)
+      return 0
+    }
+    this.host.logger.info('hub.exchange', { event: 'paced', exchanges_last_second: this.recent.length })
+    return Math.max(1, 1_001 - (now - this.recent[0]!))
   }
 
   private counted(): void {
