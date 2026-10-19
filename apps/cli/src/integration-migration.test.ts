@@ -15,6 +15,8 @@ import { markSessionEnded, readSessionState, writeSessionState } from './hook-se
 import * as attendantUpdate from './attendant-update.js'
 import * as skillIntegrity from './skill-integrity.js'
 import * as nativeInstallation from './native-installation.js'
+import * as distribution from './distribution.js'
+import * as launchSelf from './launch-self.js'
 import { withHookRepairIntent } from './integration-repair.js'
 import { sourceIntegrationRevision } from './integration-revision.js'
 import { hookRunCommand } from './commands-hook-run.js'
@@ -308,6 +310,100 @@ it('lets a resident observer detect missing wiring without consuming the agent n
   expect(integrationFaultNotice(f.deps, 'codex')).toContain('hooks-missing')
   expect(integrationFaultNotice(f.deps, 'codex')).toBeUndefined()
   expect(readFileSync(f.trust, 'utf8')).toBe(trust)
+})
+
+it.each(['version', 'artifact', 'launcher'] as const)('does not reuse another runtime %s assessment in a current hook', change => {
+  const f = fixture()
+  const old = { ...f.deps, env: { ...f.deps.env } }
+  if (change === 'version') old.runningVersion = '0.0.1'
+  else {
+    const artifact = path.join(f.root, 'older', 'dist', 'main.js')
+    mkdirSync(path.dirname(artifact), { recursive: true })
+    writeFileSync(artifact, '#!/usr/bin/env node\n', { mode: 0o755 })
+    writeFileSync(path.join(path.dirname(path.dirname(artifact)), 'package.json'), JSON.stringify({ version: packageVersion() }))
+    if (change === 'artifact') old.hookInstallTarget = { execPath: process.execPath, scriptPath: artifact }
+    else {
+      const bin = path.join(f.root, 'other-bin')
+      mkdirSync(bin)
+      symlinkSync(artifact, path.join(bin, 'notifai'))
+      old.env['PATH'] = bin
+    }
+  }
+  expect(integrationFaultNotice(old, 'codex', false)).toContain('cli-drift')
+  expect(integrationFaultNotice(f.deps, 'codex')).toBeUndefined()
+  removeToolHook(f.installation.file)
+  f.tick()
+  expect(integrationFaultNotice(f.deps, 'codex')).toContain('hooks-drift')
+  expect(integrationFaultNotice(f.deps, 'codex')).toBeUndefined()
+})
+
+it('separates resolved Claude profiles and project skill roots without leaking their faults', () => {
+  const f = fixture()
+  expect(hooksInstallCommand(f.deps, { harness: 'claude-code', narrate: false })).toBe(0)
+  const profile = path.join(f.root, 'claude-profile')
+  outdate(path.join(profile, 'skills', 'notifai'))
+  const other = { ...f.deps, env: { ...f.deps.env, CLAUDE_CONFIG_DIR: profile } }
+  expect(integrationFaultNotice(other, 'claude-code', false)).toContain('skill-drift')
+  expect(integrationFaultNotice(f.deps, 'claude-code')).toBeUndefined()
+
+  const project = path.join(f.root, 'other-project')
+  outdate(path.join(project, '.claude', 'skills', 'notifai'))
+  expect(integrationFaultNotice({ ...f.deps, cwd: project }, 'claude-code', false)).toContain('skill-drift')
+  expect(integrationFaultNotice(f.deps, 'claude-code')).toBeUndefined()
+})
+
+it('does not reuse faults after a profile skill link is retargeted', () => {
+  const f = fixture(), profile = path.join(f.root, 'profile'), skills = path.join(profile, 'skills')
+  const stale = path.join(f.root, 'stale-skills'), healthy = path.join(f.root, 'healthy-skills')
+  outdate(path.join(stale, 'notifai'))
+  mkdirSync(profile); mkdirSync(healthy)
+  symlinkSync(stale, skills, 'dir')
+  const selected = { ...f.deps, env: { ...f.deps.env, CLAUDE_CONFIG_DIR: profile } }
+  expect(hooksInstallCommand(selected, { harness: 'claude-code', narrate: false })).toBe(0)
+  expect(integrationFaultNotice(selected, 'claude-code', false)).toContain('skill-drift')
+  rmSync(skills)
+  symlinkSync(healthy, skills, 'dir')
+  expect(integrationFaultNotice(selected, 'claude-code')).toBeUndefined()
+})
+
+it('silences retained native builds before inspection or cache writes, while the active build still reports faults', () => {
+  const f = fixture(), root = path.join(f.home, '.notifai'), active = 'a'.repeat(64)
+  const installationId = '12345678-1234-1234-1234-123456789012'
+  const version = packageVersion()!
+  const versionDir = path.join(root, 'versions', active)
+  mkdirSync(versionDir, { recursive: true }); mkdirSync(path.join(root, 'bin'), { recursive: true })
+  writeFileSync(path.join(root, 'install.json'), JSON.stringify({ schema: 1, owner: 'notifai', id: installationId }), { mode: 0o600 })
+  writeFileSync(path.join(root, 'active.json'), JSON.stringify({ schema: 1, active, previous: null, generation: 1 }) + '\n', { mode: 0o600 })
+  writeFileSync(path.join(versionDir, 'inventory.json'), JSON.stringify({ payload:
+    Buffer.from(JSON.stringify({ version })).toString('base64') }), { mode: 0o600 })
+  vi.spyOn(distribution, 'buildIdentity').mockReturnValue({ version, sourceRevision: 'c'.repeat(40), sourceDirty: false,
+    sourceDigest: 'd'.repeat(64), target: 'bun-darwin-arm64', runtime: 'bun' })
+  const reference = vi.spyOn(launchSelf, 'currentRuntimeBuild').mockReturnValue({ installation_id: installationId, build: 'b'.repeat(64) })
+  const inspect = vi.fn(nativeSkills.inspect)
+  f.deps.nativeSkills = { ...nativeSkills, inspect }
+  removeToolHook(f.installation.file)
+  expect(integrationFaultNotice(f.deps, 'codex', false, true)).toBeUndefined()
+  expect(inspect).not.toHaveBeenCalled()
+  expect(existsSync(path.join(f.root, 'state', 'notifai', 'integration-health'))).toBe(false)
+
+  reference.mockReturnValue({ installation_id: installationId, build: active })
+  expect(integrationFaultNotice(f.deps, 'codex')).toContain('hooks-drift')
+  expect(integrationFaultNotice(f.deps, 'codex')).toBeUndefined()
+
+  // A retained observer may lose active status while its scan is in flight.
+  inspect.mockImplementationOnce((...args) => {
+    const next = 'e'.repeat(64), directory = path.join(root, 'versions', next)
+    mkdirSync(directory)
+    writeFileSync(path.join(directory, 'inventory.json'), readFileSync(path.join(versionDir, 'inventory.json')), { mode: 0o600 })
+    writeFileSync(path.join(root, 'active.json'), JSON.stringify({ schema: 1, active: next, previous: active, generation: 2 }) + '\n', { mode: 0o600 })
+    return nativeSkills.inspect(...args)
+  })
+  const health = path.join(f.root, 'state', 'notifai', 'integration-health')
+  const file = path.join(health, readdirSync(health).find(name => name.endsWith('.json'))!)
+  const before = JSON.parse(readFileSync(file, 'utf8'))
+  outdate(path.join(f.home, '.agents', 'skills', 'notifai'))
+  expect(integrationFaultNotice(f.deps, 'codex', false, true)).toBeUndefined()
+  expect(JSON.parse(readFileSync(file, 'utf8'))).toEqual(before)
 })
 
 it('stays quiet about guidance it could not finish inspecting, without changing hooks', () => {

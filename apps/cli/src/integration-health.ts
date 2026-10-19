@@ -9,11 +9,15 @@ import { type CommandDeps } from './commands-core.js'
 import { stopShapeProblems } from './commands-hook-shape.js'
 import { stateDir } from './config.js'
 import { withFileLock } from './file-lock.js'
-import { type HookInstallableHarness } from './harnesses.js'
+import { SOURCE_CONTEXT_HARNESSES, type HookInstallableHarness } from './harnesses.js'
 import { HOOK_EVENTS, requiredHookEvents } from './hook-events.js'
-import { hookAdapterTargetsArtifact, inspectHookAdapter, isNpxAdapterTarget } from './hook-adapter.js'
+import { hookAdapterTargetsArtifact, inspectHookAdapter, isNpxAdapterTarget, resolveHookAdapterHome } from './hook-adapter.js'
 import { codexTrustProblems, findInstallations, handlerEvent, type Installation } from './install-hooks.js'
-import { inspectSkillCopies } from './native-skills.js'
+import { inspectSkillCopies, skillDestination } from './native-skills.js'
+import { currentRuntimeBuild } from './launch-self.js'
+import { canonicalPath } from './local-path.js'
+import { nativeInstallationIdentity } from './native-installation-identity.js'
+import { accountHome } from './platform.js'
 import { packageVersion } from './release.js'
 import { type SkillInspectionBudget } from './skill-integrity.js'
 
@@ -54,13 +58,20 @@ export interface IntegrationFault {
   remedy: string
 }
 
-export function localIntegrationAssessment(deps: CommandDeps, harness?: HookInstallableHarness, budget?: SkillInspectionBudget) {
+function integrationCli(deps: CommandDeps) {
   const target = deps.hookInstallTarget
   const artifact = target !== undefined && !isNpxAdapterTarget(target) ? (target.kind === 'native' ? process.execPath : target.scriptPath) : buildIdentity() !== null ? process.execPath : process.argv[1]
-  const cli = inspectCliInstallations(deps.env, deps.hookPlatform, {
+  return inspectCliInstallations(deps.env, deps.hookPlatform, {
     ...(artifact === undefined ? {} : { runningArtifactPath: artifact }),
     currentVersion: deps.runningVersion === undefined ? packageVersion() : deps.runningVersion,
   })
+}
+
+export function localIntegrationAssessment(deps: CommandDeps, harness?: HookInstallableHarness, budget?: SkillInspectionBudget) {
+  return assessIntegration(deps, integrationCli(deps), harness, budget)
+}
+
+function assessIntegration(deps: CommandDeps, cli: ReturnType<typeof integrationCli>, harness?: HookInstallableHarness, budget?: SkillInspectionBudget) {
   const faults: IntegrationFault[] = []
   const coexistence = nativeCoexistenceGap(cli, deps.hookPlatform ?? process.platform)
   if (coexistence?.remedy?.by === 'user-here') faults.push({ code: 'legacy-native-coexistence', detail: coexistence.detail,
@@ -102,14 +113,43 @@ export function localIntegrationAssessment(deps: CommandDeps, harness?: HookInst
 
 const CHECK_INTERVAL_MS = 60_000
 
+/** Retained native residents may finish their work, but only the active build
+ * can judge the current installation. Recheck after inspection too: activation
+ * can happen while an old observer is scanning. This grants no repair authority. */
+function healthPublicationCurrent(deps: CommandDeps): () => boolean {
+  if (buildIdentity() === null) return () => true
+  const reference = currentRuntimeBuild(deps.env)
+  return () => {
+    const platform = deps.hookPlatform ?? process.platform
+    const active = nativeInstallationIdentity(accountHome(deps.env, platform), platform === 'win32')
+    return reference !== null && reference.installation_id === active.installationId && reference.build === active.build
+  }
+}
+
+function healthScope(deps: CommandDeps, cli: ReturnType<typeof integrationCli>, harness?: HookInstallableHarness) {
+  const resolved = (file: string | null | undefined) => file == null ? null : canonicalPath(file)
+  const skills = SOURCE_CONTEXT_HARNESSES.flatMap(owner => (['global', 'project'] as const).map(scope => {
+    const destination = skillDestination(scope, owner, deps.cwd, deps.env)
+    return scope === 'project' && (destination === null || !existsSync(destination)) ? null : resolved(destination)
+  }))
+  return { schema: 2, harness, build: buildIdentity(), runtime: cli.current, executable: resolved(process.execPath),
+    effective: cli.effective === null ? null : { command: resolved(cli.effective.command_path),
+      artifact: resolved(cli.effective.artifact_path), version: cli.effective.version },
+    adapterHome: resolved(resolveHookAdapterHome(deps.hookAdapterHome, deps.env, deps.hookPlatform)),
+    codexHome: resolved(deps.env['CODEX_HOME']), skills,
+    installations: integrationInstallations(deps).map(({ installation }) => resolved(installation.file)) }
+}
+
 /** Once per changed fault, across repeated callbacks and Projects on a machine. */
 export function integrationFaultNotice(deps: CommandDeps, harness?: HookInstallableHarness, consume = true, force = false): string | undefined {
   try {
-    const projectSkill = path.join(deps.cwd, '.agents', 'skills', 'notifai')
-    const key = createHash('sha256').update(JSON.stringify([harness, deps.env['CODEX_HOME'], deps.hookInstallTarget,
-      existsSync(path.join(projectSkill, 'SKILL.md')) ? projectSkill : null])).digest('hex')
+    const current = healthPublicationCurrent(deps)
+    if (!current()) return undefined
+    const cli = integrationCli(deps)
+    const key = createHash('sha256').update(JSON.stringify(healthScope(deps, cli, harness))).digest('hex')
     const file = path.join(stateDir(deps.env), 'integration-health', `${key}.json`)
     return withFileLock(`${file}.lock`, () => {
+      if (!current()) return undefined
       let previous: { checked_at?: number; reported?: string; fingerprint?: string; faults?: IntegrationFault[] } = {}
       try { previous = JSON.parse(readFileSync(file, 'utf8')) } catch { /* first check */ }
       const now = (deps.now ?? Date.now)()
@@ -119,8 +159,9 @@ export function integrationFaultNotice(deps: CommandDeps, harness?: HookInstalla
       // scan must not be retried on every ordinary tool or resident probe.
       if (!cached) atomicWriteFileSync(file, JSON.stringify({ ...previous, checked_at: now,
         faults: Array.isArray(previous.faults) ? previous.faults : [] }))
-      const faults = cached ? previous.faults! : localIntegrationAssessment(deps, harness,
+      const faults = cached ? previous.faults! : assessIntegration(deps, cli, harness,
         { maxFiles: 256, maxBytes: 2 * 1024 * 1024, deadlineAt: Date.now() + 75 }).faults
+      if (!current()) return undefined
       const fingerprint = createHash('sha256').update(JSON.stringify(faults)).digest('hex')
       const shouldReport = faults.length > 0 && (consume ? previous.reported !== fingerprint : previous.fingerprint !== fingerprint)
       if (!cached || (consume && shouldReport)) atomicWriteFileSync(file, JSON.stringify({
