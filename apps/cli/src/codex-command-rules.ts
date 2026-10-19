@@ -27,7 +27,7 @@
  *   this file. `doctor` reports that as the organization's choice.
  */
 import { execFile } from 'node:child_process'
-import { existsSync, lstatSync, readdirSync, readFileSync, rmSync, statSync } from 'node:fs'
+import { existsSync, lstatSync, readdirSync, readFileSync, rmSync } from 'node:fs'
 import path from 'node:path'
 import { promisify } from 'node:util'
 import { atomicWriteFileSync } from './atomic-file.js'

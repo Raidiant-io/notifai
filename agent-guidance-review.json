@@ -1,8 +1,8 @@
 {
   "version": 1,
-  "behavior_digest": "sha256:9e1deab7dbd6b59f647f2d0482d6e541099774612d8a650a012c17a8acd525a0",
+  "behavior_digest": "sha256:6719ff7fa0ed39363c4af9b22239a830a814909f781ace50590a8a9a630084c7",
   "outcome": "guidance-updated",
-  "reason": "Reviewed lifecycle hooks, the shipped skill and harness references, harness setup, CLI readiness and domain terms after never reviving a closed session, per-hook nested budgets with detached daily maintenance, active-build health notices, and session-end question expiry. Guidance now says closing an Agent Session ends its questions: Claude Code, Codex and Hermes references and the doctor delivery contracts drop cold resume and delivery after close, and the README states that an unread answer is dropped and shown as not delivered. Health-notice and update-notice wording is unchanged; the update lookup moved to detached maintenance, so hooks only read its recorded result. Skill and lifecycle context budgets remain enforced.",
+  "reason": "Reviewed lifecycle hooks, the shipped skill and references, harness setup, CLI readiness and domain terms after the User-approved Codex command rule. The Codex reference explains when to offer notifai init --codex-commands, never writing it unasked, and the rule's three limits (startup loading, literal argument lists only, most restrictive rule wins) with the readiness state for each; SKILL.md and send-details pass Markdown bodies and forms by file path and call notifai as a plain argument list; the README documents the rule beside the Claude Code command approval. Doctor reports codex-commands as per-command approval, never a blocker. Earlier closed-session and hook-budget guidance is unchanged.",
   "surfaces_reviewed": [
     "lifecycle-hooks",
     "notifai-skill",
