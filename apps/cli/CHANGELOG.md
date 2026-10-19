@@ -8,6 +8,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 This project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 and [Conventional Commits](https://www.conventionalcommits.org/en/v1.0.0/).
 
+## [13.1.0-beta.1](https://github.com/Raidiant-io/notifai/compare/v13.0.0...v13.1.0-beta.1) (2026-10-19)
+
+### Features
+
+* Closing an Agent Session ends its questions: they expire on every device at once, and an answer the agent had not read yet is dropped instead of being delivered later. The session's end record names any dropped answers.
+
+### Bug Fixes
+
+* Never revive a closed session. Claude Code cold resume (`claude -p --resume`) is removed; idle but open sessions still receive their answers, and the delivery contracts shown by `doctor` say so.
+* Keep every hook inside its own timeout: credential reads happen only when a hook actually calls the service, nested steps get a budget derived from the hook's declared timeout, and session pruning and update checks run in a detached daily maintenance process instead of on the prompt path.
+* Register Codex questions from the native question card itself, so an answered card no longer leaves a separately copied question pending.
+* Report integration health only for the active native build, so a retained older runtime can no longer surface stale CLI or skill faults in current hooks.
+* Beta updates always choose the newer of the beta and stable releases.
+
 ## [13.0.0](https://github.com/Raidiant-io/notifai/compare/v12.1.1...v13.0.0) (2026-10-18)
 
 
