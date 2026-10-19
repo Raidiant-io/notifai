@@ -108,6 +108,7 @@ import {
 import { skillReadiness } from './commands-skill.js'
 import { projectBinding, projectEnabled } from './project-enablement.js'
 import { attendantSupport } from './session-attendant-probe.js'
+import { readHubReport } from './hub-client.js'
 import { codexNativeActivityObserved, hermesQuestionRouteReady, listAttendantReports, type AttendantReport } from './session-attendant-state.js'
 import { CLI_UPDATE_AVAILABLE, SERVICE_UPDATE_IN_PROGRESS } from './cli-contract.js'
 import { claudeCommandRulesInstalled } from './claude-command-approval.js'
@@ -1446,6 +1447,8 @@ function hookChecks(deps: CommandDeps): HookCheck[] {
 
   const attendants = sessionAttendantCheck(deps, active)
   if (attendants !== null) checks.push(attendants)
+  const hub = sessionHubCheck(deps)
+  if (hub !== null) checks.push(hub)
 
   // A handler naming an event this build dropped exits 2 every time the harness
   // fires it, which the harness reports as a hook failure.
@@ -1893,6 +1896,49 @@ function wakeRouteCheck(
     }
   }
   return null
+}
+
+/**
+ * The shared hub: running or not, what it attends, and whether it stopped
+ * itself. Not running is normal: it starts with the next Agent Session and
+ * leaves 30 seconds after the last one.
+ */
+function sessionHubCheck(deps: CommandDeps): HookCheck | null {
+  const report = readHubReport(deps.env)
+  if (!report.supported) return null
+  const status = report.status
+  const sessions = Array.isArray(status?.['sessions']) ? (status['sessions'] as Record<string, unknown>[]) : []
+  if (report.fault !== null) {
+    return {
+      name: 'session hub',
+      ok: false,
+      detail: `the hub stopped restarting after ${report.recent_crashes} crashes in 10 minutes; Agent Sessions show as out of reach until it starts again`,
+      technical: report,
+      remedy: { summary: 'check `notifai logs --event hub.start`; the hub starts again with the next Agent Session after the window', command: 'notifai logs --event hub.start' },
+    }
+  }
+  if (report.running && status?.['credential'] === 're-pair-needed') {
+    return {
+      name: 'session hub',
+      ok: false,
+      detail: 'the service refused this machine\'s credential; the hub stopped sending',
+      technical: report,
+      remedy: { summary: 'pair this machine again', command: 'notifai login' },
+    }
+  }
+  if (!report.running) {
+    return { name: 'session hub', ok: true, reportOnly: true, detail: 'not running; it starts with the next Agent Session', technical: report }
+  }
+  const watching = sessions.filter((session) => session['watching'] === true).length
+  return {
+    name: 'session hub',
+    ok: true,
+    reportOnly: true,
+    detail: `running (process ${report.pid}): ${sessions.length} session${sessions.length === 1 ? '' : 's'} attended, ` +
+      `${watching} watched by a session child, ${String(status?.['transport'] ?? 'unknown')} service exchange` +
+      (typeof status?.['last_exchange_at'] === 'string' ? `, last exchange ${status['last_exchange_at']}` : ''),
+    technical: report,
+  }
 }
 
 /**
