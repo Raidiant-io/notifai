@@ -44,6 +44,15 @@ export const QUESTION_STOP_TIMEOUT_SECONDS =
   QUESTION_WAITER_CEILING_SECONDS + QUESTION_STOP_TEARDOWN_HEADROOM_SECONDS
 
 /**
+ * Declared timeout of Claude Code's Stop handler where the hub owns the answer
+ * window (macOS, Linux): the Stop hook serves terminal-first grace and submits,
+ * then hands the window to the hub. Claude Code does not enforce an async
+ * hook's timeout; the value keeps nested step budgets honest.
+ */
+export const CLAUDE_HUB_STOP_TIMEOUT_SECONDS =
+  QUESTION_WAITER_STARTUP_HEADROOM_SECONDS + QUESTION_STOP_TEARDOWN_HEADROOM_SECONDS
+
+/**
  * Short Stop budget for harnesses that cannot own asynchronous Question
  * Routing (Cursor, and every event the OpenCode and OpenClaw plugins run).
  * They retire/refuse promptly and never wait through an answer window, so

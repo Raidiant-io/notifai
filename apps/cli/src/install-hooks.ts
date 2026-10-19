@@ -50,6 +50,7 @@ import {
 import { accountHome } from './platform.js'
 import { sameLocalPath } from './local-path.js'
 import {
+  CLAUDE_HUB_STOP_TIMEOUT_SECONDS,
   NON_ROUTING_STOP_TIMEOUT_SECONDS,
   QUESTION_STOP_TIMEOUT_SECONDS,
 } from './question-timing.js'
@@ -79,7 +80,13 @@ import {
 
 export interface HookHandler {
   type: 'command'
+  /** Shell form: the whole command line. Exec form (with `args`): the executable. */
   command: string
+  /**
+   * Exec form: Claude Code spawns `command` directly with these arguments and
+   * no shell, so the hook process is Claude's own child on every platform.
+   */
+  args?: string[]
   timeout?: number
   async?: boolean
   asyncRewake?: boolean
@@ -125,6 +132,45 @@ export function hookCommand(
     return encodeWindowsCodexCommand(command)
   }
   return command
+}
+
+/**
+ * Claude Code on macOS and Linux runs Notifai's handlers in exec form: no
+ * `sh -c` between Claude and the hook, so the session child is Claude's own
+ * child (Ubuntu's dash does not exec its last command). Codex keeps its shell
+ * command byte for byte: changed bytes make Codex skip the hook until the User
+ * re-trusts it. Windows keeps its form until it is verified there.
+ */
+export function usesExecForm(
+  harness: HookInstallableHarness | undefined,
+  platform?: NodeJS.Platform | HookHostPlatform,
+): boolean {
+  return harness === 'claude-code' && hookHostPlatform(platform) === 'posix'
+}
+
+/** The `command` (and, in exec form, `args`) fields of one generated handler. */
+export function hookCommandFields(
+  adapterPath: string,
+  event: string,
+  harness?: HookInstallableHarness,
+  options: HookCommandOptions = {},
+): Pick<HookHandler, 'command' | 'args'> {
+  // On POSIX the adapter is directly executable (a native launcher, or a script
+  // with its own interpreter line), so exec form never needs the Node path.
+  if (usesExecForm(harness, options.platform)) {
+    return { command: adapterPath, args: ['hook', event, ...OWNER_MARKER.split(' '), '--harness', harness!] }
+  }
+  return { command: hookCommand(adapterPath, event, harness, options) }
+}
+
+/**
+ * The command line one handler runs, as one string: the shell-form command, or
+ * the exec-form executable and arguments written the way the shell form would
+ * write them. Ownership, event and drift checks all read this.
+ */
+export function handlerCommandLine(handler: { command: string; args?: unknown }): string {
+  if (!Array.isArray(handler.args)) return handler.command
+  return [quote(handler.command), ...handler.args.map((arg) => String(arg))].join(' ')
 }
 
 /** The leading argv that every Notifai handler must start with. */
@@ -243,6 +289,21 @@ export function stopHandlerIsDetached(harness: HookInstallableHarness | undefine
 }
 
 /**
+ * The declared lifetime of a detached Stop handler. Codex keeps the complete
+ * answer window (its hook bytes must not change, and its own successor owns the
+ * wait). Claude Code with the hub only submits and hands the window to the hub,
+ * so its Stop needs the submission allowance alone.
+ */
+export function stopTimeoutSeconds(
+  harness: HookInstallableHarness | undefined,
+  platform?: NodeJS.Platform | HookHostPlatform,
+): number {
+  return harness === 'claude-code' && hookHostPlatform(platform) === 'posix'
+    ? CLAUDE_HUB_STOP_TIMEOUT_SECONDS
+    : QUESTION_STOP_TIMEOUT_SECONDS
+}
+
+/**
  * The turn-end handler, whose shape is the whole per-harness difference.
  *
  * Claude Code takes the answer over its own inbox socket and Codex takes it
@@ -259,14 +320,14 @@ function stopHandler(
   harness: HookInstallableHarness | undefined,
   options: HookCommandOptions,
 ): HookHandler {
-  const command = hookCommand(adapterPath, 'stop', harness, options)
+  const command = hookCommandFields(adapterPath, 'stop', harness, options)
   if (stopHandlerIsDetached(harness)) {
-    return { type: 'command', command, timeout: QUESTION_STOP_TIMEOUT_SECONDS, async: true }
+    return { type: 'command', ...command, timeout: stopTimeoutSeconds(harness, options.platform), async: true }
   }
   if (harness === 'grok') {
-    return { type: 'command', command, timeout: QUESTION_STOP_TIMEOUT_SECONDS }
+    return { type: 'command', ...command, timeout: QUESTION_STOP_TIMEOUT_SECONDS }
   }
-  return { type: 'command', command, timeout: NON_ROUTING_BLOCKING_STOP_TIMEOUT_SECONDS }
+  return { type: 'command', ...command, timeout: NON_ROUTING_BLOCKING_STOP_TIMEOUT_SECONDS }
 }
 
 function commandOptionsFrom(options: BuildOptions): HookCommandOptions {
@@ -285,7 +346,7 @@ export function buildHookConfig(options: BuildOptions): HookConfig {
     if (row.notifai === 'pre-tool-use') {
       if (options.harness !== 'codex' || !installsSessionAttendant(options.harness, options.platform)) continue
       hooks[row.document] = [{ matcher: 'request_user_input_async', hooks: [{
-        type: 'command', command: hookCommand(adapterPath, row.notifai, options.harness, commandOptions), timeout: row.timeoutSeconds,
+        type: 'command', ...hookCommandFields(adapterPath, row.notifai, options.harness, commandOptions), timeout: row.timeoutSeconds,
       }] }]
       continue
     }
@@ -301,7 +362,7 @@ export function buildHookConfig(options: BuildOptions): HookConfig {
         matcher: CLAUDE_PICKER_MATCHER,
         hooks: [{
           type: 'command',
-          command: hookCommand(adapterPath, row.notifai, options.harness, commandOptions),
+          ...hookCommandFields(adapterPath, row.notifai, options.harness, commandOptions),
           timeout: row.notifai === 'permission-request' ? QUESTION_STOP_TIMEOUT_SECONDS : row.timeoutSeconds,
         }],
       }]
@@ -318,7 +379,7 @@ export function buildHookConfig(options: BuildOptions): HookConfig {
         hooks: [
           {
             type: 'command',
-            command: hookCommand(adapterPath, row.notifai, options.harness, commandOptions),
+            ...hookCommandFields(adapterPath, row.notifai, options.harness, commandOptions),
             timeout: row.timeoutSeconds,
           },
         ],
@@ -342,7 +403,7 @@ export function buildHookConfig(options: BuildOptions): HookConfig {
     for (const event of attendDocumentEvents(options.harness)) {
       const attend: HookHandler = {
         type: 'command',
-        command: hookCommand(adapterPath, 'attend', options.harness, commandOptions),
+        ...hookCommandFields(adapterPath, 'attend', options.harness, commandOptions),
         async: true,
         ...(options.harness !== 'codex'
           ? {}
@@ -1024,7 +1085,7 @@ function readSettings(file: string): SettingsDocument {
  * beside ours inside the same matcher group.
  */
 function isOurHandler(handler: HookHandler, scriptPath: string): boolean {
-  return isOurCommand(handler.command, scriptPath)
+  return isOurCommand(handlerCommandLine(handler), scriptPath)
 }
 
 /** Drops only our handlers, keeping the group and anyone else's handlers. */
@@ -1090,9 +1151,9 @@ export function mergeHooks(
         }
         hadOurs = true
         const replacementGroup = desired.find(candidate => candidate.hooks.some(replacement =>
-          handlerEvent(replacement.command) === handlerEvent(handler.command)))
+          handlerEvent(handlerCommandLine(replacement)) === handlerEvent(handlerCommandLine(handler))))
         const index = replacementGroup?.hooks.findIndex(replacement =>
-          handlerEvent(replacement.command) === handlerEvent(handler.command)) ?? -1
+          handlerEvent(handlerCommandLine(replacement)) === handlerEvent(handlerCommandLine(handler))) ?? -1
         if (replacementGroup !== undefined && index >= 0) {
           next.push(replacementGroup.hooks.splice(index, 1)[0]!)
         } else if (options.preserveIdentities === true) {
@@ -1952,7 +2013,7 @@ function locateAllHandlers(document: SettingsDocument): InstalledHandler[] {
           ...(group.matcher === undefined ? {} : { matcher: group.matcher }),
           groupIndex,
           handlerIndex,
-          command: handler.command,
+          command: handlerCommandLine(handler),
           ...(handler.timeout === undefined ? {} : { timeout: handler.timeout }),
           ...(handler.async === undefined ? {} : { async: handler.async }),
           ...(handler.asyncRewake === undefined ? {} : { asyncRewake: handler.asyncRewake }),
