@@ -38,10 +38,12 @@ function json(response: ServerResponse, value: unknown, status = 200): void {
   response.end(JSON.stringify(value))
 }
 
+function stripAnsi(value: string): string {
+  return value.replaceAll(/\u001b\[[0-?]*[ -/]*[@-~]/g, '')
+}
+
 function compactTerminalOutput(value: string): string {
-  return value
-    .replaceAll(/\u001b\[[0-?]*[ -/]*[@-~]/g, '')
-    .replaceAll(/[^A-Za-z0-9]+/g, '')
+  return stripAnsi(value).replaceAll(/[^A-Za-z0-9]+/g, '')
 }
 
 ptyIt('renders completed setup ahead of a transient evidence failure in a real PTY', async () => {
@@ -60,9 +62,15 @@ ptyIt('renders completed setup ahead of a transient evidence failure in a real P
     XDG_STATE_HOME: path.join(root, 'state'),
     NOTIFAI_CREDENTIALS: 'file',
     NOTIFAI_NO_ANIMATION: '1',
+    // Colour on wherever the suite runs: a colour code cut across lines is the
+    // visible symptom of a screen laid out at zero columns.
+    TERM: 'xterm-256color',
     PATH: `${bin}${path.delimiter}${process.env['PATH'] ?? ''}`,
   }
   delete env['CI']
+  delete env['NO_COLOR']
+  delete env['FORCE_COLOR']
+  delete env['NODE_DISABLE_COLORS']
   delete env['NOTIFAI_NO_INPUT']
   mkdirSync(path.join(cwd, '.notifai'), { recursive: true })
   mkdirSync(bin, { recursive: true })
@@ -226,6 +234,8 @@ ptyIt('renders completed setup ahead of a transient evidence failure in a real P
     expect(result.signal).toBeNull()
     expect(result.code).toBe(0)
     expect(compactTerminalOutput(output)).toContain('Sendatestnotification')
+    // The pty here reports no size; the screen must still lay out whole lines.
+    expect(stripAnsi(output)).toContain('Send a test notification')
     expect(compactTerminalOutput(output)).not.toContain('Finishsetup')
     expect(evidenceCalls).toBe(1)
   } finally {

@@ -1,8 +1,8 @@
 {
   "version": 1,
-  "behavior_digest": "sha256:15692d3f46b11cc261746e251705083668e2df39260f6963d4eb0c16b808c12d",
-  "outcome": "guidance-updated",
-  "reason": "Reviewed lifecycle hooks, the shipped skill and harness references, harness setup, CLI readiness and domain terms after two changes. Codex command approval (#330): the skill, the Codex reference, send details and the README describe the one-time User-approved allow rule written by notifai init --codex-commands, its three limits (rules load at startup, only a literal notifai argument list matches, the most restrictive rule wins), the readiness states doctor reports for each, and the plain --body-file transport; nothing is written unasked. Codex card linking floor: ask now reports native_question_unavailable with reason codex_version_unsupported, the app-server version it saw and the 0.163.0 floor, and tells the agent to ask in plain text without opening request_user_input_async; the native-questions reference already routes every native_question_unavailable reason the same way, so no skill text changed. Lifecycle hook output, domain terms and the ordinary question route are unchanged, and older Codex installs keep every other behaviour. Skill and lifecycle context budgets remain enforced.",
+  "behavior_digest": "sha256:cc9d62b901f3fddd645bcf4f0ba73f359408620a01cd58940b700f52efa97b43",
+  "outcome": "reviewed-no-impact",
+  "reason": "Reviewed lifecycle hooks, the shipped skill and harness references, harness setup, CLI readiness and domain terms after a terminal-layout fix: an interactive terminal that reports zero columns or rows is now laid out at 80x24 instead of one character per line, and a real size still wins. Only how the human-facing interactive screens wrap changes; no command, flag, output contract, hook output, readiness state, domain term or agent-facing instruction changes, so no guidance text needed updating.",
   "surfaces_reviewed": [
     "lifecycle-hooks",
     "notifai-skill",
