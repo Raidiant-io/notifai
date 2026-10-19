@@ -17,6 +17,8 @@ import {
   recordConfirmedNativeAnswerTarget,
 } from './native-answer-operation.js'
 import { markCodexOrdinaryPresentation, mayRetireFromPrompt, reserveCurrentCodexQuestion, type NativeQuestionAdmission } from './codex-question-bindings.js'
+import { isDeepStrictEqual } from 'node:util'
+import { currentCodexTurn } from './session-attendant-state.js'
 import { reserveClaudeQuestion } from './claude-question-bindings.js'
 import { ApiCallError, isRetryableReplyPollError } from './client.js'
 import { withFileLock } from './file-lock.js'
@@ -2571,7 +2573,7 @@ export function registerQuestion(
 ): string {
   let full: 'unasked' | 'live' | null = null
   let stored = false
-  const questionId = question.question_id ?? `q_${randomBytes(12).toString('base64url')}`
+  let questionId = question.question_id ?? `q_${randomBytes(12).toString('base64url')}`
   updateSessionState(sessionId, env, (state) => {
     // Revalidate after acquiring the lock: discovery and lock contention can
     // outlive the owner or its Approved Machine. Neither may adopt this ask.
@@ -2583,6 +2585,23 @@ export function registerQuestion(
             owner.harness_process === undefined || processIdentityLiveness(owner.harness_process) !== 'alive') {
           throw new QuestionRegistrationChanged('owner')
         }
+      }
+    }
+    if (nativeAdmission?.card !== undefined) {
+      if (currentCodexTurn(sessionId, env, nativeAdmission.owner_key) !== nativeAdmission.turn_id) {
+        throw new QuestionRegistrationChanged('owner')
+      }
+      const existing = state.codex_question_bindings?.find(registration => registration.owner_key === nativeAdmission.owner_key &&
+        registration.registration_turn_id === nativeAdmission.turn_id && registration.card_call_id === nativeAdmission.card!.call_id)
+      if (existing !== undefined) {
+        if (!isDeepStrictEqual(existing.service_identity, nativeAdmission.service) ||
+            !isDeepStrictEqual(existing.questions.map(binding => binding.question), question.questions) ||
+            !isDeepStrictEqual(existing.questions.map(binding => binding.card), nativeAdmission.card.shown)) {
+          throw new Error('The same Codex card invocation changed after question registration.')
+        }
+        questionId = existing.question_id
+        stored = true
+        return state
       }
     }
     const pending = pendingList(state)

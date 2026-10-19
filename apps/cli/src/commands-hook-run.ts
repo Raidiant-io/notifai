@@ -61,6 +61,7 @@ import {
   writeOpenclawGeneration,
 } from './openclaw-generation.js'
 import { projectBinding, projectEnabled } from './project-enablement.js'
+import { codexCardPostToolUse, codexPreToolUse } from './codex-question-hooks.js'
 import { spawnQuestionSettlement } from './question-settlement-process.js'
 import { QUESTION_WAITER_CEILING_SECONDS } from './question-timing.js'
 import { cursorStopActivationOutput, sessionActivationOutput, userPromptContextOutput } from './session-activation.js'
@@ -284,6 +285,16 @@ export async function hookRunCommand(
       // The waiting handler also ends with its picker or its session.
     }
   }
+  if (event === 'pre-tool-use') {
+    start({ cwd })
+    try {
+      if (harness === 'codex') await codexPreToolUse(deps, envelope, logger)
+      logger.info('hook.end', { hook: event, outcome: 'checked', decided: false })
+    } catch (err) {
+      logger.error('hook.end', { hook: event, outcome: 'ignored', ...failureData(err) })
+    }
+    return EXIT.ok
+  }
   if (event === 'permission-request') {
     logger.bind({ session: envelope.session_id ?? null })
     start({ cwd })
@@ -453,8 +464,9 @@ export async function hookRunCommand(
   if (event === 'post-tool-use') {
     start({ cwd })
     try {
+      const cardContext = harness === 'codex' ? await codexCardPostToolUse(deps, envelope, logger) : null
       if (harness === 'codex' && lifecycleEnabled()) {
-        const notice = integrationFaultNotice({ ...deps, cwd }, harness)
+        const notice = [cardContext, integrationFaultNotice({ ...deps, cwd }, harness)].filter(Boolean).join('\n\n') || undefined
         let wrote = false
         const io = { ...deps.io, out: (line: string) => {
           wrote = true

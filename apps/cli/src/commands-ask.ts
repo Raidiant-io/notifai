@@ -29,6 +29,7 @@ import { askUserQuestionInput, claudePickerShape } from './claude-question-bindi
 import { installsClaudePickerHooks } from './hook-events.js'
 import { hermesQuestionRouteReady } from './session-attendant-state.js'
 import { codexRoutingTrustProblems, findInstallations, handlerEvent } from './install-hooks.js'
+import { codexCardHooksReady } from './codex-card-capability.js'
 import { inferInvocationContext } from './invocation-context.js'
 import { activeOpenclawGeneration } from './openclaw-session-access.js'
 import { openclawGatewayReady } from './openclaw-gateway-readiness.js'
@@ -77,6 +78,7 @@ export interface AskFailure {
   }
   /** The `AskUserQuestion` input that asks this instead, when the picker can. */
   ask_user_question?: ReturnType<typeof askUserQuestionInput>
+  request_user_input_async?: { questions: Array<{ title: string; options?: string[] }> }
 }
 
 /** One stable failure contract for every machine-readable ask refusal. */
@@ -298,6 +300,7 @@ function recordRegisteredQuestion(
   json = false,
 ): number | Promise<number> {
   const ordinary = () => persistRegisteredQuestion(deps, sessionId, built, draft, service, json)
+  if (codexCardOwner(deps, sessionId) !== null) return ordinary()
   if (built.questions.some(question => question.multi === true)) return ordinary()
   const local = currentCodexQuestionContext(readSessionState(sessionId, deps.env), sessionId, deps.env)
   if (local === null) return ordinary()
@@ -359,6 +362,15 @@ function claudePickerOwner(deps: CommandDeps, sessionId: string, questions: Buil
     .filter(installation => installation.harness === 'claude-code')
     .flatMap(installation => installation.handlers.map(handler => handlerEvent(handler.command))))
   return events.has('permission-request') && events.has('post-tool-use') ? owner.key : null
+}
+
+/** A trusted native card hook replaces the agent's registration/copy step. */
+function codexCardOwner(deps: CommandDeps, sessionId: string): string | null {
+  if (readSessionState(sessionId, deps.env).harness !== 'codex') return null
+  const owner = readSessionIncarnation(sessionId, deps.env)
+  if (owner?.harness_process === undefined || sessionHasEnded(sessionId, deps.env) ||
+      processIdentityLiveness(owner.harness_process) !== 'alive') return null
+  return codexCardHooksReady(deps) ? owner.key : null
 }
 
 function persistRegisteredQuestion(
@@ -856,6 +868,17 @@ export function askCommand(
       message: `Nothing was registered. In Claude Code, ask ${these} with the AskUserQuestion tool: Notifai sends that picker to the user's devices by itself and returns whichever answer comes first, from a device or the terminal.`,
       remedy: `call AskUserQuestion with ${JSON.stringify(picker)}, adding a short header to each question and a description to each option. Put further context in the option descriptions or your message. Keep \`notifai ask\` for free-text questions.`,
       ask_user_question: picker,
+    })
+  }
+  if (flags.body === undefined && flags.image === undefined && built.body === undefined &&
+      built.questions.every(question => question.multi !== true) && codexCardOwner(deps, sessionId) !== null) {
+    const card = { questions: built.questions.map(question => ({ title: question.text,
+      ...(question.choices === undefined ? {} : { options: question.choices.map(choice => choice.label) }) })) }
+    return reportAskFailure(deps, flags, {
+      code: 'use_question_card', check_id: 'question_card', exit_code: EXIT.usage,
+      message: 'Nothing was registered. The Codex question card is the question: Notifai registers its actual questions for the user\'s devices. When a linked card cannot be supported, the tool context supplies the registered plain-conversation question instead.',
+      remedy: `Call request_user_input_async with ${JSON.stringify(card)}. Follow its tool context for acknowledgement or the plain-conversation fallback.`,
+      request_user_input_async: card,
     })
   }
   const source = resolveDraftInvocation(deps, flags, active)

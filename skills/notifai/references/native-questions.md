@@ -1,7 +1,19 @@
 # Native questions linked to Notifai
 
-Use this flow only when `ask` returns `native_question`. Native forms are
-optional; Question Routing still works without them. New linking requires
+Codex's card is the question: call `request_user_input_async` with the User's
+questions. Its hooks register the actual structured input on the User's
+devices, including a multi-question card, and return the question IDs and
+acknowledgement command in the tool context. No copy or marker is needed.
+
+When the card cannot receive a device answer, its pre-tool hook registers an
+ordinary question and prevents the card from appearing. Restate the printed
+question and choices in plain conversation text and continue independent work.
+An answer in the conversation uses the printed `notifai close` command: it
+retires the device question without recording a native answer. A Project that
+is not enabled, a signed-out Machine, disabled routing, unsupported shapes,
+and subagent cards stay terminal-only and are left untouched.
+
+Native forms are optional; Question Routing still works without them. New linking requires
 local eligibility, confirmed service support and, for Codex, a connection to
 the session's app-server. Capability absence leaves the ordinary conversation
 and app-answer flow available; follow `native_question_unavailable` when `ask`
@@ -12,7 +24,8 @@ returns it.
 Claude Code never returns `native_question`: its picker is the question
 itself. Read [the Claude Code file](harness-claude-code.md#question-picker).
 
-On Codex, use the returned tool, titles and options exactly, in the
+On a Codex host without the card hook, `ask` may return `native_question`.
+Only for that fallback, use the returned tool, titles and options exactly, in the
 registration turn. The short title marker identifies a registered question;
 wording alone does not. Preserve unrelated native forms, even when they
 contain identical wording.

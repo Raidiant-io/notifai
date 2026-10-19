@@ -16,6 +16,15 @@ import { hookHostPlatform, type HookHostPlatform } from './hook-adapter.js'
  */
 export const HOOK_EVENT_TABLE = [
   {
+    // Codex async question cards: registration before the card is displayed.
+    notifai: 'pre-tool-use',
+    document: 'PreToolUse',
+    cursor: null,
+    openclaw: false,
+    opencodeDiscovery: false,
+    timeoutSeconds: 10,
+  },
+  {
     notifai: 'post-compact',
     document: 'PostCompact',
     cursor: null,
@@ -179,7 +188,9 @@ export function requiredHookEvents(
 ): readonly HookEvent[] {
   if (harness === 'opencode' || harness === 'openclaw' || harness === 'hermes') return []
   return HOOK_EVENT_TABLE.filter((row) =>
-    row.notifai === 'post-compact'
+    row.notifai === 'pre-tool-use'
+      ? harness === 'codex' && installsSessionAttendant(harness, platform)
+      : row.notifai === 'post-compact'
       ? harness === 'grok'
       : row.notifai === 'subagent-start' && harness === 'grok'
       ? false

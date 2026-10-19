@@ -35,6 +35,13 @@ an older Notifai is removed once the Machine copy is proven current.
 
 ## How the answer gets back
 
+Native cards use their own structured questions: call `request_user_input_async`
+and follow its tool context. The card hook registers them after Codex accepts
+the call; a separate `ask` would duplicate them. When the native route cannot
+settle a card, the tool context gives a registered plain-conversation question
+instead. Native answers and that fallback use the distinct flows in
+[native questions](native-questions.md).
+
 **Codex:** a detached observer starts after submission and waits in the
 background for the complete answer window; Stop provides recovery. While a
 trusted tool hook can hand input into a working turn, Notifai uses that hook.
