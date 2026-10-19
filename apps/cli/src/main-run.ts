@@ -16,6 +16,10 @@ import { spawnHookMaintenance } from './hook-maintenance.js'
 import { buildIdentity } from './distribution.js'
 import { consumeNpmAdapterLocator } from './cli-bin.js'
 import { OWNER_STEP_BUDGETS, hookInvocation, hookStepBudgets } from './hook-budgets.js'
+import { ensureUsableTerminalSize } from './terminal-size.js'
+
+ensureUsableTerminalSize(process.stdout)
+ensureUsableTerminalSize(process.stderr)
 
 /**
  * The local record for this invocation.
