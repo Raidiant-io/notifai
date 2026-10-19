@@ -137,6 +137,27 @@ test('admission refuses lagging tags but accepts the CLI fallback when beta is a
   }), /changed since/)
 })
 
+test('forbidden trusted-publisher tag management names the package setting and stops before latest', async () => {
+  const name = '@raidiant/notifai-protocol', before = { latest: '8.3.3', beta: '8.2.1-beta.2' }, writes = []
+  const providerError = Object.assign(new Error('npm dist-tag command failed'), {
+    stderr: Buffer.from('npm error code E403\nThis trusted publisher cannot manage dist-tags. Ask a package maintainer to enable Allow npm dist-tag.'),
+  })
+  await assert.rejects(promoteDistribution({ name, version: '8.4.0', before }, {
+    lookup: async () => before,
+    writeTag: async (_pkg, write) => { writes.push(write); throw providerError },
+  }), error => {
+    assert.match(error.message, /@raidiant\/notifai-protocol/)
+    assert.match(error.message, /Allow npm dist-tag/)
+    assert.match(error.message, /8\.4\.0/)
+    return true
+  })
+  assert.deepEqual(writes, [{ tag: 'beta', version: '8.4.0' }])
+  const otherForbidden = Object.assign(new Error('different registry refusal'), { stderr: 'npm error E403 another policy' })
+  await assert.rejects(promoteDistribution({ name, version: '8.4.0', before }, {
+    lookup: async () => before, writeTag: async () => { throw otherForbidden },
+  }), error => error === otherForbidden)
+})
+
 test('unchanged stale tags fail after six lookups without republishing', async () => {
   let lookups = 0, sleeps = 0
   await assert.rejects(waitForDistribution(delayedBeta, {
