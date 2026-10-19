@@ -48,6 +48,7 @@ trusted tool hook can hand input into a working turn, Notifai uses that hook.
 Idle sessions, or sessions whose live input path cannot be established, use
 a content-free wake for the exact Agent Session in the same Codex home.
 Notifai does not cold-start or resume Codex to obtain a control connection.
+Closing the Agent Session ends its questions.
 Pending notes and answers remain in Notifai until
 a trusted tool hook, prompt hook, or `notifai receive` drains a bounded batch.
 A late wake-up cannot repeat an acknowledged answer: it contains no answer

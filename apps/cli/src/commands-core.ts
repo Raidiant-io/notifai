@@ -92,14 +92,14 @@ export interface CommandDeps {
   now?: () => number
   /** Test seam for retry/backoff timing. */
   sleep?: (milliseconds: number) => Promise<void>
-  /** Test seams for Claude liveness, socket delivery, and cold resume. */
+  /** Test seams for Claude liveness and socket delivery. */
   claudeWake?: ClaudeWakeAdapters
   claudeSourcePid?: number
   /** Test seam: the answer waiter's writer identity; null disables answer claims. */
   answerWriter?: ProcessIdentity | null
   /** Test seams for the Session Attendant's harness probe, clocks, and signals. */
   attendant?: AttendantSeams
-  /** Test seams for the Codex thread-writer probe and cold resume. */
+  /** Test seams for the Codex thread-writer probe and queue. */
   codexWake?: CodexWakeAdapters
   codexQueueControl?: typeof connectCodexQueue
   /** Test seam for the ask-time native answer transport preflight. */

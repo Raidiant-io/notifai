@@ -25,8 +25,7 @@ answer arrives it is stored with the session's pending inputs. Its own inbox
 socket receives a wake-up: an idle Agent Session starts a new turn, and a busy
 one receives it between tool calls or when its current turn ends. The prompt hook or the named
 `notifai receive` command drains the current notes and answers together.
-An Agent Session that is provably gone is cold-resumed with the wake-up
-instead — never one whose liveness probe cannot rule it out.
+Closing the Agent Session ends its questions; Notifai never resumes it.
 
 The inbox is a socket on macOS and Linux from Claude Code 2.1.224, and a
 named pipe on Windows from 2.1.234. On an older Claude Code the answer is

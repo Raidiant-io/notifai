@@ -436,7 +436,7 @@ export interface ContinuationEvent {
  * never settles and every later turn-end redelivers the same answer.
  *
  * - `delivered` — the route completed a write to the harness itself (an inbox
- *   socket, a cold resume). Delivery is not consumption: the write proves the
+ *   socket, a session queue). Delivery is not consumption: the write proves the
  *   harness accepted the message, never that the model acted on it. But nothing
  *   later will ever prove more, and redelivering an answer without end is
  *   strictly worse than settling on the write, so the journal settles here.

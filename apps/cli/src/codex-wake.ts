@@ -82,8 +82,9 @@ export function inspectCodexQueue(
  * and the foreground consumer claims current input immediately before stdout.
  *
  * Queue exit 0 proves storage, never presentation. A busy owner may consume
- * the wake much later; an exited thread keeps it until reopened. There is no
- * cold-resume path here, which would consume the queue and a repeated prompt.
+ * the wake much later. A closed thread is never revived: nothing here starts
+ * or resumes Codex, and a wake still stored when the thread closes carries no
+ * answer and must not start a turn after the close.
  */
 export function codexWakeRoute(options: {
   threadId: string
@@ -120,7 +121,7 @@ export function codexWakeRoute(options: {
       }
       return {
         notes: [
-          "queued the accepted answer into the Codex thread's durable inbox; it starts a turn when that thread is next live",
+          "queued the accepted answer into the open Codex thread's durable inbox; it starts a turn at that thread's next turn boundary",
         ],
         // `stage: queued`, never `delivered`: exit 0 is identical against an
         // exited thread, so this write proves storage and never consumption.

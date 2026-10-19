@@ -1,4 +1,4 @@
-import { existsSync, readFileSync } from 'node:fs'
+import { readFileSync } from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { createConnection } from 'node:net'
@@ -87,8 +87,6 @@ export interface ClaudeWakeAdapters {
   readDescriptor(pid: number): unknown
   /** With `guard`, a connection that is late or no longer writable writes nothing. */
   sendSocket(socketPath: string, line: string, guard?: WriteGuard): Promise<void>
-  /** `onSpawn` receives the resumed harness's own process group as soon as it exists. */
-  resume(sessionId: string, cwd: string, context: string, onSpawn?: (pgid: number) => void): Promise<void>
   sleep(milliseconds: number): Promise<void>
 }
 
@@ -356,12 +354,13 @@ export function inspectClaudeInbox(options: {
  * replays it. Unknown state deliberately returns without throwing, so the
  * journal becomes `hold-for-next-turn` instead of failing the hook. The
  * in-place write is the hand-off shared with Session Messages
- * (`session-handoff.ts`); only the cold resume of a stopped session belongs to
- * this answer route.
+ * (`session-handoff.ts`).
+ *
+ * A stopped session has closed, and a closed session is never revived: no
+ * process is started for it and nothing is written.
  */
 export function claudeWakeRoute(options: {
   sessionId: string
-  cwd: string
   sourcePid: number
   /** The posting process's environment, for the inbox token Claude Code exported to it. */
   env?: NodeJS.ProcessEnv
@@ -413,30 +412,8 @@ export function claudeWakeRoute(options: {
             acknowledgement: 'delivered',
           }
         case 'stopped':
-          break
-      }
-      // Probe immediately before spawn. A prior descriptor or dead socket is
-      // never sufficient: resuming a live session creates a divergent ghost.
-      const confirmed = await observeClaudeSession(options.sessionId, adapters)
-      if (confirmed.state !== 'stopped') {
-        const reason =
-          confirmed.state === 'unknown'
-            ? confirmed.reason
-            : 'the Claude session became live before cold resume'
-        return holdForNextTurn(reason)
-      }
-      // The resumed harness is a subprocess writer: its process group is
-      // journaled as soon as it exists, so its survival is never mistaken
-      // for a finished write.
-      if (!event.commitDelivery('subprocess')) return cancelledDelivery()
-      // `stopped` is reported only with a proven source descriptor.
-      await adapters.resume(options.sessionId, sourceDescriptor!.cwd, event.context, (pgid) =>
-        event.writerGroup?.(pgid),
-      )
-      return {
-        notes: ['cold-resumed the stopped Claude session with its accepted answer'],
-        log: { route: 'cold-resume', stage: 'delivered' },
-        acknowledgement: 'delivered',
+          // The session closed. Nothing is started and nothing is written.
+          return cancelledDelivery()
       }
     },
   }
@@ -444,19 +421,9 @@ export function claudeWakeRoute(options: {
 
 function runClaude(
   args: string[],
-  options: { cwd?: string; env?: NodeJS.ProcessEnv; onSpawn?: (pgid: number) => void } = {},
+  options: { env?: NodeJS.ProcessEnv } = {},
 ): Promise<string> {
   return runWakeCommand('claude', args, options)
-}
-
-function coldResumeEnvironment(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
-  const next = { ...env }
-  for (const key of Object.keys(next)) {
-    if (key === 'CLAUDECODE' || key === 'CLAUDE_PID' || key.startsWith('CLAUDE_CODE_')) {
-      delete next[key]
-    }
-  }
-  return next
 }
 
 export function systemClaudeWakeAdapters(
@@ -504,20 +471,6 @@ export function systemClaudeWakeAdapters(
           })
         })
       })
-    },
-    async resume(sessionId, cwd, context, onSpawn) {
-      if (!existsSync(cwd)) throw new Error(`Claude session cwd no longer exists: ${cwd}`)
-      await runClaude(
-        [
-          '-p',
-          '--resume',
-          sessionId,
-          '--output-format',
-          'json',
-          context,
-        ],
-        { cwd, env: coldResumeEnvironment(env), ...(onSpawn === undefined ? {} : { onSpawn }) },
-      )
     },
     sleep(milliseconds) {
       return new Promise((resolve) => setTimeout(resolve, milliseconds))
