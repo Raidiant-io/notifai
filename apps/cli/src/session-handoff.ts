@@ -2,9 +2,8 @@
  * Hand one message into a running Agent Session, in place.
  *
  * The one harness write every hand-off shares: the answer waiter's wake routes
- * and the Session Attendant's Session Messages both end here. It never cold
- * resumes: a stopped session is reported as stopped, and only the answer route
- * decides what to do about that (Session Messages never resume a session).
+ * and the Session Attendant's Session Messages both end here. A stopped session
+ * has closed and is reported as stopped; nothing ever revives it.
  *
  * `begin` is the commit point. It is called immediately before the
  * irreversible write, after every check that can refuse without writing; when
@@ -132,8 +131,7 @@ export async function deliverIntoClaudeSession(options: {
 
 /**
  * Codex's durable per-thread inbox. Exit 0 proves the queue stored the
- * message, never that the thread consumed it, and a stopped thread drains it
- * the next time it opens.
+ * message, never that the thread consumed it.
  */
 export async function deliverIntoCodexThread(options: {
   threadId: string

@@ -513,9 +513,6 @@ describe('notifai hook attend', () => {
         sendSocket: async (_path: string, line: string) => {
           posted.push(line)
         },
-        resume: async () => {
-          throw new Error('Session Messages never cold resume')
-        },
         sleep: async () => {},
       },
     })
@@ -551,7 +548,6 @@ describe('notifai hook attend', () => {
           throw new Error('started with --bare')
         },
         sendSocket: async () => {},
-        resume: async () => {},
         sleep: async () => {},
       },
     })
@@ -593,7 +589,6 @@ describe('notifai hook attend', () => {
         listAgents: async () => [],
         readDescriptor: () => (published.shift() ?? (() => descriptor))(),
         sendSocket: async () => {},
-        resume: async () => {},
         sleep: async () => {},
       },
     })

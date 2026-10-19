@@ -1,4 +1,6 @@
-import { readFileSync } from 'node:fs'
+import { readFileSync, readdirSync } from 'node:fs'
+import path from 'node:path'
+import { fileURLToPath } from 'node:url'
 import { describe, expect, it } from 'vitest'
 import {
   HARNESS_CAPABILITIES,
@@ -85,23 +87,53 @@ describe('harness contract', () => {
     expect(HERMES_QUESTION_ROUTING_UNAVAILABLE.deliveryContract.length).toBeGreaterThan(40)
   })
 
+  it('never offers to revive a closed session', () => {
+    // Closing an Agent Session ends its questions. No route resumes it, and no
+    // contract promises delivery once it is reopened.
+    const platforms: NodeJS.Platform[] = ['darwin', 'linux', 'win32']
+    const capabilities = [
+      ...Object.values(HARNESS_CAPABILITIES),
+      HERMES_QUESTION_ROUTING_UNAVAILABLE,
+      ...HOOK_INSTALLABLE_HARNESSES.flatMap((harness) =>
+        platforms.map((platform) => questionRoutingCapability(harness, platform))),
+    ]
+    for (const capability of capabilities) {
+      expect(capability.deliveryRoutes as readonly string[]).not.toContain('cold-resume')
+      expect(capability.deliveryContract).not.toMatch(/resum/i)
+      expect(capability.deliveryContract).not.toMatch(/next time it is opened/i)
+    }
+  })
+
+  it('passes no resume argument to any harness from CLI source', () => {
+    // The CLI's own `notifai update --resume` handoff is the only `--resume`
+    // it may pass; `claude -p --resume` and `codex exec resume` revive a
+    // closed session and must never return.
+    const root = path.dirname(fileURLToPath(import.meta.url))
+    const sources = readdirSync(root, { recursive: true, encoding: 'utf8' })
+      .filter((file) => file.endsWith('.ts') && !file.endsWith('.test.ts'))
+    expect(sources.length).toBeGreaterThan(50)
+    const offenders: string[] = []
+    for (const file of sources) {
+      readFileSync(path.join(root, file), 'utf8').split('\n').forEach((line, index) => {
+        const ownUpdate = /'update', '--resume'/.test(line) || /\.option\('--resume', /.test(line)
+        if (/(['"])(?:--)?resume\1/.test(line) && !ownUpdate) offenders.push(`${file}:${index + 1}: ${line.trim()}`)
+      })
+    }
+    expect(offenders).toEqual([])
+  })
+
   it('keeps each harness on its supported continuation routes', () => {
     expect(HARNESS_CAPABILITIES['claude-code'].stopContinuation).toBe('decision-block')
     expect(HARNESS_CAPABILITIES['claude-code'].deliveryRoutes).toEqual([
       'hook-continuation',
       'inbox-socket',
-      'cold-resume',
       'hold-for-next-turn',
     ])
     expect(HARNESS_CAPABILITIES.codex.stopContinuation).toBe('decision-block')
-    // Codex delivers through its thread's durable inbox. The writer-lock-gated
-    // cold resume it replaced is gone rather than demoted: queueing and
-    // resuming the same answer delivers it twice.
     expect(HARNESS_CAPABILITIES.codex.deliveryRoutes).toEqual([
       'session-queue',
       'hold-for-next-turn',
     ])
-    expect(HARNESS_CAPABILITIES.codex.deliveryRoutes).not.toContain('cold-resume')
     expect(HARNESS_CAPABILITIES.cursor).toEqual({
       stopContinuation: 'unsupported',
       deliveryRoutes: ['unsupported'],

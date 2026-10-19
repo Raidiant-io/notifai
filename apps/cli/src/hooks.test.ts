@@ -6227,15 +6227,12 @@ describe('Claude Code Stop wake route', () => {
 
   function claudeWake(status: 'idle' | 'busy' = 'idle'): ClaudeWakeAdapters & {
     sent: string[]
-    resumed: string[]
     sleeps: number[]
   } {
     const sent: string[] = []
-    const resumed: string[] = []
     const sleeps: number[] = []
     return {
       sent,
-      resumed,
       sleeps,
       async listAgents() {
         return [
@@ -6262,9 +6259,6 @@ describe('Claude Code Stop wake route', () => {
       },
       async sendSocket(_socketPath, line) {
         sent.push(line)
-      },
-      async resume(_sessionId, _cwd, context) {
-        resumed.push(context)
       },
       async sleep(milliseconds) {
         sleeps.push(milliseconds)
@@ -6307,7 +6301,6 @@ describe('Claude Code Stop wake route', () => {
     expect(h.recorder.submitted.filter((entry) => isQuestionSubmit(entry))).toHaveLength(1)
     expect(wake.sent).toHaveLength(0)
     expect(readSessionState('claude-route', h.env).waiting_answers?.[0]?.reply.text).toBe('Ship it')
-    expect(wake.resumed).toEqual([])
     expect(h.io.outLines).toEqual([])
 
     expect(await acknowledgeCommand({ ...deps, io: new CapturedIo() }, h.recorder.receipts[0]!, {
@@ -6675,7 +6668,6 @@ describe('Claude Code Stop wake route', () => {
     await stop(false)
 
     expect(wake.sent).toHaveLength(1)
-    expect(wake.resumed).toEqual([])
     expect(readSessionState('claude-route', h.env).accepted).toBeUndefined()
     expect(readSessionState('claude-route', h.env).waiting_answers).toHaveLength(1)
     expect(
@@ -6717,7 +6709,6 @@ describe('Claude Code Stop wake route', () => {
     )
 
     expect(wake.sent).toEqual([])
-    expect(wake.resumed).toEqual([])
     expect(h.io.outLines).toEqual([])
     expect(readSessionState('claude-route', h.env).accepted).toBeUndefined()
   })
@@ -7394,8 +7385,7 @@ describe('Codex Stop wake route', () => {
   it('queues the same way whether or not the asking Codex process is still alive', async () => {
     // The old route needed a live source for its stdout continuation and a
     // writer-lock probe for everything else. A queue write needs neither: the
-    // thread's inbox is the destination in both cases, and an exited session
-    // simply drains it the next time it is opened.
+    // thread's inbox is the destination in both cases.
     const results: number[] = []
     for (const sourcePid of [12345, 999_999]) {
       const h = harness([])

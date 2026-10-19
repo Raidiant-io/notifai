@@ -49,7 +49,6 @@ export type DeliveryRoute =
   | 'inbox-socket'
   | 'session-queue'
   | 'owned-control-plane'
-  | 'cold-resume'
   | 'hold-for-next-turn'
   | 'unsupported'
 
@@ -68,16 +67,16 @@ export interface HarnessCapability {
 
 const CLAUDE_CODE_CAPABILITY: HarnessCapability = {
   stopContinuation: 'decision-block',
-  deliveryRoutes: ['hook-continuation', 'inbox-socket', 'cold-resume', 'hold-for-next-turn'],
+  deliveryRoutes: ['hook-continuation', 'inbox-socket', 'hold-for-next-turn'],
   deliveryContract:
-    'the Stop hook returns at once and waits out of band through the complete answer window, then posts the answer into this same session over its own inbox socket; a session that has stopped is resumed only once a liveness probe proves it stopped',
+    'the Stop hook returns at once and waits out of band through the complete answer window, then posts the answer into this same open session over its own inbox socket, whether it is idle or busy; closing the session ends its questions',
 }
 
 const CODEX_CAPABILITY: HarnessCapability = {
   stopContinuation: 'decision-block',
   deliveryRoutes: ['session-queue', 'hold-for-next-turn'],
   deliveryContract:
-    "the Stop hook returns at once and waits out of band through the complete answer window, then queues the answer into this same thread's durable inbox; a live session consumes it within seconds, a busy one at its next turn boundary, and a stopped one the next time it is opened",
+    "the Stop hook returns at once and waits out of band through the complete answer window, then queues the answer into this same thread's durable inbox; an idle session consumes it within seconds and a busy one at its next turn boundary; closing the session ends its questions",
 }
 
 const CURSOR_CAPABILITY: HarnessCapability = {
@@ -121,7 +120,7 @@ export const HERMES_CLASSIC_CLI_QUESTION_CAPABILITY: HarnessCapability = {
   stopContinuation: 'plugin-attendant',
   deliveryRoutes: ['session-queue'],
   deliveryContract:
-    'the live classic CLI plugin owns the complete answer window and injects the claimed answer into its exact attached session; a stopped process cannot resume or receive an answer',
+    'the live classic CLI plugin owns the complete answer window and injects the claimed answer into its exact attached session; closing the session ends its questions',
 }
 
 export const HERMES_QUESTION_ROUTING_UNAVAILABLE: HarnessCapability = {

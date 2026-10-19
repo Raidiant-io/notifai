@@ -22,8 +22,8 @@ a Note may interrupt a working turn. The plugin checks the current session
 before each write, and the agent must acknowledge the message. An attended
 classic CLI session can route an `ask` answer into that same live session;
 keep Hermes running for the answer window. Registration schedules background submission;
-the plugin owns answer delivery. If the
-process exits first, it does not cold-resume and the answer is not delivered.
+the plugin owns answer delivery. Closing the session ends its questions: if
+the process exits first, the answer is not delivered.
 TUI, gateway, API, ACP, remote terminal backends, and Windows remain outside
 this proven cell.
 Nested inherited harness markers fail closed.

@@ -39,23 +39,24 @@ function descriptor(overrides: Partial<ClaudeSessionDescriptor> = {}): ClaudeSes
 function adapters(options: {
   agents?: unknown[]
   descriptor?: unknown
-  agentsSequence?: unknown[][]
 } = {}): ClaudeWakeAdapters & {
   sent: Array<{ socketPath: string; line: string }>
-  resumed: Array<{ sessionId: string; cwd: string; context: string }>
   sleeps: number[]
+  readonly probes: number
 } {
   const current = descriptor()
   const sent: Array<{ socketPath: string; line: string }> = []
-  const resumed: Array<{ sessionId: string; cwd: string; context: string }> = []
   const sleeps: number[] = []
-  const sequence = [...(options.agentsSequence ?? [])]
+  let probes = 0
   return {
     sent,
-    resumed,
     sleeps,
+    get probes() {
+      return probes
+    },
     async listAgents() {
-      return sequence.shift() ?? options.agents ?? [
+      probes++
+      return options.agents ?? [
         {
           pid: current.pid,
           sessionId: current.sessionId,
@@ -69,9 +70,6 @@ function adapters(options: {
     },
     async sendSocket(socketPath, line) {
       sent.push({ socketPath, line })
-    },
-    async resume(sessionId, cwd, context) {
-      resumed.push({ sessionId, cwd, context })
     },
     async sleep(milliseconds) {
       sleeps.push(milliseconds)
@@ -203,7 +201,6 @@ describe('Claude wake delivery', () => {
     const wake = adapters()
     const outcome = await claudeWakeRoute({ platform: POSIX,
       sessionId: SESSION_ID,
-      cwd: '/tmp/notifai-claude-wake',
       sourcePid: 12345,
       adapters: wake,
     }).deliver(event)
@@ -216,7 +213,6 @@ describe('Claude wake delivery', () => {
       message: { role: 'user', content: event.context },
     })
     expect(wake.sleeps).toEqual([CLAUDE_POST_SEND_LIVENESS_MS])
-    expect(wake.resumed).toEqual([])
     expect(outcome.log).toEqual({
       route: 'inbox-socket',
       stage: 'delivered',
@@ -229,7 +225,6 @@ describe('Claude wake delivery', () => {
 
     const outcome = await claudeWakeRoute({ platform: POSIX,
       sessionId: SESSION_ID,
-      cwd: '/tmp/notifai-claude-wake',
       sourcePid: 99999,
       adapters: wake,
     }).deliver(event)
@@ -258,7 +253,6 @@ describe('Claude wake delivery', () => {
 
     const outcome = await claudeWakeRoute({ platform: POSIX,
       sessionId: SESSION_ID,
-      cwd: live.cwd,
       sourcePid: 12345,
       adapters: wake,
     }).deliver(event)
@@ -268,67 +262,32 @@ describe('Claude wake delivery', () => {
     expect(outcome.log?.['session_state']).toBe('live-busy')
   })
 
-  it('cold-resumes only after two first-party probes both prove no owner', async () => {
-    const wake = adapters({ agentsSequence: [[], []] })
+  it('never revives a stopped session: nothing is started or written', async () => {
+    const wake = adapters({ agents: [] })
+    let committed = 0
     const outcome = await claudeWakeRoute({ platform: POSIX,
       sessionId: SESSION_ID,
-      cwd: '/tmp/notifai-claude-wake',
       sourcePid: 12345,
       adapters: wake,
-    }).deliver(event)
+    }).deliver({ ...event, commitDelivery: () => { committed++; return true } })
 
+    // A stopped session has closed. The single liveness probe is the last
+    // thing the route runs: no second probe, no commit, no write.
+    expect(wake.probes).toBe(1)
+    expect(committed).toBe(0)
     expect(wake.sent).toEqual([])
-    expect(wake.resumed).toEqual([
-      {
-        sessionId: SESSION_ID,
-        cwd: '/tmp/notifai-claude-wake',
-        context: event.context,
-      },
+    expect(wake.sleeps).toEqual([])
+    expect(outcome.acknowledgement).not.toBe('delivered')
+    expect(outcome.log).toEqual({ route: 'hold-for-next-turn', stage: 'queued', reason: 'session-ended' })
+  })
+
+  it('has no adapter that can start a Claude session', () => {
+    expect(Object.keys(systemClaudeWakeAdapters({})).sort()).toEqual([
+      'listAgents',
+      'readDescriptor',
+      'sendSocket',
+      'sleep',
     ])
-    expect(outcome.log).toEqual({ route: 'cold-resume', stage: 'delivered' })
-  })
-
-  it('holds rather than cold-resuming without exact Stop-hook parent ownership', async () => {
-    const wake = adapters({ agentsSequence: [[], []] })
-
-    const outcome = await claudeWakeRoute({ platform: POSIX,
-      sessionId: SESSION_ID,
-      cwd: '/tmp/notifai-claude-wake',
-      sourcePid: 99999,
-      adapters: wake,
-    }).deliver(event)
-
-    expect(wake.resumed).toEqual([])
-    expect(outcome.log).toMatchObject({
-      route: 'hold-for-next-turn',
-      stage: 'queued',
-      reason: 'the Stop-hook process cannot prove exact Claude session ownership',
-    })
-  })
-
-  it('refuses a ghost resume when a session becomes live between probes', async () => {
-    const liveAgent = {
-      pid: 12345,
-      sessionId: SESSION_ID,
-      startedAt: STARTED_AT,
-      status: 'idle',
-    }
-    const wake = adapters({ agentsSequence: [[], [liveAgent]] })
-
-    const outcome = await claudeWakeRoute({ platform: POSIX,
-      sessionId: SESSION_ID,
-      cwd: '/tmp/notifai-claude-wake',
-      sourcePid: 12345,
-      adapters: wake,
-    }).deliver(event)
-
-    expect(wake.resumed).toEqual([])
-    expect(wake.sent).toEqual([])
-    expect(outcome.log).toMatchObject({
-      route: 'hold-for-next-turn',
-      stage: 'queued',
-    })
-    expect(outcome.notes.join('\n')).toContain('became live before cold resume')
   })
 
   it('holds the accepted answer when state or protocol is unknown', async () => {
@@ -337,13 +296,11 @@ describe('Claude wake delivery', () => {
     })
     const outcome = await claudeWakeRoute({ platform: POSIX,
       sessionId: SESSION_ID,
-      cwd: '/tmp/notifai-claude-wake',
       sourcePid: 12345,
       adapters: wake,
     }).deliver(event)
 
     expect(wake.sent).toEqual([])
-    expect(wake.resumed).toEqual([])
     expect(outcome.log).toEqual({
       route: 'hold-for-next-turn',
       stage: 'queued',
@@ -360,7 +317,6 @@ describe('Claude wake delivery', () => {
     await expect(
       claudeWakeRoute({ platform: POSIX,
         sessionId: SESSION_ID,
-        cwd: '/tmp/notifai-claude-wake',
         sourcePid: 12345,
         adapters: wake,
       }).deliver(event),
@@ -370,31 +326,6 @@ describe('Claude wake delivery', () => {
 })
 
 describe('claimed writes at the boundary', () => {
-  it('commits a cold resume as a subprocess write and reports the child’s process group', async () => {
-    const wake = adapters({ agentsSequence: [[], []] })
-    wake.resume = async (_sessionId, _cwd, _context, onSpawn) => {
-      onSpawn?.(4747)
-    }
-    const commits: Array<string | undefined> = []
-    const groups: number[] = []
-    const outcome = await claudeWakeRoute({ platform: POSIX,
-      sessionId: SESSION_ID,
-      cwd: '/tmp/notifai-claude-wake',
-      sourcePid: 12345,
-      adapters: wake,
-    }).deliver({
-      ...event,
-      commitDelivery: (writer?: 'subprocess') => {
-        commits.push(writer)
-        return true
-      },
-      writerGroup: (pgid) => groups.push(pgid),
-    })
-    expect(commits).toEqual(['subprocess'])
-    expect(groups).toEqual([4747])
-    expect(outcome.acknowledgement).toBe('delivered')
-  })
-
   it('holds, as aborted, a write its guard stopped at the socket', async () => {
     const wake = adapters()
     wake.sendSocket = async (_path, _line, guard) => {
@@ -403,7 +334,6 @@ describe('claimed writes at the boundary', () => {
     }
     const outcome = await claudeWakeRoute({ platform: POSIX,
       sessionId: SESSION_ID,
-      cwd: '/tmp/notifai-claude-wake',
       sourcePid: 12345,
       adapters: wake,
     }).deliver({ ...event, writeGuard: { writable: () => false, remainingMs: () => 0 } })
@@ -456,7 +386,7 @@ describe('Claude inbox token', () => {
   it('opens the connection with the session token Claude Code exported for this exact socket', async () => {
     const fake = adapters()
     const route = claudeWakeRoute({ platform: POSIX,
-      sessionId: SESSION_ID, cwd: '/tmp', sourcePid: 12345, adapters: fake,
+      sessionId: SESSION_ID, sourcePid: 12345, adapters: fake,
       env: { CLAUDE_CODE_MESSAGING_SOCKET: '/tmp/cc-socks/12345.sock', CLAUDE_CODE_MESSAGING_TOKEN: 'token-a', CLAUDE_CODE_SESSION_ID: SESSION_ID },
     })
     await route.deliver(event() as never)
@@ -469,7 +399,7 @@ describe('Claude inbox token', () => {
   it('never offers a token to a socket it was not issued with', async () => {
     const fake = adapters()
     const route = claudeWakeRoute({ platform: POSIX,
-      sessionId: SESSION_ID, cwd: '/tmp', sourcePid: 12345, adapters: fake,
+      sessionId: SESSION_ID, sourcePid: 12345, adapters: fake,
       env: { CLAUDE_CODE_MESSAGING_SOCKET: '/tmp/cc-socks/99999.sock', CLAUDE_CODE_MESSAGING_TOKEN: 'token-b' },
     })
     await route.deliver(event() as never)
@@ -479,7 +409,7 @@ describe('Claude inbox token', () => {
   it('refuses a Windows write without the token, before the delivery is committed', async () => {
     const fake = adapters()
     let committed = 0
-    const route = claudeWakeRoute({ sessionId: SESSION_ID, cwd: '/tmp', sourcePid: 12345, adapters: fake, env: {}, platform: 'win32' })
+    const route = claudeWakeRoute({ sessionId: SESSION_ID, sourcePid: 12345, adapters: fake, env: {}, platform: 'win32' })
     const outcome = await route.deliver({ ...event(), commitDelivery: () => { committed++; return true } } as never)
     // Claude Code on Windows closes a connection that does not open with the
     // token; nothing is written and the answer stays for the next turn.
@@ -492,7 +422,7 @@ describe('Claude inbox token', () => {
     const pipe = '\\\\.\\pipe\\LOCAL\\cc-msg-0123456789abcdef0123456789abcdef'
     const fake = adapters({ descriptor: descriptor({ messagingSocketPath: pipe }) })
     const route = claudeWakeRoute({
-      sessionId: SESSION_ID, cwd: '/tmp', sourcePid: 12345, adapters: fake, platform: 'win32',
+      sessionId: SESSION_ID, sourcePid: 12345, adapters: fake, platform: 'win32',
       env: { CLAUDE_CODE_MESSAGING_SOCKET: pipe, CLAUDE_CODE_MESSAGING_TOKEN: 'token-w' },
     })
     await route.deliver(event() as never)
@@ -511,7 +441,7 @@ describe('Claude inbox token', () => {
 
   it('writes the user line alone when Claude Code exported no token', async () => {
     const fake = adapters()
-    const route = claudeWakeRoute({ platform: POSIX, sessionId: SESSION_ID, cwd: '/tmp', sourcePid: 12345, adapters: fake, env: {} })
+    const route = claudeWakeRoute({ platform: POSIX, sessionId: SESSION_ID, sourcePid: 12345, adapters: fake, env: {} })
     await route.deliver(event() as never)
     expect(lines(fake.sent[0]!.line)).toEqual([{ type: 'user', message: { role: 'user', content: 'wake' } }])
     expect(fake.sleeps).toEqual([CLAUDE_POST_SEND_LIVENESS_MS])

@@ -1050,7 +1050,6 @@ async function stopWakeRoute(
   if (harness === 'claude-code') {
     const route = sessionInputRoute(sessionId, deps.env, claudeWakeRoute({
       sessionId,
-      cwd,
       sourcePid: deps.claudeSourcePid ?? claudeHookSourcePid(deps.env, deps.hookPlatform ?? process.platform) ??
         declaredSourcePid ?? claudeSessionPid(deps.env),
       env: deps.env,
