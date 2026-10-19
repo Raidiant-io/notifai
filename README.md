@@ -383,7 +383,8 @@ only this moment can tell that you were present for this turn.
 The agent can keep working; only work that needs the answer waits. Registration
 alone is not proof of Provider Acceptance. **Stop** (`stop`) and
 **UserPromptSubmit** recover outstanding questions and own harness-specific
-answer delivery. Claude Code and Codex observe answers out of band.
+answer delivery. Claude Code and Codex observe answers out of band: on macOS
+and Linux the hub waits for them, and the session child wakes the session.
 Codex uses trusted tool hooks during working turns and a content-free wake when
 idle or live input capability is unavailable. Current notes and answers drain
 through a trusted tool hook, prompt hook, or `notifai receive` in the exact
@@ -412,18 +413,34 @@ delivered. Acknowledgements the agent still owed are cancelled. If a hook is
 still waiting for an answer when the session closes, it tells the Notifai
 service right away, so the questions expire on your devices at once.
 
-**Session Attendant** (`attend`, Claude Code and Codex on macOS and Linux) is a second,
-asynchronous handler on SessionStart, UserPromptSubmit, and Stop. It keeps one
-small process per Agent Session running as that session's own hook child, so
-your devices can show whether the session is still running, working, or idle.
-It checks locally every two seconds that the exact harness process still hosts
-this exact session, and makes no network call until the session has sent a
-Notification Request, so sessions that never notified are never reported. It
-ends itself when the session ends, including when the harness is killed or its
-terminal closes, and withdraws when the Project is disabled or the hooks are
-removed. Only an opaque id leaves the machine: never process ids, paths, or
-session files. The UserPromptSubmit and Stop copies restart it if it died and
-otherwise exit at once. `notifai doctor` shows each attendant's state.
+**Session child and hub** (`attend`, Claude Code and Codex on macOS and Linux).
+The `attend` handler is a second, asynchronous handler on SessionStart,
+UserPromptSubmit, and Stop (Claude Code runs every Notifai handler in exec form,
+with no shell in between). It runs the native launcher as a tiny **session
+child**: one per Agent Session, staying the harness's own child for the life of
+the session. It learns from the kernel when the harness exits, so it never polls
+and has no timer, and it is the only process that writes into Claude Code's
+inbox, opening each connection with the session's own token. It holds no
+credential and makes no network connection. When a child already serves the
+session, the UserPromptSubmit and Stop copies tell the hub a turn boundary
+passed and exit at once.
+
+The children register with one shared **hub** per OS user (`notifai hub`, started
+on demand by the first child and gone 30 seconds after the last session ends;
+there is no login item or startup task). The hub reads the machine credential
+once, holds every session's presence lease behind one batched exchange with
+the service, waits for answers to registered questions, and nudges Codex
+through its queue. It makes no network call for a session until that session
+has sent a Notification Request, so sessions that never notified are never
+reported. When the harness exits, is killed, or its machine restarts, the hub
+reports the session ended, so its questions expire on your devices; a hub that
+was not running reports it at the next Notifai activity. A hub crash is not a
+close: children restart it and register again, and nothing expires. Only an
+opaque id leaves the machine: never process ids, paths, or session files.
+`notifai doctor` shows the hub and the sessions it attends.
+
+On Windows, Claude Code keeps the earlier per-session Session Attendant until the
+hub is verified there.
 OpenClaw's Gateway service also owns a current-generation attendant on macOS.
 It reports Session Presence and accepts Session Notes and post-consumption
 Answer Edits while its local writer is ready. It stores full message text in a
@@ -435,9 +452,9 @@ message after reading it. If a pointer reaches a turn without its full context,
 the pointer tells the agent to report the missing message and leave it
 unacknowledged. The User can send a new message if needed.
 
-The attendant also hands a note, or a change to an answer the agent already
-received, from your devices into that running session. Claude Code uses its
-inbox socket. Codex uses its trusted synchronous `PostToolUse` hook during
+The hub also hands a note, or a change to an answer the agent already
+received, from your devices into that running session. Claude Code gets a
+content-free wake in its inbox, written by the session child. Codex uses its trusted synchronous `PostToolUse` hook during
 active turns and also queues a content-free wake while input is pending,
 whether working or idle. If no tool boundary occurs, the queued wake preserves
 delivery at turn end. Child callbacks cannot consume the parent session's input
@@ -448,16 +465,17 @@ answered request. A Claude Code session without an inbox socket (for example
 `--bare`), or a Codex session whose hooks cannot find the `codex` executable,
 keeps presence only and accepts no notes.
 
-On Codex the attendant differs in three ways. Codex enforces every async hook
-timeout, so the attend handler declares the complete answer window (about 72
-hours) and the next prompt or turn end restarts it after that. Codex publishes
-no session status, so working or idle comes from this thread's own prompt,
-turn-end, and interrupt hooks (a third attend copy on Interrupt only records
-that the turn ended). And Codex kills the attendant as soon as SessionEnd returns, so
-SessionEnd itself reports the session ended. A Codex thread that is no longer
-loaded has no attendant. Codex runs hooks through your login `$SHELL`; bash
-and zsh hand the hook straight to Codex's own child, and a shell that keeps
-running in between leaves the session's presence unknown rather than guessed. Codex marks new or changed hooks for review: after
+On Codex the session child differs in three ways. Codex enforces every async
+hook timeout, so the attend handler declares the complete answer window (about
+72 hours) and the next prompt or turn end starts another child after that. Codex
+publishes no session status, so the hub reads working or idle from this
+thread's own transcript and hooks (a third attend copy on Interrupt only tells
+the hub the turn ended). And Codex stops the child when the thread closes or
+unloads, so SessionEnd itself reports the session ended. Codex runs hooks
+through your login shell; bash and zsh hand the hook straight to Codex's own
+child, and the session child also accepts Codex as its grandparent through a
+shell that keeps running in between. The Codex hook definitions are unchanged
+from earlier releases, so updating needs no new `/hooks` review. Codex marks new or changed hooks for review: after
 installing, open `/hooks` in Codex once and approve the Notifai handlers.
 `notifai doctor` names any handler still waiting. Question Routing does not
 wait for that approval.

@@ -9,7 +9,7 @@ harness shares.
 fails, open `/hooks` in Codex and approve or enable the Notifai handlers.
 The synchronous `PostToolUse` handler delivers pending answers, Session Notes and Answer Edits
 after tools during an active turn. Install and approve that handler, then
-start a fresh Agent Session to use the new attendant and hook definitions.
+start a fresh Agent Session to use the new session child and hook definitions.
 Pending input also queues one coalesced wake-up, whether the session is
 working or idle. It carries no note or answer text. A trusted hook can drain
 the input first; a late wake-up may then find nothing pending. A running tool
@@ -42,8 +42,8 @@ settle a card, the tool context gives a registered plain-conversation question
 instead. Native answers and that fallback use the distinct flows in
 [native questions](native-questions.md).
 
-**Codex:** a detached observer starts after submission and waits in the
-background for the complete answer window; Stop provides recovery. While a
+**Codex:** after submission Notifai waits in the background for the complete
+answer window (the shared hub on macOS and Linux); Stop provides recovery. While a
 trusted tool hook can hand input into a working turn, Notifai uses that hook.
 Idle sessions, or sessions whose live input path cannot be established, use
 a content-free wake for the exact Agent Session in the same Codex home.
