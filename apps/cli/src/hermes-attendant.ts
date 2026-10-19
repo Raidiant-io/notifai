@@ -326,7 +326,7 @@ export async function hermesAttendCommand(deps: CommandDeps, input: Readable, ou
     })
   } finally {
     bridge.close()
-    handleSessionEnd(deps.env, { session_id: sessionId, cwd }, Date.now(), false)
+    handleSessionEnd(deps.env, { session_id: sessionId, cwd }, Date.now())
     await observer
     if (token !== null) releaseClaimFile(claimFile, token)
   }

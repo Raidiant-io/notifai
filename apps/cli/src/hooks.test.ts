@@ -87,6 +87,7 @@ import { dropPendingQuestion, inspectQuestionState } from './hook-question-state
 import {
   clearSessionState,
   pruneAbandonedSessions,
+  readSessionEndMarker,
   readSessionIncarnation,
   readSessionState,
   sessionHasEnded,
@@ -184,6 +185,8 @@ interface Recorder {
   acknowledgementTextRequiredFor?: (requestId: string) => boolean
   acknowledged?: Set<string>
   acknowledgementChecks?: string[]
+  /** Attendance reports sent outside a Session Attendant, such as a close. */
+  attended?: Array<{ sessionId: string; body: unknown }>
 }
 
 function isQuestionSubmit(entry: { draft: { reply?: unknown } }): boolean {
@@ -305,6 +308,11 @@ function fakeClient(recorder: Recorder, replies: ReplyView[]): ApiClient {
           : null,
         replies: recordedReplies(requestId),
       }) satisfies ListRepliesResponse
+    },
+    attend: async (sessionId, body) => {
+      recorder.attended ??= []
+      recorder.attended.push({ sessionId, body })
+      return { status: 'withdrawn' }
     },
     closeReplies: async (requestId) => {
       if (recorder.failCloses === true) throw new Error('offline')
@@ -489,7 +497,7 @@ describe('OpenClaw generation fencing at the CLI boundary', () => {
     expect(activeOpenclawGeneration(sessionId, env, h.deps.cwd)).toBeNull()
   })
 
-  it('preserves old message debt after reset without granting the new generation acknowledgement ownership', async () => {
+  it('drops old message debt at reset and grants the new generation only its own', async () => {
     const h = harness()
     const sessionId = 'agent:main:message-reset'
     const envelope = { session_id: sessionId, cwd: h.deps.cwd, openclaw_session_id: 'transcript-a' }
@@ -510,9 +518,8 @@ describe('OpenClaw generation fencing at the CLI boundary', () => {
     }), 'openclaw')
     const second = await activate()
     expect(second).not.toBe(first)
-    expect(readSessionState(sessionId, h.env).message_acknowledgement_due).toEqual([
-      expect.objectContaining({ message_id: 'sm_old', openclaw_generation: first }),
-    ])
+    // A reset closes the old generation's session; what it owed closes with it.
+    expect(readSessionState(sessionId, h.env).message_acknowledgement_due).toBeUndefined()
     expect(openclawOwnsMessage(sessionId, 'sm_old', env)).toBe(false)
     env.NOTIFAI_ACTIVE_OPENCLAW_GENERATION = second
     expect(openclawOwnsMessage(sessionId, 'sm_old', env)).toBe(false)
@@ -2778,7 +2785,7 @@ describe('several questions in flight', () => {
       .toEqual(mode === 'manual' ? [] : ['Second decision'])
   })
 
-  it.each(['launch-failed', 'session-ended', 'after-launch'] as const)('preserves pending inputs across successor handoff (%s)', async (interruption) => {
+  it.each(['launch-failed', 'session-ended', 'after-launch'] as const)('keeps pending inputs across a lost successor handoff and drops them at a close (%s)', async (interruption) => {
     const h = harness([])
     const sessionId = '11111111-2222-4333-8444-555555555555'
     const byRequest = new Map([['req_hook_1', [reply({ text: 'First decision' })]]])
@@ -2811,12 +2818,16 @@ describe('several questions in flight', () => {
     expect(queued).toHaveLength(1)
     expect(successors).toHaveLength(interruption === 'after-launch' ? 1 : 0)
     if (interruption === 'after-launch') handleSessionEnd(h.env, { session_id: sessionId }, NOW)
-    expect(readSessionState(sessionId, h.env).waiting_answers?.[0]?.reply.text).toBe('First decision')
     if (interruption !== 'launch-failed') {
+      // The queued wake never ran, so the agent never read the answer: the
+      // closed session drops it and names it in its end marker.
+      expect(readSessionState(sessionId, h.env).waiting_answers).toBeUndefined()
+      expect(readSessionEndMarker(sessionId, h.env)?.dropped_answers).toEqual([h.recorder.receipts[0]])
       await hookRunCommand(deps, 'question-settlement', stdin({ session_id: sessionId, cwd: deps.cwd }), 'codex')
       expect(queued).toHaveLength(1)
       return
     }
+    expect(readSessionState(sessionId, h.env).waiting_answers?.[0]?.reply.text).toBe('First decision')
 
     // The native queue commit survived the lost handoff; exact-session restart
     // recovers pending siblings without sending the already-queued answer again.
@@ -4944,7 +4955,7 @@ describe('session-end hook', () => {
     })
   })
 
-  it('round-trips future session-state fields when SessionEnd preserves an obligation', async () => {
+  it('cancels acknowledgement debt at SessionEnd and round-trips future fields beside a native report', async () => {
     const h = harness()
     const sessionId = 'session-end-future-state'
     const stateFile = path.join(
@@ -4957,12 +4968,15 @@ describe('session-end hook', () => {
       recorded_at: NOW,
       future_entry: { retained: true },
     }
+    const nativeReport = { question_id: 'q_native', operation_id: 'op_native', future_entry: { retained: true } }
     mkdirSync(path.dirname(stateFile), { recursive: true })
     writeFileSync(
       stateFile,
       `${JSON.stringify({
         future_root: { retained: true },
         acknowledgement_due: [acknowledgement],
+        message_acknowledgement_due: [{ message_id: 'sm_future', recorded_at: NOW, text_required: true }],
+        native_answer_operations: [nativeReport],
       })}\n`,
     )
 
@@ -4970,9 +4984,65 @@ describe('session-end hook', () => {
 
     expect(JSON.parse(readFileSync(stateFile, 'utf8'))).toEqual({
       future_root: { retained: true },
-      acknowledgement_due: [acknowledgement],
+      native_answer_operations: [nativeReport],
       session_id: sessionId,
     })
+  })
+
+  it('drops an accepted answer the agent never read and names it in the closed record', async () => {
+    const h = harness()
+    const sessionId = 'session-end-unread-answer'
+    const pending = (requestId: string) => ({
+      question: 'Ship it?',
+      request_id: requestId,
+      collapse_key: `collapse-${requestId}`,
+      device_ids: ['dev_iphone'],
+    })
+    writeSessionState(sessionId, h.env, {
+      last_prompt_at: NOW,
+      accepted: {
+        answers: [{ pending: pending('req_unread'), reply: reply({ text: 'Yes' }), replies: [reply({ text: 'Yes' })] }],
+        remaining: 0,
+        recorded_at: NOW,
+      },
+      waiting_answers: [{ pending: pending('req_waiting'), reply: reply({ text: 'Later' }), replies: [reply({ text: 'Later' })] }],
+      acknowledgement_due: [{ request_id: 'req_read_earlier', recorded_at: NOW, text_required: true }],
+    })
+
+    const deps = { ...h.deps, logger: createLogger({ env: h.env }) }
+    expect(await hookRunCommand(deps, 'session-end', stdin({ session_id: sessionId }))).toBe(EXIT.ok)
+
+    const state = readSessionState(sessionId, h.env)
+    expect(state.accepted).toBeUndefined()
+    expect(state.waiting_answers).toBeUndefined()
+    expect(state.acknowledgement_due).toBeUndefined()
+    expect(readSessionEndMarker(sessionId, h.env)?.dropped_answers).toEqual(['req_unread', 'req_waiting'])
+    expect(readLogRecords(h.env, { event: ['hook.end'], limit: 10 }).records.at(-1)?.data).toMatchObject({
+      outcome: 'cleaned',
+      dropped_answers: 2,
+    })
+  })
+
+  it('does not call an answer whose delivery committed dropped', async () => {
+    const h = harness()
+    const sessionId = 'session-end-committed-answer'
+    writeSessionState(sessionId, h.env, {
+      accepted: {
+        answers: [{
+          pending: { question: 'Ship it?', request_id: 'req_committed', collapse_key: 'collapse-committed', device_ids: ['dev_iphone'] },
+          reply: reply({ text: 'Yes' }),
+          replies: [reply({ text: 'Yes' })],
+        }],
+        remaining: 0,
+        recorded_at: NOW,
+        delivery_committed_at: NOW,
+      },
+    })
+
+    await hookRunCommand(h.deps, 'session-end', stdin({ session_id: sessionId }))
+
+    expect(readSessionState(sessionId, h.env).accepted).toBeUndefined()
+    expect(readSessionEndMarker(sessionId, h.env)?.dropped_answers).toBeUndefined()
   })
 
   it('runs the real Codex SessionEnd cleanup and diagnostics without waiting for a held log lock', async () => {
@@ -6548,6 +6618,44 @@ describe('Claude Code Stop wake route', () => {
     releaseQuestionPush('claude-route', h.env)
   })
 
+  it('records the close with the service as soon as its observer sees it', async () => {
+    const h = harness([])
+    let markPoll: (() => void) | undefined
+    const pollStarted = new Promise<void>((resolve) => {
+      markPoll = resolve
+    })
+    let releasePoll: (() => void) | undefined
+    const heldPoll = new Promise<void>((resolve) => {
+      releasePoll = resolve
+    })
+    h.recorder.beforeReplies = async () => {
+      markPoll?.()
+      await heldPoll
+    }
+    const envelope = { session_id: 'claude-closed', cwd: '/tmp/claude-closed' }
+    sessionStateModule.beginSessionIncarnation('claude-closed', h.env, {
+      stamp: sessionStateModule.lifecycleStamp(NOW),
+      clearEarlierEnd: true,
+    })
+    const incarnation = readSessionIncarnation('claude-closed', h.env)
+    expect(incarnation).not.toBeNull()
+    writeSessionState('claude-closed', h.env, { last_prompt_at: AWAY })
+    registerQuestion('claude-closed', h.env, { question: 'Deploy?' }, NOW)
+    const deps = { ...h.deps, claudeWake: claudeWake(), claudeSourcePid: 12345 }
+
+    const stop = hookRunCommand(deps, 'stop', stdin(envelope), 'claude-code')
+    await pollStarted
+    await hookRunCommand(deps, 'session-end', stdin(envelope), 'claude-code')
+    releasePoll?.()
+    await stop
+
+    // The service expires the question and retires it now, not on a later hook.
+    expect(h.recorder.attended).toEqual([
+      { sessionId: 'claude-closed', body: { incarnation: incarnation!.incarnation, state: 'ended' } },
+    ])
+    expect(h.io.errLines.join('\n')).toContain('recorded the closed session with the service')
+  })
+
   it('does not resurrect or wake an ended session after its close fence returns', async () => {
     const h = harness([reply({ text: 'Too late' })])
     const factory = h.deps.clientFactory!
@@ -7946,9 +8054,10 @@ describe('escalation waiter delivery seam', () => {
     await waiter
 
     expect(writes).toBe(1)
-    expect(readSessionState('waiter-commit-first', h.env).accepted?.delivered_at).toBe(
-      NOW,
-    )
+    // The closed session keeps nothing to resume, and the committed answer
+    // was handed over, so it is not named as dropped.
+    expect(readSessionState('waiter-commit-first', h.env).accepted).toBeUndefined()
+    expect(readSessionEndMarker('waiter-commit-first', h.env)?.dropped_answers).toBeUndefined()
 
     await hookRunCommand(
       h.deps,
@@ -8341,15 +8450,14 @@ describe('Session Message acknowledgement debt', () => {
     expect(readSessionState('message-prompt', h.env).message_acknowledgement_due).toBeUndefined()
   })
 
-  it('preserves owed Session Message acknowledgements through SessionEnd', () => {
+  it('cancels owed Session Message acknowledgements at SessionEnd', () => {
     const h = harness([])
     writeSessionState('message-end', h.env, {
-      message_acknowledgement_due: [{ message_id: 'sm_kept', recorded_at: NOW, text_required: false }],
+      message_acknowledgement_due: [{ message_id: 'sm_owed', recorded_at: NOW, text_required: false }],
     })
     handleSessionEnd(h.env, { session_id: 'message-end' }, NOW)
-    expect(readSessionState('message-end', h.env).message_acknowledgement_due).toEqual([
-      { message_id: 'sm_kept', recorded_at: NOW, text_required: false },
-    ])
+    // A closed session can never write the acknowledgement.
+    expect(readSessionState('message-end', h.env).message_acknowledgement_due).toBeUndefined()
   })
 
   it('keeps both debts across a released CLI writing the same state (new write, old run, new read)', () => {

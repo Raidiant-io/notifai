@@ -91,6 +91,8 @@ const attendanceIdentity = {
  *
  * - `running` acquires or renews the lease and waits for Session Messages.
  * - `ended` records that the harness session ended; presence becomes `ended`.
+ *   Its open questions expire with it and an answer the agent never read is
+ *   dropped (reported `not_delivered`, reason `session_ended`).
  * - `withdrawn` gives the lease up without an end (Project disabled, CLI
  *   contract changed); presence becomes `unknown`.
  *
@@ -323,8 +325,15 @@ export const SESSION_MESSAGE_STATES = [
 ] as const
 export type SessionMessageState = (typeof SESSION_MESSAGE_STATES)[number]
 
-/** Why a message was never claimed. Clients render unknown reasons generically. */
+/**
+ * Why a message was never claimed, or why a reply Answer Version was never
+ * delivered. Clients render unknown reasons generically.
+ */
 export const SESSION_MESSAGE_NOT_DELIVERED_REASONS = [
+  /**
+   * The Agent Session ended first. On a reply Answer Version: the agent never
+   * read the answer before its session closed, so it was dropped.
+   */
   'session_ended',
   /** The Agent Session stayed out of reach past the delivery limit. */
   'out_of_reach',
@@ -449,8 +458,10 @@ export type CreateAnswerEditRequestT = Static<typeof CreateAnswerEditRequest>
 /**
  * Status of one Answer Version. Replies are `superseded` by a later reply,
  * `current` while they are the latest undelivered answer, or `delivered` when
- * a `deliver` close fenced them. Post-delivery edits carry their Session
- * Message state.
+ * a `deliver` close fenced them. A reply is `not_delivered` (reason
+ * `session_ended`) when its Agent Session ended before the agent read it: the
+ * answer was dropped and is never delivered later. Post-delivery edits carry
+ * their Session Message state.
  */
 export type AnswerVersionStatus = 'superseded' | 'current' | 'delivered' | 'presented' | SessionMessageState
 

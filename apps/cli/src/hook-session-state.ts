@@ -77,11 +77,17 @@ export function happenedBefore(edge: LifecycleStamp | null, reference: Lifecycle
   return mono < BigInt(reference.mono) || mono > systemMonotonicNs()
 }
 
-/** What SessionEnd recorded: when, and which incarnation it ended. */
+/**
+ * What SessionEnd recorded: when, which incarnation it ended, and which
+ * answers the closed session dropped. This is the local record of a close;
+ * the service decides read versus unread from its own records too.
+ */
 export interface SessionEndMarker {
   stamp: LifecycleStamp | null
   /** `key` of the incarnation current when the session ended, when there was one. */
   ends: string | null
+  /** Request ids of answers accepted from a device that the agent never read. */
+  dropped_answers?: string[]
 }
 
 export function markSessionEnded(sessionId: string, env: NodeJS.ProcessEnv, now: number): SessionEndMarker {
@@ -97,6 +103,22 @@ export function markSessionEnded(sessionId: string, env: NodeJS.ProcessEnv, now:
   })
 }
 
+/**
+ * Adds the answers a close dropped to its end marker. The caller holds the
+ * session-state lock and has checked that the marker is still its own.
+ */
+export function recordDroppedAnswersUnlocked(
+  sessionId: string,
+  env: NodeJS.ProcessEnv,
+  marker: SessionEndMarker,
+  requestIds: readonly string[],
+): void {
+  atomicWriteFileSync(
+    sessionEndMarkerPath(sessionId, env),
+    `${JSON.stringify({ stamp: marker.stamp, ends: marker.ends, dropped_answers: [...requestIds] })}\n`,
+  )
+}
+
 /** The end marker, or null when the session carries none. */
 export function readSessionEndMarker(sessionId: string, env: NodeJS.ProcessEnv): SessionEndMarker | null {
   let raw: string
@@ -108,9 +130,13 @@ export function readSessionEndMarker(sessionId: string, env: NodeJS.ProcessEnv):
   try {
     const parsed = JSON.parse(raw) as Record<string, unknown>
     if (typeof parsed === 'object' && parsed !== null) {
+      const dropped = parsed['dropped_answers']
       return {
         stamp: parseStamp(parsed['stamp']),
         ends: typeof parsed['ends'] === 'string' ? parsed['ends'] : null,
+        ...(Array.isArray(dropped) && dropped.every((id) => typeof id === 'string')
+          ? { dropped_answers: dropped as string[] }
+          : {}),
       }
     }
   } catch {
