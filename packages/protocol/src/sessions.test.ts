@@ -2,6 +2,8 @@ import { describe, expect, it } from 'vitest'
 import { Value } from '@sinclair/typebox/value'
 import {
   AccountPreferences,
+  ATTENDANCE_BATCH_MAX_SESSIONS,
+  AttendanceBatchRequest,
   AttendanceRequest,
   CapabilityAdvertisement,
   ClaimDeliveryAttemptRequest,
@@ -121,6 +123,36 @@ describe('Session Attendance exchange', () => {
     expect(
       Value.Check(AttendanceRequest, { incarnation: '48213', state: 'withdrawn' }),
     ).toBe(false)
+  })
+})
+
+describe('Batched Session Attendance', () => {
+  const incarnation = 'inc_0123456789ab'
+  const running = (session_id: string) => ({
+    session_id, incarnation, generation: 1, state: 'running', activity: 'idle', accepts_messages: true,
+  })
+
+  it('carries one cursor and per-session exchanges, each with its own identity', () => {
+    expect(Value.Check(AttendanceBatchRequest, {
+      message_cursor: 'c_1',
+      sessions: [running('a'), { session_id: 'b', incarnation, generation: 2, state: 'ended' },
+        { session_id: 'c', incarnation, state: 'withdrawn' }],
+    })).toBe(true)
+    const anonymous: Record<string, unknown> = running('a')
+    delete anonymous['session_id']
+    expect(Value.Check(AttendanceBatchRequest, { sessions: [anonymous] })).toBe(false)
+  })
+
+  it('refuses a per-session cursor, an empty batch and an oversized one', () => {
+    expect(Value.Check(AttendanceBatchRequest, { sessions: [{ ...running('a'), message_cursor: 'c_1' }] })).toBe(false)
+    expect(Value.Check(AttendanceBatchRequest, { sessions: [] })).toBe(false)
+    const many = Array.from({ length: ATTENDANCE_BATCH_MAX_SESSIONS + 1 }, (_, i) => running(`s${i}`))
+    expect(Value.Check(AttendanceBatchRequest, { sessions: many })).toBe(false)
+    expect(Value.Check(AttendanceBatchRequest, { sessions: many.slice(1) })).toBe(true)
+  })
+
+  it('names the batch as a capability a server may list', () => {
+    expect(Value.Check(CapabilityAdvertisement, ['session_attendance', 'session_attendance_batch'])).toBe(true)
   })
 })
 
