@@ -139,6 +139,10 @@ function service(): Service {
 }
 
 function startHub(env: NodeJS.ProcessEnv, fake: Service): Promise<number> {
+  return startHubWith(env, fake).done
+}
+
+function startHubWith(env: NodeJS.ProcessEnv, fake: Service): { hub: Hub; done: Promise<number> } {
   const deps: CommandDeps = {
     io: { out: () => undefined, err: () => undefined, confirm: async () => false, openUrl: () => undefined },
     store: { load: () => ({ machineId: 'mch_test', secret: 's', baseUrl: 'https://example.invalid', machineName: 't' }), save: () => undefined, clear: () => undefined, describe: () => 'memory' },
@@ -146,7 +150,7 @@ function startHub(env: NodeJS.ProcessEnv, fake: Service): Promise<number> {
   }
   const hub = new Hub(deps, { deps, verifyPeer: peerVerifierFor(launcher), idleExitMs: 500, bootIdentity: () => null })
   cleanups.push(() => hub.requestExit('test-cleanup'))
-  return hub.run()
+  return { hub, done: hub.run() }
 }
 
 describe.skipIf(!supported)('native session child', () => {
@@ -190,6 +194,27 @@ describe.skipIf(!supported)('native session child', () => {
     harness.process.kill('SIGKILL')
     expect(await done).toBe(0)
   }, 30_000)
+
+  it('reconnects to a restarted hub and registers again, with no end reported', async () => {
+    const { root, env } = scratch()
+    recordSessionNotified(SESSION, env, Date.now())
+    const fake = service()
+    const first = startHubWith(env, fake)
+    const harness = await startHarness(root, env, 'direct')
+    await until(() => fake.batches.some((batch) => batch.sessions.some((entry) => entry.state === 'running')))
+    // The hub goes away; its leases stay saved, and the child stays.
+    first.hub.requestExit('test-crash')
+    expect(await first.done).toBe(0)
+    const before = fake.batches.length
+    const second = startHubWith(env, fake)
+    await until(() => fake.batches.length > before, 15_000)
+    const after = fake.batches.slice(before).flatMap((batch) => batch.sessions)
+    expect(after.every((entry) => entry.state === 'running' && entry.generation === 1)).toBe(true)
+    expect(fake.batches.flatMap((batch) => batch.sessions).some((entry) => entry.state === 'ended')).toBe(false)
+    harness.process.kill('SIGKILL')
+    await until(() => fake.batches.some((batch) => batch.sessions.some((entry) => entry.state === 'ended')))
+    expect(await second.done).toBe(0)
+  }, 40_000)
 
   it('records the close locally when no hub can be reached', async () => {
     const { root, env } = scratch()
