@@ -274,9 +274,10 @@ export async function attendHook(
   const gate = gates()
   if (!gate.ok) return end('ignored', { reason: gate.reason })
 
-  // Codex runs a hook through `$SHELL -lc`. bash and zsh exec the adapter, so
-  // its parent is Codex; a shell that does not would be named instead and
-  // outlive a crashed Codex. Only the Codex executable itself is proof.
+  // Codex runs a hook through the login shell with `-c` (Codex 0.163.0 on
+  // Ubuntu: the shell named in /etc/passwd, not $SHELL). bash and zsh exec the
+  // adapter, so its parent is Codex; a shell that does not would be named
+  // instead and outlive a crashed Codex. Only the Codex executable is proof.
   if (seams.harnessProcess === undefined && harness === 'codex' && processExecutableName(pid) !== 'codex') {
     return end('ignored', { reason: 'harness-process-not-codex' })
   }

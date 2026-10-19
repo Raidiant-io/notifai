@@ -151,9 +151,10 @@ export function stageSessionAnswers(sessionId: string, env: NodeJS.ProcessEnv, a
 }
 
 /** The existing route wakes the exact owner, but no longer owns answer text. */
-export function sessionInputRoute(sessionId: string, env: NodeJS.ProcessEnv, route: EscalationDeliveryRoute, log?: Logger, wakeOwner: 'producer' | 'attendant' = 'producer', wake: WakeOptions = {}): EscalationDeliveryRoute {
+export function sessionInputRoute(sessionId: string, env: NodeJS.ProcessEnv, route: EscalationDeliveryRoute, log?: Logger, wakeOwner: 'producer' | 'attendant' = 'producer', wake: WakeOptions = {}, staged?: (sessionId: string) => void): EscalationDeliveryRoute {
   return { ...route, defer: async (accepted) => {
     stageSessionAnswers(sessionId, env, accepted)
+    staged?.(sessionId)
     // A live resident owns scheduling; its completion probe also covers the
     // case where no more tool callbacks occur. Preserve return when absent.
     if (wakeOwner === 'attendant') {
