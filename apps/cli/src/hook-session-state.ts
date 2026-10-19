@@ -17,6 +17,7 @@ import { withFileLock } from './file-lock.js'
 import type { HookHarness, PendingQuestion, SessionState } from './hook-types.js'
 import type { ProcessIdentity } from './process-identity.js'
 import { systemMonotonicNs } from './monotonic-clock.js'
+import { finishBeforeExit } from './exit-work.js'
 export function sessionStatePath(sessionId: string, env: NodeJS.ProcessEnv): string {
   return path.join(stateDir(env), 'sessions', `${sanitizeSessionId(sessionId)}.json`)
 }
@@ -168,6 +169,11 @@ export interface SessionIncarnation {
   openclaw_generation?: string
   /** The harness process hosting this incarnation, when the starter knew it. */
   harness_process?: ProcessIdentity
+  /**
+   * The boot this incarnation started in (Linux boot id, macOS boot time).
+   * A different boot is close evidence: a reboot or power loss ended it.
+   */
+  boot?: string
 }
 
 function sessionIncarnationPath(sessionId: string, env: NodeJS.ProcessEnv): string {
@@ -204,6 +210,7 @@ export function readSessionIncarnation(
       typeof harness['start'] === 'string'
         ? { harness_process: { pid: harness['pid'], start: harness['start'] } }
         : {}),
+      ...(typeof record['boot'] === 'string' && record['boot'].length <= 128 ? { boot: record['boot'] } : {}),
     }
   } catch {
     return null
@@ -245,6 +252,8 @@ export function beginSessionIncarnation(
     openclawGeneration?: string
     /** Grok SessionStart always names a fresh actor, even for a resumed id. */
     restart?: boolean
+    /** The boot the starter observed; recorded so a later sweep can tell a reboot ended it. */
+    boot?: string
   },
 ): SessionIncarnation {
   const stateFile = sessionStatePath(sessionId, env)
@@ -268,6 +277,7 @@ export function beginSessionIncarnation(
         current.harness_process === undefined && options.harnessProcess !== undefined
           ? { ...current, harness_process: options.harnessProcess }
           : current
+      if (next.boot === undefined && options.boot !== undefined) next = { ...next, boot: options.boot }
     } else {
       next = {
         key: randomBytes(12).toString('base64url'),
@@ -277,6 +287,7 @@ export function beginSessionIncarnation(
           ? {}
           : { openclaw_generation: options.openclawGeneration }),
         ...(options.harnessProcess === undefined ? {} : { harness_process: options.harnessProcess }),
+        ...(options.boot === undefined ? {} : { boot: options.boot }),
       }
     }
     if (
@@ -333,6 +344,8 @@ export function recordSessionNotified(sessionId: string, env: NodeJS.ProcessEnv,
     if (existsSync(file)) return
     mkdirSync(path.dirname(file), { recursive: true })
     atomicWriteFileSync(file, `${now}\n`)
+    // The hub attends a session only once it notified; tell it now.
+    finishBeforeExit(import('./hub-client.js').then(({ notifyHubSessionNotified }) => notifyHubSessionNotified(env, sessionId)))
   } catch {
     // The marker only wakes a dormant attendant; the notification already left.
   }

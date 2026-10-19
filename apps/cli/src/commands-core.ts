@@ -114,6 +114,11 @@ export interface CommandDeps {
   /** Test seam for detached immediate submission and native answer ownership. */
   spawnQuestionSettlement?: (launch: QuestionSettlementLaunch) => void
   /**
+   * The hub's in-process question waiters: told the moment an accepted answer
+   * is staged for a session, so the hub hands it in without waiting for a tick.
+   */
+  onSessionInputStaged?: (sessionId: string) => void
+  /**
    * Starts the detached daily hook maintenance (prune, update lookup). Absent,
    * hooks start none; the production entry point supplies the real launcher.
    */

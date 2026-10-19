@@ -1,5 +1,7 @@
 import type {
   ApiErrorBody,
+  AttendanceBatchRequestT,
+  AttendanceBatchResponse,
   AttendanceRequestT,
   AttendanceResponse,
   AlphaAccessRequestResponse,
@@ -150,6 +152,14 @@ export interface ApiClient {
     body: AttendanceRequestT,
     options: { waitSeconds: number; signal?: AbortSignal },
   ): Promise<AttendanceResponse>
+  /**
+   * One batched exchange for many Agent Sessions (the hub). Offered when the
+   * service lists `session_attendance_batch`.
+   */
+  attendBatch(
+    body: AttendanceBatchRequestT,
+    options: { waitSeconds: number; signal?: AbortSignal },
+  ): Promise<AttendanceBatchResponse>
   /** Claim one hand-off into an Agent Session under the lease generation held. */
   claimDeliveryAttempt(
     sessionId: string,
@@ -417,6 +427,14 @@ export function createClient(
       call<AttendanceResponse>(
         'POST',
         `/api/v1/agent-sessions/${encodeURIComponent(sessionId)}/attendance?wait_seconds=${waitSeconds}`,
+        body,
+        waitSeconds,
+        signal,
+      ),
+    attendBatch: (body, { waitSeconds, signal }) =>
+      call<AttendanceBatchResponse>(
+        'POST',
+        `/api/v1/agent-sessions/attendance?wait_seconds=${waitSeconds}`,
         body,
         waitSeconds,
         signal,

@@ -124,6 +124,16 @@ export const LOG_EVENTS = [
   'attendant.lease',
   /** A Session Attendant stopped: why, and what it last reported. */
   'attendant.exit',
+  /** The shared hub started, refused to start, or left, and why. */
+  'hub.start',
+  /** A session child registered with the hub, was refused, disconnected, or ended. */
+  'hub.session',
+  /** The hub acquired, lost, or released one Agent Session's presence lease. */
+  'hub.lease',
+  /** The hub's service traffic: which transport, failures, clock jumps. */
+  'hub.exchange',
+  /** The hub stopped, and why. */
+  'hub.exit',
   /** A hand-off into an Agent Session was claimed, or refused and why. */
   'delivery.claimed',
   /** How a claimed hand-off ended, and whether its outcome reached the service. */

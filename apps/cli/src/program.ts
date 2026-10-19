@@ -50,6 +50,7 @@ import { GROUP, SEND_GROUP, helpConfiguration, rootHelpFooter } from './ui/help.
 import { readStdinWithTimeout } from './hook-input.js'
 import { argvFlagNames } from './logging.js'
 import { QUESTION_SETTLEMENT_INPUT_ENV } from './question-settlement-process.js'
+import { settleBeforeExit } from './exit-work.js'
 import { GROK_ATTEND_INPUT_ENV } from './grok-attendant.js'
 import { admitNativeCommand, portableNativeReport, type NativeAdmission } from './native-command-admission.js'
 import { resumeAttendantCommand } from './attendant-update.js'
@@ -158,7 +159,9 @@ export interface BuildProgramOptions {
 }
 
 export function buildProgram(deps: CommandDeps, options: BuildProgramOptions = {}): Command {
-  const exit = options.exit ?? ((code: number) => process.exit(code))
+  // Hand-offs to the hub are sent after the command's own work; the process
+  // waits for them (each is bounded) before it ends.
+  const exit = options.exit ?? ((code: number) => { void settleBeforeExit().finally(() => process.exit(code)) })
   const runners: ProgramRunners = { ...defaultRunners, ...options.runners }
   let admission: NativeAdmission = 'development'
 
@@ -811,6 +814,17 @@ export function buildProgram(deps: CommandDeps, options: BuildProgramOptions = {
     .option('--json', 'machine-readable output')
     .action(async (requestId: string | undefined, opts: { json?: boolean; pending?: boolean }) => {
       exit(await runners.close(deps, requestId, opts))
+    })
+
+  // The shared hub: started on demand by a session child or the CLI, never by
+  // a person, and gone 30 seconds after nothing needs it.
+  program
+    .command('hub', { hidden: true })
+    .description('Internal: run the shared per-user hub that attends Agent Sessions')
+    .option('--owner <name>', 'internal ownership marker')
+    .action(async () => {
+      const { hubCommand } = await import('./hub.js')
+      exit(await hubCommand(deps))
     })
 
   // Hidden, not removed. It is an entry point the hook installer writes into a
