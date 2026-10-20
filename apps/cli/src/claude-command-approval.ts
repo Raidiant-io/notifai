@@ -9,10 +9,20 @@
  * The rules are the User's to grant: setup offers them and writes them only on
  * a yes. They cover sending, asking, reading and acknowledging. Setup,
  * configuration, guidance edits, logs and sign-out keep their prompt.
+ *
+ * The offer is made only at a terminal outside Claude Code or inside a Claude
+ * Code session in its default permission mode, as the session's own hooks
+ * last reported it. In any other mode (auto, acceptEdits, plan,
+ * bypassPermissions), or before a mode is known, the state reads as not
+ * applicable and carries no remedy, so nothing is offered or written: bypass
+ * does not need the rules, and Claude Code does not say how its auto mode
+ * judges a command that grants itself permission rules.
  */
 import { existsSync } from 'node:fs'
 import { withTargetFileLock } from './file-lock.js'
+import { readSessionState, updateSessionState } from './hook-session-state.js'
 import { applyPlan, loadSettings, settingsFile, type SettingsDocument } from './install-hooks.js'
+import type { ReadinessState } from './readiness.js'
 
 export const CLAUDE_COMMAND_RULES: readonly string[] = [
   'Bash(notifai send *)',
@@ -97,4 +107,70 @@ export function installClaudeCommandRules(env: NodeJS.ProcessEnv): boolean {
     if (result.changed) applyPlan(file, result.document)
     return result.changed
   })
+}
+
+/** Claude Code's ordinary mode, where it asks before each command it has no rule for. */
+export const CLAUDE_DEFAULT_PERMISSION_MODE = 'default'
+
+function usableMode(value: unknown): string | undefined {
+  return typeof value === 'string' && /^[A-Za-z]{1,32}$/.test(value) ? value : undefined
+}
+
+/** Keep the permission mode a Claude Code hook reported for its own session. */
+export function recordClaudePermissionMode(sessionId: string, env: NodeJS.ProcessEnv, reported: unknown): void {
+  const mode = usableMode(reported)
+  if (mode === undefined || readSessionState(sessionId, env).claude_permission_mode === mode) return
+  updateSessionState(sessionId, env, (state) => ({ ...state, claude_permission_mode: mode }))
+}
+
+/** The permission mode this session's hooks last reported, or null when none has. */
+export function readClaudePermissionMode(sessionId: string, env: NodeJS.ProcessEnv): string | null {
+  try {
+    return usableMode(readSessionState(sessionId, env).claude_permission_mode) ?? null
+  } catch {
+    return null
+  }
+}
+
+export const CLAUDE_COMMANDS_STATE_ID = 'claude-commands'
+
+/**
+ * Where this invocation runs: `null` outside Claude Code (a person at a
+ * terminal, or another harness), otherwise the Claude Code session's last
+ * reported permission mode, itself `null` when none is known yet.
+ */
+export type ClaudeCommandContext = null | { permissionMode: string | null }
+
+/** What the rules mean for this invocation; pure so every branch is testable. */
+export function claudeCommandReadiness(installed: boolean, context: ClaudeCommandContext): ReadinessState {
+  const base = { id: CLAUDE_COMMANDS_STATE_ID, title: 'Claude Code command approval', harnesses: ['claude-code'] as const }
+  const mode = context?.permissionMode ?? null
+  if (installed) {
+    return {
+      ...base,
+      status: 'ready',
+      detail: 'Claude Code runs the Notifai send, ask, receive and acknowledge commands without asking first',
+    }
+  }
+  if (context !== null && mode !== CLAUDE_DEFAULT_PERMISSION_MODE) {
+    return {
+      ...base,
+      status: 'ready',
+      detail: mode === null
+        ? 'not applicable until this session reports its permission mode; it is offered only in Claude Code\'s default mode'
+        : `not applicable in this session's \`${mode}\` permission mode; it is offered only in Claude Code's default mode`,
+      technical: { permission_mode: mode, applicable: false },
+    }
+  }
+  return {
+    ...base,
+    status: 'optional-gap',
+    detail: 'not granted, so in its default mode Claude Code asks at the terminal before each Notifai command and a question cannot leave while you are away',
+    ...(context === null ? {} : { technical: { permission_mode: mode, applicable: true } }),
+    remedy: {
+      by: 'cli',
+      summary: 'on the User\'s yes, let Claude Code run the Notifai commands an away User depends on without asking first',
+      command: 'notifai init --claude-commands',
+    },
+  }
 }

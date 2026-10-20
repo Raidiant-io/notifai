@@ -6773,6 +6773,28 @@ describe('Claude Code Stop wake route', () => {
     expect(readSessionState('codex-title', h.env).harness_session_title).toBeUndefined()
   })
 
+  it('keeps the latest permission mode Claude Code reports for its own session', async () => {
+    const h = harness([])
+    const run = (event: 'user-prompt-submit' | 'stop', extra: Record<string, unknown>) => hookRunCommand(
+      h.deps,
+      event,
+      stdin({ session_id: 'claude-mode', cwd: '/tmp/claude-mode', hook_event_name: event === 'stop' ? 'Stop' : 'UserPromptSubmit', prompt: 'continue', ...extra }),
+      'claude-code',
+    )
+    await run('user-prompt-submit', {})
+    expect(readSessionState('claude-mode', h.env).claude_permission_mode).toBeUndefined()
+    await run('user-prompt-submit', { permission_mode: 'default' })
+    expect(readSessionState('claude-mode', h.env).claude_permission_mode).toBe('default')
+    // The User switched modes mid-session; the turn end reports it.
+    await run('stop', { permission_mode: 'auto' })
+    expect(readSessionState('claude-mode', h.env).claude_permission_mode).toBe('auto')
+    // A subagent's callback does not speak for the session.
+    await run('user-prompt-submit', { permission_mode: 'bypassPermissions', agent_id: 'agent-1' })
+    expect(readSessionState('claude-mode', h.env).claude_permission_mode).toBe('auto')
+    await run('user-prompt-submit', { permission_mode: 'not a mode!' })
+    expect(readSessionState('claude-mode', h.env).claude_permission_mode).toBe('auto')
+  })
+
   it('keeps the detached owner through the default one-day answer window', async () => {
     const h = harness([])
     const answerAt = NOW + (86_400 - 10) * 1000

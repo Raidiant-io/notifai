@@ -317,7 +317,7 @@ export function buildProgram(deps: CommandDeps, options: BuildProgramOptions = {
     )
     .option('--hooks', 'install supported harness lifecycle hooks')
     .option('--no-hooks', 'skip the hooks without being asked')
-    .option('--claude-commands', 'let Claude Code run the Notifai send, ask, receive and acknowledge commands without a permission prompt')
+    .option('--claude-commands', 'let Claude Code run the Notifai send, ask, receive and acknowledge commands without a permission prompt; inside Claude Code, only in its default permission mode')
     .option('--no-claude-commands', 'leave Claude Code command approval as it is without being asked')
     .option('--codex-commands', 'let Codex run the Notifai send, ask, receive and acknowledge commands outside its sandbox without a permission prompt')
     .option('--no-codex-commands', 'leave Codex command approval as it is without being asked')

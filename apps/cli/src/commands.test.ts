@@ -131,6 +131,7 @@ import type { Tone } from './ui/theme.js'
 import { enableProject, projectBinding, projectEnabled } from './project-enablement.js'
 import { firstRequiredBlocker, readinessJson } from './readiness.js'
 import { readOrcaSessionTitle, type OrcaCommand } from './orca-session-title.js'
+import { recordClaudePermissionMode } from './claude-command-approval.js'
 
 afterEach(() => {
   resetPublishedCliDistTagsForTest()
@@ -6481,6 +6482,41 @@ describe('init', () => {
     writeFileSync(settings, JSON.stringify({ ...document, model: 'kept', permissions: { ...(document['permissions'] as object), deny: ['Read(.env)'] } }))
     expect(hooksUninstallCommand(deps, { harness: 'claude-code' })).toBe(EXIT.ok)
     expect(JSON.parse(readFileSync(settings, 'utf8'))).toEqual({ model: 'kept', permissions: { deny: ['Read(.env)'] } })
+  })
+
+  it('offers and grants Claude Code command approval only in a default-mode Claude Code session', async () => {
+    const cwd = mkdtempSync(path.join(os.tmpdir(), 'init-claude-commands-mode-'))
+    mkdirSync(path.join(cwd, '.claude'))
+    const io = new CapturedIo()
+    const base = setupReadyDeps(io, cwd, inertSkills, { submit: 0 })
+    const deps = { ...base, env: { ...base.env, CLAUDECODE: '1', CLAUDE_CODE_SESSION_ID: 'claude-mode-session' } }
+    const settings = path.join(deps.env.CLAUDE_CONFIG_DIR!, 'settings.json')
+    const allowed = (): unknown => (JSON.parse(readFileSync(settings, 'utf8')) as { permissions?: { allow?: unknown } }).permissions?.allow
+    const state = async () => (await assessReadiness(deps)).states.find((candidate) => candidate.id === 'claude-commands')
+
+    await initCommand(deps, { hooks: true, skills: false })
+    // No hook has reported this session's mode yet: nothing is offered.
+    expect(await state()).toMatchObject({ status: 'ready', technical: { permission_mode: null, applicable: false } })
+
+    for (const mode of ['auto', 'acceptEdits', 'plan', 'bypassPermissions']) {
+      recordClaudePermissionMode('claude-mode-session', deps.env, mode)
+      const reported = await state()
+      expect(reported).toMatchObject({ status: 'ready', technical: { permission_mode: mode, applicable: false } })
+      expect(reported?.remedy).toBeUndefined()
+      // Even an explicit request does not grant the rules outside default mode.
+      await initCommand(deps, { hooks: true, skills: false, claudeCommands: true, json: true })
+      expect(allowed()).toBeUndefined()
+    }
+
+    recordClaudePermissionMode('claude-mode-session', deps.env, 'default')
+    expect(await state()).toMatchObject({
+      status: 'optional-gap',
+      technical: { permission_mode: 'default', applicable: true },
+      remedy: { by: 'cli', command: 'notifai init --claude-commands' },
+    })
+    await initCommand(deps, { hooks: true, skills: false, claudeCommands: true, json: true })
+    expect(allowed()).toEqual(expect.arrayContaining(['Bash(notifai ask *)']))
+    expect(await state()).toMatchObject({ status: 'ready' })
   })
 
   it('grants Codex command approval only when asked, checks it with Codex, and removes it with the wiring', async () => {
