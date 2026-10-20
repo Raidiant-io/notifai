@@ -779,6 +779,23 @@ describe('hub and Codex SessionEnd', () => {
     await done
   })
 
+  it('keeps an app conversation open when Codex stops its child without a SessionEnd', async () => {
+    const env = hubEnv()
+    recordSessionNotified(SESSION, env, Date.now())
+    const transcript = codexRollout(env, 'Codex Desktop')
+    const service = fakeService()
+    const peers = new Map<number, PeerCredentials>()
+    const { hub, done } = startHub(env, service, peers, memoryStore(), 100, { codexEndConfirmMs: 50, codexHostKind: () => 'app-server', wake: noWake })
+    await hubListening(env)
+    const child = await codexSession(env, service, peers, 900075, transcript)
+    child.socket.destroy()
+    await until(() => status(env)['reason'] === 'dormant-open')
+    expect(reportedEnd(service)).toBe(false)
+    hub.requestExit('test')
+    service.release()
+    await done
+  })
+
   it('cancels the end when the conversation starts again inside the delay', async () => {
     const env = hubEnv()
     recordSessionNotified(SESSION, env, Date.now())

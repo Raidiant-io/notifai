@@ -27,6 +27,7 @@ import { codexInputObserver, refreshCodexInputActivity } from './codex-input-lif
 import { connectCodexQueue } from './codex-queue-control.js'
 import {
   classifyCodexSessionEnd,
+  codexDormantSurface,
   codexHostKind,
   codexTranscriptState,
   readCodexThreadOriginator,
@@ -1141,7 +1142,7 @@ export class Hub {
     const probe = session.probe()
     if (probe.state === 'ended') { this.endSession(session, probe.reason); return }
     // Codex unloaded a conversation its app still lists: its child is gone, its host is not.
-    if (session.dormantSince !== null) return
+    if (session.dormantSince !== null || session.endCandidate !== null) return
     // A close nobody reported: the kernel watch went with the child, so ask
     // once (this is rare) whether that exact harness process still runs.
     if (session.harnessGone()) {
@@ -1151,6 +1152,12 @@ export class Hub {
     this.logger.info('hub.session', { event: 'child-disconnected', session: session.id })
     session.lease.setPhase('uncertain', 'session-child-disconnected')
     session.writeStatus()
+    // Codex stops the child when it ends or unloads a session; the Codex app
+    // does not always run SessionEnd for an unload. For an app or IDE
+    // conversation, decide as SessionEnd would have.
+    if (session.harness === 'codex' && codexDormantSurface(readCodexThreadOriginator(session.registration.transcriptPath)) !== null) {
+      this.holdCodexEnd(session, session.registration.transcriptPath)
+    }
   }
 
   /**

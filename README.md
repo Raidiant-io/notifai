@@ -417,8 +417,8 @@ still waiting for an answer when the session closes, it tells the Notifai
 service right away, so the questions expire on your devices at once.
 
 The Codex app and the Codex IDE extension are the exception. Codex also runs
-SessionEnd when it unloads a conversation nobody has had open for a while,
-though the app still lists it. There the hub that attends the session waits a
+SessionEnd, and stops the session child, when it unloads a conversation nobody
+has had open for a while, though the app still lists it. There the hub that attends the session waits a
 few seconds and looks: if the conversation's rollout is gone (archived or
 deleted), or the app's own Codex server has exited (the app quit), the session
 closed as above. If the conversation was started in that app and its server
