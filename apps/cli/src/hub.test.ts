@@ -2983,4 +2983,51 @@ describe('hub: Codex conversations stopped by their app or the machine, Orca pan
       await stopHub(hub, service, done)
     }
   })
+
+  it('continues under a fork that has not notified only where the service creates the successor', async () => {
+    for (const creates of [true, false]) {
+      const env = hubEnv()
+      recordSessionNotified(SESSION, env, Date.now())
+      const transcript = rollout(env, SESSION, 'Codex Desktop')
+      const server = await standIn()
+      const service = fakeService({
+        capabilities: ['session_attendance', 'session_attendance_batch', 'session_stopped_hold',
+          ...(creates ? ['session_continued_successor'] : [])],
+        batch: (body) => ({ message_cursor: 'c1', sessions: body.sessions.map((entry) => {
+          if (entry.state === 'stopped') return { session_id: entry.session_id, status: 'stopped' as const, generation: entry.generation!, message_cursor: 'c1', messages: [] }
+          if (entry.state === 'running') {
+            return { session_id: entry.session_id, status: 'attending' as const, generation: entry.generation ?? 1, lease_remaining_ms: 120_000, message_cursor: 'c1', messages: [] }
+          }
+          return { session_id: entry.session_id, status: 'withdrawn' as const }
+        }) }),
+      })
+      const peers = new Map<number, PeerCredentials>()
+      const { hub, done } = startHub(env, service, peers, memoryStore(), 100, { endConfirmMs: 150, codexHostKind: () => 'app-server',
+        wake: queueing([]) }, { powerWatch: false, runHook: noHook })
+      await hubListening(env)
+      const child = await codexChild(env, peers, 900740, server, transcript)
+      await until(() => renewals(service) >= 1)
+      question(env)
+      await requestHub(env, { type: 'session-end-candidate', session_id: SESSION, transcript_path: transcript, harness_pid: server.pid })
+      child.socket.destroy()
+      await until(() => hub.sessions.get(SESSION)?.stopped?.cause === 'app', 5_000)
+      await until(() => service.batches.some((batch) => batch.body.sessions.some((entry) => entry.state === 'stopped')), 5_000)
+      // The fork has not notified, so only a service that creates it can continue there.
+      const forkHost = await standIn()
+      const fork = await codexChild(env, peers, 900741, forkHost, rollout(env, OTHER, 'codex-tui', SESSION), { source: 'startup' }, undefined, OTHER)
+      expect(fork.frames[0]).toEqual({ type: 'registered', session_id: OTHER })
+      await until(() => ended(service), 5_000)
+      await until(() => readSessionEndMarker(SESSION, env) !== null, 5_000)
+      const end = service.batches.flatMap((batch) => batch.body.sessions).find((entry) => entry.session_id === SESSION && entry.state === 'ended')
+      if (creates) {
+        expect(end).toMatchObject({ end_reason: 'continued', successor_session_id: OTHER })
+        expect(readSessionState(OTHER, env).pending?.map((entry) => entry.request_id)).toEqual(['req_1111'])
+      } else {
+        expect(end).not.toHaveProperty('end_reason')
+        expect(readSessionState(OTHER, env).pending ?? []).toEqual([])
+      }
+      fork.socket.destroy()
+      await stopHub(hub, service, done)
+    }
+  })
 })

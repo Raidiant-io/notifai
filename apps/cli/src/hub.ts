@@ -1898,8 +1898,10 @@ export class Hub {
    * A new conversation that is a fork of one this hub attends. When that one
    * is stopped, or ending with nowhere left to run, it continues only in the
    * fork: it has moved. Where the service can move its questions (it offers
-   * `session_stopped_hold` and already knows the fork), they continue there,
-   * with its held answers and notes; otherwise they expire as for a close. A
+   * `session_stopped_hold`, and either creates an unseen successor with
+   * `session_continued_successor` or already knows the fork because it has
+   * notified), they continue there, with its held answers and notes;
+   * otherwise they expire as for a close. A
    * fork of a conversation still open somewhere is a new conversation beside
    * it, and changes nothing. Only a fork that records its origin counts
    * (Claude Code's `/branch`, a Codex fork); one that records none is a new
@@ -1918,7 +1920,8 @@ export class Hub {
     const stillOpen = parent.stopped === null && (parent.endCandidate === null || (primary !== null && parent.hosts(primary)) ||
       parent.nextPrimary() !== null)
     if (stillOpen) return
-    const continued = this.driver.offers('session_stopped_hold') && fork.notified
+    const continued = this.driver.offers('session_stopped_hold') &&
+      (this.driver.offers('session_continued_successor') || fork.notified)
     this.logger.info('hub.session', { event: 'moved', session: parent.id, to: fork.id, from_state: parent.stopped !== null ? 'stopped' : 'ending',
       follows: continued })
     this.endSession(parent, 'moved', continued ? fork.id : null)

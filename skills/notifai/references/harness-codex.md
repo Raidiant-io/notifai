@@ -66,8 +66,8 @@ conversation and arrives when it comes back (opened in the app, the next
 send in the chat, `codex resume`), possibly hours later: check that the work
 it answers still applies. Notes sent meanwhile wait and arrive the same way.
 A fork continues it under a new id: its questions and their answers move to
-the fork when the fork has already sent a notification and the service
-supports it, and expire otherwise. A `codex exec` run of it receives nothing.
+the fork when the service supports it (an older service only once the fork
+has sent a notification), and expire otherwise. A `codex exec` run of it receives nothing.
 Pending notes and answers remain in Notifai until
 a trusted tool hook, prompt hook, or `notifai receive` drains a bounded batch.
 A late wake-up cannot repeat an acknowledged answer: it contains no answer
