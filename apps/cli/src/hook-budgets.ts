@@ -77,6 +77,9 @@ export function hookTimeoutSeconds(
     if (harness !== 'codex') return null
     return document === 'Interrupt' ? CODEX_INTERRUPT_TIMEOUT_SECONDS : CODEX_ATTEND_TIMEOUT_SECONDS
   }
+  // OpenCode's question form holds its turn until it is answered; the plugin
+  // ends this command through its pipe, never with the child-process ceiling.
+  if (event === 'opencode-question' && harness === 'opencode') return null
   // One plugin child-process ceiling bounds every other event the plugin runs.
   if (harness === 'opencode' || harness === 'openclaw') return NON_ROUTING_STOP_TIMEOUT_SECONDS
   if (event === 'stop') {

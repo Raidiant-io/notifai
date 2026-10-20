@@ -1,7 +1,10 @@
 /**
  * The local classic CLI plugin owns this child for one exact Hermes session.
- * Its pipe is an in-process writer bridge, not a second Hermes connection:
- * the plugin checks its attached CLI's session id again at every injection.
+ * Its pipe is an in-process writer bridge, not a second Hermes connection.
+ * The plugin tracks that session through Hermes's public hooks and writes with
+ * `ctx.inject_message` aimed at it. Acceptance is admission into the session's
+ * input, never completion, and the plugin refuses a write while Hermes waits
+ * on an approval, so an answer can never settle a confirmation prompt.
  */
 import { nativeUninstallPending } from './native-uninstall-barrier.js'
 import { existsSync } from 'node:fs'
@@ -138,8 +141,9 @@ export class HermesWriterBridge {
     const id = ++this.nextId
     const result = new Promise<Result | null>(resolve => this.pending.set(id, resolve))
     try {
-      // The plugin checks this again immediately before calling inject_message.
-      // A queued pipe write must not outlive the delivery claim.
+      // The plugin checks the session, a pending approval and this deadline
+      // again immediately before calling inject_message. A queued pipe write
+      // must not outlive the delivery claim.
       this.output.write(`${JSON.stringify({ type: 'write', id, session_id: sessionId, text,
         deadline_ms: Date.now() + budget })}\n`)
     } catch (error) {

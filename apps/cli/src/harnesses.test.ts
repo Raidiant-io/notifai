@@ -104,6 +104,10 @@ describe('harness contract', () => {
     }
   })
 
+  it('says a held Grok question ends with its session', () => {
+    expect(HARNESS_CAPABILITIES.grok.deliveryContract).toMatch(/closing the session ends its questions/)
+  })
+
   it('passes no resume argument to any harness from CLI source', () => {
     // The CLI's own `notifai update --resume` handoff is the only `--resume`
     // it may pass; `claude -p --resume` and `codex exec resume` revive a

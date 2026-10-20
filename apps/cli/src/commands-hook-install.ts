@@ -53,10 +53,12 @@ import {
   type SettingsDocument,
 } from './install-hooks.js'
 import {
+  OPENCLAW_PLUGIN_FILENAME,
   OPENCLAW_PLUGIN_MANIFEST,
   OPENCLAW_PLUGIN_PACKAGE,
   enableOpenclawNotifaiConfigText,
   isOurOpenclawPlugin,
+  openclawPluginDir,
   openclawPluginLoadBlockers,
   openclawPluginLoadWarning,
   openclawConfigPath,
@@ -67,6 +69,7 @@ import {
   removeOpenclawLoadPathConfigText,
   removeOpenclawNotifaiConfigText,
 } from './openclaw-plugin.js'
+import { applyOpenclawPluginLive, openclawLiveApplyText } from './openclaw-live-apply.js'
 import { isOurOpencodePlugin, opencodePluginSource } from './opencode-plugin.js'
 import { hermesPluginDir, installHermesPlugin, preflightHermesPlugin, refreshHermesPlugin, uninstallHermesPlugin } from './hermes-plugin.js'
 import { integrationPublication, type IntegrationPublication } from './native-installation.js'
@@ -202,7 +205,19 @@ function installHooks(deps: CommandDeps, flags: HooksInstallFlags, publish: Inte
       return failed(err)
     }
   }
-  return publish(() => installDocumentHooks(deps, flags, harness))
+  if (harness !== 'openclaw') return publish(() => installDocumentHooks(deps, flags, harness))
+  const pluginDir = openclawPluginDir(deps.env, deps.hookPlatform)
+  const pluginFiles = [OPENCLAW_PLUGIN_FILENAME, OPENCLAW_PLUGIN_MANIFEST, OPENCLAW_PLUGIN_PACKAGE]
+    .map(name => path.join(pluginDir, name))
+  const before = installationBytes(pluginFiles)
+  const code = publish(() => installDocumentHooks(deps, flags, harness))
+  if (code !== EXIT.ok || before === installationBytes(pluginFiles)) return code
+  // A running Gateway keeps the generation it loaded until it applies this
+  // one. Host work stays outside the owned-file publication boundary.
+  const outcome = applyOpenclawPluginLive(deps.env)
+  if (outcome.status === 'failed') deps.io.err(openclawLiveApplyText(outcome))
+  else if (flags.narrate !== false) deps.io.out(openclawLiveApplyText(outcome))
+  return code
 }
 
 /** No external host work belongs inside this publication boundary. */

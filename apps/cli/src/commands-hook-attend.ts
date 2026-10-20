@@ -48,6 +48,7 @@ import {
   runSessionAttendant,
   systemAttendantClock,
   type AttendantClock,
+  type AttendantExitReason,
   type AttendantHandle,
   type AttendantResult,
   type GateResult,
@@ -80,6 +81,7 @@ import { claudeSourceDescriptor, deliverIntoClaudeSession, deliverIntoCodexThrea
 import { handOffSessionMessages, type MessageHandOffResult } from './session-message-handoff.js'
 import { compareVersions } from './version.js'
 import { readOpenclawGeneration } from './openclaw-generation.js'
+import { awaitOpenclawGeneration, openclawGenerationMarker } from './openclaw-generation-marker.js'
 import { integrationFaultNotice } from './integration-health.js'
 import { openclawBridgeActivity, openclawMessageBridge, openclawMessageBridgeAvailable } from './openclaw-message-bridge.js'
 import { readNativeTurnSnapshot } from './codex-native-turn.js'
@@ -108,6 +110,10 @@ export interface AttendantSeams {
   clock?: AttendantClock
   /** Resolves to simulate SIGTERM/SIGHUP/SIGINT. */
   signalled?: Promise<void>
+  /** Resolves to simulate the OpenClaw plugin's generation handover (SIGUSR2). */
+  handedOver?: Promise<void>
+  /** How long a stepped-aside OpenClaw attendant waits for a next plugin generation. */
+  openclawSuccessorGraceMs?: number
   probeIntervalMs?: number
   waitSeconds?: number
   /** How long a new start waits for a superseded attendant to step aside. */
@@ -406,6 +412,11 @@ export async function attendHook(
   })
   let wakeCleanup: Promise<void> | null = null
   const signals = seams.signalled === undefined ? terminationSignal() : null
+  const handover = harness === 'openclaw' && seams.handedOver === undefined ? openclawHandoverSignal() : null
+  const handedOver = harness !== 'openclaw' ? undefined : seams.handedOver ?? handover!.promise
+  let steppedAside = false
+  void handedOver?.then(() => { steppedAside = true })
+  const generationMarker = harness === 'openclaw' ? openclawGenerationMarker(deps.env) : null
   try {
     const result = await runSessionAttendant({
       sessionId,
@@ -475,12 +486,21 @@ export async function attendHook(
         ])
       },
       signalled: seams.signalled ?? signals!.promise,
+      ...(handedOver === undefined ? {} : {
+        handedOver,
+        finalState: (reason) => openclawFinalState(reason, {
+          steppedAside, marker: generationMarker, gatewayPid: pid,
+          clock: { monotonic: () => clock.monotonic(), sleep: (ms) => clock.sleep(ms, new AbortController().signal) },
+          ...(seams.openclawSuccessorGraceMs === undefined ? {} : { graceMs: seams.openclawSuccessorGraceMs }),
+        }),
+      }),
       ...(seams.probeIntervalMs === undefined ? {} : { probeIntervalMs: seams.probeIntervalMs }),
       ...(seams.waitSeconds === undefined ? {} : { waitSeconds: seams.waitSeconds }),
     })
     seams.onExit?.(result)
   } finally {
     signals?.dispose()
+    handover?.dispose()
     if (token !== null) releaseClaimFile(claimFile, token)
   }
   return EXIT.ok
@@ -771,6 +791,54 @@ function terminationSignal(): { promise: Promise<void>; dispose(): void } {
     promise,
     dispose: () => {
       for (const signal of signals) process.off(signal, onSignal)
+    },
+  }
+}
+
+/**
+ * What an OpenClaw attendant reports when it stops inside a Gateway that keeps
+ * running. Notifai being uninstalled ends the session. A plugin generation
+ * stepping aside (SIGUSR2), or its installation disappearing, hands over only
+ * if a Notifai generation is loaded in that Gateway within the grace period:
+ * a reload loads the next one, while a disable or an uninstall loads none, and
+ * then nothing can ever deliver into the session again, so it ends and its
+ * questions expire. The attendant still holds the lease while it waits.
+ */
+export async function openclawFinalState(
+  reason: AttendantExitReason,
+  context: {
+    steppedAside: boolean
+    marker: string | null
+    gatewayPid: number
+    clock: { monotonic(): number; sleep(ms: number): Promise<void> }
+    graceMs?: number
+  },
+): Promise<'ended' | 'withdrawn' | undefined> {
+  if (reason === 'gate:uninstall-in-progress') return 'ended'
+  const handedOver = (reason === 'superseded' && context.steppedAside) || reason === 'gate:attend-handler-removed'
+  // A plugin that names no marker predates this check: keep stepping aside.
+  if (!handedOver || context.marker === null) return undefined
+  const loaded = await awaitOpenclawGeneration(context.marker, context.gatewayPid, context.clock, context.graceMs)
+  return loaded ? 'withdrawn' : 'ended'
+}
+
+/**
+ * The OpenClaw plugin sends SIGUSR2 when OpenClaw replaces its generation in a
+ * Gateway that keeps running (install, update, reload, disable). The session is
+ * still open, so the attendant steps aside for the next generation's attendant
+ * instead of ending the session. SIGTERM still means the Gateway is stopping.
+ */
+function openclawHandoverSignal(): { promise: Promise<void>; dispose(): void } {
+  let resolve!: () => void
+  const promise = new Promise<void>((done) => {
+    resolve = done
+  })
+  const onSignal = (): void => resolve()
+  if (process.platform !== 'win32') process.on('SIGUSR2', onSignal)
+  return {
+    promise,
+    dispose: () => {
+      if (process.platform !== 'win32') process.off('SIGUSR2', onSignal)
     },
   }
 }

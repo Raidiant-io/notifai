@@ -91,7 +91,7 @@ const OPENCODE_CAPABILITY: HarnessCapability = {
   stopContinuation: 'unsupported',
   deliveryRoutes: ['unsupported'],
   deliveryContract:
-    'no proven answer continuation after session.idle; use a blocking reply command',
+    "OpenCode's own question form reaches the User's devices while its turn waits and settles from either side; there is no proven answer continuation after session.idle, so use the question form or a blocking reply command; closing the session ends its questions",
 }
 
 const OPENCLAW_CAPABILITY: HarnessCapability = {
@@ -114,14 +114,14 @@ const GROK_CAPABILITY: HarnessCapability = {
   stopContinuation: 'decision-block',
   deliveryRoutes: ['session-queue', 'hook-continuation', 'hold-for-next-turn'],
   deliveryContract:
-    'the Stop hook waits for the answer; an exact shared-leader session receives a claimed interjection, otherwise a native decision block continues the same session within Grok\'s per-turn continuation limit',
+    'the Stop hook waits for the answer; an exact shared-leader session receives a claimed interjection, otherwise a native decision block continues the same session within Grok\'s per-turn continuation limit; closing the session ends its questions',
 }
 
 export const HERMES_CLASSIC_CLI_QUESTION_CAPABILITY: HarnessCapability = {
   stopContinuation: 'plugin-attendant',
   deliveryRoutes: ['session-queue'],
   deliveryContract:
-    'the live classic CLI plugin owns the complete answer window and injects the claimed answer into its exact attached session; closing the session ends its questions',
+    'the live classic CLI plugin owns the complete answer window and admits the claimed answer as the next input of that exact session through Hermes\'s public plugin API; closing the session ends its questions',
 }
 
 export const HERMES_QUESTION_ROUTING_UNAVAILABLE: HarnessCapability = {

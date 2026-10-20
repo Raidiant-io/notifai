@@ -21,7 +21,14 @@ export function hermesPluginDir(env: NodeJS.ProcessEnv = process.env): string {
 export function hermesPluginSource(adapterPath: string, nodePath?: string, integrationScope = ''): string {
   const command = nodePath === undefined ? [adapterPath] : [nodePath, adapterPath]
   return stampIntegrationSource(`${HERMES_PLUGIN_MARKER}
-"""Notifai activation and Session Attendant for a local Hermes CLI session."""
+"""Notifai activation and Session Attendant for a local Hermes CLI session.
+
+Only Hermes's public plugin surface is used. The session and its activity come
+from the plugin's own hooks, and every write goes through ctx.inject_message
+with that exact session as its explicit target. Acceptance is admission into
+the session's input, never completion, and an injection is held while Hermes
+waits on an approval, so a write can never answer a confirmation prompt.
+"""
 import atexit
 import json
 import os
@@ -32,12 +39,108 @@ import time
 
 NOTIFAI_INTEGRATION_REVISION = "${INTEGRATION_REVISION_PLACEHOLDER}"
 COMMAND = ${JSON.stringify(command)}
+# Slash commands that may leave or replace the current session. Writes are held
+# from the command until Hermes reports which session is current again, so a
+# write can never land in the next session and a cancelled switch loses nothing.
+SESSION_SWITCH_COMMANDS = frozenset("new clear resume sessions branch compress handoff".split())
+# Without a model request or tool in flight, a turn that never reported its
+# end (an interrupted turn fires no post_llm_call) counts as idle after this.
+TURN_QUIET_SECONDS = 30.0
 _attendants = {}
 _lock = threading.RLock()
+_session = {"id": "", "turn": False, "tools": 0, "requests": 0, "approvals": 0,
+            "switching": False, "activity_at": 0.0}
 
-def _attached_session(ctx):
-    cli = getattr(ctx._manager, "_cli_ref", None)
-    return str(getattr(cli, "session_id", "") or "") if cli is not None else ""
+def _main_session_event(session_id, platform, parent_session_id):
+    if parent_session_id:
+        return ""
+    if str(platform or "cli") not in ("", "cli"):
+        return ""
+    return str(session_id or "")
+
+def _replace_session(session_id):
+    # Callers hold _lock. Any other session reported by Hermes retires ours.
+    previous = _session["id"]
+    if previous and previous != session_id:
+        _stop_attendant(previous)
+    _session.update({"id": session_id, "turn": False, "tools": 0, "requests": 0,
+                     "approvals": 0, "switching": False, "activity_at": time.monotonic()})
+
+def _observe_session(session_id):
+    with _lock:
+        if session_id and _session["id"] != session_id:
+            _replace_session(session_id)
+
+def _on_turn_start(session_id=None, platform=None, parent_session_id=None, **_):
+    current = _main_session_event(session_id, platform, parent_session_id)
+    if not current:
+        return None
+    with _lock:
+        if _session["id"] != current:
+            _replace_session(current)
+        _session.update({"turn": True, "tools": 0, "requests": 0, "approvals": 0,
+                         "switching": False, "activity_at": time.monotonic()})
+    return None
+
+def _on_turn_end(session_id=None, platform=None, parent_session_id=None, **_):
+    current = _main_session_event(session_id, platform, parent_session_id)
+    if not current:
+        return None
+    with _lock:
+        if _session["id"] != current:
+            _replace_session(current)
+        _session.update({"turn": False, "tools": 0, "requests": 0, "approvals": 0,
+                         "switching": False, "activity_at": time.monotonic()})
+    return None
+
+def _counter(name, delta):
+    def observe(surface=None, **_):
+        # The guardian model's own assessment is not a prompt the User answers,
+        # and it reports no outcome when it escalates to one.
+        if name == "approvals" and str(surface or "") == "smart":
+            return None
+        with _lock:
+            _session[name] = max(0, _session[name] + delta)
+            _session["activity_at"] = time.monotonic()
+        return None
+    return observe
+
+def _on_command(surface=None, command=None, session_key=None, **_):
+    if str(surface or "") != "cli":
+        return None
+    with _lock:
+        current = str(session_key or "")
+        if _session["id"] and current and current != _session["id"]:
+            _replace_session(current)
+        elif current and current == _session["id"]:
+            _session["switching"] = False
+        if str(command or "") in SESSION_SWITCH_COMMANDS and _session["id"]:
+            _session["switching"] = True
+    return None
+
+def _on_finalize(session_id=None, **_):
+    with _lock:
+        ended = str(session_id or "") or _session["id"]
+        _stop_attendant(ended)
+        if ended == _session["id"]:
+            _session["id"] = ""
+    return None
+
+def _on_reset(**_):
+    with _lock:
+        _stop_all()
+        _session["id"] = ""
+    return None
+
+def _activity(session_id):
+    # Callers hold _lock. None means this attendant's session is no longer current.
+    if _session["id"] != session_id:
+        return None
+    if not _session["turn"]:
+        return "idle"
+    if _session["tools"] > 0 or _session["requests"] > 0:
+        return "working"
+    return "working" if time.monotonic() - _session["activity_at"] < TURN_QUIET_SECONDS else "idle"
 
 def _run_attendant(ctx, session_id, cwd, stopped):
     proc = None
@@ -64,12 +167,10 @@ def _run_attendant(ctx, session_id, cwd, stopped):
         pending = bytearray()
         while not stopped.is_set() and proc.poll() is None:
             with _lock:
-                current = _attached_session(ctx)
-                working = bool(getattr(ctx._manager._cli_ref, "_agent_running", False)) if current == session_id else False
-            if current != session_id:
+                activity = _activity(session_id)
+            if activity is None:
                 break
-            if not send({"type": "state", "session_id": session_id,
-                         "activity": "working" if working else "idle"}):
+            if not send({"type": "state", "session_id": session_id, "activity": activity}):
                 break
             readable, _, _ = select.select([proc.stdout], [], [], 1.0)
             if not readable:
@@ -90,6 +191,7 @@ def _run_attendant(ctx, session_id, cwd, stopped):
                 if frame.get("type") != "write" or not isinstance(frame.get("id"), int):
                     continue
                 accepted = False
+                reason = "session-replaced"
                 with _lock:
                     wall_now = time.time_ns()
                     mono_now = time.monotonic_ns()
@@ -98,15 +200,22 @@ def _run_attendant(ctx, session_id, cwd, stopped):
                     # differ from Python's on the same macOS host.
                     clock_stable = wall_now - wall_anchor + 100_000_000 >= mono_now - mono_anchor
                     deadline = frame.get("deadline_ms")
-                    if (not stopped.is_set() and frame.get("session_id") == session_id and
-                            _attached_session(ctx) == session_id and
-                            type(deadline) is int and wall_now < deadline * 1_000_000 and clock_stable):
+                    current = (not stopped.is_set() and frame.get("session_id") == session_id and
+                               _session["id"] == session_id)
+                    if current and _session["approvals"] > 0:
+                        reason = "approval-pending"
+                    elif current and _session["switching"]:
+                        reason = "session-switching"
+                    elif (current and type(deadline) is int and wall_now < deadline * 1_000_000 and
+                            clock_stable):
                         try:
-                            accepted = bool(ctx.inject_message(frame.get("text", "")))
+                            # Explicit target, never origin: an origin can start a session.
+                            accepted = ctx.inject_message(frame.get("text", ""), role="user",
+                                                          session_key=session_id) is True
                         except Exception:
                             pass
                 send({"type": "result", "id": frame["id"], "accepted": accepted,
-                      "reason": "session-replaced" if not accepted else ""})
+                      "reason": "" if accepted else reason})
         send({"type": "end", "session_id": session_id})
     except (OSError, ValueError):
         pass
@@ -130,7 +239,8 @@ def _start_attendant(ctx, session_id, cwd):
     if os.name == "nt":
         return
     with _lock:
-        if _attached_session(ctx) != session_id or os.environ.get("HERMES_SESSION_ID") != session_id:
+        _observe_session(session_id)
+        if _session["id"] != session_id or os.environ.get("HERMES_SESSION_ID") != session_id:
             return
         if session_id in _attendants:
             return
@@ -164,7 +274,7 @@ def _activation(info):
     if os.environ.get("HERMES_SESSION_SOURCE", "").lower() not in ("", "cli"):
         return ""
     # Hermes may import gateway.run inside a classic CLI and set its process
-    # marker there. The attached CLI object and exact session are the proof.
+    # marker there, so the exact session's own markers are the proof.
     if os.environ.get("HERMES_TUI_ACTIVE_SESSION_FILE"):
         return ""
     if os.environ.get("TERMINAL_ENV", "").lower() not in ("", "local"):
@@ -205,8 +315,18 @@ def register(ctx):
     _ctx = ctx
     ctx.register_system_prompt_section("notifai.activation", _activation,
                                        position="after_memory", max_chars=4000)
-    ctx.register_hook("on_session_finalize", lambda session_id=None, **_: _stop_attendant(str(session_id or "")))
-    ctx.register_hook("on_session_reset", lambda session_id=None, **_: _stop_all())
+    ctx.register_hook("pre_llm_call", _on_turn_start)
+    ctx.register_hook("post_llm_call", _on_turn_end)
+    ctx.register_hook("pre_tool_call", _counter("tools", 1))
+    ctx.register_hook("post_tool_call", _counter("tools", -1))
+    ctx.register_hook("pre_api_request", _counter("requests", 1))
+    ctx.register_hook("post_api_request", _counter("requests", -1))
+    ctx.register_hook("api_request_error", _counter("requests", -1))
+    ctx.register_hook("pre_approval_request", _counter("approvals", 1))
+    ctx.register_hook("post_approval_response", _counter("approvals", -1))
+    ctx.register_hook("pre_command", _on_command)
+    ctx.register_hook("on_session_finalize", _on_finalize)
+    ctx.register_hook("on_session_reset", _on_reset)
     atexit.register(_stop_all)
 `, integrationScope)
 }
@@ -275,7 +395,7 @@ export function installHermesPlugin(adapterPath: string, env: NodeJS.ProcessEnv 
     const temp = mkdtempSync(path.join(os.tmpdir(), 'notifai-hermes-plugin-'))
     let started = false, completed = false
     try {
-      writeFileSync(path.join(temp, 'plugin.yaml'), 'name: notifai\nversion: "1.0.0"\ndescription: "Notifai activation and Session Attendant"\nprovides_hooks:\n  - on_session_finalize\n  - on_session_reset\n')
+      writeFileSync(path.join(temp, 'plugin.yaml'), 'name: notifai\nversion: "1.0.0"\ndescription: "Notifai activation and Session Attendant"\nprovides_hooks:\n  - pre_llm_call\n  - post_llm_call\n  - pre_tool_call\n  - post_tool_call\n  - pre_api_request\n  - post_api_request\n  - api_request_error\n  - pre_approval_request\n  - post_approval_response\n  - pre_command\n  - on_session_finalize\n  - on_session_reset\n')
       writeFileSync(path.join(temp, '__init__.py'), source)
       const git = (args: string[]) => {
         const result = spawnSync('git', args, { cwd: temp, env, encoding: 'utf8', timeout: 10_000 })

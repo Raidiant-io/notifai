@@ -73,7 +73,12 @@ function grokAnswerContext(event: ContinuationEvent): string {
 
 /** Interjection avoids Grok's eight blocking-Stop continuations per turn.
  * Pin the resident owner before waiting, then recheck its identity at write.
- * Without a leader the native Stop remains the only proven answer route. */
+ * Without a leader the native Stop remains the only proven answer route.
+ * Qualified live on grok 1.0.62: a genuine `end_turn` Stop's `decision: block`
+ * continues the same session, the leader roster admits interjection into an
+ * idle resident session, and passive events' stdout never reaches the model.
+ * The vendor's web hook page (only PreToolUse blocks) predates that build's
+ * shipped guide, which documents Stop decision control. */
 export async function grokQuestionRoute(sessionId: string | undefined, cwd: string, env: NodeJS.ProcessEnv): Promise<EscalationDeliveryRoute> {
   const leader = sessionId === undefined ? null : await GrokLeaderSession.discover(sessionId, cwd, env, { watch: false })
   if (leader === null) return grokContinuationRoute()

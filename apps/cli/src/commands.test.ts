@@ -4479,6 +4479,42 @@ describe('harness activation guidance', () => {
     expect(io.outLines.join('\n')).toContain('local Gateway service has not verified')
   })
 
+  it.skipIf(process.platform === 'win32')('applies a changed OpenClaw plugin to the running Gateway and reports its generation', () => {
+    const cwd = mkdtempSync(path.join(os.tmpdir(), 'notifai-openclaw-live-'))
+    const bin = path.join(cwd, 'bin')
+    mkdirSync(bin)
+    const calls = path.join(cwd, 'reload-calls.jsonl')
+    // The documented live path: `openclaw plugins reload` drains the loaded
+    // generation and returns the applied one.
+    writeFileSync(path.join(bin, 'openclaw'), `#!${process.execPath}
+require('node:fs').appendFileSync(${JSON.stringify(calls)}, JSON.stringify({ args: process.argv.slice(2), state: process.env.OPENCLAW_STATE_DIR }) + '\\n')
+process.stdout.write(JSON.stringify({ ok: true, restartRequired: false, runtime: { generation: 7, pluginIds: ['notifai'] } }, null, 2) + '\\n')
+`)
+    chmodSync(path.join(bin, 'openclaw'), 0o755)
+    const io = new CapturedIo()
+    const state = path.join(cwd, 'openclaw-home')
+    const deps = {
+      ...makeDeps(io, {} as ApiClient),
+      cwd,
+      env: {
+        HOME: path.join(cwd, 'home'),
+        PATH: `${bin}${path.delimiter}/usr/bin${path.delimiter}/bin`,
+        XDG_CONFIG_HOME: path.join(cwd, 'config'),
+        XDG_STATE_HOME: path.join(cwd, 'state'),
+        OPENCLAW_STATE_DIR: state,
+      },
+    }
+    expect(hooksInstallCommand(deps, { harness: 'openclaw', execPath, scriptPath })).toBe(EXIT.ok)
+    expect(io.outLines.join('\n')).toContain('applied the Notifai plugin as generation 7')
+    const recorded = readFileSync(calls, 'utf8').trim().split('\n').map(line => JSON.parse(line) as { args: string[]; state: string })
+    expect(recorded).toEqual([{ args: ['plugins', 'reload', 'notifai', '--json'], state }])
+    // Unchanged plugin bytes leave the running generation alone.
+    io.outLines = []
+    expect(hooksInstallCommand(deps, { harness: 'openclaw', execPath, scriptPath })).toBe(EXIT.ok)
+    expect(readFileSync(calls, 'utf8').trim().split('\n')).toHaveLength(1)
+    expect(io.outLines.join('\n')).not.toContain('generation 7')
+  })
+
   it('refuses to overwrite a foreign OpenClaw plugin', () => {
     const cwd = mkdtempSync(path.join(os.tmpdir(), 'notifai-openclaw-foreign-'))
     const plugin = path.join(cwd, 'openclaw-home', 'extensions', 'notifai', 'index.js')

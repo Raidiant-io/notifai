@@ -67,7 +67,7 @@ import {
  * those server-only provenance markers preserves their exact label behavior;
  * every other contract difference remains an explicit service-skew failure.
  */
-function draftForServerCapabilities(
+export function draftForServerCapabilities(
   draft: NotificationDraftT,
   capabilities: CapabilityDocument,
 ): NotificationDraftT {

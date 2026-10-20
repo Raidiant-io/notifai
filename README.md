@@ -162,7 +162,7 @@ not part of the current public support claim.
 | Claude Code hooks | Supported; live inbox wake | Supported; live inbox wake | Supported; live inbox wake through the session's named pipe; question pickers stay in the terminal |
 | Codex hooks | Asynchronous Stop and durable session queue; CLI/app-server verified | Same queue implementation; live Codex verification pending | Same queue implementation; live Codex verification pending |
 | Cursor hooks | Supported; use full-window blocking `notifai send --reply` where a proven return is required | Supported; same limitation | Supported; same limitation |
-| OpenCode hooks | Supported; use full-window blocking `notifai send --reply` where a proven return is required | Supported; same limitation | Supported; same limitation |
+| OpenCode hooks | Supported; OpenCode 1.19.3's own question form reaches devices and settles from either side; otherwise use full-window blocking `notifai send --reply` where a proven return is required | Same implementation; live OpenCode verification pending | Same implementation; live OpenCode verification pending |
 | OpenClaw hooks | Asynchronous Question Routing, Session Presence, Session Notes, and post-consumption Answer Edits through the local Gateway service and exact-session followup queue | Lifecycle hooks; asynchronous Question Routing and Session Messages unproven, use blocking reply | WSL2 lifecycle hooks only; native Windows Gateway unproven |
 | Hermes plugin | v0.21.5 local classic CLI: managed Project activation, Source Context, Question Routing, Session Presence, Session Notes, and Answer Edits through its live plugin writer | Same implementation; live Hermes verification pending | Unverified |
 | Grok hooks | Automatic guidance and Question Routing for main and delegated child sessions; live shared-leader sessions also receive Notes and Answer Edits | Same adapter; live Grok verification pending | Same adapter; live Grok verification pending |
@@ -195,7 +195,8 @@ Linux and 2.1.234 or newer on Windows; an older Claude Code receives the
 accepted answer at the Agent Session's next turn. Cursor does not expose the conversation
 identity needed to prove asynchronous return, and OpenCode has no proven
 exactly-once continuation after `session.idle`; blocking reply mode provides
-their reliable question path. OpenClaw's advertised Windows cell is WSL2 only;
+their reliable question path. OpenCode's own question form is the exception:
+it holds its turn, so its device answer returns through the form itself. OpenClaw's advertised Windows cell is WSL2 only;
 a native Windows Gateway plus native Notifai CLI in one process is unproven.
 
 ## Companion App installation
@@ -450,7 +451,10 @@ Answer Edits while its local writer is ready. It stores full message text in a
 private local delivery journal and queues a pointer-only followup. The exact
 pointer turn reads that text once, only while its native Gateway generation
 still matches. The journal discards the text after that turn claims it, after
-a generation change, or on Gateway restart. The agent acknowledges the
+a generation change, or on Gateway restart; a plugin reload hands it to the
+new plugin generation. Stopping the Gateway, or disabling or uninstalling the
+plugin while it runs, ends its sessions for Notifai and their questions
+expire. The agent acknowledges the
 message after reading it. If a pointer reaches a turn without its full context,
 the pointer tells the agent to report the missing message and leave it
 unacknowledged. The User can send a new message if needed.
