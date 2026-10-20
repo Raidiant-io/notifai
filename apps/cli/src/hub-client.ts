@@ -4,6 +4,7 @@
  */
 import { existsSync, readFileSync, statSync } from 'node:fs'
 import os from 'node:os'
+import path from 'node:path'
 import { atomicWriteFileSync } from './atomic-file.js'
 import { readClaimFile, claimHolderMayRun } from './hook-question-lock.js'
 import {
@@ -24,13 +25,85 @@ import { launchSelf } from './launch-self.js'
 import { pidExists } from './process-identity.js'
 import { attendantClaimPath } from './session-attendant-state.js'
 
-/** Variables that belong to one harness session and never reach the shared hub. */
-const SESSION_VARIABLES = /^(CLAUDE_CODE_|CLAUDECODE$|CODEX_THREAD_ID$|CODEX_SESSION_ID$|NOTIFAI_HOOK_SOURCE_PID$|NOTIFAI_ACTIVE_|NOTIFAI_NATIVE_|NOTIFAI_INTERNAL_)/
+/**
+ * What the shared hub runs with, whoever starts it: the account, its locale
+ * and Notifai's own settings, as the native session child passes them
+ * (`session-child.h`). Nothing else the starter had: its API keys and tokens
+ * stay where they were, and a session's own variables (its harness homes, the
+ * PATH its harness runs on, its desktop) travel with that session's
+ * registration instead.
+ */
+const HUB_VARIABLES = /^(HOME|PATH|USER|LOGNAME|SHELL|LANG|TZ|TMPDIR|LC_[A-Z_]+|XDG_(CONFIG|STATE|DATA|CACHE)_HOME|XDG_RUNTIME_DIR|DBUS_SESSION_BUS_ADDRESS|NOTIFAI_[A-Z0-9_]+)$/
+/** Notifai variables that belong to one harness session or one process. */
+const SESSION_VARIABLES = /^NOTIFAI_(HOOK_SOURCE_PID$|ACTIVE_|NATIVE_|INTERNAL_)/
+
+/**
+ * How this machine reaches the service: proxy and certificate settings. The
+ * hub takes them from one deliberate record, written when the User signs in
+ * (`recordHubNetwork`), never from whichever process happened to start it.
+ * The native session child reads the same record (`session-child.h`).
+ */
+export const HUB_NETWORK_VARIABLES = ['HTTPS_PROXY', 'https_proxy', 'HTTP_PROXY', 'http_proxy', 'ALL_PROXY', 'all_proxy',
+  'NO_PROXY', 'no_proxy', 'NODE_EXTRA_CA_CERTS', 'SSL_CERT_FILE', 'SSL_CERT_DIR'] as const
+
+export function hubNetworkPath(env: NodeJS.ProcessEnv): string {
+  return path.join(hubRunDir(env), 'network.json')
+}
+
+function networkVariables(source: Record<string, unknown>): Record<string, string> {
+  const kept: Record<string, string> = {}
+  for (const name of HUB_NETWORK_VARIABLES) {
+    const value = source[name]
+    if (typeof value === 'string' && value !== '' && value.length <= 4_096 && !/[\0\r\n]/.test(value)) kept[name] = value
+  }
+  return kept
+}
+
+/** The recorded network settings; none (a direct connection) when nothing was recorded. */
+export function readHubNetwork(env: NodeJS.ProcessEnv): Record<string, string> {
+  try {
+    const value = JSON.parse(readFileSync(hubNetworkPath(env), 'utf8')) as unknown
+    return typeof value === 'object' && value !== null && !Array.isArray(value) ? networkVariables(value as Record<string, unknown>) : {}
+  } catch {
+    return {}
+  }
+}
+
+/**
+ * Record the network settings of the command that signed this machine in:
+ * the User's own shell, which just reached the service with them. True when
+ * they differ from what the hub runs with now. Only the names above are kept;
+ * a proxy URL may carry its credentials, so the file is the User's alone.
+ */
+export function recordHubNetwork(env: NodeJS.ProcessEnv): boolean {
+  const next = networkVariables(env)
+  const before = readHubNetwork(env)
+  ensurePrivateDirectory(hubRunDir(env))
+  atomicWriteFileSync(hubNetworkPath(env), `${JSON.stringify(next)}\n`, { mode: 0o600, requireCurrentUserOwner: true })
+  return JSON.stringify(Object.entries(before).sort()) !== JSON.stringify(Object.entries(next).sort())
+}
 
 export function hubEnvironment(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
   const clean: NodeJS.ProcessEnv = {}
-  for (const [name, value] of Object.entries(env)) if (!SESSION_VARIABLES.test(name)) clean[name] = value
-  return clean
+  for (const [name, value] of Object.entries(env)) {
+    if (value !== undefined && HUB_VARIABLES.test(name) && !SESSION_VARIABLES.test(name)) clean[name] = value
+  }
+  return { ...clean, ...readHubNetwork(env) }
+}
+
+/**
+ * After sign-in: record the network settings, and when they changed, ask a
+ * running hub to hand over to one started with them. A process's proxy and
+ * certificate settings are read once, when it starts.
+ */
+export async function adoptHubNetwork(env: NodeJS.ProcessEnv): Promise<void> {
+  if (!hubSupported()) return
+  let changed: boolean
+  try { changed = recordHubNetwork(env) } catch { return }
+  if (!changed) return
+  const holder = readClaimFile(hubLockPath(env))
+  if (holder === null || !claimHolderMayRun(holder)) return
+  await requestHub(env, { type: 'stop', reason: 'network-changed' }, { timeoutMs: 2_000 })
 }
 
 /** Start the hub detached, outside this process's group, in the user's home. */
@@ -103,17 +176,20 @@ export async function notifyHubSessionEnded(env: NodeJS.ProcessEnv, sessionId: s
  * decide after the end confirmation whether it closed, came back at once (a
  * reload, a handoff to another place), goes on in another place it is open
  * in, or was only unloaded by its app. `harnessPid` is the process that ran
- * the hook, when known. True only when the hub holds the decision; otherwise
- * the caller ends the session at once, as before. Never starts a hub: a hub
- * that is not running attends nothing it could keep open.
+ * the hook, when known. `held` only when the hub holds the decision;
+ * `refused` when it attends no such session; `unreachable` when no hub
+ * answered in time (a slow hub may still take the request it was sent).
+ * Never starts a hub: a hub that is not running attends nothing it could
+ * keep open.
  */
 export async function holdSessionEnd(env: NodeJS.ProcessEnv, sessionId: string,
-  details: { harnessPid?: number | undefined; transcriptPath?: string | undefined } = {}, timeoutMs = 800): Promise<boolean> {
-  if (!hubSupported()) return false
+  details: { harnessPid?: number | undefined; transcriptPath?: string | undefined } = {}, timeoutMs = 800): Promise<'held' | 'refused' | 'unreachable'> {
+  if (!hubSupported()) return 'unreachable'
   const reply = await requestHub(env, { type: 'session-end-candidate', session_id: sessionId,
     ...(details.harnessPid === undefined ? {} : { harness_pid: details.harnessPid }),
     ...(details.transcriptPath === undefined ? {} : { transcript_path: details.transcriptPath }) }, { timeoutMs })
-  return reply?.['type'] === 'ok' && reply['held'] === true
+  if (reply === null) return 'unreachable'
+  return reply['type'] === 'ok' && reply['held'] === true ? 'held' : 'refused'
 }
 
 /** Best effort: a session sent its first Notification Request; the hub starts attending it. */

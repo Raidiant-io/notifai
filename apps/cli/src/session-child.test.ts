@@ -41,11 +41,14 @@ afterEach(() => { for (const cleanup of cleanups.splice(0).reverse()) cleanup() 
 /** A stand-in for one Claude Code process: descriptor, inbox socket, and the attend hook. */
 const HARNESS_SCRIPT = `
 import { spawn, execFileSync } from 'node:child_process'
-import { mkdirSync, writeFileSync, rmSync } from 'node:fs'
+import { mkdirSync, readFileSync, writeFileSync, rmSync } from 'node:fs'
 import net from 'node:net'
 import path from 'node:path'
 const [mode, launcher, session, configDir, inbox] = process.argv.slice(2)
-const procStart = execFileSync('ps', ['-o', 'lstart=', '-p', String(process.pid)], { encoding: 'utf8', env: { TZ: 'UTC', LC_ALL: 'C', PATH: '/bin:/usr/bin' } }).trim().replace(/\\s+/g, ' ')
+// What Claude Code writes: start ticks on Linux, \`ps -o lstart\` text elsewhere.
+const stat = process.platform === 'linux' ? readFileSync('/proc/self/stat', 'utf8') : ''
+const procStart = process.platform === 'linux' ? stat.slice(stat.lastIndexOf(')') + 2).split(' ')[19]
+  : execFileSync('ps', ['-o', 'lstart=', '-p', String(process.pid)], { encoding: 'utf8', env: { TZ: 'UTC', LC_ALL: 'C', PATH: '/bin:/usr/bin' } }).trim().replace(/\\s+/g, ' ')
 mkdirSync(path.join(configDir, 'sessions'), { recursive: true })
 writeFileSync(path.join(configDir, 'sessions', process.pid + '.json'), JSON.stringify({ pid: process.pid, sessionId: session, cwd: '/tmp',
   startedAt: Date.now(), procStart, version: '2.1.304', peerProtocol: 1, messagingSocketPath: inbox, status: 'idle' }))

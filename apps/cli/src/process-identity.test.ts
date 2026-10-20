@@ -80,4 +80,18 @@ describe('Claude Code descriptor start', () => {
     expect(descriptorStartMatches('9613', identity, '9613', 'darwin')).toBe(false)
     expect(descriptorStartMatches('Tue Oct 20 22:14:03 2026', identity, '9613', 'linux')).toBe(false)
   })
+
+  it('matches a Linux identity, named by boot and start ticks, by the ticks it carries', () => {
+    const identity = { pid: 4242, start: 'linux:6f1d2c3b-0a9e-4c1f-9d2e-1b2c3d4e5f60:9613' }
+    expect(descriptorStartMatches('9613', identity, undefined, 'linux')).toBe(true)
+    expect(descriptorStartMatches('9614', identity, undefined, 'linux')).toBe(false)
+  })
+})
+
+describe.runIf(process.platform === 'linux')('Linux process start', () => {
+  it('is the boot and kernel start ticks, which no wall-clock step moves', () => {
+    const start = processStartTime(process.ppid)
+    expect(start).toMatch(/^linux:[0-9a-f-]+:\d+$/)
+    expect(start!.endsWith(`:${linuxStartTicks(process.ppid)}`)).toBe(true)
+  })
 })

@@ -35,6 +35,31 @@ export interface StoppedRecord {
   watch: StoppedWatch
 }
 
+/**
+ * A session's own desktop (Linux): where a window it reopens appears. Carried
+ * with its registration, never taken from whichever session started the hub.
+ */
+export type SessionDisplay = {
+  DISPLAY?: string
+  WAYLAND_DISPLAY?: string
+  XAUTHORITY?: string
+}
+
+export function sessionDisplayOf(value: unknown): SessionDisplay {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return {}
+  const record = value as Record<string, unknown>
+  const display: SessionDisplay = {}
+  const name = (key: 'DISPLAY' | 'WAYLAND_DISPLAY'): void => {
+    const candidate = record[key]
+    if (typeof candidate === 'string' && /^[\w.:/@-]{1,256}$/.test(candidate)) display[key] = candidate
+  }
+  name('DISPLAY')
+  name('WAYLAND_DISPLAY')
+  const authority = absolute(record['XAUTHORITY'])
+  if (authority !== null) display.XAUTHORITY = authority
+  return display
+}
+
 export interface AdoptionRecord {
   harness: 'claude-code' | 'codex'
   harness_process: ProcessIdentity
@@ -67,6 +92,9 @@ export interface AdoptionRecord {
   stopped: StoppedRecord | null
   /** How the harness was started, for a terminal: what a reopen runs (see `session-reopen.ts`). */
   launch: LaunchRecord | null
+  /** The PATH the session's harness ran with: what its Codex wakes resolve `codex` on. Null: the hub's. */
+  session_path: string | null
+  display: SessionDisplay
 }
 
 function processOf(value: unknown): ProcessIdentity | null {
@@ -120,7 +148,14 @@ export function parseAdoptionRecord(value: unknown): AdoptionRecord | null {
     terminal_host: processOf(record['terminal_host']),
     stopped: stoppedOf(record['stopped']),
     launch: parseLaunchRecord(record['launch']),
+    session_path: sessionPathOf(record['session_path']),
+    display: sessionDisplayOf(record['display']),
   }
+}
+
+/** A PATH as a session's harness ran with it, or null. */
+export function sessionPathOf(value: unknown): string | null {
+  return typeof value === 'string' && value.length > 0 && value.length <= 32_768 && !/[\0\r\n]/.test(value) ? value : null
 }
 
 /**
@@ -156,6 +191,8 @@ export function adoptionRecord(env: NodeJS.ProcessEnv, sessionId: string, status
     terminal_host: null,
     stopped: null,
     launch: null,
+    session_path: null,
+    display: {},
   }
 }
 

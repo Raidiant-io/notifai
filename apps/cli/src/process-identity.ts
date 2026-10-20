@@ -7,31 +7,57 @@ import { oncePerHook } from './hook-scope.js'
 
 export interface ProcessIdentity {
   pid: number
-  /** UTC ps text on POSIX; kernel FILETIME on Windows. Never a PID alone. */
+  /**
+   * `ps -o lstart` text under UTC on macOS; `linux:<boot id>:<start ticks>` on
+   * Linux; kernel FILETIME on Windows. Never a PID alone, and never a value a
+   * wall-clock step moves.
+   */
   start: string
 }
 
 /**
- * The start time of a process, or null when it is gone or cannot be read.
+ * The start of a process, or null when it is gone or cannot be read.
  *
- * One clock source for every side of every comparison: `ps -o lstart` under
- * `TZ=UTC` and the C locale. Claude Code writes its session descriptor's
- * `procStart` the same way, so a harness start read here compares equal to it
- * as text. Whitespace is collapsed because `lstart` pads single-digit days.
+ * Each platform names a start that no wall-clock step moves, from one source
+ * for every side of every comparison:
+ * - macOS: `ps -o lstart` under `TZ=UTC` and the C locale. The kernel keeps the
+ *   start as an absolute time, and Claude Code writes its session descriptor's
+ *   `procStart` the same way, so the two compare equal as text. Whitespace is
+ *   collapsed because `lstart` pads single-digit days.
+ * - Linux: the boot's id and the start in clock ticks since boot. `lstart` is
+ *   derived there from the boot time, which moves whenever the realtime clock
+ *   is stepped (NTP after resume, a VM's correction, `date -s`), so a text
+ *   read after a step names a live process as a different one. The native
+ *   launcher writes the same value.
  */
 export function processStartTime(pid: number, platform: NodeJS.Platform = process.platform): string | null {
   if (!Number.isInteger(pid) || pid <= 0) return null
   if (platform === 'win32') return buildIdentity() !== null ? windowsProcessInfo(pid)?.start ?? null : windowsProcessStart(pid)
   // This process's own start never changes: read it once.
-  if (pid === process.pid) return selfStart ??= posixProcessStart(pid)
+  if (pid === process.pid) return selfStart ??= posixProcessStart(pid, platform)
   // One read per process within one hook the hub runs: a start never changes
   // while its PID lives, and every liveness check asks whether it still does.
-  return oncePerHook(`process-start\0${pid}`, () => posixProcessStart(pid))
+  return oncePerHook(`process-start\0${pid}`, () => posixProcessStart(pid, platform))
 }
 
 let selfStart: string | null | undefined
 
-function posixProcessStart(pid: number): string | null {
+function posixProcessStart(pid: number, platform: NodeJS.Platform): string | null {
+  if (platform === 'linux') {
+    const ticks = linuxStartTicks(pid)
+    const boot = linuxBootIdentity()
+    return ticks === null || boot === null ? null : `${boot}:${ticks}`
+  }
+  return processWallStart(pid)
+}
+
+/**
+ * A process's start as `ps -o lstart` text under UTC, or null: a wall-clock
+ * time, for comparing with file times. Never an identity: on Linux a clock
+ * step moves it.
+ */
+export function processWallStart(pid: number): string | null {
+  if (!Number.isInteger(pid) || pid <= 0) return null
   try {
     const output = execFileSync('ps', ['-o', 'lstart=', '-p', String(pid)], {
       encoding: 'utf8',
@@ -45,6 +71,20 @@ function posixProcessStart(pid: number): string | null {
     // `ps` exits 1 for a PID that does not exist.
     return null
   }
+}
+
+let bootIdentity: string | null | undefined
+
+/** `linux:<boot id>`, as the native launcher writes it; read once per process. */
+function linuxBootIdentity(): string | null {
+  if (bootIdentity !== undefined) return bootIdentity
+  try {
+    const id = readFileSync('/proc/sys/kernel/random/boot_id', 'utf8').trim()
+    bootIdentity = /^[0-9a-f-]{8,64}$/i.test(id) ? `linux:${id}` : null
+  } catch {
+    bootIdentity = null
+  }
+  return bootIdentity
 }
 
 /** The executable name of a process (`ps -o comm`, without its directory), or null. */
@@ -157,7 +197,7 @@ export function linuxStartTicks(pid: number, read: (file: string) => string = (f
  * Whether a Claude Code descriptor's `procStart` names this process's start:
  * `ps -o lstart` text on macOS, a FILETIME on Windows, start ticks on Linux.
  * `ticks` is the process's Linux start when the caller already has it from the
- * kernel; otherwise it is read now, for the same PID.
+ * kernel; otherwise it comes from the identity, or is read now for its PID.
  */
 export function descriptorStartMatches(
   procStart: string,
@@ -168,7 +208,12 @@ export function descriptorStartMatches(
   const start = normalizeProcessStart(procStart)
   if (start === normalizeProcessStart(identity.start)) return true
   if (platform !== 'linux' || !/^\d+$/.test(start)) return false
-  return (ticks ?? linuxStartTicks(identity.pid)) === start
+  return (ticks ?? linuxIdentityTicks(identity.start) ?? linuxStartTicks(identity.pid)) === start
+}
+
+/** The start ticks inside a Linux identity's start (`linux:<boot id>:<ticks>`), or null. */
+function linuxIdentityTicks(start: string): string | null {
+  return /^linux:[^:]+:(\d+)$/.exec(start)?.[1] ?? null
 }
 
 /** Signal 0 only asks whether the PID exists; EPERM still means it does. */

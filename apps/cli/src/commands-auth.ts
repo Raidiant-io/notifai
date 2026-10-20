@@ -1,4 +1,4 @@
-import { notifyCredentialChanged } from './hub-client.js'
+import { adoptHubNetwork, notifyCredentialChanged } from './hub-client.js'
 import { finishBeforeExit } from './exit-work.js'
 import { type AccountAccessResponse } from '@raidiant/notifai-protocol'
 import { sha256Hex } from '@raidiant/notifai-protocol/node'
@@ -333,8 +333,10 @@ export async function loginCommand(
     if (poll.status === 'approved' && poll.machine_id) {
       deps.store.save({ machineId: poll.machine_id, secret: active.secret, baseUrl, machineName: active.machine_name })
       clearPendingPairing(deps.env)
-      // A running hub drops the previous credential before this returns.
+      // A running hub drops the previous credential before this returns, and
+      // reaches the service the way this sign-in just did.
       await notifyCredentialChanged(deps.env)
+      await adoptHubNetwork(deps.env)
       if (interactive) {
         progress.spinner?.stop(`Machine "${active.machine_name}" approved`)
         await deps.io.outro?.(`Credential stored in ${deps.store.describe()}`)
@@ -549,7 +551,7 @@ export function authAdoptCommand(
     } catch (err) {
       return fail(EXIT.failed, 'store_failed', `Credential not adopted: ${err instanceof Error ? err.message : String(err)}.`)
     }
-    finishBeforeExit(notifyCredentialChanged(deps.env))
+    finishBeforeExit(notifyCredentialChanged(deps.env).then(() => adoptHubNetwork(deps.env)))
   }
   clearPendingPairing(deps.env)
   if (flags.json) {

@@ -71,8 +71,8 @@ import {
   type AutomaticUpdateHost,
   type WaitingReason,
 } from './automatic-update.js'
-import { adoptionCandidates, childWatching, parseAdoptionRecord, recordedRolloutArchived, stoppedCandidates, type AdoptionRecord,
-  type StoppedRecord, type StoppedWatch } from './hub-adoption.js'
+import { adoptionCandidates, childWatching, parseAdoptionRecord, recordedRolloutArchived, sessionDisplayOf, sessionPathOf, stoppedCandidates,
+  type AdoptionRecord, type SessionDisplay, type StoppedRecord, type StoppedWatch } from './hub-adoption.js'
 import { hubEnvironment } from './hub-client.js'
 import { readActiveBuild } from './hub-handover.js'
 import type { ActivationPlan } from './activation-plan.js'
@@ -422,6 +422,10 @@ interface Registration {
   terminalHost: ProcessIdentity | null
   /** How a terminal harness was started: what a reopen runs. Null for other places. */
   launch: LaunchRecord | null
+  /** The PATH the harness runs with: its Codex wakes resolve `codex` there. Null: the hub's. */
+  sessionPath: string | null
+  /** The session's own desktop (Linux), where a window it reopens appears. */
+  display: SessionDisplay
 }
 
 /**
@@ -435,6 +439,9 @@ interface Writer {
   registration: Registration
   env: NodeJS.ProcessEnv
 }
+
+/** Why a hub leaves for a successor that takes everything over. */
+type HandoverReason = 'automatic-update' | 'build-superseded' | 'network-changed'
 
 const identityKey = (identity: ProcessIdentity): string => `${identity.pid}\0${normalizeProcessStart(identity.start)}`
 
@@ -923,6 +930,8 @@ class HubSession implements AttendedSession {
       terminal_host: registration.terminalHost,
       stopped: this.stopped,
       launch: registration.launch,
+      session_path: registration.sessionPath,
+      display: registration.display,
     }
   }
 
@@ -1098,7 +1107,7 @@ export class Hub {
   /** Local end work (`handleSessionEnd`) started for sessions that just ended. */
   private readonly localEnds = new Set<Promise<void>>()
   /** An automatic update activated a new build, or another build became active: start its hub after this one leaves. */
-  private successor: 'automatic-update' | 'build-superseded' | null = null
+  private successor: HandoverReason | null = null
   /** Another build is active; what this hub still waits for before it hands over. */
   private handoverState: { active_build: string; waiting_for: WaitingReason[] } | null = null
   private handoverChecking = false
@@ -1348,7 +1357,7 @@ export class Hub {
    * answer owners are asked to step aside at their next check. The next hub,
    * started through the stable launcher, continues every lease.
    */
-  async handOver(reason: 'automatic-update' | 'build-superseded'): Promise<void> {
+  async handOver(reason: HandoverReason): Promise<void> {
     if (this.handingOver || this.exiting) return
     this.handingOver = true
     this.statusChanged()
@@ -1702,7 +1711,8 @@ export class Hub {
       case 'stop':
         reply({ type: 'ack' })
         // A build that became active asks this hub to make way: the same handover as its own.
-        if (frame['reason'] === 'build-superseded') void this.handOver('build-superseded')
+        // New network settings (a sign-in) need a hub started with them: the same handover.
+        if (frame['reason'] === 'build-superseded' || frame['reason'] === 'network-changed') void this.handOver(frame['reason'])
         else this.requestExit(typeof frame['reason'] === 'string' ? frame['reason'] : 'stop-requested')
         return
       default:
@@ -1814,16 +1824,23 @@ export class Hub {
       hostApp: null,
       terminalHost: null,
       launch: null,
+      sessionPath: sessionPathOf(frame['path']),
+      display: sessionDisplayOf({ DISPLAY: frame['display'], WAYLAND_DISPLAY: frame['wayland_display'], XAUTHORITY: frame['xauthority'] }),
     }
   }
 
-  /** The environment one session's work runs under: the hub's, plus that session's harness homes. */
-  private sessionEnv(registration: Pick<Registration, 'claudeConfigDir' | 'codexHome'>): NodeJS.ProcessEnv {
+  /**
+   * The environment one session's work runs under: the hub's, plus that
+   * session's harness homes, the PATH its harness runs with (which `codex` a
+   * wake runs) and its desktop. Nothing of another session's.
+   */
+  private sessionEnv(registration: Pick<Registration, 'claudeConfigDir' | 'codexHome'> & Partial<Pick<Registration, 'sessionPath' | 'display'>>): NodeJS.ProcessEnv {
     const env = { ...this.env }
-    delete env['CLAUDE_CONFIG_DIR']
-    delete env['CODEX_HOME']
+    for (const name of ['CLAUDE_CONFIG_DIR', 'CODEX_HOME', 'DISPLAY', 'WAYLAND_DISPLAY', 'XAUTHORITY']) delete env[name]
     if (registration.claudeConfigDir !== null) env['CLAUDE_CONFIG_DIR'] = registration.claudeConfigDir
     if (registration.codexHome !== null) env['CODEX_HOME'] = registration.codexHome
+    if (registration.sessionPath !== undefined && registration.sessionPath !== null) env['PATH'] = registration.sessionPath
+    Object.assign(env, registration.display ?? {})
     return env
   }
 
@@ -2598,6 +2615,7 @@ export class Hub {
         claudeConfigDir: registration.claudeConfigDir, codexHome: registration.codexHome, orcaPane: registration.terminalHost !== null,
         launch: registration.launch, hooks: readReopenLaunch(readSessionState(session.id, session.env).reopen_launch), items,
         transcriptPath: registration.transcriptPath, hostApp: registration.hostApp, harnessProcess: session.harnessProcess,
+        display: registration.display,
       }, trigger)
     } catch (err) {
       this.logger.error('hub.reopen', { event: 'failed', session: session.id, message: err instanceof Error ? err.message : String(err) })
@@ -3025,6 +3043,7 @@ export class Hub {
       transcriptPath: record.transcript_path, inboxSocket: null, inboxToken: false,
       claudeConfigDir: record.claude_config_dir, codexHome: record.codex_home, harnessTicks: record.harness_ticks,
       place: record.place, hostApp: record.host_app, terminalHost: record.terminal_host, launch: record.launch,
+      sessionPath: record.session_path, display: record.display,
     }
     const env = this.sessionEnv(registration)
     const incarnation = readSessionIncarnation(sessionId, env)
@@ -3077,6 +3096,7 @@ export class Hub {
       transcriptPath: record.transcript_path, inboxSocket: null, inboxToken: false,
       claudeConfigDir: record.claude_config_dir, codexHome: record.codex_home, harnessTicks: record.harness_ticks,
       place: record.place, hostApp: record.host_app, terminalHost: record.terminal_host, launch: record.launch,
+      sessionPath: record.session_path, display: record.display,
     }
     const env = this.sessionEnv(registration)
     const incarnation = readSessionIncarnation(sessionId, env)
@@ -3123,7 +3143,8 @@ export class Hub {
     const marker = readShutdownMarker(this.env)
     if (!machineDownEarlierBoot({ recordedBoot, currentBoot: boot, endedAt, endPending: record.end_candidate_since !== null,
       shutdown: marker === null || marker.boot === null ? null : { boot: marker.boot, since: marker.since } })) return declined('not-machine-down')
-    const env = this.sessionEnv({ claudeConfigDir: record.claude_config_dir, codexHome: record.codex_home })
+    const env = this.sessionEnv({ claudeConfigDir: record.claude_config_dir, codexHome: record.codex_home,
+      sessionPath: record.session_path, display: record.display })
     const lease = readAttendantEndingLease(sessionId, env)
     if (lease === null) return declined('no-lease')
     const present = record.harness === 'claude-code'
@@ -3302,7 +3323,8 @@ export class Hub {
 
   codexAdapters(session: HubSession): CodexWakeAdapters {
     if (this.deps.codexWake !== undefined) return this.deps.codexWake
-    const key = session.env['CODEX_HOME'] ?? ''
+    // Per Codex home and PATH: a session wakes with the `codex` its own harness runs on.
+    const key = `${session.env['CODEX_HOME'] ?? ''}\0${session.env['PATH'] ?? ''}`
     let adapters = this.codexAdapterCache.get(key)
     if (adapters === undefined) {
       adapters = systemCodexWakeAdapters(session.env)
