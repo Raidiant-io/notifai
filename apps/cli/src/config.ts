@@ -213,7 +213,7 @@ const DEFAULTS = {
   media_origins: [],
   approve_origins: [],
   // On by default ("Fully automatic, toggleable", 2026-10-19). The
-  // hub installs a newer build on the saved channel only while nothing waits.
+  // hub installs a newer build on the saved channel unless it would change hooks.
   'updates.automatic': true,
 } satisfies Record<ConfigKey, unknown>
 

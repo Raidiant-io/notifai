@@ -13,6 +13,7 @@ import {
 } from 'node:fs'
 import path from 'node:path'
 import { sanitizeSessionId, stateDir } from './config.js'
+import { formerHubPids } from './hub-ipc.js'
 import { pendingList, readSessionState } from './hook-session-state.js'
 import type { PendingQuestion } from './hook-types.js'
 import { currentProcessIdentity, pidExists, processIdentityLiveness } from './process-identity.js'
@@ -105,7 +106,9 @@ export const QUESTION_OWNER_SUPERSEDE_WAIT_MS = 45_000
 
 export type QuestionOwnerSupersession =
   | { action: 'none' }
-  | { action: 'asked' | 'signalled'; pid: number; reason: 'older-runtime' | 'outlived-window' | 'hub-owns-sessions' }
+  | { action: 'asked' | 'signalled'; pid: number; reason: 'older-runtime' | 'outlived-window' | 'hub-owns-sessions' | 'hub-replaced' }
+  /** The holder is a hub this one replaced: it is on its way out, so wait for its claim to go. */
+  | { action: 'waiting'; pid: number; reason: 'hub-replaced' }
 
 /**
  * A background owner (`detached` or `hub`) meets a live holder of the
@@ -114,7 +117,10 @@ export type QuestionOwnerSupersession =
  * - from an older runtime (any holder that predates this field is older);
  * - past its own owner deadline plus teardown, i.e. outlived its window; or
  * - a detached owner, when the hub itself asks (the hub owns questions where
- *   it runs, and wakes the session through its child).
+ *   it runs, and wakes the session through its child); or
+ * - a hub this hub replaced (one hub runs at a time, so any other live hub
+ *   owner is leaving): asked when it can be, otherwise waited out, never
+ *   signalled.
  *
  * A holder that honours hand-off requests is asked: its token changes, it
  * notices before or after its next reply poll and stops without touching the
@@ -142,6 +148,11 @@ export function supersedeQuestionOwner(
   const order = theirs === null || ours === null ? 'unparseable' : compareVersions(theirs, ours)
   const cooperative = holder['yields'] === true
   const deadline = holder['owner_deadline_at']
+  if (role === 'hub' && (holder['owner_role'] === 'hub' || formerHubPids(env).has(pid))) {
+    if (!cooperative) return { action: 'waiting', pid, reason: 'hub-replaced' }
+    if (holder['handoff'] === true || requestQuestionOwnerHandoff(file, holder['token'])) return { action: 'asked', pid, reason: 'hub-replaced' }
+    return { action: 'waiting', pid, reason: 'hub-replaced' }
+  }
   const reason = !cooperative || order === 'before' ? 'older-runtime' as const
     : typeof deadline === 'number' && now > deadline + QUESTION_STOP_TEARDOWN_HEADROOM_SECONDS * 1000 ? 'outlived-window' as const
       : role === 'hub' && holder['owner_role'] === 'detached' && order !== 'after' ? 'hub-owns-sessions' as const
@@ -171,6 +182,20 @@ export function supersedeQuestionOwner(
   } finally {
     rmSync(guard, { force: true })
   }
+}
+
+/**
+ * A hub that is handing over: ask every question owner running in this
+ * process to step aside. Each stops at its next check (before or after its
+ * reply poll) without consuming, closing or retiring anything, and releases
+ * its claim; the next hub continues the same questions. Returns how many were asked.
+ */
+export function standDownQuestionOwners(): number {
+  let asked = 0
+  for (const [file, token] of heldClaims) {
+    try { if (requestQuestionOwnerHandoff(file, token)) asked += 1 } catch { /* The owner keeps its claim; it dies with this process. */ }
+  }
+  return asked
 }
 
 /** Ask a live, hand-off-aware question owner to step aside. */

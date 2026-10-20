@@ -1,0 +1,174 @@
+/**
+ * What a hub needs to take over a session that no session child will bring
+ * back, written where it survives the hub.
+ *
+ * A Codex app or IDE conversation that Codex unloaded (dormant-open), or one
+ * whose end was still being decided, has no child: nothing re-registers it
+ * with the next hub. The hub that attends it writes this record into the
+ * session's attendance status (`adoption`), and the next hub, whatever ended
+ * the previous one (a handover, a crash), adopts every such session at start.
+ * A hub from an earlier build never wrote the record; it is rebuilt from the
+ * status, the session's incarnation and its recorded rollout.
+ */
+import { readdirSync, readFileSync } from 'node:fs'
+import path from 'node:path'
+import { stateDir } from './config.js'
+import { codexTranscriptState } from './codex-session-end.js'
+import { claimHolderMayRun, readClaimFile } from './hook-question-lock.js'
+import { endsIncarnation, readSessionEndMarker, readSessionIncarnation, readSessionState } from './hook-session-state.js'
+import { childLockPath } from './hub-ipc.js'
+import { pidExists, processIdentityLiveness, type ProcessIdentity } from './process-identity.js'
+import { attendantClaimPath } from './session-attendant-state.js'
+
+export interface AdoptionRecord {
+  harness: 'claude-code' | 'codex'
+  harness_process: ProcessIdentity
+  harness_ticks: string | null
+  boot: string | null
+  cwd: string | null
+  transcript_path: string | null
+  claude_config_dir: string | null
+  codex_home: string | null
+  /** Wall-clock milliseconds Codex unloaded the conversation while its app still lists it; null while it is not dormant. */
+  dormant_since: number | null
+  /** The rollout existed at some point, so its absence means an archive or delete. */
+  transcript_seen: boolean
+}
+
+const text = (value: unknown): string | null => typeof value === 'string' && value.length > 0 && value.length <= 4096 ? value : null
+const absolute = (value: unknown): string | null => {
+  const candidate = text(value)
+  return candidate !== null && path.isAbsolute(candidate) ? candidate : null
+}
+
+/** A well-formed record from a status file, or null. */
+export function parseAdoptionRecord(value: unknown): AdoptionRecord | null {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return null
+  const record = value as Record<string, unknown>
+  const harness = record['harness']
+  const owner = record['harness_process'] as Record<string, unknown> | null | undefined
+  if ((harness !== 'claude-code' && harness !== 'codex') || typeof owner !== 'object' || owner === null ||
+      typeof owner['pid'] !== 'number' || !Number.isSafeInteger(owner['pid']) || owner['pid'] <= 1 || text(owner['start']) === null) return null
+  const ticks = text(record['harness_ticks'])
+  const dormant = record['dormant_since']
+  return {
+    harness,
+    harness_process: { pid: owner['pid'], start: owner['start'] as string },
+    harness_ticks: ticks !== null && /^\d{1,30}$/.test(ticks) ? ticks : null,
+    boot: text(record['boot']),
+    cwd: absolute(record['cwd']),
+    transcript_path: absolute(record['transcript_path']),
+    claude_config_dir: absolute(record['claude_config_dir']),
+    codex_home: absolute(record['codex_home']),
+    dormant_since: typeof dormant === 'number' && Number.isFinite(dormant) ? dormant : null,
+    transcript_seen: record['transcript_seen'] === true,
+  }
+}
+
+/** The Codex home a rollout lives under (`<home>/sessions/…`), or null. */
+export function codexHomeOfRollout(transcriptPath: string): string | null {
+  const parts = transcriptPath.split(path.sep)
+  const index = parts.lastIndexOf('sessions')
+  return index > 0 ? parts.slice(0, index).join(path.sep) || path.sep : null
+}
+
+/**
+ * The record for one session, from its attendance status: the one the hub
+ * wrote, or, for a status an earlier hub wrote, one rebuilt from local
+ * records. Null when it cannot be rebuilt: without a recorded rollout a
+ * dormant conversation's archive, and its app, cannot be told.
+ */
+export function adoptionRecord(env: NodeJS.ProcessEnv, sessionId: string, status: Record<string, unknown>): AdoptionRecord | null {
+  const written = parseAdoptionRecord(status['adoption'])
+  if (written !== null) return written
+  const incarnation = readSessionIncarnation(sessionId, env)
+  const state = readSessionState(sessionId, env)
+  if (incarnation?.harness_process === undefined || state.harness !== 'codex') return null
+  const turn = state.codex_native_turn
+  const transcript = turn !== undefined && turn.key === incarnation.key ? absolute(turn.transcript_path) : null
+  if (transcript === null) return null
+  return {
+    harness: 'codex',
+    harness_process: incarnation.harness_process,
+    harness_ticks: null,
+    boot: incarnation.boot ?? null,
+    cwd: absolute(state.activation_cwd),
+    transcript_path: transcript,
+    claude_config_dir: null,
+    codex_home: codexHomeOfRollout(transcript),
+    dormant_since: status['reason'] === 'dormant-open' && typeof status['updated_at'] === 'number' ? status['updated_at'] : null,
+    // The native turn was read from that rollout.
+    transcript_seen: true,
+  }
+}
+
+/**
+ * Whether a session child still runs for this session and harness process:
+ * it writes `<pid> <harness pid>` into its lock, which it holds for life. A
+ * live child has its own kernel watch, reconnects to whichever hub runs, and
+ * reports the end itself.
+ */
+export function childWatching(env: NodeJS.ProcessEnv, sessionId: string, harnessPid: number): boolean {
+  try {
+    const [child, harness] = readFileSync(childLockPath(env, sessionId), 'utf8').trim().split(' ').map(Number)
+    return harness === harnessPid && child !== undefined && pidExists(child)
+  } catch {
+    return false
+  }
+}
+
+export interface AdoptionCandidate {
+  sessionId: string
+  status: Record<string, unknown>
+  /** Null: this build cannot rebuild what the earlier hub held for it. */
+  record: AdoptionRecord | null
+}
+
+/** Every attendance status on this machine, parsed. */
+export function attendanceStatuses(env: NodeJS.ProcessEnv): { sessionId: string; status: Record<string, unknown> }[] {
+  const directory = path.join(stateDir(env), 'sessions')
+  let names: string[]
+  try { names = readdirSync(directory).filter((name) => name.endsWith('.attendance.json')) } catch { return [] }
+  const statuses: { sessionId: string; status: Record<string, unknown> }[] = []
+  for (const name of names) {
+    try {
+      const status = JSON.parse(readFileSync(path.join(directory, name), 'utf8')) as Record<string, unknown>
+      if (typeof status === 'object' && status !== null && typeof status['session_id'] === 'string') statuses.push({ sessionId: status['session_id'], status })
+    } catch { /* A half-written or foreign file is not a status. */ }
+  }
+  return statuses
+}
+
+/**
+ * Codex sessions a hub attended that no child will bring back: the status
+ * says a hub attended this exact incarnation and nobody holds its claim now,
+ * the session has not ended, its host still runs, and no child watches it.
+ * (A session whose host is gone is the sweep's: it reports the end.)
+ */
+export function adoptionCandidates(env: NodeJS.ProcessEnv): AdoptionCandidate[] {
+  const candidates: AdoptionCandidate[] = []
+  for (const { sessionId, status } of attendanceStatuses(env)) {
+    if (status['phase'] === 'exited' || typeof status['incarnation'] !== 'string') continue
+    const claim = readClaimFile(attendantClaimPath(sessionId, env))
+    if (claim !== null && claimHolderMayRun(claim)) continue
+    const incarnation = readSessionIncarnation(sessionId, env)
+    if (incarnation === null || incarnation.incarnation !== status['incarnation'] || incarnation.harness_process === undefined) continue
+    if (endsIncarnation(readSessionEndMarker(sessionId, env), incarnation)) continue
+    const record = adoptionRecord(env, sessionId, status)
+    if ((record?.harness ?? readSessionState(sessionId, env).harness) !== 'codex') continue
+    if (processIdentityLiveness(incarnation.harness_process) === 'gone') continue
+    if (childWatching(env, sessionId, incarnation.harness_process.pid)) continue
+    candidates.push({ sessionId, status, record })
+  }
+  return candidates
+}
+
+/**
+ * A recorded Codex rollout that existed and is gone: the conversation was
+ * archived or deleted (Codex runs no SessionEnd for that).
+ */
+export function recordedRolloutArchived(env: NodeJS.ProcessEnv, sessionId: string, status: Record<string, unknown>): boolean {
+  const record = adoptionRecord(env, sessionId, status)
+  return record !== null && record.harness === 'codex' && record.transcript_seen &&
+    codexTranscriptState(record.transcript_path) === 'missing'
+}

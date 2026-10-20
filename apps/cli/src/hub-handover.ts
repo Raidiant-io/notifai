@@ -2,34 +2,45 @@
  * A hub that runs a build other than the active one hands over to it.
  *
  * Any change of the active build (a manual, npm or curl update, a rollback)
- * leaves the running hub on its old build until it is replaced. The hub
- * replaces itself as soon as nothing waits (see `Hub.checkBuildHandover`),
- * under the same blockers that hold an automatic activation back. A hub from
- * a build without that check is replaced by the active build instead: a hook
- * notices the older hub, and a detached process asks it for its status and
- * sends `stop` only when that status, read twice, proves nothing waits.
- * Leaving keeps every lease on disk; the session children reconnect and the
- * next hub, started through the stable launcher, continues each lease.
+ * leaves the running hub on its old build until it is replaced. A hub of
+ * this build replaces itself at once (`Hub.handOver`): the next hub takes
+ * over every question, answer, Note and session it held. A hub from an
+ * earlier build kept some of that only in memory; the active build replaces
+ * it instead: a hook notices it, and a detached process reads its status
+ * twice and sends `stop`, unless it is doing one of the few things the new
+ * hub cannot take over from it (`olderHubWaits`). Leaving keeps every lease on
+ * disk; the session children reconnect and the next hub, started through the
+ * stable launcher, continues each lease and adopts the rest.
  */
-import { readFileSync, statSync, writeFileSync } from 'node:fs'
+import { readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs'
 import path from 'node:path'
-import { waitingSessionWork, type WaitingReason } from './automatic-update.js'
+import type { WaitingReason } from './automatic-update.js'
+import { sanitizeSessionId, stateDir } from './config.js'
 import { buildIdentity } from './distribution.js'
 import { claimHolderMayRun, readClaimFile } from './hook-question-lock.js'
 import { startHub } from './hub-client.js'
-import { endsIncarnation, readSessionEndMarker, readSessionIncarnation } from './hook-session-state.js'
+import { readSessionState } from './hook-session-state.js'
+import { adoptionRecord } from './hub-adoption.js'
 import { HUB_IPC_VERSIONS, hubLockPath, hubRunDir, hubStatusPath, hubSupported, requestHub } from './hub-ipc.js'
 import { currentRuntimeBuild } from './launch-self.js'
 import type { Logger } from './logging.js'
 import { accountHome } from './platform.js'
-import { pidExists, processIdentityLiveness } from './process-identity.js'
+import { pidExists } from './process-identity.js'
 import { packageVersion } from './release.js'
-import { hasSessionInputs } from './session-inputs.js'
+import { attendantStatusPath } from './session-attendant-state.js'
 
 /** Why a hub on another build has not handed over yet. */
 export type HandoverWait = WaitingReason
-  /** The running hub's status does not say enough to prove that nothing waits. */
+  /** The running hub's status does not say enough to show what it holds. */
   | 'hub-unverifiable'
+  /** An earlier hub is handing an answer to its agent; stopping it now could repeat it. */
+  | 'answer-delivering'
+  /** An earlier hub is writing a wake into a session. */
+  | 'wake-writing'
+  /** An earlier hub runs a question owner for a session it does not attend; its id is not on disk. */
+  | 'question-unattended'
+  /** An earlier hub holds open a Codex conversation whose rollout was never recorded. */
+  | 'session-dormant'
 
 /**
  * Two reads of an older hub's status this far apart, both clear: longer than
@@ -63,9 +74,9 @@ export function activeRuntime(env: NodeJS.ProcessEnv): ActiveRuntime | null {
   return { build: running.build, version, digest: buildIdentity()?.sourceDigest ?? null }
 }
 
-/** A hub that checks its own build reports `runtime_build`; earlier hubs do not. */
-export function hubHandsOverItself(status: Record<string, unknown>): boolean {
-  return Object.hasOwn(status, 'runtime_build')
+/** A hub that hands itself over and leaves nothing behind says so; earlier hubs do not. */
+export function hubHandsOverSeamlessly(status: Record<string, unknown>): boolean {
+  return status['seamless_handover'] === true
 }
 
 /** An earlier hub names only its version and source digest. */
@@ -74,34 +85,51 @@ function olderHubOnOtherBuild(status: Record<string, unknown>, self: ActiveRunti
 }
 
 /**
- * What holds an earlier hub's handover back, judged from its status and this
- * machine's records: the reasons `Hub.updateBlockers` gives, as far as that
- * status shows them. Anything it cannot show counts as waiting.
+ * What an earlier hub is doing that the next hub could not take over, judged
+ * from its status and this machine's records. Everything else it holds is
+ * on disk or rebuilt: its sessions' questions and answers, staged inputs and
+ * owed ends; an answer owner of a session it attends (that session's child
+ * re-registers and the next hub runs it again); a Codex conversation without
+ * a child (adopted, when its rollout is on record).
  */
-export function olderHubWaits(env: NodeJS.ProcessEnv, status: Record<string, unknown>, now: number = Date.now()): HandoverWait[] {
+export function olderHubWaits(env: NodeJS.ProcessEnv, status: Record<string, unknown>): HandoverWait[] {
   const settlements = status['settlements'], owed = status['pending_end_reports'], sessions = status['sessions'], ipc = status['ipc_version']
-  if (typeof settlements !== 'number' || typeof owed !== 'number' || !Array.isArray(sessions) || typeof ipc !== 'number') return ['hub-unverifiable']
-  const waits = new Set<HandoverWait>(waitingSessionWork(env, now))
+  const pid = status['pid']
+  if (typeof settlements !== 'number' || typeof owed !== 'number' || !Array.isArray(sessions) || typeof ipc !== 'number' ||
+      typeof pid !== 'number') return ['hub-unverifiable']
+  const waits = new Set<HandoverWait>()
   // Its children speak the version it serves.
   if (ipc < HUB_IPC_VERSIONS.min || ipc > HUB_IPC_VERSIONS.max) waits.add('session-child-incompatible')
-  if (settlements > 0) waits.add('question-waiting')
-  if (owed > 0) waits.add('session-ending')
+  const attended = new Map<string, string>()
   for (const entry of sessions as unknown[]) {
     if (typeof entry !== 'object' || entry === null) return ['hub-unverifiable']
     const session = entry as Record<string, unknown>
     const id = session['session_id']
     if (typeof id !== 'string') return ['hub-unverifiable']
-    // Dormant-open, or a Codex end it may still be classifying: only that hub holds it.
-    if (session['reason'] === 'dormant-open' || (session['harness'] === 'codex' && session['child'] !== true)) waits.add('session-dormant')
-    const record = readSessionIncarnation(id, env)
-    if (record === null) { waits.add('hub-unverifiable'); continue }
-    // An end it may still owe the service: the end marker, or its harness gone.
-    if (endsIncarnation(readSessionEndMarker(id, env), record) ||
-        (record.harness_process !== undefined && processIdentityLiveness(record.harness_process) === 'gone')) waits.add('session-ending')
-    const generation = session['generation']
-    if (typeof generation === 'number' && hasSessionInputs(id, env, { incarnation: record.incarnation, generation })) {
-      waits.add('session-input-pending')
+    attended.set(sanitizeSessionId(id), id)
+    // A Codex session without a child: the next hub adopts it from its record, when there is one.
+    if (session['harness'] === 'codex' && session['child'] !== true) {
+      let record: Record<string, unknown> | null = null
+      try { record = JSON.parse(readFileSync(attendantStatusPath(id, env), 'utf8')) as Record<string, unknown> } catch { record = null }
+      if (record === null || adoptionRecord(env, id, record) === null) waits.add('session-dormant')
     }
+    // A wake it is writing into the session right now (Claude Code's inbox, a Codex thread's queue).
+    const state = readSessionState(id, env)
+    if ((state.input_wake !== undefined && !state.input_wake.queued && state.input_wake.writer.pid === pid) ||
+        (state.input_wake_attempts ?? []).some((attempt) => attempt.writer.pid === pid && (attempt.phase === 'prepared' || attempt.phase === 'sending'))) {
+      waits.add('wake-writing')
+    }
+  }
+  // The answer owners it runs: each holds its session's question claim.
+  const directory = path.join(stateDir(env), 'sessions')
+  let names: string[]
+  try { names = readdirSync(directory).filter((name) => name.endsWith('.claim')) } catch { names = [] }
+  for (const name of names) {
+    const holder = readClaimFile(path.join(directory, name))
+    if (holder === null || holder['pid'] !== pid || holder['owner_role'] === 'stop') continue
+    const id = attended.get(name.slice(0, -'.claim'.length))
+    if (id === undefined) waits.add('question-unattended')
+    else if (readSessionState(id, env).accepted !== undefined) waits.add('answer-delivering')
   }
   return [...waits]
 }
@@ -136,7 +164,7 @@ function runningHubStatus(env: NodeJS.ProcessEnv): Record<string, unknown> | nul
 export function claimOlderHubHandover(env: NodeJS.ProcessEnv, now: number = Date.now()): boolean {
   if (!hubSupported() || buildIdentity() === null) return false
   const status = hubStatusFile(env)
-  if (status === null || hubHandsOverItself(status)) return false
+  if (status === null || hubHandsOverSeamlessly(status)) return false
   if (status['version'] === packageVersion() && status['build'] === (buildIdentity()?.sourceDigest ?? null)) return false
   if (!hubLockHeld(env)) return false
   const self = activeRuntime(env)
@@ -193,20 +221,20 @@ export async function handOverOlderHub(env: NodeJS.ProcessEnv, seams: OlderHubHa
   }
   const first = await read()
   if (first === null) return { outcome: 'no-hub' }
-  if (hubHandsOverItself(first)) return { outcome: 'self-managed' }
+  if (hubHandsOverSeamlessly(first)) return { outcome: 'self-managed' }
   if (!olderHubOnOtherBuild(first, self)) return { outcome: 'current' }
   const hubVersion = typeof first['version'] === 'string' ? first['version'] : null
   const waiting = (waits: HandoverWait[]): OlderHubOutcome => {
     seams.logger?.info('hub.handover', { event: 'waiting', hub_version: hubVersion, active_version: self.version, waiting_for: waits })
     return { outcome: 'waiting', hub_version: hubVersion, waiting_for: waits }
   }
-  const before = olderHubWaits(env, first, now())
+  const before = olderHubWaits(env, first)
   if (before.length > 0) return waiting(before)
   await sleep(seams.confirmMs ?? HANDOVER_CONFIRM_MS)
   const second = await read()
   if (second === null) return { outcome: 'no-hub' }
   if (second['pid'] !== first['pid']) return { outcome: 'current' }
-  const after = olderHubWaits(env, second, now())
+  const after = olderHubWaits(env, second)
   if (after.length > 0) return waiting(after)
   const ack = await request(env, { type: 'stop', reason: 'build-superseded' }, { timeoutMs: 2_000 })
   if (ack?.['type'] !== 'ack') return { outcome: 'failed' }
@@ -237,21 +265,21 @@ export async function handOverOlderHub(env: NodeJS.ProcessEnv, seams: OlderHubHa
 export interface HubHandoverReport {
   hub_version: string | null
   active_version: string | null
-  /** `hub`: the hub replaces itself; `active-build`: an earlier hub, replaced by this build at a hook. */
+  /** `hub`: the hub replaces itself at once; `active-build`: an earlier hub, replaced by this build at a hook. */
   replaced_by: 'hub' | 'active-build'
-  /** `due`: nothing waits, the next check replaces it. */
+  /** `due`: nothing holds it, the next check replaces it. */
   state: 'waiting' | 'due'
   waiting_for: HandoverWait[]
 }
 
 /** Null while the running hub runs the active build (or no hub runs). */
-export function hubHandoverReport(env: NodeJS.ProcessEnv, now: number = Date.now()): HubHandoverReport | null {
+export function hubHandoverReport(env: NodeJS.ProcessEnv): HubHandoverReport | null {
   if (!hubSupported()) return null
   const status = runningHubStatus(env)
   if (status === null) return null
   const hubVersion = typeof status['version'] === 'string' ? status['version'] : null
   const self = activeRuntime(env)
-  if (hubHandsOverItself(status)) {
+  if (hubHandsOverSeamlessly(status)) {
     const active = readActiveBuild(env), running = status['runtime_build']
     if (typeof running !== 'string' || active === null || active === running) return null
     const handover = status['handover'] as { waiting_for?: unknown } | null | undefined
@@ -260,19 +288,19 @@ export function hubHandoverReport(env: NodeJS.ProcessEnv, now: number = Date.now
       state: waits.length > 0 ? 'waiting' : 'due', waiting_for: waits }
   }
   if (self === null || !olderHubOnOtherBuild(status, self)) return null
-  const waits = olderHubWaits(env, status, now)
+  const waits = olderHubWaits(env, status)
   return { hub_version: hubVersion, active_version: self.version, replaced_by: 'active-build',
     state: waits.length > 0 ? 'waiting' : 'due', waiting_for: waits }
 }
 
 const WAIT_TEXT: Record<HandoverWait, string> = {
-  'question-waiting': 'a question or answer waits',
-  'session-input-pending': 'a Note or answer is on its way to its agent',
-  'session-ending': 'a closed session\'s end is still being reported',
-  'session-dormant': 'a Codex conversation is held open',
+  'answer-delivering': 'it is handing an answer to its agent',
+  'wake-writing': 'it is writing a wake into a session',
+  'question-unattended': 'it runs a question owner for a session it does not attend',
+  'session-dormant': 'it holds open a Codex conversation whose rollout was never recorded',
   'session-child-incompatible': 'a session child speaks a protocol the new build does not serve',
   'candidate-unverified': 'the active build could not be checked',
-  'hub-unverifiable': 'the running hub does not report enough to show nothing waits',
+  'hub-unverifiable': 'the running hub does not report enough to show what it holds',
   'hook-approval': 'hook changes need approval',
   continuity: 'local state is not compatible yet',
   'installation-busy': 'an installation change is in progress',
@@ -283,5 +311,5 @@ const WAIT_TEXT: Record<HandoverWait, string> = {
 export function describeHubHandover(report: HubHandoverReport): string {
   const what = `running ${report.hub_version ?? 'an earlier build'} while ${report.active_version ?? 'another build'} is active`
   if (report.state === 'due') return `${what}; it hands over at the next check`
-  return `${what}; it hands over once nothing waits (${report.waiting_for.map((reason) => WAIT_TEXT[reason] ?? reason).join('; ')})`
+  return `${what}; it hands over when this clears: ${report.waiting_for.map((reason) => WAIT_TEXT[reason] ?? reason).join('; ')}`
 }

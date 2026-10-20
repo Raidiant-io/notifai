@@ -39,8 +39,8 @@ import { inspectCodexQueue, systemCodexWakeAdapters, type CodexWakeAdapters } fr
 import { EXIT, log, makeClient, type CommandDeps } from './commands-core.js'
 import type { CredentialStore, MachineCredential } from './credentials.js'
 import { buildIdentity } from './distribution.js'
-import type { HookInstallableHarness } from './harnesses.js'
-import { acquireClaimFile, claimHolderMayRun, readClaimFile, releaseClaimFile, requestClaimHandoff } from './hook-question-lock.js'
+import { isHookInstallableHarness, type HookInstallableHarness } from './harnesses.js'
+import { acquireClaimFile, claimHolderMayRun, readClaimFile, releaseClaimFile, requestClaimHandoff, standDownQuestionOwners } from './hook-question-lock.js'
 import {
   beginSessionIncarnation,
   endsIncarnation,
@@ -60,11 +60,11 @@ import {
   attemptAutomaticUpdate,
   candidatePlan,
   candidateResume,
-  waitingSessionWork,
   type AttemptOutcome,
   type AutomaticUpdateHost,
   type WaitingReason,
 } from './automatic-update.js'
+import { adoptionCandidates, childWatching, recordedRolloutArchived, type AdoptionRecord } from './hub-adoption.js'
 import { hubEnvironment } from './hub-client.js'
 import { readActiveBuild } from './hub-handover.js'
 import type { ActivationPlan } from './activation-plan.js'
@@ -72,7 +72,6 @@ import { osAccountHome } from './os-account-home.js'
 import { olderClaudeAttendantsAlive, readClaudeFormDeferral } from './claude-form-readers.js'
 import type { managedInstallation as ManagedInstallation } from './native-installation.js'
 import {
-  childLockPath,
   credentialGenerationPath,
   encodeFrame,
   endedRecordsDir,
@@ -81,8 +80,10 @@ import {
   HUB_IPC_VERSION,
   HUB_IPC_VERSIONS,
   hubHistoryPath,
+  fnv64Hex,
   hubLockPath,
   hubRunDir,
+  hubSettlementsDir,
   hubSocketPath,
   hubStatusPath,
 } from './hub-ipc.js'
@@ -152,6 +153,12 @@ const SHELLS: ReadonlySet<string> = new Set(['sh', 'dash', 'bash', 'zsh', 'ksh',
 export const CODEX_END_CONFIRM_MS = 5_000
 /** A dormant conversation keeps the hub alive at most one answer window. */
 const DORMANT_CEILING_MS = QUESTION_WAITER_CEILING_SECONDS * 1000
+/**
+ * How long a hub that hands over waits for work already in flight (a hook it
+ * serves, a write into a session, a wake, an answer owner finishing a step)
+ * before it leaves anyway. Everything else is on disk for the next hub.
+ */
+const HANDOVER_DRAIN_MS = 30_000
 
 export interface PeerProcess { pid: number; ppid: number; comm: string; start: string; ticks?: string }
 
@@ -181,6 +188,10 @@ export interface HubOptions {
   safetyTickMs?: number
   /** Test seam; production waits CODEX_END_CONFIRM_MS. */
   codexEndConfirmMs?: number
+  /** Test seam; production waits at most HANDOVER_DRAIN_MS for work in flight. */
+  handoverDrainMs?: number
+  /** Test seam: run one internal hook (an answer owner); production runs `hookRunCommand` in this process. */
+  runHook?: (event: string, envelope: Record<string, unknown> | null, harness: HookInstallableHarness, env: NodeJS.ProcessEnv) => Promise<number>
   /** Test seam: what kind of process hosts a Codex session; production asks `ps`. */
   codexHostKind?: typeof codexHostKind
   /** Test seam: the build and installation this hub runs; production reads its own managed build once. */
@@ -249,6 +260,11 @@ class ChildLink {
     })
   }
 
+  /** Writes asked of the child that it has not answered yet. */
+  get writesInFlight(): number {
+    return this.pending.size
+  }
+
   answered(frame: Record<string, unknown>): void {
     const id = typeof frame['id'] === 'string' ? frame['id'] : null
     const resolve = id === null ? undefined : this.pending.get(id)
@@ -309,6 +325,8 @@ class HubSession implements AttendedSession {
    * waits in the conversation until the User opens it.
    */
   dormantSince: number | null = null
+  /** The same moment on the wall clock, for the next hub (see `hub-adoption.ts`). */
+  dormantSinceWall: number | null = null
   /** The rollout existed at some point; only then does its absence mean an archive or delete. */
   transcriptSeen = false
 
@@ -429,7 +447,7 @@ class HubSession implements AttendedSession {
   async attended(messages: AttendanceMessage[]): Promise<'done' | 'retry-soon'> {
     this.writeStatus()
     if (!this.writerAvailable()) return 'done'
-    return this.harness === 'claude-code' ? this.handClaude(messages) : this.handCodex(messages)
+    return this.hub.handing(() => this.harness === 'claude-code' ? this.handClaude(messages) : this.handCodex(messages))
   }
 
   settled(outcome: LeaseOutcome): void {
@@ -474,6 +492,8 @@ class HubSession implements AttendedSession {
 
   /** Staged input that needs a wake: cut the held exchange and hand it in. */
   checkInput(): void {
+    // A hub handing over starts no new write; the next hub hands the input in.
+    if (this.hub.handingOver) return
     if (this.dormantSince !== null) { void this.hub.dormantWake(this); return }
     if (!this.notified || this.lease.generation === null || this.hub.clock.monotonic() < this.lease.pausedUntil) return
     const lease: DeliveryLease = { incarnation: this.lease.incarnation, generation: this.lease.generation }
@@ -500,7 +520,7 @@ class HubSession implements AttendedSession {
    * the lease was granted under, and the lease outlives a write that starts now.
    */
   mayWrite(): boolean {
-    if (this.ending !== null || !this.claimHeld()) return false
+    if (this.ending !== null || this.hub.handingOver || !this.claimHeld()) return false
     if (readSessionIncarnation(this.id, this.env)?.incarnation !== this.lease.incarnation) return false
     const probe = this.probe()
     if (probe.state !== 'running') return false
@@ -575,6 +595,23 @@ class HubSession implements AttendedSession {
 
   // -- local records -------------------------------------------------------------
 
+  /** What the next hub needs to take this session over without its child. */
+  adoptionRecord(): AdoptionRecord {
+    const registration = this.registration
+    return {
+      harness: this.harness,
+      harness_process: this.harnessProcess,
+      harness_ticks: registration.harnessTicks,
+      boot: registration.boot,
+      cwd: registration.cwd,
+      transcript_path: registration.transcriptPath,
+      claude_config_dir: registration.claudeConfigDir,
+      codex_home: registration.codexHome,
+      dormant_since: this.dormantSinceWall,
+      transcript_seen: this.transcriptSeen,
+    }
+  }
+
   private rotate(expected: string): string | null {
     const next = rotateSessionIncarnation(this.id, this.env, expected)
     if (next === null) return null
@@ -590,7 +627,8 @@ class HubSession implements AttendedSession {
   }
 
   writeStatus(force = false): void {
-    const phase = `${this.lease.phase}|${this.lease.reason}|${this.lease.generation}|${this.activityValue}|${this.writerAvailable()}`
+    const phase = `${this.lease.phase}|${this.lease.reason}|${this.lease.generation}|${this.activityValue}|${this.writerAvailable()}|` +
+      `${this.dormantSinceWall}|${this.transcriptSeen}`
     if (!force && phase === this.lastPhaseWritten) return
     this.lastPhaseWritten = phase
     try {
@@ -602,6 +640,7 @@ class HubSession implements AttendedSession {
         reason: this.lease.reason,
         accepts_messages: this.writerAvailable(),
         updated_at: this.hub.clock.wall(),
+        adoption: this.adoptionRecord(),
       })
     } catch {
       // Status is diagnostic; attendance continues without it.
@@ -625,8 +664,19 @@ class EndedSession implements AttendedSession {
   settled(outcome: LeaseOutcome): void {
     if (outcome.kind !== 'reported') return
     for (const file of this.records) rmSync(file, { force: true })
-    this.hub.forgetEnded(this)
+    this.hub.endReported(this)
   }
+}
+
+/** One answer owner the hub runs, as `run/settlements` records it. */
+interface SettlementRecord {
+  file: string
+  sessionId: string
+  harness: HookInstallableHarness
+  cwd: string | null
+  purpose: 'submission' | 'settlement'
+  claudeConfigDir: string | null
+  codexHome: string | null
 }
 
 interface History { starts: { at: number; pid: number; clean: boolean; boot?: string | null }[]; fault?: { reason: string; since: number } }
@@ -662,6 +712,15 @@ export class Hub {
   private readonly links = new Set<ChildLink>()
   private updateTimer: ReturnType<typeof setTimeout> | null = null
   private updating = false
+  /**
+   * Handing over to the active build: no new hook, write, wake or answer
+   * owner starts here, and work in flight finishes before this hub leaves.
+   */
+  handingOver = false
+  /** Session Messages, answers and wakes being handed into sessions right now. */
+  private handIns = 0
+  /** Local end work (`handleSessionEnd`) started for sessions that just ended. */
+  private readonly localEnds = new Set<Promise<void>>()
   /** An automatic update activated a new build, or another build became active: start its hub after this one leaves. */
   private successor: 'automatic-update' | 'build-superseded' | null = null
   /** Another build is active; what this hub still waits for before it hands over. */
@@ -740,6 +799,10 @@ export class Hub {
       this.logger.error('hub.exchange', { event: 'stopped', message: err instanceof Error ? err.message : String(err) })
     })
     this.sweep()
+    // What the previous hub held: sessions no child brings back, and the answer owners it ran.
+    void this.restore().catch((err: unknown) => {
+      this.logger.error('hub.session', { event: 'restore-failed', message: err instanceof Error ? err.message : String(err) })
+    })
     this.safetyTimer = setInterval(() => this.safetyTick(), this.options.safetyTickMs ?? SAFETY_TICK_MS)
     this.safetyTimer.unref?.()
     this.scheduleAutomaticUpdate(this.options.automaticUpdate?.firstDelayMs ?? AUTOMATIC_UPDATE_FIRST_MS)
@@ -784,10 +847,7 @@ export class Hub {
     this.updating = true
     try {
       const outcome = await (options.attempt ?? attemptAutomaticUpdate)({ ...this.automaticUpdateHost(), ...options.host })
-      if (outcome.outcome === 'activated' && !this.exiting) {
-        this.successor = 'automatic-update'
-        this.requestExit('automatic-update')
-      }
+      if (outcome.outcome === 'activated' && !this.exiting) void this.handOver('automatic-update')
       return outcome
     } catch (err) {
       this.logger.error('update.automatic', { event: 'failed', message: err instanceof Error ? err.message : String(err) })
@@ -813,36 +873,11 @@ export class Hub {
         const version = packageVersion()
         return reference === null || version === null ? null : { build: reference.build, version }
       },
-      blockers: () => this.updateBlockers(),
       childIpcVersions: () => [...this.links].filter((link) => !link.closed).map((link) => link.ipcVersion),
       plan: (launcher) => candidatePlan(launcher, hubEnvironment(this.env), cwd),
       resume: (launcher, from) => candidateResume(launcher, from, hubEnvironment(this.env), cwd),
       logger: this.logger,
     }
-  }
-
-  /**
-   * Work that holds an activation back, seen from here: every Agent Session's
-   * outstanding questions and answers on this machine, the question waiters
-   * this hub runs, Notes and Answer Edits it staged but has not handed in, and
-   * end reports it still owes.
-   */
-  updateBlockers(): WaitingReason[] {
-    const reasons = new Set<WaitingReason>(waitingSessionWork(this.env, this.clock.wall()))
-    if (this.settlements.size > 0) reasons.add('question-waiting')
-    for (const session of this.sessions.values()) {
-      if (session.lease.final !== null) reasons.add('session-ending')
-      // A dormant-open Codex conversation, or one whose end is still being
-      // classified, lives only in this hub's memory: a handover now could lose
-      // it, so wait until it reopens, ends or stops owing anything.
-      if (session.dormantSince !== null || session.endCandidate !== null) reasons.add('session-dormant')
-      const generation = session.lease.generation
-      if (generation !== null && hasSessionInputs(session.id, session.env, { incarnation: session.lease.incarnation, generation })) {
-        reasons.add('session-input-pending')
-      }
-    }
-    if (this.ended.size > 0) reasons.add('session-ending')
-    return [...reasons]
   }
 
   // -- handing over to another active build ---------------------------------------
@@ -857,13 +892,14 @@ export class Hub {
 
   /**
    * Another build became active under this hub (a manual, npm or curl update,
-   * a rollback): hand over to it as soon as nothing waits, under the blockers
-   * that hold an automatic activation back. Leaving keeps every lease; the
-   * children reconnect to the next hub, which runs the active build.
+   * a rollback): hand over to it now. Nothing a session waits for holds it
+   * back, because the next hub takes all of it over (see `handOver`). It
+   * waits only while the active build's hub could not serve a connected
+   * child, or cannot be asked at all.
    */
   async checkBuildHandover(): Promise<WaitingReason[] | null> {
     const options = this.options.handover
-    if (options === undefined || this.exiting || this.updating || this.handoverChecking) return null
+    if (options === undefined || this.exiting || this.updating || this.handoverChecking || this.handingOver) return null
     const builds = options.builds !== undefined ? options.builds()
       : this.runtimeBuild() === null ? null : { running: this.runtimeBuild()!, active: readActiveBuild(this.env) }
     if (builds === null || builds.active === null || builds.active === builds.running) {
@@ -873,23 +909,19 @@ export class Hub {
     const active = builds.active
     this.handoverChecking = true
     try {
-      const reasons = new Set<WaitingReason>(this.updateBlockers())
-      if (reasons.size === 0) {
-        // The children connected now must be served by the active build's hub.
-        const now = this.clock.monotonic()
-        if (this.handoverPlan === null || this.handoverPlan.build !== active ||
-            (this.handoverPlan.plan === null && now - this.handoverPlan.at >= AUTOMATIC_UPDATE_INTERVAL_MS)) {
-          let plan: ActivationPlan | null = null
-          try { plan = await (options.plan ?? ((build) => this.activePlan(build)))(active) } catch { plan = null }
-          this.handoverPlan = { build: active, at: now, plan }
-        }
-        const plan = this.handoverPlan.plan
-        if (plan === null) reasons.add('candidate-unverified')
-        else if ([...this.links].some((link) => !link.closed && (link.ipcVersion < plan.hub_ipc_versions.min || link.ipcVersion > plan.hub_ipc_versions.max))) {
-          reasons.add('session-child-incompatible')
-        }
-        // Work may have arrived while the plan was asked for.
-        for (const reason of this.updateBlockers()) reasons.add(reason)
+      const reasons = new Set<WaitingReason>()
+      // The children connected now must be served by the active build's hub.
+      const now = this.clock.monotonic()
+      if (this.handoverPlan === null || this.handoverPlan.build !== active ||
+          (this.handoverPlan.plan === null && now - this.handoverPlan.at >= AUTOMATIC_UPDATE_INTERVAL_MS)) {
+        let plan: ActivationPlan | null = null
+        try { plan = await (options.plan ?? ((build) => this.activePlan(build)))(active) } catch { plan = null }
+        this.handoverPlan = { build: active, at: now, plan }
+      }
+      const plan = this.handoverPlan.plan
+      if (plan === null) reasons.add('candidate-unverified')
+      else if ([...this.links].some((link) => !link.closed && (link.ipcVersion < plan.hub_ipc_versions.min || link.ipcVersion > plan.hub_ipc_versions.max))) {
+        reasons.add('session-child-incompatible')
       }
       const waiting = [...reasons]
       if (this.handoverState?.active_build !== active || this.handoverState.waiting_for.join() !== waiting.join()) {
@@ -897,14 +929,51 @@ export class Hub {
       }
       this.handoverState = { active_build: active, waiting_for: waiting }
       this.statusChanged()
-      if (waiting.length === 0 && !this.exiting && !this.updating && this.ingressInFlight === 0) {
-        if (this.sessions.size > 0 || this.children > 0) this.successor = 'build-superseded'
-        this.requestExit('build-superseded')
-      }
+      if (waiting.length === 0) void this.handOver('build-superseded')
       return waiting
     } finally {
       this.handoverChecking = false
     }
+  }
+
+  /**
+   * Leave so the active build's hub takes over, losing nothing. Everything a
+   * session waits for is on disk: its questions and answers, staged Notes,
+   * owed acknowledgements and ends, the answer owners this hub ran
+   * (`run/settlements`), and the Codex conversations no child brings back
+   * (their attendance status). What is in flight finishes first: hooks this
+   * hub serves, writes and wakes into sessions, and local end work; then its
+   * answer owners are asked to step aside at their next check. The next hub,
+   * started through the stable launcher, continues every lease.
+   */
+  async handOver(reason: 'automatic-update' | 'build-superseded'): Promise<void> {
+    if (this.handingOver || this.exiting) return
+    this.handingOver = true
+    this.statusChanged()
+    const deadline = this.clock.monotonic() + (this.options.handoverDrainMs ?? HANDOVER_DRAIN_MS)
+    const settle = async (done: () => boolean): Promise<void> => {
+      while (!done() && !this.exiting && this.clock.monotonic() < deadline) await new Promise((resolve) => setTimeout(resolve, 50))
+    }
+    await settle(() => this.ingressInFlight === 0 && this.handIns === 0 && this.localEnds.size === 0 && this.dormantWaking.size === 0 &&
+      ![...this.links].some((link) => link.writesInFlight > 0))
+    // The answer owners stop at their next check, without consuming, closing
+    // or retiring anything; their reply polls end now.
+    const asked = standDownQuestionOwners()
+    this.credentialAbort.abort()
+    this.credentialAbort = new AbortController()
+    await settle(() => this.settlements.size === 0)
+    const left = { ingress: this.ingressInFlight, hand_ins: this.handIns, local_ends: this.localEnds.size, settlements: this.settlements.size }
+    this.logger.info('hub.handover', { event: 'drained', reason, answer_owners_asked: asked,
+      ...(Object.values(left).some((count) => count > 0) ? { in_flight: left } : {}) })
+    if (this.exiting) return
+    if (this.sessions.size > 0 || this.children > 0 || this.settlementRecords().length > 0) this.successor = reason
+    this.requestExit(reason)
+  }
+
+  /** Run `work` as a hand-in a handover waits for. */
+  async handing<T>(work: () => Promise<T>): Promise<T> {
+    this.handIns += 1
+    try { return await work() } finally { this.handIns -= 1 }
   }
 
   private async activePlan(build: string): Promise<ActivationPlan | null> {
@@ -1209,7 +1278,9 @@ export class Hub {
         return
       case 'stop':
         reply({ type: 'ack' })
-        this.requestExit(typeof frame['reason'] === 'string' ? frame['reason'] : 'stop-requested')
+        // A build that became active asks this hub to make way: the same handover as its own.
+        if (frame['reason'] === 'build-superseded') void this.handOver('build-superseded')
+        else this.requestExit(typeof frame['reason'] === 'string' ? frame['reason'] : 'stop-requested')
         return
       default:
         reply({ type: 'refused', reason: 'unknown-request' })
@@ -1226,7 +1297,7 @@ export class Hub {
   private async ingress(socket: Socket, frame: Record<string, unknown>, launcherGo: () => Promise<boolean>): Promise<void> {
     const request = parseIngressRequest(frame)
     const reason = typeof request === 'string' ? request
-      : this.exiting ? 'hub-exiting' : ingressRefusal(request, this.ingressIdentity())
+      : this.exiting || this.handingOver ? 'hub-exiting' : ingressRefusal(request, this.ingressIdentity())
     if (reason !== null || typeof request === 'string') {
       const why = reason ?? 'malformed'
       this.ingressCounts.declined += 1
@@ -1327,7 +1398,8 @@ export class Hub {
   private async register(link: ChildLink, frame: Record<string, unknown>, socket: Socket): Promise<HubSession | string> {
     const registration = this.parseRegistration(frame)
     if (registration === null) return 'malformed-registration'
-    if (this.exiting) return 'hub-exiting'
+    // The child comes back to the next hub.
+    if (this.exiting || this.handingOver) return 'hub-exiting'
     // The peer must be this user's process, the child that said hello, and the
     // child (or the shell's child) of the harness it names, at that start.
     const peer = await (this.options.verifyPeer ?? nativePeerVerifier)(socket)
@@ -1372,6 +1444,7 @@ export class Hub {
           if (existing.endCandidate !== null) clearTimeout(existing.endCandidate.timer)
           existing.endCandidate = null
           existing.dormantSince = null
+          existing.dormantSinceWall = null
           this.logger.info('hub.session', { event: 'reopened', session: existing.id })
         }
         this.logger.info('hub.session', { event: 'reconnected', session: existing.id })
@@ -1497,8 +1570,9 @@ export class Hub {
     session.ending = reason
     if (session.endCandidate !== null) { clearTimeout(session.endCandidate.timer); session.endCandidate = null }
     session.dormantSince = null
+    session.dormantSinceWall = null
     const ended = !endsIncarnation(readSessionEndMarker(session.id, session.env), session.record)
-    void (async () => {
+    this.trackLocalEnd((async () => {
       // Best effort, never relied on: take back a wake Notifai queued that
       // the closed thread has not shown. The prompt hook blocks one that stays.
       if (session.harness === 'codex') await this.withdrawQueuedWakes(session.id, session.env)
@@ -1511,7 +1585,7 @@ export class Hub {
         }
       }
       this.drainRetirements()
-    })()
+    })())
     // The harness may outlive this session (`/clear`, `/resume`): its child
     // has nothing left to watch for it.
     session.child?.send({ type: 'bye' })
@@ -1557,15 +1631,17 @@ export class Hub {
       originator: evidence.originator, host: evidence.host, host_kind: evidence.hostKind, transcript: evidence.transcript })
     if (verdict.state === 'ended') { this.endSession(session, verdict.reason); return }
     session.dormantSince = this.clock.monotonic()
+    session.dormantSinceWall = this.clock.wall()
     if (child !== null && !child.closed) child.send({ type: 'bye' })
     session.lease.setPhase('uncertain', 'dormant-open')
-    session.writeStatus()
+    // Durable before anything else: the next hub adopts it from this record.
+    session.writeStatus(true)
     this.driver.poke()
     void this.dormantWake(session)
     this.touch()
   }
 
-  private readonly dormantWaking = new Set<string>()
+  readonly dormantWaking = new Set<string>()
 
   /**
    * An answer (or anything else staged) for a dormant conversation waits in
@@ -1574,7 +1650,7 @@ export class Hub {
    * the User opens it. Nothing starts or loads the thread before that.
    */
   async dormantWake(session: HubSession): Promise<void> {
-    if (session.dormantSince === null || session.ending !== null || this.dormantWaking.has(session.id)) return
+    if (session.dormantSince === null || session.ending !== null || this.handingOver || this.dormantWaking.has(session.id)) return
     const open = (): boolean => session.dormantSince !== null && session.ending === null &&
       !sessionHasEnded(session.id, session.env) && !session.harnessGone() && !session.transcriptGone()
     const lease = session.lease.generation === null ? null : { incarnation: session.lease.incarnation, generation: session.lease.generation }
@@ -1620,8 +1696,20 @@ export class Hub {
     this.touch()
   }
 
-  forgetEnded(session: EndedSession): void {
+  /**
+   * A swept session's `ended` report reached the service: record its lease
+   * exited, so no later hub start reports that end again.
+   */
+  endReported(session: EndedSession): void {
     this.ended.delete(session.id)
+    try {
+      const file = attendantStatusPath(session.id, this.env)
+      const status = JSON.parse(readFileSync(file, 'utf8')) as Record<string, unknown>
+      if (status['session_id'] === session.id && status['incarnation'] === session.lease.incarnation && status['phase'] !== 'exited') {
+        atomicWriteFileSync(file, `${JSON.stringify({ ...status, pid: process.pid, phase: 'exited', reason: 'reported-ended', generation: null,
+          accepts_messages: false, updated_at: this.clock.wall() })}\n`)
+      }
+    } catch { /* No status: nothing would report it again. */ }
     this.touch()
   }
 
@@ -1681,23 +1769,18 @@ export class Hub {
       const incarnation = readSessionIncarnation(sessionId, this.env)
       if (incarnation?.harness_process === undefined) continue
       const otherBoot = boot !== null && incarnation.boot !== undefined && incarnation.boot !== boot
-      if (!otherBoot && (this.childWatching(sessionId, incarnation.harness_process.pid) ||
-          processIdentityLiveness(incarnation.harness_process) !== 'gone')) continue
+      if (!otherBoot) {
+        // A live child reports its own session's end, to whichever hub runs.
+        if (childWatching(this.env, sessionId, incarnation.harness_process.pid)) continue
+        // Closed while no hub reported it: its harness is gone, it ran
+        // SessionEnd (the harness itself may live on: /clear, another
+        // conversation), or Codex archived its rollout.
+        const closed = processIdentityLiveness(incarnation.harness_process) === 'gone' ||
+          endsIncarnation(readSessionEndMarker(sessionId, this.env), incarnation) ||
+          recordedRolloutArchived(this.env, sessionId, status)
+        if (!closed) continue
+      }
       this.queueEnded(sessionId, incarnation.harness_process.pid, [])
-    }
-  }
-
-  /**
-   * Whether a session child still runs for this session and harness process:
-   * it writes `<pid> <harness pid>` into its lock, which it holds for life. A
-   * live child has its own kernel watch and will report the end itself.
-   */
-  private childWatching(sessionId: string, harnessPid: number): boolean {
-    try {
-      const [child, harness] = readFileSync(childLockPath(this.env, sessionId), 'utf8').trim().split(' ').map(Number)
-      return harness === harnessPid && child !== undefined && pidExists(child)
-    } catch {
-      return false
     }
   }
 
@@ -1731,14 +1814,27 @@ export class Hub {
    * Run a session's question submission or answer waiter in this process,
    * where today a detached process per question ran it. One per session and
    * purpose; a request while one runs reruns it once it ends.
+   *
+   * Each is recorded in `run/settlements` first and the record removed when
+   * it ends, so the next hub runs again whatever this one did not finish (a
+   * handover, a crash). A hub handing over only records it.
    */
-  settle(sessionId: string, harness: HookInstallableHarness, cwd: string | null, purpose: 'submission' | 'settlement'): void {
+  settle(sessionId: string, harness: HookInstallableHarness, cwd: string | null, purpose: 'submission' | 'settlement',
+    env: NodeJS.ProcessEnv = this.sessions.get(sessionId)?.env ?? this.env): void {
     const key = `${sessionId}\0${purpose}`
+    const record = path.join(hubSettlementsDir(this.env), `${fnv64Hex(key)}.json`)
+    try {
+      ensurePrivateDirectory(hubSettlementsDir(this.env))
+      atomicWriteFileSync(record, `${JSON.stringify({ session_id: sessionId, harness, cwd, purpose,
+        claude_config_dir: env['CLAUDE_CONFIG_DIR'] ?? null, codex_home: env['CODEX_HOME'] ?? null })}\n`)
+    } catch (err) {
+      this.logger.error('hub.session', { event: 'settlement-unrecorded', session: sessionId, message: err instanceof Error ? err.message : String(err) })
+    }
+    if (this.handingOver || this.exiting) return
     const running = this.settlements.get(key)
     if (running !== undefined) { running.rerun = true; return }
     const entry = { rerun: false }
     this.settlements.set(key, entry)
-    const env = this.sessions.get(sessionId)?.env ?? this.env
     void (async () => {
       do {
         entry.rerun = false
@@ -1748,15 +1844,106 @@ export class Hub {
         } catch (err) {
           this.logger.error('hub.session', { event: 'settlement-failed', session: sessionId, message: err instanceof Error ? err.message : String(err) })
         }
-      } while (entry.rerun && !this.exiting)
+      } while (entry.rerun && !this.exiting && !this.handingOver)
     })().finally(() => {
       this.settlements.delete(key)
+      // Stood down for a handover (or cut by an exit): the next hub runs it again.
+      if (!this.handingOver && !this.exiting) rmSync(record, { force: true })
       this.inputStaged(sessionId)
       this.touch()
     })
   }
 
+  /** The answer owners a previous hub recorded and did not finish. */
+  settlementRecords(): SettlementRecord[] {
+    const directory = hubSettlementsDir(this.env)
+    let names: string[]
+    try { names = readdirSync(directory).filter((name) => /^[0-9a-f]{16}\.json$/.test(name)) } catch { return [] }
+    const records: SettlementRecord[] = []
+    for (const name of names) {
+      const file = path.join(directory, name)
+      try {
+        const value = JSON.parse(readFileSync(file, 'utf8')) as Record<string, unknown>
+        const absolute = (key: string): string | null => typeof value[key] === 'string' && path.isAbsolute(value[key]) ? value[key] : null
+        const harness = value['harness'], sessionId = value['session_id'], purpose = value['purpose']
+        if (typeof sessionId !== 'string' || sessionId === '' || typeof harness !== 'string' || !isHookInstallableHarness(harness) ||
+            (purpose !== 'submission' && purpose !== 'settlement')) { rmSync(file, { force: true }); continue }
+        records.push({ file, sessionId, harness, cwd: absolute('cwd'), purpose, claudeConfigDir: absolute('claude_config_dir'), codexHome: absolute('codex_home') })
+      } catch { rmSync(file, { force: true }) }
+    }
+    return records
+  }
+
+  /**
+   * Take over what the previous hub held only in memory, whatever ended it:
+   * the Codex conversations no child will bring back (dormant-open, or whose
+   * end it was still deciding), and the answer owners it ran.
+   */
+  async restore(): Promise<void> {
+    for (const candidate of adoptionCandidates(this.env)) {
+      if (this.exiting || this.handingOver) return
+      if (candidate.record === null || this.sessions.has(candidate.sessionId) || this.ended.has(candidate.sessionId)) continue
+      await this.adopt(candidate.sessionId, candidate.record)
+    }
+    for (const record of this.settlementRecords()) {
+      if (this.exiting || this.handingOver) return
+      this.settle(record.sessionId, record.harness, record.cwd, record.purpose,
+        this.sessions.get(record.sessionId)?.env ?? this.sessionEnv({ claudeConfigDir: record.claudeConfigDir, codexHome: record.codexHome }))
+    }
+  }
+
+  /**
+   * Attend a Codex session a previous hub attended, without its child: take
+   * the claim, continue the lease at its generation, restart its answer
+   * owner when something is owed, and decide again, from fresh evidence, what
+   * the previous hub held: still dormant-open (and its answer queued in the
+   * thread), or closed (archived, its app quit), or to be classified now.
+   */
+  private async adopt(sessionId: string, record: AdoptionRecord): Promise<void> {
+    const registration: Registration = {
+      sessionId, harness: record.harness, harnessProcess: record.harness_process, boot: record.boot,
+      stamp: { wall: this.clock.wall(), mono: '0' }, hookEvent: 'Adopted', source: null, cwd: record.cwd,
+      transcriptPath: record.transcript_path, inboxSocket: null, inboxToken: false,
+      claudeConfigDir: record.claude_config_dir, codexHome: record.codex_home, harnessTicks: record.harness_ticks,
+    }
+    const env = this.sessionEnv(registration)
+    const incarnation = readSessionIncarnation(sessionId, env)
+    if (incarnation === null) return
+    const session = new HubSession(this, sessionId, record.harness, env, record.harness_process, incarnation, registration)
+    session.transcriptSeen = record.transcript_seen
+    session.transcriptGone()
+    session.claimToken = await this.takeClaim(session)
+    if (session.claimToken === null) return
+    if (this.sessions.has(sessionId) || this.exiting) {
+      // A child registered it meanwhile, or this hub is leaving.
+      releaseClaimFile(attendantClaimPath(sessionId, env), session.claimToken)
+      return
+    }
+    this.sessions.set(sessionId, session)
+    const now = this.clock.wall()
+    if (record.dormant_since !== null) {
+      session.dormantSinceWall = record.dormant_since
+      session.dormantSince = this.clock.monotonic() - Math.max(0, now - record.dormant_since)
+      session.lease.setPhase('uncertain', 'dormant-open')
+    } else session.lease.setPhase('uncertain', 'session-child-disconnected')
+    session.writeStatus(true)
+    this.logger.info('hub.session', { event: 'adopted', session: sessionId, harness: record.harness, dormant: record.dormant_since !== null })
+    const state = readSessionState(sessionId, env)
+    if (pendingList(state).length > 0 || state.accepted !== undefined) this.settle(sessionId, record.harness, record.cwd, 'settlement')
+    const probe = session.probe()
+    if (probe.state === 'ended') this.endSession(session, probe.reason)
+    else if (session.transcriptGone()) this.endSession(session, 'session-archived')
+    else if (session.harnessGone()) this.endSession(session, 'harness-gone')
+    else if (session.dormantSince !== null) void this.dormantWake(session)
+    // An app or IDE conversation whose end was still being decided: decide
+    // now, as its SessionEnd would have. Anything else stays attended,
+    // watched by the process table until a child comes back or its host goes.
+    else if (codexDormantSurface(readCodexThreadOriginator(record.transcript_path)) !== null) this.holdCodexEnd(session, record.transcript_path)
+    this.touch()
+  }
+
   private async runInternalHook(event: string, envelope: Record<string, unknown> | null, harness: HookInstallableHarness, env: NodeJS.ProcessEnv): Promise<number> {
+    if (this.options.runHook !== undefined) return this.options.runHook(event, envelope, harness, env)
     const { hookRunCommand } = await import('./commands-hook-run.js')
     const deps: CommandDeps = {
       ...this.deps,
@@ -1778,6 +1965,12 @@ export class Hub {
     delete deps.spawnRetirement
     delete deps.spawnHubHandover
     return hookRunCommand(deps, event, async () => envelope === null ? '' : JSON.stringify(envelope), harness)
+  }
+
+  /** Local end work a handover waits for. */
+  private trackLocalEnd(work: Promise<void>): void {
+    const tracked = work.catch(() => undefined).finally(() => { this.localEnds.delete(tracked) })
+    this.localEnds.add(tracked)
   }
 
   /** An answer was staged for a session: hand it in now rather than at a later tick. */
@@ -1901,7 +2094,7 @@ export class Hub {
 
   private busy(): boolean {
     // An update pass in progress (a download, a staged write) finishes first.
-    if (this.children > 0 || this.settlements.size > 0 || this.updating || this.ingressInFlight > 0) return true
+    if (this.children > 0 || this.settlements.size > 0 || this.updating || this.ingressInFlight > 0 || this.handingOver) return true
     // A dormant conversation still owed something: watch its app, so a quit expires it at once.
     const now = this.clock.monotonic()
     for (const session of this.sessions.values()) {
@@ -1925,8 +2118,11 @@ export class Hub {
       pid: process.pid,
       version: packageVersion(),
       build: buildIdentity()?.sourceDigest ?? null,
-      // Its presence tells a newer build that this hub hands itself over.
       runtime_build: this.runtimeBuild(),
+      // A newer build reads this: this hub hands itself over at once and the
+      // next hub takes over everything it holds, so nobody replaces it from outside.
+      seamless_handover: true,
+      handing_over: this.handingOver,
       handover: this.handoverState,
       ipc_version: HUB_IPC_VERSION,
       started_at: new Date(this.startedAt).toISOString(),

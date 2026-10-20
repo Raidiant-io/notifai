@@ -74,7 +74,9 @@ npx --yes @raidiant/notifai@latest init
 
 Requires Node.js 20.12 or newer for this launcher. Notifai installs its own native
 runtime and, on macOS and Linux, keeps it updated by itself (`notifai config set updates.automatic off --yes`
-turns that off); `notifai update` updates it on demand. npm updates/removes only the
+turns that off); `notifai update` updates it on demand. Updating never waits for
+or drops a waiting question: the shared hub restarts seamlessly, and only an
+update that would change Codex or Claude Code hooks waits. npm updates/removes only the
 launcher; `notifai uninstall` removes the runtime after its safety checks.
 Existing native versions and channels survive launcher changes. `@version`
 selects launcher code, not a command to replace an existing runtime.

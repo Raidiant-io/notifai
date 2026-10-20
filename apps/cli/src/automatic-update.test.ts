@@ -13,13 +13,13 @@ import {
   heldAutomaticUpdate,
   parseActivationPlan,
   readAutomaticUpdateRecord,
-  waitingSessionWork,
+  updateAutomaticUpdateRecord,
   type AutomaticUpdateHost,
 } from './automatic-update.js'
 import type { ActivationPlan } from './activation-plan.js'
 import { cachedAgentUpdateNotice } from './agent-update-notice.js'
 import { globalConfigPath } from './config.js'
-import { beginSessionIncarnation, lifecycleStamp, markSessionEnded, writeSessionState } from './hook-session-state.js'
+import { beginSessionIncarnation, lifecycleStamp, writeSessionState } from './hook-session-state.js'
 import { Installation } from './installation.js'
 import { nullLogger } from './logging.js'
 import { processStartTime } from './process-identity.js'
@@ -105,7 +105,6 @@ function host(f: Fixture, overrides: Partial<AutomaticUpdateHost> = {}) {
       const active = f.installation.inspect().active
       return active ? { build: active.active, version: f.installation.versionRelease(active.active).version } : null
     },
-    blockers: () => waitingSessionWork(f.env, NOW),
     childIpcVersions: () => [1],
     plan: async (launcher) => { calls.plan.push(launcher); return PLAN },
     resume: async (launcher, from) => { calls.resume.push([launcher, from]); return { ok: true } },
@@ -206,35 +205,17 @@ describe('automatic updates', () => {
     expect(install(f)).toMatchObject({ source: 'npm', channel: 'stable' })
   })
 
-  it('waits while a question waits in an open session, and not for a closed one', async () => {
+  it('activates while questions, answers and acknowledgements wait, because the next hub takes them over', async () => {
     const f = fixture()
     await f.publish('1.0.0'); await f.install('1.0.0', 'stable')
     await f.publish('1.1.0'); f.point('stable', '1.1.0')
-    const open = 'open-session', closed = 'closed-session'
+    const open = 'open-session'
     beginSessionIncarnation(open, f.env, { stamp: lifecycleStamp(), harnessProcess: { pid: process.pid, start: processStartTime(process.pid)! } })
-    writeSessionState(open, f.env, { harness: 'claude-code', pending: [{ request_id: 'req_open', question: 'Deploy?', asked_at: NOW }] })
-    expect(await attemptAutomaticUpdate(host(f).host)).toEqual({ outcome: 'waiting', version: '1.1.0', waiting_for: ['question-waiting'] })
-    expect(activeVersion(f)).toBe('1.0.0')
-    expect(automaticUpdateReport(f.env, { runsHere: true })).toMatchObject({ staged: '1.1.0', waiting_for: ['question-waiting'] })
-
-    // An answer on its way, or an acknowledgement owed, holds it back too.
-    writeSessionState(open, f.env, { harness: 'claude-code', acknowledgement_due: [{ request_id: 'req_open', recorded_at: NOW }] })
-    expect((await attemptAutomaticUpdate(host(f).host)).outcome).toBe('waiting')
-
-    // The open session is done; a closed one with a question left over does not count.
-    writeSessionState(open, f.env, { harness: 'claude-code' })
-    writeSessionState(closed, f.env, { harness: 'claude-code', pending: [{ request_id: 'req_closed', question: 'Old?', asked_at: NOW }] })
-    markSessionEnded(closed, f.env, NOW)
+    writeSessionState(open, f.env, { harness: 'claude-code', pending: [{ request_id: 'req_open', question: 'Deploy?', asked_at: NOW }],
+      acknowledgement_due: [{ request_id: 'req_done', recorded_at: NOW }] })
     expect(await attemptAutomaticUpdate(host(f).host)).toEqual({ outcome: 'activated', from: '1.0.0', to: '1.1.0' })
-  })
-
-  it('waits for the hub\'s own outstanding work', async () => {
-    const f = fixture()
-    await f.publish('1.0.0'); await f.install('1.0.0', 'stable')
-    await f.publish('1.1.0'); f.point('stable', '1.1.0')
-    expect(await attemptAutomaticUpdate(host(f, { blockers: () => ['session-input-pending'] }).host))
-      .toEqual({ outcome: 'waiting', version: '1.1.0', waiting_for: ['session-input-pending'] })
-    expect(activeVersion(f)).toBe('1.0.0')
+    expect(activeVersion(f)).toBe('1.1.0')
+    expect(automaticUpdateReport(f.env, { runsHere: true })).toMatchObject({ staged: null, waiting_for: [] })
   })
 
   it('keeps an update staged when it would change trusted hook definitions, and offers it to agents', async () => {
@@ -275,7 +256,7 @@ describe('automatic updates', () => {
     expect(activeVersion(f)).toBe('1.0.0')
   })
 
-  it('recovers an interrupted swap forward once nothing waits, and hands the hub over', async () => {
+  it('recovers an interrupted swap forward at the next pass, and hands the hub over', async () => {
     const f = fixture()
     await f.publish('1.0.0'); await f.install('1.0.0', 'stable')
     await f.publish('1.1.0'); f.point('stable', '1.1.0')
@@ -284,13 +265,10 @@ describe('automatic updates', () => {
     const crashed = await attemptAutomaticUpdate({ ...host(f).host, installation: () => interrupted, running: () => running })
     expect(crashed.outcome).toBe('failed')
     expect(install(f).pending).toBe(true)
-    // A question waits: the previous build keeps serving and the journal stays.
+    // A question waits; it does not hold the recovery back.
     const open = 'open-session'
     beginSessionIncarnation(open, f.env, { stamp: lifecycleStamp(), harnessProcess: { pid: process.pid, start: processStartTime(process.pid)! } })
     writeSessionState(open, f.env, { harness: 'claude-code', pending: [{ request_id: 'req_open', question: 'Deploy?', asked_at: NOW }] })
-    expect(await attemptAutomaticUpdate({ ...host(f).host, running: () => running })).toMatchObject({ outcome: 'waiting', waiting_for: ['question-waiting'] })
-    expect(install(f).pending).toBe(true)
-    writeSessionState(open, f.env, { harness: 'claude-code' })
     expect(await attemptAutomaticUpdate({ ...host(f).host, running: () => running })).toEqual({ outcome: 'activated', from: '1.0.0', to: '1.1.0' })
     expect(install(f)).toMatchObject({ pending: false, channel: 'stable' })
     expect(activeVersion(f)).toBe('1.1.0')
@@ -320,7 +298,9 @@ describe('automatic updates', () => {
     const f = fixture()
     await f.publish('1.0.0'); await f.install('1.0.0', 'stable')
     await f.publish('1.1.0'); f.point('stable', '1.1.0')
-    await attemptAutomaticUpdate(host(f, { blockers: () => ['question-waiting'] }).host)
+    // Held back by something that clears by itself (an installation change in progress).
+    updateAutomaticUpdateRecord(f.env, (record) => ({ record: { ...record, staged: { version: '1.1.0', build: 'b'.repeat(64), since: NOW },
+      waiting_for: ['installation-busy'] }, result: undefined }))
     expect(heldAutomaticUpdate(f.env, NOW + 7 * DAY - 1)).toBeNull()
     expect(heldAutomaticUpdate(f.env, NOW + 7 * DAY)).toMatchObject({ version: '1.1.0', reason: 'starved' })
     expect(cachedAgentUpdateNotice({ env: f.env, now: NOW + 7 * DAY, updateCommand: 'notifai update', automaticRunsHere: true }))
@@ -340,15 +320,5 @@ describe('activation plan parsing', () => {
     expect(parseActivationPlan('{"schema":1,"hub_ipc_versions":{"min":2,"max":1},"hook_changes":[]}')).toBeNull()
     expect(parseActivationPlan('{"schema":1,"hub_ipc_versions":{"min":1,"max":1},"hook_changes":[{"harness":"codex"}]}')).toBeNull()
     expect(parseActivationPlan('not json')).toBeNull()
-  })
-})
-
-describe('waiting session work', () => {
-  it('counts a session with no recorded harness only while its answer window could still be open', () => {
-    const root = mkdtempSync(path.join(os.tmpdir(), 'notifai-waiting-')); roots.push(root)
-    const env = { XDG_STATE_HOME: root }
-    writeSessionState('unknown-harness', env, { harness: 'codex', accepted: { request_id: 'req_a' } as never })
-    expect(waitingSessionWork(env, Date.now())).toEqual(['question-waiting'])
-    expect(waitingSessionWork(env, Date.now() + 73 * 3600 * 1000)).toEqual([])
   })
 })
