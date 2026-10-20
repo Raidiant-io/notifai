@@ -451,7 +451,8 @@ Answer Edits while its local writer is ready. It stores full message text in a
 private local delivery journal and queues a pointer-only followup. The exact
 pointer turn reads that text once, only while its native Gateway generation
 still matches. The journal discards the text after that turn claims it, after
-a generation change, or on Gateway restart. The agent acknowledges the
+a generation change, or on Gateway restart; a plugin reload hands it to the
+new plugin generation. The agent acknowledges the
 message after reading it. If a pointer reaches a turn without its full context,
 the pointer tells the agent to report the missing message and leave it
 unacknowledged. The User can send a new message if needed.
