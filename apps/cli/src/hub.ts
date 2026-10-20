@@ -117,6 +117,7 @@ import { claudeSocketLine, deliverIntoCodexThread } from './session-handoff.js'
 import { detachInputWakes, readInputWakes } from './session-input-wakes.js'
 import {
   hasSessionInputs,
+  inputWakeDeferred,
   inputWakeOverdue,
   reconcileSessionInputWakes,
   stageSessionMessages,
@@ -683,13 +684,15 @@ class HubSession implements AttendedSession {
     if (!this.notified || this.lease.generation === null || this.hub.clock.monotonic() < this.lease.pausedUntil) return
     const lease: DeliveryLease = { incarnation: this.lease.incarnation, generation: this.lease.generation }
     let pending = false
+    const state = readSessionState(this.id, this.env)
+    // A wake shown without its input handed in spaces out the next one.
+    if (inputWakeDeferred(state, this.hub.clock.wall())) return
     if (this.harness === 'claude-code') {
-      const state = readSessionState(this.id, this.env)
       pending = !claudePickerHolds(state) &&
         (!state.input_wake?.queued || (this.settledIdle() && inputWakeOverdue(state, this.hub.clock.wall()))) &&
         hasSessionInputs(this.id, this.env, null)
     } else {
-      pending = !readSessionState(this.id, this.env).input_wake?.queued && hasSessionInputs(this.id, this.env, lease) &&
+      pending = !state.input_wake?.queued && hasSessionInputs(this.id, this.env, lease) &&
         (this.codexObserver?.mayWake() ?? false)
     }
     if (!pending || this.lease.needsFresh) return

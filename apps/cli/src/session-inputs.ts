@@ -56,6 +56,35 @@ export function inputWakeOverdue(state: SessionState, now: number): boolean {
     wake.queued_at !== undefined && now - wake.queued_at >= LOST_WAKE_MS
 }
 
+/** The wait before the next wake after the first one shown without its input handed in. */
+export const INPUT_WAKE_BACKOFF_BASE_MS = 5_000
+/** The longest wait between wakes the agent is shown while input cannot be handed in. */
+export const INPUT_WAKE_BACKOFF_CAP_MS = 5 * 60_000
+
+/** How long the next wake waits after `count` wakes were shown with nothing handed in. */
+export function inputWakeBackoffMs(count: number): number {
+  return count < 1 ? 0 : Math.min(INPUT_WAKE_BACKOFF_CAP_MS, INPUT_WAKE_BACKOFF_BASE_MS * 2 ** Math.min(count - 1, 16))
+}
+
+/**
+ * A wake was shown and its input could not be handed in (a service error, an
+ * outage): waking again at once would spend a model turn per wake on the same
+ * failure. A wall clock that moved backwards defers nothing.
+ */
+export function inputWakeDeferred(state: SessionState, now: number): boolean {
+  const unanswered = state.input_wake_unanswered
+  if (unanswered === undefined) return false
+  const elapsed = now - unanswered.presented_at
+  return elapsed >= 0 && elapsed < inputWakeBackoffMs(unanswered.count)
+}
+
+function clearUnansweredWakes(state: SessionState): SessionState {
+  if (state.input_wake_unanswered === undefined) return state
+  const next = { ...state }
+  delete next.input_wake_unanswered
+  return next
+}
+
 /** Atomically coalesce native wakes until one actually reaches its consumer. */
 export async function wakeSessionInputs(
   sessionId: string, env: NodeJS.ProcessEnv, send: (text: string) => Promise<boolean>, log?: Logger,
@@ -69,10 +98,12 @@ export async function wakeSessionInputs(
   const lease = readAttendantLease(sessionId, env)
   let elected = false
   let replacement = false
+  let unanswered: SessionState['input_wake_unanswered']
   updateSessionState(sessionId, env, (state) => {
     // A refused lease needs fresh attendance, not another prompt to the agent.
     if (lease !== null && state.input_delivery_fenced?.incarnation === lease.incarnation &&
         state.input_delivery_fenced.generation === lease.generation) return state
+    if (inputWakeDeferred(state, now())) { unanswered = state.input_wake_unanswered; return state }
     if (state.input_wake?.incarnation === incarnation) {
       const lost = inputWakeOverdue(state, now()) && options.replaceLost?.() === true
       if (!lost && (state.input_wake.queued || processIdentityLiveness(state.input_wake.writer) !== 'gone')) return state
@@ -82,7 +113,9 @@ export async function wakeSessionInputs(
     return { ...state, input_wake: { incarnation, token, queued: false, writer, ...(replacement ? { replacement } : {}) } }
   })
   if (!elected) {
-    log?.debug('delivery.handoff', { route: 'input-wake', stage: 'coalesced', session: sessionId })
+    log?.debug('delivery.handoff', { route: 'input-wake', stage: unanswered === undefined ? 'coalesced' : 'backoff', session: sessionId,
+      ...(unanswered === undefined ? {} : { unanswered: unanswered.count,
+        retry_in_ms: unanswered.presented_at + inputWakeBackoffMs(unanswered.count) - now() }) })
     return
   }
   let sent = false
@@ -114,7 +147,11 @@ export function inputWakeToken(prompt: string | undefined): string | null {
   return matched !== null && prompt === sessionInputWake(matched[1]) ? matched[1]! : null
 }
 
-export function observeSessionInputWake(sessionId: string, env: NodeJS.ProcessEnv, prompt: string | undefined): void {
+/**
+ * A wake prompt reached the agent. It also counts as shown-but-unanswered
+ * until a drain hands input in, which is what spaces out the next wake.
+ */
+export function observeSessionInputWake(sessionId: string, env: NodeJS.ProcessEnv, prompt: string | undefined, now = Date.now()): void {
   if (prompt !== undefined) {
     const matched = /^Notifai wake ([0-9a-f-]{36})\. /.exec(prompt)
     if (matched !== null) {
@@ -122,10 +159,10 @@ export function observeSessionInputWake(sessionId: string, env: NodeJS.ProcessEn
       if (owned !== undefined) observeInputWake({ sessionId, env }, owned.token)
       // A coalesced wake is settled only by its own token: an older wake
       // arriving late must not clear the one still outstanding.
-      else if (inputWakeToken(prompt) !== null) updateSessionState(sessionId, env, (state) => {
-        if (state.input_wake?.token !== matched[1]) return state
-        const next = { ...state }
-        delete next.input_wake
+      else if (inputWakeToken(prompt) === null) return
+      updateSessionState(sessionId, env, (state) => {
+        const next = { ...state, input_wake_unanswered: { count: (state.input_wake_unanswered?.count ?? 0) + 1, presented_at: now } }
+        if (state.input_wake?.token === matched[1]) delete next.input_wake
         return next
       })
       return
@@ -133,6 +170,16 @@ export function observeSessionInputWake(sessionId: string, env: NodeJS.ProcessEn
   }
   if (prompt !== sessionInputWake()) return
   updateSessionState(sessionId, env, (state) => {
+    const next = { ...state, input_wake_unanswered: { count: (state.input_wake_unanswered?.count ?? 0) + 1, presented_at: now } }
+    delete next.input_wake
+    return next
+  })
+}
+
+/** An explicit `notifai receive`: any wake still queued is for input this reads now. */
+export function forgetQueuedInputWake(sessionId: string, env: NodeJS.ProcessEnv): void {
+  updateSessionState(sessionId, env, (state) => {
+    if (state.input_wake === undefined) return state
     const next = { ...state }
     delete next.input_wake
     return next
@@ -146,7 +193,8 @@ export function stageSessionAnswers(sessionId: string, env: NodeJS.ProcessEnv, a
     for (const answer of accepted.answers) {
       if (!waiting.some((entry) => entry.pending.request_id === answer.pending.request_id)) waiting.push(answer)
     }
-    const next = { ...state, waiting_answers: waiting }
+    // New input earns a prompt wake, whatever became of the earlier ones.
+    const next = { ...(waiting.length > (state.waiting_answers?.length ?? 0) ? clearUnansweredWakes(state) : state), waiting_answers: waiting }
     delete next.accepted
     return next
   })
@@ -189,10 +237,12 @@ export function stageSessionMessages(sessionId: string, env: NodeJS.ProcessEnv, 
   if (cached !== null && JSON.stringify(cached) === JSON.stringify(messages) &&
       readSessionState(sessionId, env).input_delivery_fenced === undefined) return
   updateSessionState(sessionId, env, state => {
+    const known = new Set(readSessionMessagesFile(sessionId, env).map(m => (m as { message_id?: unknown } | null)?.message_id))
     atomicWriteFileSync(messagesPath(sessionId, env), JSON.stringify({ session_id: sessionId, ...lease, messages }))
     // The resident stages only after a fresh authenticated attendance exchange.
     // This also rearms a temporarily expired lease renewed at the same generation.
-    const next = { ...state }
+    // A new message earns a prompt wake, whatever became of the earlier ones.
+    const next = messages.some(m => !known.has(m.message_id)) ? clearUnansweredWakes(state) : { ...state }
     delete next.input_delivery_fenced
     return next
   })
@@ -259,8 +309,11 @@ export async function wakeCodexSessionInputs(input: {
 }): Promise<boolean> {
   const owner = readSessionIncarnation(input.sessionId, input.env)
   if (owner === null || owner.incarnation !== input.lease.incarnation || !input.mayWrite()) return true
-  const generic = readSessionState(input.sessionId, input.env).input_wake
+  const state = readSessionState(input.sessionId, input.env)
+  const generic = state.input_wake
   if (generic?.incarnation === owner.incarnation && (generic.queued || processIdentityLiveness(generic.writer) !== 'gone')) return true
+  // A wake shown without its input handed in holds the queue wake as well.
+  if (inputWakeDeferred(state, Date.now())) return true
   const initial = pendingInputRevisionIds(input.sessionId, input.env, input.lease)
   if (initial === null || (initial.length === 0 && !readInputWakes(input).some(a => !['consumed', 'cancelled'].includes(a.phase)))) return true
   const control = await (input.connect ?? connectCodexQueue)(input.sessionId, input.env, performance.now() + 2_000)
@@ -526,8 +579,12 @@ async function drainSessionInputsOnce(input: {
 
 
 export async function drainSessionInputs(input: Parameters<typeof drainSessionInputsOnce>[0]): Promise<boolean> {
-  try { return await drainSessionInputsOnce(input) }
-  finally {
+  try {
+    const presented = await drainSessionInputsOnce(input)
+    // Input reached the agent: what remains is woken for promptly again.
+    if (presented) updateSessionState(input.sequencer.sessionId, input.sequencer.env, clearUnansweredWakes)
+    return presented
+  } finally {
     // Delivery bookkeeping has released its sequencer before native cleanup.
     await reconcileSessionInputWakes(input.sequencer.sessionId, input.sequencer.env)
       .catch(() => undefined)

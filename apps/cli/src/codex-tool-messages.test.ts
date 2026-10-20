@@ -5,7 +5,7 @@ import { refreshCodexInputActivity } from './codex-input-lifecycle.js'
 import { CodexControlNotSent } from './codex-native-control.js'
 import { type QueueControl } from './codex-queue-control.js'
 import { readInputWakes } from './session-input-wakes.js'
-import { stageSessionMessages, readSessionMessages, sessionInputRoute, sessionInputWake, observeSessionInputWake, drainSessionInputs, wakeSessionInputs, hasSessionInputs, wakeCodexSessionInputs, reconcileSessionInputWakes } from './session-inputs.js'
+import { INPUT_WAKE_BACKOFF_BASE_MS, inputWakeBackoffMs, stageSessionMessages, readSessionMessages, sessionInputRoute, sessionInputWake, observeSessionInputWake, drainSessionInputs, wakeSessionInputs, hasSessionInputs, wakeCodexSessionInputs, reconcileSessionInputWakes } from './session-inputs.js'
 import { clearAcknowledgementObligation } from './hook-acknowledgements.js'
 import { receiveSessionInputs, receiveCommand } from './commands-receive.js'
 import { buildProgram } from './program.js'
@@ -1173,9 +1173,10 @@ it.each([1, 2])('rearms a refused wake after fresh attendance at generation %i',
   const h = setup()
   h.stage([note('sm_first')])
   const wakes: string[] = []
-  const wake = () => wakeSessionInputs(SESSION, h.env, async text => { wakes.push(text); return true }, undefined, { unique: true })
+  let now = Date.now()
+  const wake = () => wakeSessionInputs(SESSION, h.env, async text => { wakes.push(text); return true }, undefined, { unique: true, now: () => now })
   await wake()
-  observeSessionInputWake(SESSION, h.env, wakes[0])
+  observeSessionInputWake(SESSION, h.env, wakes[0], now)
   vi.spyOn(h.sequencer.client, 'claimDeliveryAttempt').mockRejectedValueOnce(
     new ApiCallError(409, 'claim_refused', 'lease refused', null, { reason: 'generation_fenced' }))
   const drain = (lease = h.lease) => drainSessionInputs({ sequencer: h.sequencer, lease, mayWrite: () => true,
@@ -1186,6 +1187,10 @@ it.each([1, 2])('rearms a refused wake after fresh attendance at generation %i',
   const recovered = { ...h.lease, generation }
   writeAttendantStatus(SESSION, h.env, { ...recovered, phase: 'attending', activity: 'working', reason: null, accepts_messages: true, updated_at: Date.now() })
   stageSessionMessages(SESSION, h.env, recovered, [note('sm_first')])
+  // Fresh attendance rearms the wake once the shown one's backoff has passed.
+  await wake()
+  expect(wakes).toHaveLength(1)
+  now += INPUT_WAKE_BACKOFF_BASE_MS
   await wake()
   expect(wakes).toHaveLength(2)
   expect(await drain(recovered)).toBe(true)
@@ -1205,6 +1210,89 @@ it('does not rewrite the staged messages when an exchange brings nothing new', (
   stageSessionMessages(SESSION, h.env, h.lease, [note('sm_new')])
   expect(statSync(file).ino).not.toBe(before)
   expect(readSessionMessages(SESSION, h.env, h.lease).map((m) => m.message_id)).toEqual(['sm_new'])
+})
+
+describe('wakes after a drain that hands nothing in', () => {
+  // A service error or outage: every claim fails, so a shown wake hands nothing in.
+  const failing = (h: ReturnType<typeof setup>) => vi.spyOn(h.sequencer.client, 'claimDeliveryAttempt')
+    .mockRejectedValue(new ApiCallError(503, 'service_unavailable', 'outage'))
+  const harness = () => {
+    const h = setup()
+    let now = Date.now()
+    h.deps.now = () => now
+    const wakes: string[] = []
+    return { ...h, wakes, advance: (ms: number) => { now += ms },
+      wake: () => wakeSessionInputs(SESSION, h.env, async text => { wakes.push(text); return true }, undefined, { unique: true, now: () => now }),
+      // The agent is shown the latest wake; its prompt hook drains.
+      shown: () => hookRunCommand(h.deps, 'user-prompt-submit', async () => JSON.stringify({
+        session_id: SESSION, cwd: h.deps.cwd, hook_event_name: 'UserPromptSubmit', turn_id: 'turn-2', prompt: wakes.at(-1) }), 'codex') }
+  }
+
+  it('never wakes again at once, backs off up to a cap, and wakes promptly once input is handed in', async () => {
+    const h = harness()
+    h.stage([note('sm_stuck')])
+    const outage = failing(h)
+    await h.wake()
+    expect(h.wakes).toHaveLength(1)
+    const backoffs = [5_000, 10_000, 20_000, 40_000, 80_000, 160_000, 300_000, 300_000]
+    expect(backoffs.map((_, i) => inputWakeBackoffMs(i + 1))).toEqual(backoffs)
+    for (const [i, backoff] of backoffs.entries()) {
+      await h.shown()
+      expect(readSessionState(SESSION, h.env).input_wake_unanswered?.count).toBe(i + 1)
+      // The hub's next boundary, right after the failed drain, writes nothing.
+      await h.wake()
+      expect(h.wakes).toHaveLength(i + 1)
+      h.advance(backoff - 1)
+      await h.wake()
+      expect(h.wakes).toHaveLength(i + 1)
+      h.advance(1)
+      await h.wake()
+      expect(h.wakes).toHaveLength(i + 2)
+    }
+    expect(h.output.join('\n')).not.toContain('Read sm_stuck')
+
+    outage.mockRestore()
+    await h.shown()
+    expect(h.output.join('\n')).toContain('Read sm_stuck')
+    expect(readSessionState(SESSION, h.env).input_wake_unanswered).toBeUndefined()
+    // Input handed in resets the backoff: what waits next is woken for at once.
+    stageSessionMessages(SESSION, h.env, h.lease, [note('sm_stuck'), note('sm_after')])
+    await h.wake()
+    expect(h.wakes).toHaveLength(backoffs.length + 2)
+  })
+
+  it('wakes at once for new input while an earlier wake backs off', async () => {
+    const h = harness()
+    h.stage([note('sm_stuck')])
+    failing(h)
+    await h.wake()
+    await h.shown()
+    await h.shown()
+    await h.wake()
+    expect(h.wakes).toHaveLength(1)
+    h.stage([note('sm_stuck')])
+    await h.wake()
+    expect(h.wakes).toHaveLength(1)
+    h.stage([note('sm_stuck'), note('sm_new')])
+    expect(readSessionState(SESSION, h.env).input_wake_unanswered).toBeUndefined()
+    await h.wake()
+    expect(h.wakes).toHaveLength(2)
+  })
+
+  it('holds the Codex queue wake the same way', async () => {
+    const h = ownedWakeHarness(); h.stage([note('sm_queued')])
+    failing(h)
+    await h.schedule()
+    expect(h.adds()).toBe(1)
+    observeSessionInputWake(SESSION, h.env, h.wakes()[0]!.text)
+    expect(await drainSessionInputs({ sequencer: h.sequencer, lease: h.lease, mayWrite: () => true,
+      write: text => h.output.push(text) })).toBe(false)
+    await h.schedule()
+    expect(h.adds()).toBe(1)
+    h.stage([note('sm_queued'), note('sm_new')])
+    await h.schedule()
+    expect(h.adds()).toBe(2)
+  })
 })
 
 describe('Codex empty wakes', () => {

@@ -1099,7 +1099,7 @@ export async function hookRunCommand(
     // What this turn hands the agent itself, before any diagnostic notice.
     let handedStdout: string | undefined
     if (event === 'user-prompt-submit') {
-      if (envelope.session_id !== undefined) observeSessionInputWake(envelope.session_id, deps.env, envelope.prompt)
+      if (envelope.session_id !== undefined) observeSessionInputWake(envelope.session_id, deps.env, envelope.prompt, (deps.now ?? Date.now)())
       const notice = lifecycleEnabled() && harness !== undefined && harness !== 'grok'
         ? cachedIntegrationFaultNotice({ ...deps, cwd }, harness) : undefined
       // A scripted run (`claude -p`, an SDK script) of a conversation another
