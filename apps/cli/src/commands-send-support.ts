@@ -76,6 +76,13 @@ interface ReplyWaitOptions {
   afterSeq: number
   now?: (() => number) | undefined
   sleep?: ((milliseconds: number) => Promise<void>) | undefined
+  /**
+   * When the reply window was due to close (epoch ms), as the submission
+   * receipt said. A window that the service shows closing earlier, with no
+   * reply, was closed early (the User dismissed the question, or it was
+   * closed elsewhere): nothing more can arrive, so the wait ends there.
+   */
+  expiresAt?: number | undefined
 }
 
 interface ReplyWaitResult {
@@ -86,6 +93,18 @@ interface ReplyWaitResult {
    * may well have answered and we could not see it.
    */
   degraded: boolean
+  /** The reply window closed early with no reply: no answer will come. */
+  closed?: true
+}
+
+/**
+ * The window closed before it was due, with no reply. Compared with the
+ * service's own earlier value, never with this machine's clock.
+ */
+function closedEarly(response: ListRepliesResponse, dueAt: number | undefined): boolean {
+  if (response.replies.length > 0 || response.reply_expires_at === null || dueAt === undefined) return false
+  const expiresAt = Date.parse(response.reply_expires_at)
+  return Number.isFinite(expiresAt) && expiresAt < dueAt
 }
 
 /** Loop over server-capped long polls until a reply arrives or the caller's deadline passes. */
@@ -102,6 +121,7 @@ export async function waitForReply(
   let consecutiveTransientErrors = 0
   let firstPoll = true
   let confirmAtDeadline = false
+  let dueAt = options.expiresAt
 
   while (firstPoll || now() < deadline || confirmAtDeadline) {
     firstPoll = false
@@ -118,6 +138,11 @@ export async function waitForReply(
       lastTransientError = null
       consecutiveTransientErrors = 0
       if (response.replies.length > 0) return { response, timedOut: false, degraded: false }
+      if (closedEarly(response, dueAt)) return { response, timedOut: false, degraded: false, closed: true }
+      if (dueAt === undefined && response.reply_expires_at !== null) {
+        const expiresAt = Date.parse(response.reply_expires_at)
+        if (Number.isFinite(expiresAt)) dueAt = expiresAt
+      }
 
       // A server/proxy can return an empty snapshot before the requested hold
       // ends. Preserve the long-poll cadence instead of spinning on that path.

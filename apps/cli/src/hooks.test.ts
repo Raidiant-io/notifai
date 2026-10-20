@@ -8146,6 +8146,46 @@ describe('escalation waiter delivery seam', () => {
     expect(deliveredAt! - answerReadyAt).toBeLessThanOrEqual(5_000)
   })
 
+  it('retires a question the User dismissed as soon as the service shows it closed, and keeps waiting on the rest', async () => {
+    const h = harness([])
+    const sessionId = 'waiter-dismissed'
+    writeSessionState(sessionId, h.env, { last_prompt_at: AWAY, pending: [
+      { question: 'Dismissed?', request_id: 'req_dismissed', collapse_key: 'ck_dismissed', device_ids: ['dev_iphone'],
+        reply_deadline_at: NOW + 100_000, owner_deadline_at: NOW + 120_000 },
+      { question: 'Still open?', request_id: 'req_open', collapse_key: 'ck_open', device_ids: ['dev_iphone'],
+        reply_deadline_at: NOW + 100_000, owner_deadline_at: NOW + 120_000 },
+    ] })
+    const context = waiterContext(h)
+    const dueAt = new Map<string, number | undefined>()
+    let dismissedSeenAt: number | undefined
+    let retiredAt: number | undefined
+    context.waitForFirstReply = async (requestId, timeoutSeconds, expiresAt) => {
+      dueAt.set(requestId, expiresAt ?? dueAt.get(requestId))
+      if (requestId === 'req_dismissed') {
+        dismissedSeenAt ??= context.now()
+        return { replies: [], timedOut: false, closed: true }
+      }
+      if (retiredAt === undefined && !(readSessionState(sessionId, h.env).pending ?? []).some((entry) => entry.request_id === 'req_dismissed')) {
+        retiredAt = context.now()
+      }
+      h.advanceClock(timeoutSeconds * 1000)
+      return { replies: [], timedOut: true }
+    }
+    let delivered = false
+    await runEscalationWaiter(context, { sessionId, envelope: { session_id: sessionId },
+      route: { kind: 'hook-continuation', deliver: async () => { delivered = true; return { acknowledgement: 'stdout', stdout: '' } } },
+      processDeadlineAt: NOW + 120_000,
+    })
+    // The waiter knew when each window was due, and saw the dismissal at once.
+    expect(dueAt.get('req_dismissed')).toBe(NOW + 100_000)
+    expect(dismissedSeenAt).toBe(NOW)
+    // Retired as a window expiry would be, long before the other question's window ends, with nothing delivered.
+    expect(retiredAt).toBeDefined()
+    expect(retiredAt! - NOW).toBeLessThanOrEqual(30_000)
+    expect(h.recorder.closed[0]).toBe('req_dismissed')
+    expect(delivered).toBe(false)
+  })
+
   it('keeps an unrelated answer when another owned question is retired mid-poll', async () => {
     const h = harness([])
     const first: PendingQuestion = {

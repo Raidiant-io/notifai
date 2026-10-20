@@ -47,7 +47,13 @@ export type LeaseOutcome =
   | { kind: 'rotated' }
   | { kind: 'unknown-session' }
   /** A final report was answered (whatever the answer, it is done). */
-  | { kind: 'reported'; state: 'ended' | 'withdrawn' }
+  | { kind: 'reported'; state: 'ended' | 'withdrawn'; successor: string | null }
+  /** The service refused to continue this session under the named successor; a plain end is owed instead. */
+  | { kind: 'successor-refused'; successor: string }
+  /** The service holds this session as stopped; `messages` wait for it and cannot be claimed until it is back. */
+  | { kind: 'stopped'; messages: AttendanceMessage[] }
+  /** The service would not hold this session as stopped (another incarnation holds it, or none does). */
+  | { kind: 'stop-refused' }
 
 export class SessionLease {
   incarnation: string
@@ -67,6 +73,27 @@ export class SessionLease {
   messageRetries = 0
   /** A final report still owed to the service. */
   final: 'ended' | 'withdrawn' | null = null
+  /**
+   * With `final: 'ended'`: the Agent Session this one continues as (a fork
+   * that records it as its origin). Its questions, held answers and pending
+   * notes move there instead of expiring. Set only against a service that
+   * offers `session_stopped_hold`.
+   */
+  successor: string | null = null
+  /**
+   * The session stopped without the User closing it: against a service that
+   * offers `session_stopped_hold` it is reported `stopped` and stays in the
+   * exchange, so notes sent to it meanwhile are seen (and held by the service).
+   */
+  holdStopped = false
+  /** The service answered `stopped` for this incarnation: it holds the session as stopped. */
+  stopReported = false
+  /**
+   * It came back after a stop: a service that held it as stopped refuses
+   * this incarnation's renewal, which then means "acquire afresh" (a new
+   * incarnation), not "stop attending".
+   */
+  resumedFromStop = false
   /** Which credential the current lease was granted under. */
   credentialKey: string | null = null
   private rotated = false
@@ -104,6 +131,15 @@ export class SessionLease {
   }
 
   /**
+   * A `stopped` entry while the session is held as stopped, or null. Only the
+   * holder may report it, so it needs the generation this incarnation held.
+   */
+  stoppedEntry(sessionId: string): AttendanceBatchEntryT | null {
+    if (!this.holdStopped || this.final !== null || this.generation === null) return null
+    return { session_id: sessionId, incarnation: this.incarnation, generation: this.generation, state: 'stopped' }
+  }
+
+  /**
    * The owed final report, or null when there is nothing safe to report: an
    * `ended` is always worth sending (the service fences it), a withdrawal only
    * from a generation this hub held.
@@ -116,7 +152,8 @@ export class SessionLease {
       incarnation: this.incarnation,
       ...(this.generation === null ? {} : { generation: this.generation }),
       state: this.final,
-    }
+      ...(this.final === 'ended' && this.successor !== null ? { end_reason: 'continued' as const, successor_session_id: this.successor } : {}),
+    } as AttendanceBatchEntryT
   }
 
   /** Applies one exchange's result. `sentAt`/`sentEpoch` are taken when the request left. */
@@ -127,13 +164,39 @@ export class SessionLease {
     currentEpoch: number,
     credentialKey: string | null,
     sentFinal: boolean,
+    sentStopped = false,
   ): LeaseOutcome {
     if (sentFinal) {
+      const successor = this.successor
+      if (successor !== null && result.status === 'unknown_successor') {
+        // Nothing changed at the service: the session still owes a plain end.
+        this.successor = null
+        this.needsFresh = true
+        return { kind: 'successor-refused', successor }
+      }
       const state = this.final ?? 'ended'
       this.final = null
+      this.successor = null
+      this.holdStopped = false
       this.generation = null
       this.leaseEndsAt = null
-      return { kind: 'reported', state }
+      return { kind: 'reported', state, successor }
+    }
+    if (sentStopped) {
+      if (result.status === 'stopped') {
+        this.generation = result.generation
+        this.leaseEndsAt = null
+        this.cursor = result.message_cursor
+        this.credentialKey = credentialKey
+        this.needsFresh = false
+        this.stopReported = true
+        return { kind: 'stopped', messages: result.messages }
+      }
+      // Another incarnation holds the session, or the service has none: there
+      // is nothing for this one to hold. A later end is still worth sending.
+      this.holdStopped = false
+      this.needsFresh = true
+      return { kind: 'stop-refused' }
     }
     if (result.status === 'attending') {
       const acquired = this.generation !== result.generation
@@ -143,6 +206,7 @@ export class SessionLease {
       this.cursor = result.message_cursor
       this.credentialKey = credentialKey
       this.rotated = false
+      this.resumedFromStop = false
       this.needsFresh = false
       this.setPhase('attending')
       return { kind: 'attending', acquired, messages: result.messages }
@@ -161,6 +225,12 @@ export class SessionLease {
       return { kind: 'unknown-session' }
     }
     // withdrawn: the service holds no lease for this incarnation.
+    if (this.generation !== null && this.resumedFromStop) {
+      // The service held it as stopped: only a new incarnation takes it back.
+      this.resumedFromStop = false
+      this.generation = null
+      this.leaseEndsAt = null
+    }
     if (this.generation !== null) {
       this.generation = null
       this.leaseEndsAt = null

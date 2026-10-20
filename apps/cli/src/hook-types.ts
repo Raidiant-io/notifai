@@ -506,11 +506,17 @@ export interface HookContext {
   now: () => number
   /** Injected so tests advance a virtual clock instead of sleeping. */
   sleep: (milliseconds: number) => Promise<void>
-  /** Bounded wait for the first reply; injected so tests do not sleep. */
+  /**
+   * Bounded wait for the first reply; injected so tests do not sleep.
+   * `expiresAt` is when the question's window was due to close (epoch ms):
+   * `closed` says the service closed it earlier with no reply (the User
+   * dismissed it), so no answer can arrive.
+   */
   waitForFirstReply: (
     requestId: string,
     timeoutSeconds: number,
-  ) => Promise<{ replies: ReplyView[]; timedOut: boolean; degraded?: boolean }>
+    expiresAt?: number,
+  ) => Promise<{ replies: ReplyView[]; timedOut: boolean; degraded?: boolean; closed?: boolean }>
   /** The active harness selects the native continuation output adapter. */
   harness?: HookHarness
   /**

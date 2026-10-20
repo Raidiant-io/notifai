@@ -190,7 +190,10 @@ retain ordinary delivery and do not suppress the native form.
 Each `send --reply` fallback owns the complete answer window in its foreground
 process: keep it alive and set `--reply-timeout` equal to `--reply-window`.
 After a timeout, retain the request ID, inspect that original with `notifai
-replies` and `notifai status`, and never send a duplicate.
+replies` and `notifai status`, and never send a duplicate. A question you
+dismiss on a device ends like one whose window ran out: a waiting `send
+--reply` stops waiting (exit 3), and an `ask` question is retired, with no
+answer delivered.
 
 “Fails closed” means Notifai keeps the accepted answer in the Agent Session
 journal until an exact continuation path can prove ownership, rather than
@@ -467,12 +470,18 @@ A scripted run (`claude -p --resume`, an SDK script, `codex exec`) receives
 nothing. If the conversation is deleted or archived while stopped (a Codex
 rollout is found by its id in `sessions/` and `archived_sessions/`), or you
 quit the app it was stopped in, it closes as above; when its last window ends,
-it ends. A fork that names the stopped conversation (Codex records
-`forked_from_id`, Claude Code's `/branch` records `forkedFrom`) means it
-continues there: its questions expire, as they cannot follow it yet. A note
-cannot be sent to a stopped session yet; one the service accepted just before
-the stop is delivered if the session comes back within the hour. `notifai
-doctor` shows stopped sessions and whether shutdowns are seen.
+it ends, and stops accepting notes. A fork that names the stopped
+conversation (Codex records `forked_from_id`, Claude Code's `/branch` records
+`forkedFrom`) means it continues there. Where the service supports it, and
+the fork has already sent a notification, its questions, their answers and
+its notes move to the fork and arrive there; otherwise its questions expire.
+Where the service supports it, you can also send a note to a stopped
+session: it waits up to a day and is delivered when the conversation comes
+back. An answer still waiting when its question's window ends is not
+delivered, and your devices say so. Otherwise a note cannot be sent to a
+stopped session; one the service accepted just before the stop is delivered
+if the session comes back within the hour. `notifai doctor` shows stopped
+sessions and whether shutdowns are seen.
 
 **Session child and hub** (`attend`, Claude Code and Codex on macOS and Linux).
 The `attend` handler is a second, asynchronous handler on SessionStart,

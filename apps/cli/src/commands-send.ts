@@ -297,6 +297,7 @@ export async function sendCommand(
     replay: attempt.replay,
   })
   let receipt: SubmissionReceipt
+  const submittedAt = (deps.now ?? Date.now)()
   try {
     receipt = await authed.client.submit(
       { idempotency_key: idempotencyKey, draft: submissionDraft },
@@ -394,11 +395,13 @@ export async function sendCommand(
   }
 
   try {
+    const dueAt = replyWindowDue(receipt, submittedAt, submissionDraft.reply?.expires_in_seconds)
     const result = await waitForReply(authed.client, receipt.request_id, {
       timeoutSeconds: replyTimeout,
       afterSeq: 0,
       now: deps.now,
       sleep: deps.sleep,
+      ...(Number.isFinite(dueAt) ? { expiresAt: dueAt } : {}),
     })
     let response = result.response
     if (response.replies.length > 0 && !result.degraded) {
@@ -464,6 +467,12 @@ export async function sendCommand(
       deps.io.err(degradedWaitWarning(receipt.request_id))
       return EXIT.network
     }
+    if (result.closed === true) {
+      // Closed before it was due with no reply (the User dismissed it): no
+      // answer will come, so nothing waits any longer and nothing needs retiring.
+      deps.io.err(`No reply: the reply window for ${receipt.request_id} has closed, so no answer will come.`)
+      return EXIT.noReply
+    }
     if (result.timedOut) {
       deps.io.err(
         `No reply yet. Retrieve it with \`notifai replies ${receipt.request_id}\` or retire the question with ` +
@@ -501,6 +510,20 @@ export async function sendCommand(
     }
     return reportError(deps, err)
   }
+}
+
+/**
+ * When the reply window was due to close, for spotting one closed early.
+ * Normally the receipt's own deadline. A fresh receipt whose window already
+ * ends well before the window asked for was closed while the send waited for
+ * Companion Receipts (the User dismissed it at once): then the window asked
+ * for is the reference, measured from when the send started.
+ */
+function replyWindowDue(receipt: SubmissionReceipt, submittedAt: number, windowSeconds: number | undefined): number {
+  const due = receipt.reply_expires_at === null ? NaN : Date.parse(receipt.reply_expires_at)
+  if (!Number.isFinite(due) || receipt.replayed || windowSeconds === undefined) return due
+  const asked = submittedAt + windowSeconds * 1000
+  return due < asked - Math.min(60_000, (windowSeconds * 1000) / 2) ? asked : due
 }
 
 function emitSendWarnings(
@@ -693,7 +716,7 @@ export async function repliesCommand(
         }
         anyReplies ||= result.response.replies.length > 0
         if (result.degraded) degradedRequestIds.push(requestId)
-        allTimedOut &&= result.timedOut
+        allTimedOut &&= result.timedOut || result.closed === true
       } catch (err) {
         recordDegradedReplyWaits(deps, degradedRequestIds)
         return reportError(deps, err, { operation: 'reply_wait', request_id: requestId })

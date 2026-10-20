@@ -64,9 +64,10 @@ stopping it after 30 idle minutes, Orca losing a pane's terminal, and the
 machine shutting down or restarting. An answer given meanwhile waits in the
 conversation and arrives when it comes back (opened in the app, the next
 send in the chat, `codex resume`), possibly hours later: check that the work
-it answers still applies. A fork continues under a new id and leaves the
-stopped conversation's questions to expire. A `codex exec` run of it receives
-nothing.
+it answers still applies. Notes sent meanwhile wait and arrive the same way.
+A fork continues it under a new id: its questions and their answers move to
+the fork when the fork has already sent a notification and the service
+supports it, and expire otherwise. A `codex exec` run of it receives nothing.
 Pending notes and answers remain in Notifai until
 a trusted tool hook, prompt hook, or `notifai receive` drains a bounded batch.
 A late wake-up cannot repeat an acknowledged answer: it contains no answer

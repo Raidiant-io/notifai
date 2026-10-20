@@ -89,8 +89,63 @@ describe('hub session lease', () => {
     expect(lease.finalEntry(SESSION)).toEqual({ session_id: SESSION, incarnation: 'inc_aaaaaaaaaaaa', state: 'ended' })
     lease.generation = 4
     expect(lease.finalEntry(SESSION)).toMatchObject({ generation: 4, state: 'ended' })
-    expect(lease.apply({ status: 'withdrawn' }, 0, 0, 0, null, true)).toEqual({ kind: 'reported', state: 'ended' })
+    expect(lease.apply({ status: 'withdrawn' }, 0, 0, 0, null, true)).toEqual({ kind: 'reported', state: 'ended', successor: null })
     expect(lease.final).toBeNull()
+  })
+
+  it('reports a stop only from a held generation, keeps it, and reads what the service holds for it', () => {
+    const lease = new SessionLease('inc_aaaaaaaaaaaa', () => null)
+    lease.holdStopped = true
+    expect(lease.stoppedEntry(SESSION)).toBeNull()
+    lease.generation = 3
+    expect(lease.stoppedEntry(SESSION)).toEqual({ session_id: SESSION, incarnation: 'inc_aaaaaaaaaaaa', generation: 3, state: 'stopped' })
+    const note = { message_id: 'sm_note1', created_at: new Date().toISOString(), agent_acknowledgement_text_required: true, kind: 'note' as const, body: 'Use the staging DB' }
+    expect(lease.apply({ status: 'stopped', generation: 3, message_cursor: 'c2', messages: [note] }, 0, 0, 0, 'cred', false, true))
+      .toEqual({ kind: 'stopped', messages: [note] })
+    expect(lease).toMatchObject({ stopReported: true, needsFresh: false, generation: 3, cursor: 'c2' })
+    // An end still goes out first, and from the same holder.
+    lease.final = 'ended'
+    expect(lease.stoppedEntry(SESSION)).toBeNull()
+    expect(lease.finalEntry(SESSION)).toEqual({ session_id: SESSION, incarnation: 'inc_aaaaaaaaaaaa', generation: 3, state: 'ended' })
+  })
+
+  it('stops holding when the service will not keep it stopped for this incarnation', () => {
+    const lease = new SessionLease('inc_aaaaaaaaaaaa', () => null)
+    lease.generation = 2
+    lease.holdStopped = true
+    expect(lease.apply({ status: 'withdrawn' }, 0, 0, 0, null, false, true)).toEqual({ kind: 'stop-refused' })
+    expect(lease.stoppedEntry(SESSION)).toBeNull()
+    expect(lease.generation).toBe(2)
+  })
+
+  it('continues an ended session under its successor, and owes a plain end when the service refuses the successor', () => {
+    const lease = new SessionLease('inc_aaaaaaaaaaaa', () => null)
+    lease.generation = 2
+    lease.final = 'ended'
+    lease.successor = 'fork-session'
+    expect(lease.finalEntry(SESSION)).toEqual({ session_id: SESSION, incarnation: 'inc_aaaaaaaaaaaa', generation: 2, state: 'ended',
+      end_reason: 'continued', successor_session_id: 'fork-session' })
+    expect(lease.apply({ status: 'unknown_successor' } as never, 0, 0, 0, null, true)).toEqual({ kind: 'successor-refused', successor: 'fork-session' })
+    expect(lease.finalEntry(SESSION)).toEqual({ session_id: SESSION, incarnation: 'inc_aaaaaaaaaaaa', generation: 2, state: 'ended' })
+    lease.successor = 'fork-session'
+    expect(lease.apply({ status: 'withdrawn' }, 0, 0, 0, null, true)).toEqual({ kind: 'reported', state: 'ended', successor: 'fork-session' })
+  })
+
+  it('takes a session back after a stop the service held under a new incarnation, and renews as before where it held none', () => {
+    const rotations: string[] = []
+    const lease = new SessionLease('inc_aaaaaaaaaaaa', (expected) => { rotations.push(expected); return 'inc_bbbbbbbbbbbb' })
+    lease.generation = 2
+    lease.resumedFromStop = true
+    // The service held it as stopped: the renewal is refused, and a fresh incarnation acquires.
+    expect(lease.apply({ status: 'withdrawn' }, 0, 0, 0, null, false)).toEqual({ kind: 'rotated' })
+    expect(lease).toMatchObject({ incarnation: 'inc_bbbbbbbbbbbb', generation: null, resumedFromStop: false })
+    expect(lease.apply(attending(3), 0, 0, 0, null, false)).toMatchObject({ kind: 'attending', acquired: true })
+    // A service that only saw the lease lapse renews it as it always did.
+    const lapsed = new SessionLease('inc_cccccccccccc', () => 'inc_dddddddddddd')
+    lapsed.generation = 2
+    lapsed.resumedFromStop = true
+    expect(lapsed.apply(attending(2), 0, 0, 0, null, false)).toMatchObject({ kind: 'attending', acquired: false })
+    expect(lapsed).toMatchObject({ incarnation: 'inc_cccccccccccc', resumedFromStop: false })
   })
 })
 
@@ -249,6 +304,77 @@ describe('hub exchange driver', () => {
     expect(calls).toBeLessThanOrEqual(3)
     expect(service.batches.at(-1)!.body.sessions.map((s) => s.session_id)).toEqual([SESSION])
     expect(sessions[1]!.outcomes).toContain('owned')
+    driver.stop()
+    service.release()
+    await running
+  })
+
+  it('keeps a stopped session in the batch only where the service holds stopped sessions', async () => {
+    const note = { message_id: 'sm_held1', created_at: new Date().toISOString(), agent_acknowledgement_text_required: true, kind: 'note' as const, body: 'Later' }
+    const holding = fakeService({
+      capabilities: ['session_attendance', 'session_attendance_batch', 'session_stopped_hold'],
+      batch: (body) => ({ message_cursor: 'c2', sessions: body.sessions.map((entry) => entry.state === 'stopped'
+        ? { session_id: entry.session_id, status: 'stopped', generation: entry.generation!, message_cursor: 'c2', messages: [note] }
+        : { session_id: entry.session_id, status: 'attending', generation: 1, lease_remaining_ms: 120_000, message_cursor: 'c2', messages: [] }) }),
+    })
+    const stopped = new FakeSession(SESSION)
+    stopped.ready = false
+    stopped.lease.generation = 4
+    stopped.lease.holdStopped = true
+    const driver = new ExchangeDriver(driverHost(holding, [stopped]))
+    const running = driver.run()
+    await until(() => holding.batches.length >= 2)
+    expect(holding.batches[0]!.body.sessions).toEqual([{ session_id: SESSION, incarnation: stopped.lease.incarnation, generation: 4, state: 'stopped' }])
+    expect(holding.batches[0]!.waitSeconds).toBe(0)
+    // Held from then on: it waits for a note, never spins.
+    expect(holding.batches[1]!.waitSeconds).toBe(25)
+    expect(stopped.outcomes).toContain('stopped')
+    expect(stopped.lease.stopReported).toBe(true)
+    driver.stop()
+    holding.release()
+    await running
+
+    // A service without it: nothing about the stop is sent, as before.
+    const plain = fakeService()
+    const other = new FakeSession(SESSION)
+    other.ready = false
+    other.lease.generation = 4
+    other.lease.holdStopped = true
+    const second = new ExchangeDriver(driverHost(plain, [other]))
+    const secondRun = second.run()
+    await new Promise((resolve) => setTimeout(resolve, 150))
+    expect(plain.batches).toEqual([])
+    expect(second.offers('session_stopped_hold')).toBe(false)
+    second.stop()
+    plain.release()
+    await secondRun
+  })
+
+  it('asks the service again what it offers when it refuses a stopped entry', async () => {
+    let capabilities = ['session_attendance', 'session_attendance_batch', 'session_stopped_hold']
+    let compatibilityCalls = 0
+    // A service rolled back past stopped sessions while this hub ran.
+    const service = fakeService({ batch: (body) => {
+      if (!body.sessions.some((entry) => entry.state === 'stopped')) return { message_cursor: 'c1', sessions: [] }
+      capabilities = ['session_attendance', 'session_attendance_batch']
+      return new ApiCallError(422, 'invalid_request', 'body/sessions/0/state must be equal to one of the allowed values')
+    } })
+    const compatibility = service.client.compatibility.bind(service.client)
+    const client = new Proxy(service.client, { get(target, property) {
+      if (property === 'compatibility') return async () => { compatibilityCalls += 1; return { ...(await compatibility()), server_capabilities: capabilities } }
+      return (target as unknown as Record<string | symbol, unknown>)[property]
+    } }) as ApiClient
+    const stopped = new FakeSession(SESSION)
+    stopped.ready = false
+    stopped.lease.generation = 4
+    stopped.lease.holdStopped = true
+    const driver = new ExchangeDriver(driverHost(service, [stopped], { client: () => client }))
+    const running = driver.run()
+    await until(() => service.batches.length >= 1)
+    await until(() => compatibilityCalls >= 2)
+    await new Promise((resolve) => setTimeout(resolve, 100))
+    expect(service.batches).toHaveLength(1)
+    expect(driver.offers('session_stopped_hold')).toBe(false)
     driver.stop()
     service.release()
     await running
@@ -1943,6 +2069,8 @@ describe('hub: conversations stopped by their app or the machine', () => {
     expect(renewals(service)).toBe(quiet)
     expect(ended(service)).toBe(false)
     expect(readSessionEndMarker(SESSION, env)).toBeNull()
+    // A service that does not hold stopped sessions is told nothing new: the lease just lapses.
+    expect(service.batches.flatMap((batch) => batch.body.sessions).some((entry) => entry.state === 'stopped')).toBe(false)
     // The User answers on the phone meanwhile.
     answered(env)
     hub.inputStaged(SESSION)
@@ -1961,6 +2089,109 @@ describe('hub: conversations stopped by their app or the machine', () => {
     expect(ended(service)).toBe(false)
     second.socket.destroy()
     first.socket.destroy()
+    await stopHub(hub, service, done)
+  })
+
+  it('where the service holds stopped sessions: reports the stop, sees held notes, drops an answer at its window, and comes back under a new incarnation', async () => {
+    const env = hubEnv()
+    recordSessionNotified(SESSION, env, Date.now())
+    const app = await standIn()
+    const host = await standIn()
+    describeHost(env, host)
+    const desktop = desktopApp(env)
+    const note = { message_id: 'sm_r7b_note', created_at: new Date().toISOString(), agent_acknowledgement_text_required: true, kind: 'note' as const, body: 'Use staging' }
+    // The service: one row, stopped by its holder; only a new incarnation takes it back.
+    let row: { incarnation: string | null; generation: number; state: 'running' | 'stopped' | 'ended' } = { incarnation: null, generation: 0, state: 'running' }
+    const service = fakeService({
+      capabilities: ['session_attendance', 'session_attendance_batch', 'session_stopped_hold'],
+      batch: (body) => ({ message_cursor: 'c1', sessions: body.sessions.map((entry) => {
+        if (entry.state === 'stopped') {
+          if (entry.incarnation !== row.incarnation) return { session_id: entry.session_id, status: 'withdrawn' as const }
+          row.state = 'stopped'
+          return { session_id: entry.session_id, status: 'stopped' as const, generation: row.generation, message_cursor: 'c1', messages: [note] }
+        }
+        if (entry.state === 'running') {
+          if (entry.incarnation === row.incarnation && row.state !== 'running') return { session_id: entry.session_id, status: 'withdrawn' as const }
+          if (entry.incarnation !== row.incarnation) row = { incarnation: entry.incarnation, generation: row.generation + 1, state: 'running' }
+          return { session_id: entry.session_id, status: 'attending' as const, generation: row.generation, lease_remaining_ms: 120_000, message_cursor: 'c1', messages: [] }
+        }
+        row.state = 'ended'
+        return { session_id: entry.session_id, status: 'withdrawn' as const }
+      }) }),
+    })
+    const peers = new Map<number, PeerCredentials>()
+    const { hub, done } = startHub(env, service, peers, memoryStore(), 50, { endConfirmMs: 200 }, { claudeDesktop: desktop, powerWatch: false, runHook: noHook })
+    await hubListening(env)
+    const first = await writerChild(env, peers, 900420, host, { entrypoint: 'claude-desktop', transcript_path: transcript(env) }, app)
+    await until(() => renewals(service) >= 1)
+    const firstIncarnation = readSessionIncarnation(SESSION, env)!.incarnation
+    // A question whose window ends soon, answered on the phone just before.
+    question(env, Date.now() + 1_500)
+    answered(env)
+    logPause(desktop.log)
+    expect(await end(env, first, host)).toEqual({ type: 'ok', held: true })
+    await until(() => hub.sessions.get(SESSION)?.stopped?.cause === 'app', 5_000)
+    // The stop is reported from the held generation, and the note sent meanwhile is seen, not claimed.
+    await until(() => (hub.sessions.get(SESSION)?.held.length ?? 0) === 1, 5_000)
+    const stops = service.batches.flatMap((batch) => batch.body.sessions).filter((entry) => entry.state === 'stopped')
+    expect(stops[0]).toEqual({ session_id: SESSION, incarnation: firstIncarnation, generation: 1, state: 'stopped' })
+    expect(row.state).toBe('stopped')
+    expect(readSessionState(SESSION, env).waiting_answers).toHaveLength(1)
+    // The answer's window ends while it is stopped: it goes here too, so it is never handed in later.
+    await until(() => (readSessionState(SESSION, env).waiting_answers ?? []).length === 0, 5_000)
+    expect(readSessionState(SESSION, env).acknowledgement_due ?? []).toEqual([])
+    // The held note still keeps it: stopped, not ended.
+    expect(hub.sessions.get(SESSION)?.stopped).not.toBeNull()
+    expect(ended(service)).toBe(false)
+    // The app reopens it: the service refuses the old incarnation, a new one acquires.
+    const respawned = await standIn()
+    describeHost(env, respawned)
+    const second = await writerChild(env, peers, 900421, respawned, { entrypoint: 'claude-desktop', source: 'resume' }, app)
+    expect(second.frames[0]).toEqual({ type: 'registered', session_id: SESSION })
+    await until(() => row.state === 'running' && row.incarnation !== firstIncarnation, 5_000)
+    expect(row.generation).toBe(2)
+    expect(readSessionIncarnation(SESSION, env)!.incarnation).toBe(row.incarnation)
+    await until(() => hub.sessions.get(SESSION)?.lease.phase === 'attending', 5_000)
+    await new Promise((resolve) => setTimeout(resolve, 300))
+    // Nothing was handed in: the only answer was dropped at its window.
+    expect(second.writes).toBe(0)
+    expect(ended(service)).toBe(false)
+    second.socket.destroy()
+    first.socket.destroy()
+    await stopHub(hub, service, done)
+  })
+
+  it('ends a stopped conversation once its last window passes, from the generation that stopped it', async () => {
+    const env = hubEnv()
+    recordSessionNotified(SESSION, env, Date.now())
+    const app = await standIn()
+    const host = await standIn()
+    describeHost(env, host)
+    const desktop = desktopApp(env)
+    const service = fakeService({
+      capabilities: ['session_attendance', 'session_attendance_batch', 'session_stopped_hold'],
+      batch: (body) => ({ message_cursor: 'c1', sessions: body.sessions.map((entry) => entry.state === 'stopped'
+        ? { session_id: entry.session_id, status: 'stopped' as const, generation: 1, message_cursor: 'c1', messages: [] }
+        : entry.state === 'running'
+          ? { session_id: entry.session_id, status: 'attending' as const, generation: 1, lease_remaining_ms: 120_000, message_cursor: 'c1', messages: [] }
+          : { session_id: entry.session_id, status: 'withdrawn' as const }) }),
+    })
+    const peers = new Map<number, PeerCredentials>()
+    const { hub, done } = startHub(env, service, peers, memoryStore(), 50, { endConfirmMs: 150 }, { claudeDesktop: desktop, powerWatch: false, runHook: noHook })
+    await hubListening(env)
+    const child = await writerChild(env, peers, 900430, host, { entrypoint: 'claude-desktop', transcript_path: transcript(env) }, app)
+    await until(() => renewals(service) >= 1)
+    const incarnation = readSessionIncarnation(SESSION, env)!.incarnation
+    question(env, Date.now() + 1_200)
+    logPause(desktop.log)
+    await end(env, child, host)
+    await until(() => service.batches.some((batch) => batch.body.sessions.some((entry) => entry.state === 'stopped')), 5_000)
+    expect(ended(service)).toBe(false)
+    // The question's window passes: the session ends, so it no longer accepts notes.
+    await until(() => ended(service), 5_000)
+    const end_ = service.batches.flatMap((batch) => batch.body.sessions).find((entry) => entry.state === 'ended')
+    expect(end_).toEqual({ session_id: SESSION, incarnation, generation: 1, state: 'ended' })
+    child.socket.destroy()
     await stopHub(hub, service, done)
   })
 
@@ -2691,7 +2922,65 @@ describe('hub: Codex conversations stopped by their app or the machine, Orca pan
     const fork = await codexChild(env, peers, 900721, forkHost, rollout(env, OTHER, 'codex-tui', SESSION), { source: 'startup' }, undefined, OTHER)
     expect(fork.frames[0]).toEqual({ type: 'registered', session_id: OTHER })
     await until(() => ended(service), 5_000)
+    // A service that cannot move questions is asked for a plain end, as before.
+    expect(service.batches.flatMap((batch) => batch.body.sessions).find((entry) => entry.state === 'ended')).not.toHaveProperty('end_reason')
     fork.socket.destroy()
     await stopHub(hub, service, done)
+  })
+
+  it('continues a stopped Codex thread under its fork where the service can move its questions, and ends it as before when it cannot', async () => {
+    for (const variant of ['moved', 'refused'] as const) {
+      const env = hubEnv()
+      recordSessionNotified(SESSION, env, Date.now())
+      // The fork already notified, so the service knows it.
+      recordSessionNotified(OTHER, env, Date.now())
+      const transcript = rollout(env, SESSION, 'Codex Desktop')
+      const server = await standIn()
+      const service = fakeService({
+        capabilities: ['session_attendance', 'session_attendance_batch', 'session_stopped_hold'],
+        batch: (body) => ({ message_cursor: 'c1', sessions: body.sessions.map((entry) => {
+          if (entry.state === 'stopped') return { session_id: entry.session_id, status: 'stopped' as const, generation: entry.generation!, message_cursor: 'c1', messages: [] }
+          if (entry.state === 'running') {
+            return { session_id: entry.session_id, status: 'attending' as const, generation: entry.generation ?? 1, lease_remaining_ms: 120_000, message_cursor: 'c1', messages: [] }
+          }
+          if (entry.state === 'ended' && 'end_reason' in entry && entry.end_reason === 'continued' && variant === 'refused') {
+            return { session_id: entry.session_id, status: 'unknown_successor' as const }
+          }
+          return { session_id: entry.session_id, status: 'withdrawn' as const }
+        }) }),
+      })
+      const peers = new Map<number, PeerCredentials>()
+      const { hub, done } = startHub(env, service, peers, memoryStore(), 100, { endConfirmMs: 150, codexHostKind: () => 'app-server',
+        wake: queueing([]) }, { powerWatch: false, runHook: noHook })
+      await hubListening(env)
+      const child = await codexChild(env, peers, 900730, server, transcript)
+      await until(() => renewals(service) >= 1)
+      question(env)
+      await requestHub(env, { type: 'session-end-candidate', session_id: SESSION, transcript_path: transcript, harness_pid: server.pid })
+      child.socket.destroy()
+      await until(() => hub.sessions.get(SESSION)?.stopped?.cause === 'app', 5_000)
+      await until(() => service.batches.some((batch) => batch.body.sessions.some((entry) => entry.state === 'stopped')), 5_000)
+      const forkHost = await standIn()
+      const fork = await codexChild(env, peers, 900731, forkHost, rollout(env, OTHER, 'codex-tui', SESSION), { source: 'startup' }, undefined, OTHER)
+      expect(fork.frames[0]).toEqual({ type: 'registered', session_id: OTHER })
+      await until(() => ended(service), 5_000)
+      const ends = service.batches.flatMap((batch) => batch.body.sessions).filter((entry) => entry.session_id === SESSION && entry.state === 'ended')
+      expect(ends[0]).toMatchObject({ state: 'ended', generation: 1, end_reason: 'continued', successor_session_id: OTHER })
+      if (variant === 'moved') {
+        // The question is the fork's to collect now; nothing of it expired here.
+        await until(() => readSessionEndMarker(SESSION, env) !== null, 5_000)
+        expect(readSessionState(OTHER, env).pending?.map((entry) => entry.request_id)).toEqual(['req_1111'])
+        expect(readSessionState(SESSION, env).pending ?? []).toEqual([])
+        expect(ends).toHaveLength(1)
+      } else {
+        // The service does not know the fork: a plain end follows, and the question expires with the session.
+        await until(() => service.batches.flatMap((batch) => batch.body.sessions).filter((entry) =>
+          entry.session_id === SESSION && entry.state === 'ended' && !('end_reason' in entry)).length === 1, 5_000)
+        await until(() => readSessionEndMarker(SESSION, env) !== null, 5_000)
+        expect(readSessionState(OTHER, env).pending ?? []).toEqual([])
+      }
+      fork.socket.destroy()
+      await stopHub(hub, service, done)
+    }
   })
 })

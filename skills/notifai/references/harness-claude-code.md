@@ -37,8 +37,11 @@ questions open for their window: the desktop app pausing a conversation it
 still lists, an Orca chat stopping it after 30 idle minutes, Orca losing a
 pane's terminal, and the machine shutting down or restarting. An answer given meanwhile arrives when
 the conversation comes back (the app reopening it, `claude --resume`),
-possibly hours later: check that the work it answers still applies. A
-scripted `claude -p --resume` of it receives nothing.
+possibly hours later: check that the work it answers still applies. Notes
+sent meanwhile wait and arrive the same way. A `/branch` of it continues it
+under a new id: its questions and their answers move to the branch when the
+branch has already sent a notification and the service supports it, and
+expire otherwise. A scripted `claude -p --resume` of it receives nothing.
 
 The inbox is a socket on macOS and Linux from Claude Code 2.1.224, and a
 named pipe on Windows from 2.1.234. On an older Claude Code the answer is
