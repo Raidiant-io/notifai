@@ -32,7 +32,12 @@ its terminal, or replacing it there with `/clear` or another conversation's
 once elsewhere (`/desktop`, the desktop app reopening it, a resume in another
 terminal), its questions stay open and their answers follow it. Open in two
 places at once, it receives answers and notes in the most recently opened one
-only; closing one leaves the other.
+only; closing one leaves the other. Two stops keep its questions open for
+their window: the desktop app pausing a conversation it still lists, and the
+machine shutting down or restarting. An answer given meanwhile arrives when
+the conversation comes back (the app reopening it, `claude --resume`),
+possibly hours later: check that the work it answers still applies. A
+scripted `claude -p --resume` of it receives nothing.
 
 The inbox is a socket on macOS and Linux from Claude Code 2.1.224, and a
 named pipe on Windows from 2.1.234. On an older Claude Code the answer is

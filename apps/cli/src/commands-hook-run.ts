@@ -21,9 +21,10 @@ import {
   type CommandDeps,
 } from './commands-core.js'
 import { claudeHookSourcePid, claudeSessionPid } from './commands-harness-context.js'
+import { claudePlaceOf, claudePlaceSignals, placeReceives } from './session-place.js'
 import { attendHook, recordCodexTurnStart, reportCodexSessionEnded } from './commands-hook-attend.js'
 import { hubSupported } from './hub-ipc.js'
-import { holdSessionEnd, hubAttendsSession, notifyHubSessionEnded } from './hub-client.js'
+import { holdSessionEnd, hubAttendsSession, notifyHubSessionEnded, shutdownUnderway } from './hub-client.js'
 import { waitForReply } from './commands-send-support.js'
 import { loadConfig, type CliConfig } from './config.js'
 import { withFileLock } from './file-lock.js'
@@ -928,6 +929,14 @@ export async function hookRunCommand(
       logger.info('hook.end', { hook: event, decided: false, outcome: 'held-for-confirmation' })
       return EXIT.ok
     }
+    if (sessionEnd && harness === 'claude-code' && envelope.session_id !== undefined && hubSupported(deps.hookPlatform ?? process.platform) &&
+        shutdownUnderway(deps.env, now())) {
+      // The machine is going down and its hub may already be gone: the next
+      // hub decides (stopped by the machine, or closed), never this hook.
+      start({ cwd, stop_hook_active: envelope.stop_hook_active ?? null })
+      logger.info('hook.end', { hook: event, decided: false, outcome: 'held-for-shutdown' })
+      return EXIT.ok
+    }
     if (sessionEnd) {
       // Codex gives SessionEnd one second total. Do every durable cleanup write
       // before lifecycle diagnostics: a busy log must never preserve
@@ -1093,16 +1102,21 @@ export async function hookRunCommand(
       if (envelope.session_id !== undefined) observeSessionInputWake(envelope.session_id, deps.env, envelope.prompt)
       const notice = lifecycleEnabled() && harness !== undefined && harness !== 'grok'
         ? cachedIntegrationFaultNotice({ ...deps, cwd }, harness) : undefined
+      // A scripted run (`claude -p`, an SDK script) of a conversation another
+      // process hosts is not where the User is: nothing held for it is handed in here.
+      const elsewhere = harness === 'claude-code' && envelope.session_id !== undefined &&
+        claudeRunElsewhere(envelope.session_id, deps.env, claudeHookSourcePid(deps.env, deps.hookPlatform ?? process.platform))
       // Claude wakes carry a token; Codex prompts with one keep their own path.
-      outcome = envelope.session_id !== undefined && (envelope.prompt === sessionInputWake() ||
+      outcome = elsewhere ? { notes: [], log: { stage: 'scripted-run-receives-nothing' } }
+        : envelope.session_id !== undefined && (envelope.prompt === sessionInputWake() ||
           (harness === 'claude-code' && inputWakeToken(envelope.prompt) !== null))
-        ? { notes: [], log: { stage: 'input-wake-observed' } }
-        : await handleUserPromptSubmit(ctx, envelope)
+          ? { notes: [], log: { stage: 'input-wake-observed' } }
+          : await handleUserPromptSubmit(ctx, envelope)
       handedStdout = outcome.stdout
       if (notice !== undefined) outcome.stdout = appendIntegrationContext(outcome.stdout, notice, harness, 'UserPromptSubmit')
       // A device answer returned through a picker that Claude Code never took
       // is still owed to the agent; this prompt carries it.
-      if (harness === 'claude-code' && envelope.session_id !== undefined && envelope.agent_id === undefined) {
+      if (harness === 'claude-code' && envelope.session_id !== undefined && envelope.agent_id === undefined && !elsewhere) {
         const owed = takeOwedClaudePickerAnswer(envelope.session_id, deps.env)
         if (owed !== null) outcome.stdout = appendIntegrationContext(outcome.stdout, owed, harness, 'UserPromptSubmit')
       }
@@ -1113,7 +1127,10 @@ export async function hookRunCommand(
         const { sweepAbandonedOpencodeForms } = await import('./opencode-question.js')
         await sweepAbandonedOpencodeForms(deps, { timeoutMs: budgets.serviceRequestMs, limit: 2 })
       }
-      outcome = await handleStop(
+      // A scripted run's turn end collects no answer meant for the place the conversation is in.
+      const scriptedElsewhere = event === 'stop' && harness === 'claude-code' && envelope.session_id !== undefined &&
+        claudeRunElsewhere(envelope.session_id, deps.env, claudeHookSourcePid(deps.env, deps.hookPlatform ?? process.platform))
+      outcome = scriptedElsewhere ? { notes: [], log: { stage: 'scripted-run-receives-nothing' } } : await handleStop(
         ctx,
         envelope,
         processDeadlineAt,
@@ -1300,6 +1317,18 @@ function codexWakeHasInput(deps: CommandDeps, sessionId: string): boolean {
   if (owner === undefined || owner.pid !== declaredHookSourcePid(deps)) return false
   const lease = readAttendantLease(sessionId, deps.env) ?? readAttendantEndingLease(sessionId, deps.env)
   return hasSessionInputs(sessionId, deps.env, lease)
+}
+
+/**
+ * A Claude Code prompt in a place that receives nothing held for the
+ * conversation (a scripted run, an unknown entrypoint) while another process
+ * hosts it: its own questions still work, but answers and notes wait for the
+ * place the conversation is in.
+ */
+export function claudeRunElsewhere(sessionId: string, env: NodeJS.ProcessEnv, sourcePid: number | undefined): boolean {
+  if (placeReceives(claudePlaceOf(claudePlaceSignals(env)))) return false
+  const host = readSessionIncarnation(sessionId, env)?.harness_process
+  return host !== undefined && host.pid !== sourcePid
 }
 
 /** Stable harness parent propagated by the managed adapter across child tools. */

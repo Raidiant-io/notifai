@@ -1771,6 +1771,29 @@ describe('SessionEnd hook', () => {
     } finally { await hub.close() }
   })
 
+  it('leaves a Claude Code conversation\'s end to the next hub while the machine is going down and no hub answers', async () => {
+    for (const age of [60_000, 31 * 60_000]) {
+      const env = { ...hubEnv(), NOTIFAI_HOOK_SOURCE_PID: String(HARNESS.pid) }
+      beginSessionIncarnation(SESSION, env, { stamp: lifecycleStamp(), harnessProcess: HARNESS })
+      updateSessionState(SESSION, env, (state) => ({ ...state, harness: 'claude-code', pending: [{ question: 'Deploy?', summary: 'Deploy?' } as never] }))
+      ensurePrivateDirectory(path.dirname(hubSocketPath(env)))
+      writeFileSync(path.join(path.dirname(hubLockPath(env)), 'shutdown.json'), JSON.stringify({ boot: 'b', since: Date.now() - age, name: 'x' }))
+      const deps: CommandDeps = {
+        io: { out: () => undefined, err: () => undefined, confirm: async () => false, openUrl: () => undefined },
+        store: memoryStore(), env, cwd: '/tmp', logger: nullLogger(), hookPlatform: 'darwin',
+      }
+      await hookRunCommand(deps, 'session-end', async () => JSON.stringify({ session_id: SESSION, cwd: '/tmp',
+        hook_event_name: 'SessionEnd', reason: 'other' }), 'claude-code')
+      if (age < 30 * 60_000) {
+        expect(readSessionEndMarker(SESSION, env)).toBeNull()
+        expect(readSessionState(SESSION, env).pending).toHaveLength(1)
+      } else {
+        // A shutdown noted long ago and never cleared is no reason to hold anything.
+        expect(readSessionEndMarker(SESSION, env)).not.toBeNull()
+      }
+    }
+  })
+
   it('ends it at once when no hub holds it', async () => {
     for (const originator of ['Codex Desktop', 'codex-tui']) {
       const env = hubEnv()
@@ -1781,6 +1804,465 @@ describe('SessionEnd hook', () => {
         expect(readSessionEndMarker(SESSION, env)).not.toBeNull()
         expect(readSessionState(SESSION, env).pending ?? []).toEqual([])
       } finally { await hub.close() }
+    }
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Stopped, not closed: the Claude desktop app's own pause, the machine going down
+// ---------------------------------------------------------------------------
+
+describe('hub: conversations stopped by their app or the machine', () => {
+  interface StandIn { pid: number; start: string; process: ChildProcess }
+  const standIns: ChildProcess[] = []
+  afterEach(() => { for (const proc of standIns.splice(0)) proc.kill('SIGKILL') })
+  // The answer owners are the question waiters' own tests; here the hub's decisions are.
+  const noHook = async (): Promise<number> => 0
+
+  async function standIn(): Promise<StandIn> {
+    const proc = spawn('sleep', ['60'], { stdio: 'ignore' })
+    standIns.push(proc)
+    await until(() => processStartTime(proc.pid!) !== null)
+    return { pid: proc.pid!, start: processStartTime(proc.pid!)!, process: proc }
+  }
+
+  function describeHost(env: NodeJS.ProcessEnv, host: StandIn): void {
+    writeFileSync(path.join(claudeDescriptorDir(env), `${host.pid}.json`), JSON.stringify({
+      pid: host.pid, sessionId: SESSION, cwd: '/tmp', startedAt: Date.now(), procStart: host.start, version: '2.1.304', peerProtocol: 1,
+      messagingSocketPath: `/tmp/b3hub-${host.pid}.sock`, status: 'idle',
+    }))
+  }
+
+  /** The conversation's transcript, where Claude Code keeps it. */
+  function transcript(env: NodeJS.ProcessEnv): string {
+    const directory = path.join(env['CLAUDE_CONFIG_DIR']!, 'projects', '-tmp')
+    mkdirSync(directory, { recursive: true })
+    const file = path.join(directory, `${SESSION}.jsonl`)
+    writeFileSync(file, '{}\n')
+    return file
+  }
+
+  /** The desktop app's own records: its session (`local_*.json`) and its log. */
+  function desktopApp(env: NodeJS.ProcessEnv, archived = false): { sessions: string; log: string } {
+    const root = path.join(env['XDG_STATE_HOME']!, '..', 'desktop')
+    const sessions = path.join(root, 'claude-code-sessions')
+    mkdirSync(path.join(sessions, 'acct', 'org'), { recursive: true })
+    writeFileSync(path.join(sessions, 'acct', 'org', 'local_r2-app.json'), JSON.stringify({ sessionId: 'local_r2-app', cliSessionId: SESSION, isArchived: archived }))
+    writeFileSync(path.join(root, 'main.log'), '')
+    return { sessions, log: path.join(root, 'main.log') }
+  }
+
+  function logPause(log: string): void {
+    const now = new Date()
+    const pad = (n: number): string => String(n).padStart(2, '0')
+    const stamp = `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())} ${pad(now.getHours())}:${pad(now.getMinutes())}:${pad(now.getSeconds())}`
+    writeFileSync(log, `${stamp} [info] [CCD] Pausing session local_r2-app (governor_evict)\n`, { flag: 'a' })
+  }
+
+  async function writerChild(env: NodeJS.ProcessEnv, peers: Map<number, PeerCredentials>, childPid: number, host: StandIn,
+    overrides: Record<string, unknown> = {}, app?: StandIn): Promise<FakeChild & { writes: number }> {
+    const child = await registered(env, SESSION, childPid, peerOf(childPid, { pid: host.pid, comm: 'claude', start: host.start },
+      app === undefined ? undefined : { pid: app.pid, comm: 'Claude', start: app.start }), peers,
+    { harness_pid: host.pid, harness_start: host.start, stamp_wall: Date.now(), entrypoint: 'cli', ...overrides }) as FakeChild & { writes: number }
+    child.writes = 0
+    const done = new Set<unknown>()
+    const answer = (): void => {
+      for (const frame of child.frames) {
+        if (frame['type'] !== 'write' || done.has(frame['id'])) continue
+        done.add(frame['id'])
+        child.writes += 1
+        child.send({ type: 'written', id: frame['id'], result: 'ok' })
+      }
+    }
+    child.socket.on('data', answer)
+    // A write can arrive with the registration itself (a stopped conversation's answer).
+    answer()
+    return child
+  }
+
+  const ended = (service: FakeService): boolean => service.batches.some((batch) => batch.body.sessions.some((entry) => entry.state === 'ended'))
+  const renewals = (service: FakeService): number => service.batches.flatMap((batch) => batch.body.sessions)
+    .filter((entry) => entry.session_id === SESSION && entry.state === 'running').length
+  const status = (env: NodeJS.ProcessEnv): Record<string, unknown> => JSON.parse(readFileSync(attendantStatusPath(SESSION, env), 'utf8')) as Record<string, unknown>
+  const question = (env: NodeJS.ProcessEnv, deadline?: number): void => updateSessionState(SESSION, env, (state) => ({ ...state,
+    pending: [{ question: 'Deploy?', summary: 'Deploy?', request_id: 'req_r2', collapse_key: 'ck_r2', device_ids: ['dev_r2'],
+      ...(deadline === undefined ? {} : { reply_deadline_at: deadline }) } as never] }))
+  /** The User answered on the phone while the conversation was stopped: the hub's answer owner staged it. */
+  const answered = (env: NodeJS.ProcessEnv): void => updateSessionState(SESSION, env, (state) => {
+    const pending = state.pending![0]!
+    const reply = { reply_id: 'rpl_r2', seq: 1, delivery_id: 'del_r2', device_id: 'dev_r2', device_name: 'Phone', text: 'Yes',
+      answers: [], source: null, created_at: new Date().toISOString() }
+    return { ...state, pending: [], waiting_answers: [{ pending, reply, replies: [reply], agent_acknowledgement_required: true, delivery_claim: true } as never],
+      acknowledgement_due: [{ request_id: 'req_r2', recorded_at: Date.now(), text_required: true }] }
+  })
+  const end = (env: NodeJS.ProcessEnv, child: FakeChild, host: StandIn): Promise<Record<string, unknown> | null> => {
+    const held = requestHub(env, { type: 'session-end-candidate', session_id: SESSION, harness_pid: host.pid })
+    host.process.kill('SIGKILL')
+    child.send({ type: 'ended', session_id: SESSION, harness_pid: host.pid, reason: 'harness-gone' })
+    return held
+  }
+  async function stopHub(hub: Hub, service: FakeService, done: Promise<number>): Promise<void> {
+    let exited = false
+    void done.then(() => { exited = true })
+    hub.requestExit('test')
+    while (!exited) { service.release(); await new Promise((resolve) => setTimeout(resolve, 20)) }
+  }
+
+  it('keeps a conversation the desktop app paused, renews nothing, and hands the answer in where the app reopens it', async () => {
+    const env = hubEnv()
+    recordSessionNotified(SESSION, env, Date.now())
+    const app = await standIn()
+    const host = await standIn()
+    describeHost(env, host)
+    const desktop = desktopApp(env)
+    const service = fakeService()
+    const peers = new Map<number, PeerCredentials>()
+    const { hub, done } = startHub(env, service, peers, memoryStore(), 100, { endConfirmMs: 200 }, { claudeDesktop: desktop, powerWatch: false, runHook: noHook })
+    await hubListening(env)
+    const first = await writerChild(env, peers, 900400, host, { entrypoint: 'claude-desktop', transcript_path: transcript(env) }, app)
+    expect(first.frames[0]).toEqual({ type: 'registered', session_id: SESSION })
+    await until(() => renewals(service) >= 1)
+    question(env)
+    const incarnation = readSessionIncarnation(SESSION, env)!
+    // The app pauses it: its log says so, then the process goes (SessionEnd `other`).
+    logPause(desktop.log)
+    expect(await end(env, first, host)).toEqual({ type: 'ok', held: true })
+    await until(() => hub.sessions.get(SESSION)?.stopped !== null && hub.sessions.get(SESSION)?.stopped !== undefined, 5_000)
+    expect(hub.sessions.get(SESSION)?.stopped?.cause).toBe('app')
+    expect(status(env)).toMatchObject({ phase: 'exited', reason: 'stopped', generation: 1, accepts_messages: false })
+    expect((status(env)['adoption'] as Record<string, unknown>)['stopped']).toMatchObject({ cause: 'app' })
+    const quiet = renewals(service)
+    await new Promise((resolve) => setTimeout(resolve, 600))
+    service.release()
+    expect(renewals(service)).toBe(quiet)
+    expect(ended(service)).toBe(false)
+    expect(readSessionEndMarker(SESSION, env)).toBeNull()
+    // The User answers on the phone meanwhile.
+    answered(env)
+    hub.inputStaged(SESSION)
+    // The app reopens it: a new process, `--resume` of the same id.
+    const respawned = await standIn()
+    describeHost(env, respawned)
+    const second = await writerChild(env, peers, 900401, respawned, { entrypoint: 'claude-desktop', source: 'resume' }, app)
+    expect(second.frames[0]).toEqual({ type: 'registered', session_id: SESSION })
+    expect(hub.sessions.get(SESSION)?.stopped).toBeNull()
+    expect(readSessionIncarnation(SESSION, env)).toMatchObject({ key: incarnation.key, incarnation: incarnation.incarnation,
+      harness_process: { pid: respawned.pid } })
+    // The answer goes in once, through the new place.
+    await until(() => second.writes === 1, 5_000)
+    await new Promise((resolve) => setTimeout(resolve, 300))
+    expect(second.writes).toBe(1)
+    expect(ended(service)).toBe(false)
+    second.socket.destroy()
+    first.socket.destroy()
+    await stopHub(hub, service, done)
+  })
+
+  it('expires a desktop conversation stopped without the app\'s pause line (the Stop button), or archived', async () => {
+    for (const variant of ['no-line', 'archived'] as const) {
+      const env = hubEnv()
+      recordSessionNotified(SESSION, env, Date.now())
+      const app = await standIn()
+      const host = await standIn()
+      describeHost(env, host)
+      const desktop = desktopApp(env, variant === 'archived')
+      const service = fakeService()
+      const peers = new Map<number, PeerCredentials>()
+      const { hub, done } = startHub(env, service, peers, memoryStore(), 100, { endConfirmMs: 150 }, { claudeDesktop: desktop, powerWatch: false, runHook: noHook })
+      await hubListening(env)
+      const child = await writerChild(env, peers, 900410, host, { entrypoint: 'claude-desktop', transcript_path: transcript(env) }, app)
+      await until(() => renewals(service) >= 1)
+      question(env)
+      if (variant === 'archived') logPause(desktop.log)
+      await end(env, child, host)
+      await until(() => ended(service), 5_000)
+      await until(() => (readSessionState(SESSION, env).pending ?? []).length === 0)
+      expect(readSessionEndMarker(SESSION, env)).not.toBeNull()
+      child.socket.destroy()
+      await stopHub(hub, service, done)
+    }
+  })
+
+  it('expires a terminal close after the confirmation even with the desktop app\'s records present (only the app pauses)', async () => {
+    const env = hubEnv()
+    recordSessionNotified(SESSION, env, Date.now())
+    const host = await standIn()
+    describeHost(env, host)
+    const desktop = desktopApp(env)
+    logPause(desktop.log)
+    const service = fakeService()
+    const peers = new Map<number, PeerCredentials>()
+    const { hub, done } = startHub(env, service, peers, memoryStore(), 100, { endConfirmMs: 150 }, { claudeDesktop: desktop, powerWatch: false, runHook: noHook })
+    await hubListening(env)
+    const child = await writerChild(env, peers, 900420, host, { transcript_path: transcript(env) })
+    await until(() => renewals(service) >= 1)
+    question(env)
+    await end(env, child, host)
+    await until(() => ended(service), 5_000)
+    expect(hub.sessions.get(SESSION)).toBeUndefined()
+    child.socket.destroy()
+    await stopHub(hub, service, done)
+  })
+
+  it('holds every end while the machine shuts down; the next boot keeps the conversation and delivers at its resume', async () => {
+    const env = hubEnv()
+    recordSessionNotified(SESSION, env, Date.now())
+    const host = await standIn()
+    describeHost(env, host)
+    const service = fakeService()
+    const peers = new Map<number, PeerCredentials>()
+    let post: ((event: { kind: 'shutdown' | 'cancelled' | 'other'; name: string }) => void) | null = null
+    const powerWatch = (onEvent: typeof post & {}): ReturnType<NonNullable<Exclude<HubOptions['powerWatch'], false>>> => {
+      post = onEvent
+      return { state: () => ({ source: 'loginwindow', unavailable: null }), persisted: () => undefined, stop: () => undefined }
+    }
+    const first = startHub(env, service, peers, memoryStore(), 100, { endConfirmMs: 150 }, { powerWatch, claudeDesktop: null, runHook: noHook })
+    await hubListening(env)
+    const child = await writerChild(env, peers, 900430, host, { transcript_path: transcript(env) })
+    await until(() => renewals(service) >= 1)
+    question(env)
+    // The shutdown begins; then the terminal app quits and its window hangs up on `claude`.
+    post!({ kind: 'shutdown', name: 'com.apple.system.loginwindow.shutdownInitiated' })
+    await end(env, child, host)
+    await new Promise((resolve) => setTimeout(resolve, 700))
+    service.release()
+    expect(ended(service)).toBe(false)
+    expect(first.hub.sessions.get(SESSION)?.endCandidate).not.toBeNull()
+    expect(readSessionEndMarker(SESSION, env)).toBeNull()
+    // launchd terminates the hub: the end stays undecided, on disk.
+    child.socket.destroy()
+    await stopHub(first.hub, service, first.done)
+    expect(ended(service)).toBe(false)
+    // The next boot.
+    const second = startHub(env, service, peers, memoryStore(), 100, { endConfirmMs: 150 }, { powerWatch: false, claudeDesktop: null, runHook: noHook,
+      bootIdentity: () => 'next-boot' })
+    await hubListening(env)
+    await until(() => second.hub.sessions.get(SESSION)?.stopped?.cause === 'machine', 5_000)
+    expect(status(env)).toMatchObject({ phase: 'exited', reason: 'stopped' })
+    expect(readSessionState(SESSION, env).pending).toHaveLength(1)
+    answered(env)
+    // `claude --resume` in a terminal after the reboot.
+    const resumed = await standIn()
+    describeHost(env, resumed)
+    const back = await writerChild(env, peers, 900431, resumed, { source: 'resume', boot: 'next-boot' })
+    expect(back.frames[0]).toEqual({ type: 'registered', session_id: SESSION })
+    await until(() => back.writes === 1, 5_000)
+    expect(ended(service)).toBe(false)
+    expect(readSessionIncarnation(SESSION, env)?.harness_process?.pid).toBe(resumed.pid)
+    back.socket.destroy()
+    await stopHub(second.hub, service, second.done)
+  })
+
+  it('lets a shutdown that never goes on lapse, and then decides held ends as usual', async () => {
+    const env = hubEnv()
+    recordSessionNotified(SESSION, env, Date.now())
+    const host = await standIn()
+    describeHost(env, host)
+    const service = fakeService()
+    const peers = new Map<number, PeerCredentials>()
+    let post: ((event: { kind: 'shutdown' | 'cancelled' | 'other'; name: string }) => void) | null = null
+    const powerWatch = (onEvent: typeof post & {}): ReturnType<NonNullable<Exclude<HubOptions['powerWatch'], false>>> => {
+      post = onEvent
+      return { state: () => ({ source: 'loginwindow', unavailable: null }), persisted: () => undefined, stop: () => undefined }
+    }
+    let shift = 0
+    const clock = { monotonic: () => performance.now(), wall: () => Date.now() + shift }
+    const { hub, done } = startHub(env, service, peers, memoryStore(), 100, { endConfirmMs: 150 }, { powerWatch, claudeDesktop: null, runHook: noHook, clock })
+    await hubListening(env)
+    const child = await writerChild(env, peers, 900445, host, { transcript_path: transcript(env) })
+    await until(() => renewals(service) >= 1)
+    question(env)
+    post!({ kind: 'shutdown', name: 'com.apple.system.loginwindow.shutdownInitiated' })
+    await end(env, child, host)
+    await new Promise((resolve) => setTimeout(resolve, 400))
+    expect(ended(service)).toBe(false)
+    // An app holds the shutdown up and nobody answers its dialog for half an hour.
+    shift = 31 * 60_000
+    await until(() => ended(service), 5_000)
+    child.socket.destroy()
+    await stopHub(hub, service, done)
+  })
+
+  it('decides a held end as usual when the shutdown is cancelled', async () => {
+    const env = hubEnv()
+    recordSessionNotified(SESSION, env, Date.now())
+    const host = await standIn()
+    describeHost(env, host)
+    const service = fakeService()
+    const peers = new Map<number, PeerCredentials>()
+    let post: ((event: { kind: 'shutdown' | 'cancelled' | 'other'; name: string }) => void) | null = null
+    const powerWatch = (onEvent: typeof post & {}): ReturnType<NonNullable<Exclude<HubOptions['powerWatch'], false>>> => {
+      post = onEvent
+      return { state: () => ({ source: 'loginwindow', unavailable: null }), persisted: () => undefined, stop: () => undefined }
+    }
+    const { hub, done } = startHub(env, service, peers, memoryStore(), 100, { endConfirmMs: 150 }, { powerWatch, claudeDesktop: null, runHook: noHook })
+    await hubListening(env)
+    const child = await writerChild(env, peers, 900440, host, { transcript_path: transcript(env) })
+    await until(() => renewals(service) >= 1)
+    question(env)
+    post!({ kind: 'shutdown', name: 'com.apple.system.loginwindow.shutdownInitiated' })
+    await end(env, child, host)
+    await new Promise((resolve) => setTimeout(resolve, 500))
+    expect(ended(service)).toBe(false)
+    expect(existsSync(path.join(path.dirname(hubLockPath(env)), 'shutdown.json'))).toBe(true)
+    post!({ kind: 'cancelled', name: 'com.apple.system.loginwindow.logoutcancelled' })
+    await until(() => ended(service), 5_000)
+    expect(existsSync(path.join(path.dirname(hubLockPath(env)), 'shutdown.json'))).toBe(false)
+    child.socket.destroy()
+    await stopHub(hub, service, done)
+  })
+
+  it('keeps a conversation the machine took down with no end at all (power loss), and ends one with nothing waiting as before', async () => {
+    for (const waiting of [true, false]) {
+      const env = hubEnv()
+      recordSessionNotified(SESSION, env, Date.now())
+      const host = await standIn()
+      describeHost(env, host)
+      const service = fakeService()
+      const peers = new Map<number, PeerCredentials>()
+      const first = startHub(env, service, peers, memoryStore(), 100, { endConfirmMs: 150 }, { powerWatch: false, claudeDesktop: null, runHook: noHook })
+      await hubListening(env)
+      const child = await writerChild(env, peers, 900450, host, { transcript_path: transcript(env) })
+      await until(() => renewals(service) >= 1)
+      if (waiting) question(env)
+      // The power goes: no SessionEnd, no exit report, the hub just stops.
+      await stopHub(first.hub, service, first.done)
+      child.socket.destroy()
+      host.process.kill('SIGKILL')
+      const second = startHub(env, service, peers, memoryStore(), 100, { endConfirmMs: 150 }, { powerWatch: false, claudeDesktop: null, runHook: noHook,
+        bootIdentity: () => 'after-power-loss' })
+      if (waiting) {
+        await until(() => second.hub.sessions.get(SESSION)?.stopped?.cause === 'machine', 5_000)
+        expect(ended(service)).toBe(false)
+        expect(readSessionState(SESSION, env).pending).toHaveLength(1)
+      } else {
+        await until(() => ended(service), 5_000)
+      }
+      await stopHub(second.hub, service, second.done)
+    }
+  })
+
+  it('ends a stopped conversation once its question\'s window is over, and the hub then leaves', async () => {
+    const env = hubEnv()
+    recordSessionNotified(SESSION, env, Date.now())
+    const host = await standIn()
+    describeHost(env, host)
+    const service = fakeService()
+    const peers = new Map<number, PeerCredentials>()
+    const first = startHub(env, service, peers, memoryStore(), 100, { endConfirmMs: 150 }, { powerWatch: false, claudeDesktop: null, runHook: noHook })
+    await hubListening(env)
+    const child = await writerChild(env, peers, 900460, host, { transcript_path: transcript(env) })
+    await until(() => renewals(service) >= 1)
+    question(env, Date.now() + 2_500)
+    await stopHub(first.hub, service, first.done)
+    child.socket.destroy()
+    host.process.kill('SIGKILL')
+    const second = startHub(env, service, peers, memoryStore(), 100, { endConfirmMs: 150 }, { powerWatch: false, claudeDesktop: null, runHook: noHook,
+      bootIdentity: () => 'later-boot' })
+    let exited = false
+    void second.done.then(() => { exited = true })
+    await until(() => second.hub.sessions.get(SESSION)?.stopped !== undefined && second.hub.sessions.get(SESSION)?.stopped !== null, 5_000)
+    // Owed: the hub stays past its idle exit.
+    await new Promise((resolve) => setTimeout(resolve, 800))
+    expect(exited).toBe(false)
+    // The window ends: the end is reported (the service expires and drops what is left), then the hub goes.
+    await until(() => ended(service), 8_000)
+    expect(service.batches.flatMap((batch) => batch.body.sessions).find((entry) => entry.state === 'ended')).toMatchObject({ generation: 1 })
+    while (!exited) { service.release(); await new Promise((resolve) => setTimeout(resolve, 50)) }
+  })
+
+  it('never hands what waits to a scripted run of the same conversation, and its end ends nothing', async () => {
+    const env = hubEnv()
+    recordSessionNotified(SESSION, env, Date.now())
+    const app = await standIn()
+    const host = await standIn()
+    describeHost(env, host)
+    const desktop = desktopApp(env)
+    const service = fakeService()
+    const peers = new Map<number, PeerCredentials>()
+    const { hub, done } = startHub(env, service, peers, memoryStore(), 100, { endConfirmMs: 150 }, { claudeDesktop: desktop, powerWatch: false, runHook: noHook })
+    await hubListening(env)
+    const child = await writerChild(env, peers, 900470, host, { entrypoint: 'claude-desktop', transcript_path: transcript(env) }, app)
+    await until(() => renewals(service) >= 1)
+    question(env)
+    logPause(desktop.log)
+    await end(env, child, host)
+    await until(() => hub.sessions.get(SESSION)?.stopped?.cause === 'app', 5_000)
+    answered(env)
+    // `claude -p --resume <id>`: refused for good, and nothing is written into it.
+    const scripted = await standIn()
+    describeHost(env, scripted)
+    const run = await writerChild(env, peers, 900471, scripted, { entrypoint: 'sdk-cli', source: 'resume' })
+    expect(run.frames[0]).toMatchObject({ type: 'refused', reason: 'place-receives-nothing', retry: false })
+    expect(await requestHub(env, { type: 'session-end-candidate', session_id: SESSION, harness_pid: scripted.pid })).toEqual({ type: 'ok', held: true })
+    await new Promise((resolve) => setTimeout(resolve, 400))
+    expect(hub.sessions.get(SESSION)?.stopped?.cause).toBe('app')
+    expect(hub.sessions.get(SESSION)?.endCandidate).toBeNull()
+    expect(readSessionIncarnation(SESSION, env)?.harness_process?.pid).toBe(host.pid)
+    expect(ended(service)).toBe(false)
+    child.socket.destroy()
+    await stopHub(hub, service, done)
+  })
+
+  it('ends a stopped desktop conversation the User then archives, or whose app the User quits', async () => {
+    for (const variant of ['archive', 'quit'] as const) {
+      const env = hubEnv()
+      recordSessionNotified(SESSION, env, Date.now())
+      const app = await standIn()
+      const host = await standIn()
+      describeHost(env, host)
+      const desktop = desktopApp(env)
+      const service = fakeService()
+      const peers = new Map<number, PeerCredentials>()
+      const { hub, done } = startHub(env, service, peers, memoryStore(), 100, { endConfirmMs: 150 }, { claudeDesktop: desktop, powerWatch: false, runHook: noHook })
+      await hubListening(env)
+      const child = await writerChild(env, peers, 900480, host, { entrypoint: 'claude-desktop', transcript_path: transcript(env) }, app)
+      await until(() => renewals(service) >= 1)
+      question(env)
+      logPause(desktop.log)
+      await end(env, child, host)
+      await until(() => hub.sessions.get(SESSION)?.stopped?.cause === 'app', 5_000)
+      if (variant === 'archive') desktopApp(env, true)
+      else app.process.kill('SIGKILL')
+      await until(() => ended(service), 5_000)
+      await until(() => (readSessionState(SESSION, env).pending ?? []).length === 0)
+      child.socket.destroy()
+      await stopHub(hub, service, done)
+    }
+  })
+
+  it('keeps a conversation whose terminal exit was recorded after the machine said it was going down, and not one recorded before', async () => {
+    for (const after of [true, false]) {
+      const env = hubEnv()
+      recordSessionNotified(SESSION, env, Date.now())
+      const host = await standIn()
+      describeHost(env, host)
+      const service = fakeService()
+      const peers = new Map<number, PeerCredentials>()
+      const first = startHub(env, service, peers, memoryStore(), 100, { endConfirmMs: 150 }, { powerWatch: false, claudeDesktop: null, runHook: noHook })
+      await hubListening(env)
+      const child = await writerChild(env, peers, 900490, host, { transcript_path: transcript(env) })
+      await until(() => renewals(service) >= 1)
+      question(env)
+      // The hub was terminated first; the terminal's child recorded the exit afterwards.
+      await stopHub(first.hub, service, first.done)
+      child.socket.destroy()
+      host.process.kill('SIGKILL')
+      const at = Date.now()
+      writeFileSync(path.join(path.dirname(hubLockPath(env)), 'shutdown.json'), JSON.stringify({ boot: 'test-boot', since: after ? at - 1_000 : at + 1_000, name: 'x' }))
+      const ended_ = path.join(path.dirname(hubLockPath(env)), 'ended')
+      mkdirSync(ended_, { recursive: true })
+      writeFileSync(path.join(ended_, `${fnv64Hex(SESSION)}-${host.pid}.json`), JSON.stringify({ session_id: SESSION, harness: 'claude-code',
+        harness_pid: host.pid, harness_start: host.start, boot: 'test-boot', reason: 'harness-gone', at }))
+      const second = startHub(env, service, peers, memoryStore(), 100, { endConfirmMs: 150 }, { powerWatch: false, claudeDesktop: null, runHook: noHook,
+        bootIdentity: () => 'next' })
+      if (after) {
+        await until(() => second.hub.sessions.get(SESSION)?.stopped?.cause === 'machine', 5_000)
+        expect(ended(service)).toBe(false)
+      } else {
+        await until(() => ended(service), 5_000)
+      }
+      await stopHub(second.hub, service, second.done)
     }
   })
 })

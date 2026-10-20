@@ -1964,6 +1964,14 @@ function sessionHubCheck(deps: CommandDeps): HookCheck | null {
   // an end being confirmed is decided seconds later (a handoff or a reload keeps it).
   const shared = sessions.filter((session) => typeof session['writers'] === 'number' && session['writers'] > 1).length
   const closing = sessions.filter((session) => session['end_pending'] === true).length
+  // Stopped by an app or by the machine, not by the User: their questions stay open and what is
+  // answered meanwhile is handed in when they come back where they were.
+  const stopped = sessions.filter((session) => session['stopped'] === 'app' || session['stopped'] === 'machine').length
+  // Whether a shutdown is seen before apps quit (otherwise a shutdown-time close counts as the User's).
+  const power = status?.['power_watch'] as { source?: unknown; unavailable?: unknown } | undefined
+  const powerLine = power === undefined ? '' : typeof power.source === 'string'
+    ? `; shutdowns seen through ${power.source}` + (status?.['shutdown_in_progress'] === true ? ' (one is in progress: ends are held)' : '')
+    : `; shutdowns not seen (${typeof power.unavailable === 'string' ? power.unavailable : 'unavailable'}): a close during one counts as the User's`
   // A hub left on an earlier build after an update, and what it still finishes before it hands over.
   const handover = hubHandoverReport(deps.env)
   return {
@@ -1973,6 +1981,8 @@ function sessionHubCheck(deps: CommandDeps): HookCheck | null {
     detail: `running: ${sessions.length} Agent Session${sessions.length === 1 ? '' : 's'} attended, ${reachable} reachable now` +
       (shared === 0 ? '' : `; ${shared} open in more than one place (the most recently opened receives)`) +
       (closing === 0 ? '' : `; ${closing} closing (confirming the end)`) +
+      (stopped === 0 ? '' : `; ${stopped} stopped by ${stopped === 1 ? 'its' : 'their'} app or the machine (questions stay open; answers wait for ${stopped === 1 ? 'it' : 'them'} to come back)`) +
+      powerLine +
       (handover === null ? '' : `; ${describeHubHandover(handover)}`),
     technical: { ...report, handover },
   }

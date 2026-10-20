@@ -9,6 +9,7 @@
 import { lstatSync, chmodSync, mkdirSync, readFileSync } from 'node:fs'
 import { createConnection, type Socket } from 'node:net'
 import path from 'node:path'
+import { atomicWriteFileSync } from './atomic-file.js'
 import { stateDir } from './config.js'
 
 /** The IPC version this build speaks, and the range of versions the hub serves. */
@@ -104,6 +105,40 @@ export function writerLockPath(env: NodeJS.ProcessEnv, sessionId: string, harnes
 export function endedRecordsDir(env: NodeJS.ProcessEnv): string {
   return path.join(hubRunDir(env), 'ended')
 }
+
+/**
+ * Where the hub notes that the machine said it is shutting down or restarting
+ * (its boot and when), until the shutdown is cancelled. The next boot reads it.
+ */
+export function shutdownMarkerPath(env: NodeJS.ProcessEnv): string {
+  return path.join(hubRunDir(env), 'shutdown.json')
+}
+
+export function writeShutdownMarker(env: NodeJS.ProcessEnv, marker: { boot: string | null; since: number; name: string }): void {
+  try {
+    mkdirSync(hubRunDir(env), { recursive: true, mode: 0o700 })
+    atomicWriteFileSync(shutdownMarkerPath(env), `${JSON.stringify(marker)}\n`)
+  } catch { /* the boot change and pending ends still tell */ }
+}
+
+export function readShutdownMarker(env: NodeJS.ProcessEnv): { boot: string | null; since: number } | null {
+  try {
+    const marker = JSON.parse(readFileSync(shutdownMarkerPath(env), 'utf8')) as Record<string, unknown>
+    if (typeof marker['since'] !== 'number') return null
+    return { boot: typeof marker['boot'] === 'string' ? marker['boot'] : null, since: marker['since'] }
+  } catch {
+    return null
+  }
+}
+
+/**
+ * A shutdown is under way: noted within this long (Proposal). Bounded, because
+ * a shutdown an app holds up shows the User a dialog and posts nothing more
+ * until it is cancelled or goes on (590 s in the macOS VM witness), and a hub
+ * that went down before a cancellation could not clear the note; an end held
+ * meanwhile is decided late by the next hub, never early.
+ */
+export const SHUTDOWN_MARKER_FRESH_MS = 30 * 60_000
 
 /** A directory only this user can enter: 0700, owned by this user, not a link. */
 export function ensurePrivateDirectory(directory: string): void {

@@ -19,6 +19,10 @@ import { endsIncarnation, readSessionEndMarker, readSessionIncarnation, readSess
 import { childLockPath, writerLockPath } from './hub-ipc.js'
 import { pidExists, processIdentityLiveness, type ProcessIdentity } from './process-identity.js'
 import { attendantClaimPath } from './session-attendant-state.js'
+import type { ClaudePlace } from './session-place.js'
+
+const PLACES: ReadonlySet<string> = new Set<ClaudePlace>(['terminal', 'claude-desktop', 'claude-ide', 'claude-background', 'orca-chat',
+  'headless', 'unknown', 'unreported'])
 
 export interface AdoptionRecord {
   harness: 'claude-code' | 'codex'
@@ -38,6 +42,32 @@ export interface AdoptionRecord {
    * confirming; null when none was pending. The next hub confirms it.
    */
   end_candidate_since: number | null
+  /** Where the conversation ran (Claude Code); `unreported` from a hub that did not record it. */
+  place: ClaudePlace
+  /** The process that started the harness (the Claude desktop app), when known. */
+  host_app: ProcessIdentity | null
+  /**
+   * Stopped by its app or by the machine, not closed by the User (wall-clock
+   * milliseconds, and the boot it stopped in): the next hub keeps it open for
+   * its windows. Null while it is not stopped.
+   */
+  stopped: { since: number; cause: 'app' | 'machine'; boot: string | null } | null
+}
+
+function processOf(value: unknown): ProcessIdentity | null {
+  if (typeof value !== 'object' || value === null) return null
+  const owner = value as Record<string, unknown>
+  return typeof owner['pid'] === 'number' && Number.isSafeInteger(owner['pid']) && owner['pid'] > 1 && text(owner['start']) !== null
+    ? { pid: owner['pid'], start: owner['start'] as string } : null
+}
+
+function stoppedOf(value: unknown): AdoptionRecord['stopped'] {
+  if (typeof value !== 'object' || value === null) return null
+  const stopped = value as Record<string, unknown>
+  const since = stopped['since']
+  const cause = stopped['cause']
+  if (typeof since !== 'number' || !Number.isFinite(since) || (cause !== 'app' && cause !== 'machine')) return null
+  return { since, cause, boot: text(stopped['boot']) }
 }
 
 const text = (value: unknown): string | null => typeof value === 'string' && value.length > 0 && value.length <= 4096 ? value : null
@@ -69,6 +99,9 @@ export function parseAdoptionRecord(value: unknown): AdoptionRecord | null {
     dormant_since: typeof dormant === 'number' && Number.isFinite(dormant) ? dormant : null,
     transcript_seen: record['transcript_seen'] === true,
     end_candidate_since: typeof candidate === 'number' && Number.isFinite(candidate) ? candidate : null,
+    place: typeof record['place'] === 'string' && PLACES.has(record['place']) ? record['place'] as ClaudePlace : 'unreported',
+    host_app: processOf(record['host_app']),
+    stopped: stoppedOf(record['stopped']),
   }
 }
 
@@ -107,6 +140,9 @@ export function adoptionRecord(env: NodeJS.ProcessEnv, sessionId: string, status
     // The native turn was read from that rollout.
     transcript_seen: true,
     end_candidate_since: null,
+    place: 'unreported',
+    host_app: null,
+    stopped: null,
   }
 }
 
@@ -168,6 +204,28 @@ export function adoptionCandidates(env: NodeJS.ProcessEnv): AdoptionCandidate[] 
     if ((record?.harness ?? readSessionState(sessionId, env).harness) !== 'codex') continue
     if (processIdentityLiveness(incarnation.harness_process) === 'gone') continue
     if (childWatching(env, sessionId, incarnation.harness_process.pid)) continue
+    candidates.push({ sessionId, status, record })
+  }
+  return candidates
+}
+
+/**
+ * Claude Code conversations a hub stopped (their app paused them, or the
+ * machine went down) that are still owed something: the next hub keeps them
+ * open until they come back in place or their windows end. The status reads
+ * `exited` (`reason: stopped`) so a hub from an earlier build leaves it alone.
+ */
+export function stoppedCandidates(env: NodeJS.ProcessEnv): { sessionId: string; status: Record<string, unknown>; record: AdoptionRecord }[] {
+  const candidates: { sessionId: string; status: Record<string, unknown>; record: AdoptionRecord }[] = []
+  for (const { sessionId, status } of attendanceStatuses(env)) {
+    if (status['phase'] !== 'exited' || status['reason'] !== 'stopped' || typeof status['incarnation'] !== 'string') continue
+    const record = parseAdoptionRecord(status['adoption'])
+    if (record === null || record.harness !== 'claude-code' || record.stopped === null) continue
+    const claim = readClaimFile(attendantClaimPath(sessionId, env))
+    if (claim !== null && claimHolderMayRun(claim)) continue
+    const incarnation = readSessionIncarnation(sessionId, env)
+    if (incarnation === null || incarnation.incarnation !== status['incarnation']) continue
+    if (endsIncarnation(readSessionEndMarker(sessionId, env), incarnation)) continue
     candidates.push({ sessionId, status, record })
   }
   return candidates
