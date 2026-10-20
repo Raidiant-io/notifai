@@ -178,9 +178,11 @@ If optional control is unavailable before delivery, Notifai uses the ordinary
 hook/queue route where that route is proven. If a native write may already have
 been accepted, it retains recovery state instead of sending a second copy.
 This can delay delivery until control recovers or a foreground hook runs.
-Exact wake cleanup reduces stale prompts, but cannot prevent an empty turn when
-Codex starts the wake before cancellation. Unsupported question shapes retain
-ordinary delivery and do not suppress the native form.
+Exact wake cleanup reduces stale prompts. A wake Codex starts with nothing
+behind it, such as one left in a conversation that closed and was reopened
+later, is blocked by the prompt hook: no turn runs and no model request is
+made, and Codex shows one "Blocked by hook" line. Unsupported question shapes
+retain ordinary delivery and do not suppress the native form.
 
 Each `send --reply` fallback owns the complete answer window in its foreground
 process: keep it alive and set `--reply-timeout` equal to `--reply-window`.
@@ -414,6 +416,18 @@ delivered. Acknowledgements the agent still owed are cancelled. If a hook is
 still waiting for an answer when the session closes, it tells the Notifai
 service right away, so the questions expire on your devices at once.
 
+The Codex app and the Codex IDE extension are the exception. Codex also runs
+SessionEnd, and stops the session child, when it unloads a conversation nobody
+has had open for a while, though the app still lists it. There the hub that attends the session waits a
+few seconds and looks: if the conversation's rollout is gone (archived or
+deleted), or the app's own Codex server has exited (the app quit), the session
+closed as above. If the conversation was started in that app and its server
+still runs, the session stays open: its questions stay answerable, and an
+answer waits in that conversation as a content-free wake that Codex starts only
+when the conversation is loaded again, that is, when you open it. Nothing runs
+while you are not looking. The hub stays to watch the app while something
+waits, so quitting the app still expires the questions at once.
+
 **Session child and hub** (`attend`, Claude Code and Codex on macOS and Linux).
 The `attend` handler is a second, asynchronous handler on SessionStart,
 UserPromptSubmit, and Stop. Claude Code runs every Notifai handler in exec form,
@@ -478,7 +492,11 @@ hook timeout, so the attend handler declares the complete answer window (about
 publishes no session status, so the hub reads working or idle from this
 thread's own transcript and hooks (a third attend copy on Interrupt only tells
 the hub the turn ended). And Codex stops the child when the thread closes or
-unloads, so SessionEnd itself reports the session ended. Codex runs hooks
+unloads, so SessionEnd itself reports the session ended, except for an unloaded
+Codex app or IDE conversation, which stays open as described above. Codex runs
+no SessionEnd when a loaded conversation is archived, so the hub also watches
+each Codex session's rollout and ends the session when it is archived or
+deleted. Codex runs hooks
 through your login shell; bash and zsh hand the hook straight to Codex's own
 child, and the session child also accepts Codex as its grandparent through a
 shell that keeps running in between. The Codex hook definitions are unchanged

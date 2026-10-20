@@ -48,14 +48,21 @@ trusted tool hook can hand input into a working turn, Notifai uses that hook.
 Idle sessions, or sessions whose live input path cannot be established, use
 a content-free wake for the exact Agent Session in the same Codex home.
 Notifai does not cold-start or resume Codex to obtain a control connection.
-Closing the Agent Session ends its questions.
+Closing the Agent Session ends its questions. In the Codex app or IDE
+extension, a conversation Codex unloads while the app still lists it stays
+open: its questions stay answerable, and an answer waits in that conversation
+until the User opens it again. Quitting the app, or archiving or deleting the
+conversation, closes it.
 Pending notes and answers remain in Notifai until
 a trusted tool hook, prompt hook, or `notifai receive` drains a bounded batch.
 A late wake-up cannot repeat an acknowledged answer: it contains no answer
 text. Queue success proves wake storage, not input presentation. Inputs are
 claimed immediately before presentation; uncertain writes are never replayed.
 Verified queue control can remove a stale wake owned by Notifai; unavailable
-control leaves the harmless wake in place and preserves human prompts.
+control leaves the harmless wake in place and preserves human prompts. The
+prompt hook skips a wake with nothing behind it, so it starts no turn. If a
+Notifai wake still reaches you and `notifai receive` is empty, it asks for
+nothing: end the turn without resuming earlier work.
 Keep the original question and request identities when investigating a delay.
 
 ## Command approval

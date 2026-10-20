@@ -1206,3 +1206,56 @@ it('does not rewrite the staged messages when an exchange brings nothing new', (
   expect(statSync(file).ino).not.toBe(before)
   expect(readSessionMessages(SESSION, h.env, h.lease).map((m) => m.message_id)).toEqual(['sm_new'])
 })
+
+describe('Codex empty wakes', () => {
+  const prompt = (h: ReturnType<typeof setup>, text: string) => hookRunCommand(h.deps, 'user-prompt-submit', async () => JSON.stringify({
+    session_id: SESSION, cwd: h.deps.cwd, hook_event_name: 'UserPromptSubmit', turn_id: 'turn-2', prompt: text }), 'codex')
+  const blocked = (output: string[]) => output.some((line) => {
+    try { return (JSON.parse(line) as { decision?: string }).decision === 'block' } catch { return false }
+  })
+
+  it('blocks a wake with nothing waiting, tokened or not, so no turn runs', async () => {
+    for (const wake of [sessionInputWake(), sessionInputWake('1a55ec5f-0fd4-4158-b1e2-6efe6b2256cf')]) {
+      const h = setup()
+      h.deps.store.load = () => { throw new Error('an empty wake reads no credential') }
+      await prompt(h, wake)
+      expect(h.output).toHaveLength(1)
+      expect(JSON.parse(h.output[0]!)).toEqual({ decision: 'block', reason: expect.stringContaining('nothing is waiting') })
+      expect(h.claims).toEqual([])
+    }
+  })
+
+  it('hands in what waits instead of blocking the wake', async () => {
+    const h = setup()
+    h.stage([note('sm_waiting')])
+    await prompt(h, sessionInputWake())
+    expect(h.claims).toEqual(['sm_waiting'])
+    expect(blocked(h.output)).toBe(false)
+    expect(h.output.join('\n')).toContain('Read sm_waiting')
+  })
+
+  it('blocks a stale wake left in a closed session even when input was staged before the close', async () => {
+    const h = setup()
+    h.stage([note('sm_stale')])
+    markSessionEnded(SESSION, h.env, Date.now())
+    await prompt(h, sessionInputWake())
+    expect(h.claims).toEqual([])
+    expect(blocked(h.output)).toBe(true)
+  })
+
+  it('blocks a wake in a session another process now hosts', async () => {
+    const h = setup()
+    h.stage([note('sm_elsewhere')])
+    h.deps.env['NOTIFAI_HOOK_SOURCE_PID'] = '1'
+    await prompt(h, sessionInputWake())
+    expect(h.claims).toEqual([])
+    expect(blocked(h.output)).toBe(true)
+  })
+
+  it('never blocks the User\'s own prompt, even with nothing waiting', async () => {
+    const h = setup()
+    await prompt(h, 'Notifai wake, please carry on')
+    await prompt(h, `${sessionInputWake()} And also fix the build.`)
+    expect(blocked(h.output)).toBe(false)
+  })
+})
