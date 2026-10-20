@@ -1,9 +1,10 @@
 # Native questions linked to Notifai
 
-Codex's card is the question: call `request_user_input_async` with the User's
-questions. Its hooks register the actual structured input on the User's
-devices, including a multi-question card, and return the question IDs and
-acknowledgement command in the tool context. No copy or marker is needed.
+When your tools include Codex's `request_user_input_async`, the card is the
+question: call it with the User's questions. Its hooks register the actual
+structured input on the User's devices, including a multi-question card, and
+return the question IDs and acknowledgement command in the tool context. No
+copy or marker is needed. Without that tool, use `notifai ask`.
 
 When the card cannot receive a device answer, its pre-tool hook registers an
 ordinary question and prevents the card from appearing. Restate the printed
@@ -25,8 +26,8 @@ Claude Code never returns `native_question`: its picker is the question
 itself. Read [the Claude Code file](harness-claude-code.md#question-picker).
 
 On a Codex host without the card hook, `ask` may return `native_question`.
-Only for that fallback, use the returned tool, titles and options exactly, in the
-registration turn. The short title marker identifies a registered question;
+Only for that fallback, and only when your tools include the returned tool, use
+it with the returned titles and options exactly, in the registration turn. The short title marker identifies a registered question;
 wording alone does not. Preserve unrelated native forms, even when they
 contain identical wording.
 

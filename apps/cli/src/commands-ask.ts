@@ -29,7 +29,7 @@ import { askUserQuestionInput, claudePickerShape } from './claude-question-bindi
 import { installsClaudePickerHooks } from './hook-events.js'
 import { hermesQuestionRouteReady } from './session-attendant-state.js'
 import { codexRoutingTrustProblems, findInstallations, handlerEvent } from './install-hooks.js'
-import { CODEX_CARD_VERSION_FLOOR, codexCardHooksReady } from './codex-card-capability.js'
+import { CODEX_CARD_VERSION_FLOOR, codexCardHooksReady, codexCardToolOffered } from './codex-card-capability.js'
 import { inferInvocationContext } from './invocation-context.js'
 import { activeOpenclawGeneration } from './openclaw-session-access.js'
 import { openclawGatewayReady } from './openclaw-gateway-readiness.js'
@@ -373,13 +373,26 @@ function claudePickerOwner(deps: CommandDeps, sessionId: string, questions: Buil
   return events.has('permission-request') && events.has('post-tool-use') ? owner.key : null
 }
 
-/** A trusted native card hook replaces the agent's registration/copy step. */
+/**
+ * A trusted native card hook replaces the agent's registration/copy step:
+ * any card this session opens registers itself, so `ask` never links one.
+ */
 function codexCardOwner(deps: CommandDeps, sessionId: string): string | null {
   if (readSessionState(sessionId, deps.env).harness !== 'codex') return null
   const owner = readSessionIncarnation(sessionId, deps.env)
   if (owner?.harness_process === undefined || sessionHasEnded(sessionId, deps.env) ||
       processIdentityLiveness(owner.harness_process) !== 'alive') return null
   return codexCardHooksReady(deps) ? owner.key : null
+}
+
+/**
+ * Whether `ask` should hand this question to the Codex card instead. Only
+ * when the card hooks are ready and this session has proved it can call the
+ * card: an agent sent to a tool it does not have cannot ask at all.
+ */
+function codexCardAsks(deps: CommandDeps, sessionId: string): boolean {
+  const owner = codexCardOwner(deps, sessionId)
+  return owner !== null && codexCardToolOffered(readSessionState(sessionId, deps.env), owner, sessionId, deps.env)
 }
 
 function persistRegisteredQuestion(
@@ -883,7 +896,7 @@ export function askCommand(
     })
   }
   if (flags.body === undefined && flags.image === undefined && built.body === undefined &&
-      built.questions.every(question => question.multi !== true) && codexCardOwner(deps, sessionId) !== null) {
+      built.questions.every(question => question.multi !== true) && codexCardAsks(deps, sessionId)) {
     const card = { questions: built.questions.map(question => ({ title: question.text,
       ...(question.choices === undefined ? {} : { options: question.choices.map(choice => choice.label) }) })) }
     return reportAskFailure(deps, flags, {

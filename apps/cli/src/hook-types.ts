@@ -84,6 +84,8 @@ export interface HookEnvelope {
   turn_id?: string
   /** Native Codex transcript; only typed lifecycle/question records are consumed. */
   transcript_path?: string
+  /** Codex's model slug for this callback's turn. */
+  model?: string
   /** Codex child hooks carry the root session_id but name the child here. */
   agent_id?: string
   agent_type?: string
@@ -104,6 +106,12 @@ export interface SessionState {
   native_answer_operations?: NativeAnswerOperation[]
   /** Content-free native lifecycle proof, scoped to the current owner. */
   codex_native_turn?: { key: string; turn_id: string; transcript_path: string; observed_at?: number }
+  /**
+   * This owner's Codex ran Notifai's card PreToolUse, so it offers
+   * request_user_input_async under this model. Codex offers that tool only for
+   * models whose catalog lists it, so the proof holds while the model does.
+   */
+  codex_card_tool?: { key: string; model: string; transcript_path: string }
   /** Exact incarnation observed executing the currently trusted Codex tool hook. */
   codex_tool_hook?: {
     incarnation: string; fingerprint: string

@@ -6,7 +6,7 @@ import { codexCardHooksReady } from './codex-card-capability.js'
 import { resolveDraftInvocation } from './commands-send-support.js'
 import { loadConfig } from './config.js'
 import { registerQuestion } from './hook-lifecycle.js'
-import { readSessionIncarnation, readSessionState, sessionHasEnded } from './hook-session-state.js'
+import { readSessionIncarnation, readSessionState, sessionHasEnded, updateSessionState } from './hook-session-state.js'
 import type { HookEnvelope } from './hook-types.js'
 import type { Logger } from './logging.js'
 import { processIdentityLiveness } from './process-identity.js'
@@ -97,7 +97,25 @@ async function routeCard(deps: CommandDeps, envelope: HookEnvelope, logger: Logg
   return null
 }
 
+/**
+ * Codex runs this callback only for a card tool it offered, so it proves the
+ * tool exists for this owner under this turn's model. `ask` points at the card
+ * only with that proof; without it, `ask` registers an ordinary question.
+ */
+function observeCardTool(deps: CommandDeps, envelope: HookEnvelope): void {
+  const owner = cardOwner(deps, envelope)
+  const { model, transcript_path: transcript } = envelope
+  if (owner === null || typeof model !== 'string' || model === '' || typeof transcript !== 'string') return
+  updateSessionState(envelope.session_id!, deps.env, state => {
+    const proof = state.codex_card_tool
+    if (cardOwner(deps, envelope)?.key !== owner.key ||
+        (proof?.key === owner.key && proof.model === model && proof.transcript_path === transcript)) return state
+    return { ...state, codex_card_tool: { key: owner.key, model, transcript_path: transcript } }
+  })
+}
+
 export async function codexPreToolUse(deps: CommandDeps, envelope: HookEnvelope, logger: Logger): Promise<void> {
+  observeCardTool(deps, envelope)
   await routeCard(deps, envelope, logger, false)
 }
 

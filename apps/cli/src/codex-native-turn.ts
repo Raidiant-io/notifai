@@ -163,6 +163,42 @@ export function nativeTranscriptOwned(file: unknown, sessionId: string, env: Nod
   return readNativeTranscript(file, sessionId, env, true) !== null
 }
 
+/**
+ * The model of the newest turn context in an owned transcript's bounded tail.
+ * Codex writes one per turn, before the model runs, so during a turn this is
+ * that turn's model. Anything unreadable, unowned or out of bound is unknown.
+ */
+export function readNativeTurnModel(file: unknown, sessionId: string, env: NodeJS.ProcessEnv): string | null {
+  const owned = readNativeTranscript(file, sessionId, env, true)
+  if (owned === null) return null
+  let fd: number | undefined
+  try {
+    fd = openSync(owned.file, constants.O_RDONLY | constants.O_NOFOLLOW)
+    const stat = fstatSync(fd)
+    if (`${stat.dev}:${stat.ino}` !== owned.identity) return null
+    const at = Math.max(0, stat.size - TAIL_BYTES)
+    const bytes = Buffer.alloc(stat.size - at)
+    if (readSync(fd, bytes, 0, bytes.length, at) !== bytes.length) return null
+    const lines = bytes.toString('utf8').split('\n')
+    // A tail that starts mid-record cannot vouch for its first line.
+    if (at > 0) lines.shift()
+    for (let index = lines.length - 1; index >= 0; index -= 1) {
+      const line = lines[index]!
+      if (!line.includes('"turn_context"')) continue
+      let record: { type?: unknown; payload?: { model?: unknown } }
+      try { record = JSON.parse(line) as typeof record } catch { continue }
+      if (record?.type !== 'turn_context') continue
+      const model = record.payload?.model
+      return typeof model === 'string' && model !== '' ? model : null
+    }
+    return null
+  } catch {
+    return null
+  } finally {
+    if (fd !== undefined) closeSync(fd)
+  }
+}
+
 function readNativeTranscript(
   file: unknown, sessionId: string, env: NodeJS.ProcessEnv, identityOnly: boolean, includeQuestions = false,
   checkpointFile?: string,

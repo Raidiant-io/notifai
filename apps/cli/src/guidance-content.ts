@@ -132,8 +132,8 @@ itself is a Notification Request. Register it with \`notifai ask\` in the same
 turn you ask in the conversation, even while other work continues or the User
 was recently active. Conversation alone does not reach an away User.
 In Claude Code its question picker is the Notification Request; in Codex use
-\`request_user_input_async\`. Their hooks register the question: never also
-\`ask\`; follow tool context.
+\`request_user_input_async\` if you have it. Their hooks register it: never
+also \`ask\`; follow tool context.
 
 Decisions, approvals, sign-in, credential setup and physical actions count.
 Ask for safe setup or readiness, never for credentials or private material.
