@@ -124,6 +124,7 @@ import { claudeSocketLine, deliverIntoCodexThread } from './session-handoff.js'
 import { detachInputWakes, readInputWakes } from './session-input-wakes.js'
 import {
   hasSessionInputs,
+  pendingInputRevisionIds,
   inputWakeDeferred,
   inputWakeOverdue,
   reconcileSessionInputWakes,
@@ -134,6 +135,16 @@ import {
 import { compareVersions } from './version.js'
 import { QUESTION_WAITER_CEILING_SECONDS } from './question-timing.js'
 import { claudePlaceOf, codexPlaceOf, orcaTerminalHostOf, parentProcessOf, placeReceives, type SessionPlace } from './session-place.js'
+import { readReopenLaunch } from './reopen-terminal.js'
+import {
+  launchRecordOf,
+  processArguments,
+  SessionReopen,
+  systemReopenHost,
+  type LaunchRecord,
+  type ReopenHost,
+  type ReopenTrigger,
+} from './session-reopen.js'
 import {
   classifyClaudeEnd,
   classifyCodexEnd,
@@ -288,6 +299,12 @@ export interface HubOptions {
    * for a managed installation.
    */
   handover?: HandoverOptions
+  /**
+   * Reopening stopped conversations in place (see `session-reopen.ts`).
+   * Absent: off (tests and development); `hubCommand` turns it on. Overrides
+   * replace parts of the machine (tests).
+   */
+  reopen?: Partial<ReopenHost>
 }
 
 export interface HandoverOptions {
@@ -401,6 +418,8 @@ interface Registration {
   hostApp: ProcessIdentity | null
   /** An Orca pane's terminal host, when the harness runs in one. */
   terminalHost: ProcessIdentity | null
+  /** How a terminal harness was started: what a reopen runs. Null for other places. */
+  launch: LaunchRecord | null
 }
 
 /**
@@ -720,6 +739,7 @@ class HubSession implements AttendedSession {
       if (changed) {
         this.hub.logger.info('hub.session', { event: 'stopped-held', session: this.id, messages: held.length })
         this.hub.touch()
+        if (held.length > 0) void this.hub.reopenStopped(this, 'note')
       }
     }
     if (outcome.kind === 'stop-refused') this.hub.logger.info('hub.session', { event: 'stopped-not-held', session: this.id })
@@ -769,8 +789,13 @@ class HubSession implements AttendedSession {
   checkInput(): void {
     // A hub handing over starts no new write; the next hub hands the input in.
     if (this.hub.handingOver) return
-    // Stopped: a Codex thread gets one wake in its own queue, run when it loads again.
-    if (this.stopped !== null) { if (this.harness === 'codex') void this.hub.stoppedWake(this); return }
+    // Stopped: a Codex thread gets one wake in its own queue, run when it loads again,
+    // and the conversation reopens in place where it can.
+    if (this.stopped !== null) {
+      void this.hub.reopenStopped(this, 'answer')
+      if (this.harness === 'codex') void this.hub.stoppedWake(this)
+      return
+    }
     if (!this.notified || this.lease.generation === null || this.hub.clock.monotonic() < this.lease.pausedUntil) return
     const lease: DeliveryLease = { incarnation: this.lease.incarnation, generation: this.lease.generation }
     let pending = false
@@ -895,6 +920,7 @@ class HubSession implements AttendedSession {
       host_app: registration.hostApp,
       terminal_host: registration.terminalHost,
       stopped: this.stopped,
+      launch: registration.launch,
     }
   }
 
@@ -1087,11 +1113,21 @@ export class Hub {
    * (wall-clock milliseconds, and what said so): every new end is held.
    */
   private shutdownState: { since: number; name: string } | null = null
+  /** Reopening stopped conversations in place; null when off (tests, development). */
+  readonly reopen: SessionReopen | null
 
   constructor(readonly deps: CommandDeps, private readonly options: HubOptions) {
     this.clock = options.clock ?? { monotonic: () => performance.now(), wall: () => Date.now() }
     this.logger = log(deps)
     this.logger.bind({ cmd: 'hub' })
+    this.reopen = options.reopen === undefined ? null : new SessionReopen(systemReopenHost(deps.env, this.logger, launcherExecutable(), {
+      now: () => this.clock.wall(),
+      codexHolders: (home, id) => (this.options.codexThreadHolders ?? codexThreadHolders)(home, id),
+      codexSharedServer: (pid) => this.codexHostKind(pid) === 'shared-server',
+      codexAttach: (input) => this.reopenAttachState(input.sessionId, input.holder),
+      queueCodexWake: (id) => this.queueStoppedWake(id),
+      ...options.reopen,
+    }))
     this.idleSince = this.clock.monotonic()
     this.startedAt = this.clock.wall()
     this.driver = new ExchangeDriver({
@@ -1155,6 +1191,7 @@ export class Hub {
       this.shutdownState = { since: marker.since, name: 'noted-by-an-earlier-hub' }
     }
     this.watchPower()
+    this.reopen?.prune()
     const signals = this.options.handleSignals === true ? this.installSignals() : null
     const exchange = this.driver.run().catch((err: unknown) => {
       this.logger.error('hub.exchange', { event: 'stopped', message: err instanceof Error ? err.message : String(err) })
@@ -1318,6 +1355,7 @@ export class Hub {
       while (!done() && !this.exiting && this.clock.monotonic() < deadline) await new Promise((resolve) => setTimeout(resolve, 50))
     }
     await settle(() => this.ingressInFlight === 0 && this.handIns === 0 && this.localEnds.size === 0 && this.stoppedWaking.size === 0 &&
+      !(this.reopen?.busy ?? false) &&
       ![...this.links].some((link) => link.writesInFlight > 0))
     // The answer owners stop at their next check, without consuming, closing
     // or retiring anything; their reply polls end now.
@@ -1773,6 +1811,7 @@ export class Hub {
         : 'unreported',
       hostApp: null,
       terminalHost: null,
+      launch: null,
     }
   }
 
@@ -1933,6 +1972,10 @@ export class Hub {
     if (frame['orca_pane'] === '1' && (registration.place === 'terminal' || registration.place === 'unreported')) {
       registration.terminalHost = (this.options.orcaTerminalHostOf ?? orcaTerminalHostOf)(harnessPid)
     }
+    // A terminal conversation a restart stops reopens with the command it ran: read it while it runs.
+    if (registration.place === 'terminal' && this.reopen !== null) {
+      registration.launch = launchRecordOf(registration.harness, processArguments(harnessPid))
+    }
   }
 
   /**
@@ -2041,6 +2084,7 @@ export class Hub {
     session.lease.needsFresh = true
     this.logger.info('hub.session', { event: 'resumed', session: session.id, stopped_by: from.cause, place: writer.registration.place,
       stopped_for_s: Math.round(Math.max(0, this.clock.wall() - from.since) / 1000) })
+    this.reopen?.resumed(session.id, writer.harnessProcess.pid)
     this.addWriter(session, writer)
     const state = readSessionState(session.id, session.env)
     if (pendingList(state).length > 0 || state.accepted !== undefined) this.settle(session.id, session.harness, writer.registration.cwd, 'settlement')
@@ -2493,6 +2537,7 @@ export class Hub {
     this.logger.info('hub.session', { event: 'stopped', session: session.id, cause, reason, place: session.registration.place })
     if (!session.stoppedOwes(this.clock.wall())) { this.endSession(session, 'window-over'); return }
     if (session.harness === 'codex') void this.stoppedWake(session)
+    void this.reopenStopped(session, 'answer')
     this.driver.poke()
     this.touch()
   }
@@ -2502,9 +2547,10 @@ export class Hub {
    * still inside its window, or once the User ends it after all (deleted,
    * archived, or its app quit while the machine stayed up).
    */
-  private checkStopped(session: HubSession): void {
+  private checkStopped(session: HubSession, trigger: ReopenTrigger = 'answer'): void {
     const stopped = session.stopped
     if (stopped === null) return
+    this.reopen?.check(session.id)
     session.dropExpiredAnswers()
     if (!session.stoppedOwes(this.clock.wall())) { this.endSession(session, 'window-over'); return }
     const record = this.recordPresent(session)
@@ -2522,6 +2568,63 @@ export class Hub {
     if (stopped.cause === 'app' && (stopped.boot === null || stopped.boot === boot) && watched !== null && !this.shutdownInProgress() &&
         processIdentityLiveness(watched) === 'gone') { this.endSession(session, 'app-quit'); return }
     if (session.harness === 'codex') void this.stoppedWake(session)
+    void this.reopenStopped(session, trigger)
+  }
+
+  /**
+   * An answer or note waits for a stopped conversation: reopen it in place
+   * where the settings and the place allow (see `session-reopen.ts`).
+   */
+  async reopenStopped(session: HubSession, trigger: ReopenTrigger): Promise<void> {
+    const stopped = session.stopped
+    if (this.reopen === null || stopped === null || session.ending !== null || this.handingOver || this.exiting) return
+    const lease = session.lease.generation === null ? null : { incarnation: session.lease.incarnation, generation: session.lease.generation }
+    const items = [...(pendingInputRevisionIds(session.id, session.env, lease) ?? []), ...session.held.map((message) => `held:${message.message_id}`)]
+    if (items.length === 0) return
+    const registration = session.registration
+    try {
+      await this.reopen.reopenFor({
+        sessionId: session.id, harness: session.harness, place: registration.place, stoppedSince: stopped.since, cwd: registration.cwd,
+        claudeConfigDir: registration.claudeConfigDir, codexHome: registration.codexHome, orcaPane: registration.terminalHost !== null,
+        launch: registration.launch, hooks: readReopenLaunch(readSessionState(session.id, session.env).reopen_launch), items,
+      }, trigger)
+    } catch (err) {
+      this.logger.error('hub.reopen', { event: 'failed', session: session.id, message: err instanceof Error ? err.message : String(err) })
+    }
+  }
+
+  /**
+   * Before a stopped Codex conversation reopens while the shared server still
+   * holds it: does a terminal show it? Asked with the confirming request when
+   * no terminal seems to, and only on a Codex build whose behaviour was checked.
+   */
+  private async reopenAttachState(sessionId: string, holder: number): Promise<CodexAttachState> {
+    const session = this.sessions.get(sessionId)
+    const start = processStartTime(holder)
+    if (session === undefined || start === null) return { state: 'unknown', confirmed: false, reason: 'no-host' }
+    const host = { pid: holder, start }
+    const verified = (this.options.codexAttach?.verified ?? ((value: ProcessIdentity) => codexAttachVerified(value, this.env)))(host)
+    if (!verified) return { state: 'unknown', confirmed: false, reason: 'codex-build-unverified' }
+    const input: CodexAttachInput = { threadId: sessionId, env: session.env, host, confirm: 'closed',
+      beforeConfirm: () => { session.attachOwnReload = { pid: holder, at: this.clock.monotonic() } } }
+    try {
+      return await (this.options.codexAttach?.state ?? ((value: CodexAttachInput) => codexThreadAttachState(value, { verified: () => true })))(input)
+    } catch {
+      return { state: 'unknown', confirmed: false, reason: 'check-failed' }
+    }
+  }
+
+  /** The wake for a stopped Codex thread, queued before its terminal reopens: after any queueing already under way. */
+  private async queueStoppedWake(sessionId: string): Promise<void> {
+    const session = this.sessions.get(sessionId)
+    if (session === undefined) return
+    const deadline = this.clock.monotonic() + 15_000
+    const settled = async (): Promise<void> => {
+      while (this.stoppedWaking.has(sessionId) && this.clock.monotonic() < deadline) await new Promise((resolve) => setTimeout(resolve, 50))
+    }
+    await settled()
+    await this.stoppedWake(session)
+    await settled()
   }
 
   /** The machine's shutdown signal: watched for the hub's life. */
@@ -2904,7 +3007,7 @@ export class Hub {
       stamp: { wall: this.clock.wall(), mono: '0' }, hookEvent: 'Adopted', source: null, cwd: record.cwd,
       transcriptPath: record.transcript_path, inboxSocket: null, inboxToken: false,
       claudeConfigDir: record.claude_config_dir, codexHome: record.codex_home, harnessTicks: record.harness_ticks,
-      place: record.place, hostApp: record.host_app, terminalHost: record.terminal_host,
+      place: record.place, hostApp: record.host_app, terminalHost: record.terminal_host, launch: record.launch,
     }
     const env = this.sessionEnv(registration)
     const incarnation = readSessionIncarnation(sessionId, env)
@@ -2956,7 +3059,7 @@ export class Hub {
       stamp: { wall: this.clock.wall(), mono: '0' }, hookEvent: 'Adopted', source: null, cwd: record.cwd,
       transcriptPath: record.transcript_path, inboxSocket: null, inboxToken: false,
       claudeConfigDir: record.claude_config_dir, codexHome: record.codex_home, harnessTicks: record.harness_ticks,
-      place: record.place, hostApp: record.host_app, terminalHost: record.terminal_host,
+      place: record.place, hostApp: record.host_app, terminalHost: record.terminal_host, launch: record.launch,
     }
     const env = this.sessionEnv(registration)
     const incarnation = readSessionIncarnation(sessionId, env)
@@ -2978,7 +3081,7 @@ export class Hub {
     this.logger.info('hub.session', { event: 'adopted', session: sessionId, harness: record.harness, stopped_by: record.stopped.cause })
     const state = readSessionState(sessionId, env)
     if (pendingList(state).length > 0 || state.accepted !== undefined) this.settle(sessionId, record.harness, record.cwd, 'settlement')
-    this.checkStopped(session)
+    this.checkStopped(session, 'hub-start')
     this.touch()
   }
 
@@ -3438,6 +3541,6 @@ export function startSuccessorHub(env: NodeJS.ProcessEnv): void {
 export async function hubCommand(deps: CommandDeps): Promise<number> {
   // Automatic updates run only in a managed native installation.
   if (buildIdentity() !== null) nativeInstallationModule = await import('./native-installation.js')
-  const hub = new Hub(deps, { deps, handleSignals: true, ...(buildIdentity() !== null ? { automaticUpdate: {}, handover: {} } : {}) })
+  const hub = new Hub(deps, { deps, handleSignals: true, reopen: {}, ...(buildIdentity() !== null ? { automaticUpdate: {}, handover: {} } : {}) })
   return hub.run()
 }

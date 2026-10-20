@@ -6796,6 +6796,31 @@ describe('Claude Code Stop wake route', () => {
     expect(readSessionState('claude-mode', h.env).claude_permission_mode).toBe('auto')
   })
 
+  it('keeps what a reopen needs: the terminal each hook ran in and the latest permission mode, for Claude Code and Codex', async () => {
+    const h = harness([])
+    const run = (harness: 'claude-code' | 'codex', event: 'session-start' | 'user-prompt-submit' | 'stop', extra: Record<string, unknown>,
+      env: NodeJS.ProcessEnv = {}) => hookRunCommand(
+      { ...h.deps, env: { ...h.deps.env, ...env } },
+      event,
+      stdin({ session_id: `${harness}-reopen`, cwd: '/tmp/reopen', hook_event_name: event === 'stop' ? 'Stop' : event === 'session-start' ? 'SessionStart' : 'UserPromptSubmit',
+        prompt: 'continue', ...extra }),
+      harness,
+    )
+    await run('claude-code', 'session-start', { permission_mode: 'acceptEdits' }, { TERM_PROGRAM: 'iTerm.app' })
+    expect(readSessionState('claude-code-reopen', h.env).reopen_launch).toEqual({ terminal: 'iterm2', terminal_seen: 'iterm2', orca_pane: false,
+      permission_mode: 'acceptEdits' })
+    // A mode switch reported at the turn end; a subagent's callback does not speak for the session.
+    await run('claude-code', 'stop', { permission_mode: 'plan' }, { TERM_PROGRAM: 'iTerm.app' })
+    await run('claude-code', 'user-prompt-submit', { permission_mode: 'bypassPermissions', agent_id: 'agent-1' }, { TERM_PROGRAM: 'iTerm.app' })
+    expect(readSessionState('claude-code-reopen', h.env).reopen_launch?.permission_mode).toBe('plan')
+    // A hook that reports no mode keeps the last one.
+    await run('claude-code', 'user-prompt-submit', {}, { TERM_PROGRAM: 'iTerm.app' })
+    expect(readSessionState('claude-code-reopen', h.env).reopen_launch?.permission_mode).toBe('plan')
+    await run('codex', 'session-start', { permission_mode: 'bypassPermissions' }, { ORCA_AGENT_PANE: 'p1', TERM_PROGRAM: 'Orca' })
+    expect(readSessionState('codex-reopen', h.env).reopen_launch).toEqual({ terminal: null, terminal_seen: 'orca', orca_pane: true,
+      permission_mode: 'bypassPermissions' })
+  })
+
   it('keeps the detached owner through the default one-day answer window', async () => {
     const h = harness([])
     const answerAt = NOW + (86_400 - 10) * 1000

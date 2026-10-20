@@ -112,7 +112,30 @@ export interface CliConfig {
    * `MACHINE_ONLY_CONFIG_KEYS`), because the runtime belongs to the machine.
    */
   'updates.automatic': ResolvedValue<boolean>
+  /**
+   * Reopening a conversation that its app or the machine stopped, when an
+   * answer or note arrives for it (see `session-reopen.ts`). Machine-wide,
+   * like `updates.automatic`: the master switch, then one policy per place.
+   */
+  'reopen.automatic': ResolvedValue<boolean>
+  'reopen.terminal': ResolvedValue<ReopenTerminalPolicy>
+  'reopen.codex_app': ResolvedValue<ReopenCodexAppPolicy>
+  'reopen.terminal_app': ResolvedValue<ReopenTerminalApp>
+  'reopen.terminal_command': ResolvedValue<string | null>
+  'reopen.focus': ResolvedValue<ReopenFocus>
+  'reopen.permission_mode': ResolvedValue<ReopenPermissionMode>
 }
+
+export const REOPEN_TERMINAL_POLICIES = ['automatic', 'off'] as const
+export type ReopenTerminalPolicy = (typeof REOPEN_TERMINAL_POLICIES)[number]
+export const REOPEN_CODEX_APP_POLICIES = ['when-running', 'launch', 'off'] as const
+export type ReopenCodexAppPolicy = (typeof REOPEN_CODEX_APP_POLICIES)[number]
+export const REOPEN_TERMINAL_APPS = ['auto', 'terminal', 'iterm2', 'ghostty', 'wezterm', 'kitty', 'alacritty', 'gnome-terminal', 'konsole', 'custom'] as const
+export type ReopenTerminalApp = (typeof REOPEN_TERMINAL_APPS)[number]
+export const REOPEN_FOCUS = ['background', 'front'] as const
+export type ReopenFocus = (typeof REOPEN_FOCUS)[number]
+export const REOPEN_PERMISSION_MODES = ['same', 'default'] as const
+export type ReopenPermissionMode = (typeof REOPEN_PERMISSION_MODES)[number]
 
 export const CONFIG_KEYS = [
   'wait_seconds',
@@ -131,6 +154,13 @@ export const CONFIG_KEYS = [
   'media_origins',
   'approve_origins',
   'updates.automatic',
+  'reopen.automatic',
+  'reopen.terminal',
+  'reopen.codex_app',
+  'reopen.terminal_app',
+  'reopen.terminal_command',
+  'reopen.focus',
+  'reopen.permission_mode',
 ] as const
 export type ConfigKey = (typeof CONFIG_KEYS)[number]
 
@@ -150,13 +180,17 @@ export const USER_OWNED_CONFIG_KEYS: readonly ConfigKey[] = ['media_origins', 'a
  * by every Project on the machine, so no repository and no single conversation
  * may decide what runs on it.
  */
-export const MACHINE_ONLY_CONFIG_KEYS: readonly ConfigKey[] = ['updates.automatic']
+export const MACHINE_ONLY_CONFIG_KEYS: readonly ConfigKey[] = ['updates.automatic', 'reopen.automatic', 'reopen.terminal', 'reopen.codex_app',
+  'reopen.terminal_app', 'reopen.terminal_command', 'reopen.focus', 'reopen.permission_mode']
 
 /** Keys whose TOML value must be a list of normalized http(s) origins. */
 export const ORIGIN_LIST_CONFIG_KEYS: readonly ConfigKey[] = ['media_origins', 'approve_origins']
 
 /** Keys whose TOML value must parse as a boolean; used by `config set`. */
-export const BOOLEAN_CONFIG_KEYS: readonly ConfigKey[] = ['ask_notifications', 'updates.automatic']
+export const BOOLEAN_CONFIG_KEYS: readonly ConfigKey[] = ['ask_notifications', 'updates.automatic', 'reopen.automatic']
+
+/** Machine-wide switches that also read naturally as `on` and `off`. */
+export const ON_OFF_CONFIG_KEYS: readonly ConfigKey[] = ['updates.automatic', 'reopen.automatic']
 
 /** Keys whose TOML value must parse as an integer within its configured bounds. */
 export const NUMERIC_CONFIG_KEYS: readonly ConfigKey[] = [
@@ -178,6 +212,11 @@ export const NUMERIC_CONFIG_KEYS: readonly ConfigKey[] = [
 export const ENUM_CONFIG_VALUES: Partial<Record<ConfigKey, readonly string[]>> = {
   interruption_level: INTERRUPTION_LEVELS,
   log_level: LOG_LEVELS,
+  'reopen.terminal': REOPEN_TERMINAL_POLICIES,
+  'reopen.codex_app': REOPEN_CODEX_APP_POLICIES,
+  'reopen.terminal_app': REOPEN_TERMINAL_APPS,
+  'reopen.focus': REOPEN_FOCUS,
+  'reopen.permission_mode': REOPEN_PERMISSION_MODES,
 }
 
 /** Compiled service origin. Not a user-facing setting; login may override with `--base-url` or `NOTIFAI_BASE_URL`. */
@@ -215,6 +254,15 @@ const DEFAULTS = {
   // On by default ("Fully automatic, toggleable", 2026-10-19). The
   // hub installs a newer build on the saved channel unless it would change hooks.
   'updates.automatic': true,
+  // Reopen in place by default (2026-10-20): a terminal the machine took down
+  // comes back in a new window, in the background, in the mode it last ran in.
+  'reopen.automatic': true,
+  'reopen.terminal': 'automatic',
+  'reopen.codex_app': 'when-running',
+  'reopen.terminal_app': 'auto',
+  'reopen.terminal_command': null,
+  'reopen.focus': 'background',
+  'reopen.permission_mode': 'same',
 } satisfies Record<ConfigKey, unknown>
 
 /** The shipped value beneath every user-controlled configuration layer. */
@@ -409,6 +457,9 @@ function coerce(key: ConfigKey, value: unknown): unknown | undefined {
   if (key === 'sound') {
     return typeof value === 'string' && isCliSoundRef(value) ? value : undefined
   }
+  if (key === 'reopen.terminal_command') {
+    return typeof value === 'string' && value.trim() !== '' && value.length <= 1024 ? value : undefined
+  }
   const allowed = ENUM_CONFIG_VALUES[key]
   if (allowed !== undefined) {
     return typeof value === 'string' && allowed.includes(value) ? value : undefined
@@ -436,19 +487,26 @@ function rawLayerValue(raw: Record<string, unknown>, key: ConfigKey): unknown {
 }
 
 /**
- * The automatic-update switch, from this machine's own configuration only.
- * No working directory is involved: a Project can never change it.
+ * One machine-wide key, from this machine's own configuration file only. No
+ * working directory is involved: a Project can never change it. An unreadable
+ * or invalid value decides nothing new: the shipped default stands.
  */
-export function automaticUpdatesSetting(env: NodeJS.ProcessEnv = process.env): { enabled: boolean; source: 'default' | 'user' } {
+export function machineSetting<K extends ConfigKey>(key: K, env: NodeJS.ProcessEnv = process.env): { value: CliConfig[K]['value']; source: 'default' | 'user' } {
+  const fallback = { value: DEFAULTS[key] as CliConfig[K]['value'], source: 'default' as const }
   const file = globalConfigPath(env)
   try {
-    if (!existsSync(file)) return { enabled: true, source: 'default' }
-    const value = coerce('updates.automatic', rawLayerValue(readTomlFile(file), 'updates.automatic'))
-    return typeof value === 'boolean' ? { enabled: value, source: 'user' } : { enabled: true, source: 'default' }
+    if (!existsSync(file)) return fallback
+    const value = coerce(key, rawLayerValue(readTomlFile(file), key))
+    return value === undefined ? fallback : { value: value as CliConfig[K]['value'], source: 'user' }
   } catch {
-    // An unreadable machine file decides nothing new: the shipped default stands.
-    return { enabled: true, source: 'default' }
+    return fallback
   }
+}
+
+/** The automatic-update switch, from this machine's own configuration only. */
+export function automaticUpdatesSetting(env: NodeJS.ProcessEnv = process.env): { enabled: boolean; source: 'default' | 'user' } {
+  const setting = machineSetting('updates.automatic', env)
+  return { enabled: setting.value, source: setting.source }
 }
 
 function readTomlFile(filePath: string): Record<string, unknown> {
@@ -548,5 +606,12 @@ export function loadConfig(options: {
     media_origins: resolve('media_origins'),
     approve_origins: resolve('approve_origins'),
     'updates.automatic': resolve('updates.automatic'),
+    'reopen.automatic': resolve('reopen.automatic'),
+    'reopen.terminal': resolve('reopen.terminal'),
+    'reopen.codex_app': resolve('reopen.codex_app'),
+    'reopen.terminal_app': resolve('reopen.terminal_app'),
+    'reopen.terminal_command': resolve('reopen.terminal_command'),
+    'reopen.focus': resolve('reopen.focus'),
+    'reopen.permission_mode': resolve('reopen.permission_mode'),
   }
 }

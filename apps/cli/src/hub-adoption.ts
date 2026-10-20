@@ -19,6 +19,7 @@ import { endsIncarnation, readSessionEndMarker, readSessionIncarnation, readSess
 import { childLockPath, writerLockPath } from './hub-ipc.js'
 import { pidExists, processIdentityLiveness, type ProcessIdentity } from './process-identity.js'
 import { attendantClaimPath } from './session-attendant-state.js'
+import { parseLaunchRecord, type LaunchRecord } from './session-reopen.js'
 import type { SessionPlace } from './session-place.js'
 
 const PLACES: ReadonlySet<string> = new Set<SessionPlace>(['terminal', 'claude-desktop', 'claude-ide', 'claude-background', 'orca-chat',
@@ -64,6 +65,8 @@ export interface AdoptionRecord {
    * its windows. Null while it is not stopped.
    */
   stopped: StoppedRecord | null
+  /** How the harness was started, for a terminal: what a reopen runs (see `session-reopen.ts`). */
+  launch: LaunchRecord | null
 }
 
 function processOf(value: unknown): ProcessIdentity | null {
@@ -116,6 +119,7 @@ export function parseAdoptionRecord(value: unknown): AdoptionRecord | null {
     host_app: processOf(record['host_app']),
     terminal_host: processOf(record['terminal_host']),
     stopped: stoppedOf(record['stopped']),
+    launch: parseLaunchRecord(record['launch']),
   }
 }
 
@@ -151,6 +155,7 @@ export function adoptionRecord(env: NodeJS.ProcessEnv, sessionId: string, status
     host_app: null,
     terminal_host: null,
     stopped: null,
+    launch: null,
   }
 }
 

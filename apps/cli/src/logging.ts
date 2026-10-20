@@ -136,6 +136,8 @@ export const LOG_EVENTS = [
   'hub.ingress',
   /** A hub on another build than the active one waited for its work, or handed over. */
   'hub.handover',
+  /** The hub reopened a stopped conversation in place, or why it left it waiting. */
+  'hub.reopen',
   /** The hub stopped, and why. */
   'hub.exit',
   /** The automatic updater looked for, staged, held back or activated a release. */

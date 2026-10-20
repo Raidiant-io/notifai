@@ -93,6 +93,7 @@ import {
 import { receiveSessionInputs } from './commands-receive.js'
 import { recordClaudeSessionTitle } from './harness-session-title.js'
 import { recordClaudePermissionMode } from './claude-command-approval.js'
+import { recordReopenLaunch } from './reopen-terminal.js'
 import {
   claudePermissionRequest,
   claudePostToolUse,
@@ -367,6 +368,16 @@ export async function hookRunCommand(
       recordClaudePermissionMode(envelope.session_id, deps.env, envelope.permission_mode)
     } catch {
       // Only the command-approval offer reads this; it never fails the hook.
+    }
+  }
+  // A conversation a restart stops reopens where it ran, in the mode it last
+  // ran in: keep what its start, prompt and turn-end hooks see of both.
+  if ((harness === 'claude-code' || harness === 'codex') && (event === 'session-start' || event === 'user-prompt-submit' || event === 'stop') &&
+      envelope.session_id !== undefined && envelope.agent_id === undefined) {
+    try {
+      recordReopenLaunch(envelope.session_id, deps.env, envelope.permission_mode)
+    } catch {
+      // Only a later reopen reads this; it never fails the hook.
     }
   }
   // The turn moved on, so no picker of this session is still on screen: a
