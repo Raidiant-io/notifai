@@ -70,7 +70,7 @@ const CLAUDE_CODE_CAPABILITY: HarnessCapability = {
   stopContinuation: 'decision-block',
   deliveryRoutes: ['hook-continuation', 'inbox-socket', 'hold-for-next-turn'],
   deliveryContract:
-    'the Stop hook returns at once and waits out of band through the complete answer window, then posts the answer into this same open session over its own inbox socket, whether it is idle or busy; closing the session ends its questions',
+    'the Stop hook returns at once and waits out of band through the complete answer window, then posts the answer into this same open session over its own inbox socket, whether it is idle or busy; open in several places, the most recently opened receives; closing the session ends its questions',
 }
 
 const CODEX_CAPABILITY: HarnessCapability = {

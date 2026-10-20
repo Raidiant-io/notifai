@@ -1960,6 +1960,10 @@ function sessionHubCheck(deps: CommandDeps): HookCheck | null {
   }
   // Process, transport and timing stay in the JSON detail; the line says what the User gets.
   const reachable = sessions.filter((session) => session['phase'] === 'attending').length
+  // A conversation open in several places is handed answers in the most recently opened only;
+  // an end being confirmed is decided seconds later (a handoff or a reload keeps it).
+  const shared = sessions.filter((session) => typeof session['writers'] === 'number' && session['writers'] > 1).length
+  const closing = sessions.filter((session) => session['end_pending'] === true).length
   // A hub left on an earlier build after an update, and what it still finishes before it hands over.
   const handover = hubHandoverReport(deps.env)
   return {
@@ -1967,6 +1971,8 @@ function sessionHubCheck(deps: CommandDeps): HookCheck | null {
     ok: true,
     reportOnly: true,
     detail: `running: ${sessions.length} Agent Session${sessions.length === 1 ? '' : 's'} attended, ${reachable} reachable now` +
+      (shared === 0 ? '' : `; ${shared} open in more than one place (the most recently opened receives)`) +
+      (closing === 0 ? '' : `; ${closing} closing (confirming the end)`) +
       (handover === null ? '' : `; ${describeHubHandover(handover)}`),
     technical: { ...report, handover },
   }

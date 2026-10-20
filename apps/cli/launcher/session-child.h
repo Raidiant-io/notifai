@@ -299,11 +299,12 @@ typedef struct {
     char state[PATH_MAX], run[PATH_MAX], socket_path[PATH_MAX], self[PATH_MAX];
     char harness_start[64], harness_ticks[32], boot[128];
     char inbox_socket[PATH_MAX], token[1024];
+    char writer_lock[PATH_MAX];
     pid_t harness_pid;
     int refusals;
     long long stamp_wall;
     unsigned long long stamp_mono;
-    int hub, lock;
+    int hub, lock, writer;
 } child_state;
 
 static void child_end_record(child_state *child) {
@@ -535,6 +536,8 @@ static int harness_alive(child_state *child) {
 
 static void child_ended(child_state *child) {
     child_end_record(child);
+    /* The harness is gone, so no later hook of it can want this lock. */
+    if (child->writer_lock[0]) unlink(child->writer_lock);
     if (child->hub >= 0) {
         jbuf ended = {0};
         jb_text(&ended, "{");
@@ -602,6 +605,15 @@ static int claude_descriptor_matches(const char *session, const proc_record *can
     if (strcmp(named, session) || strtol(pid, NULL, 10) != (long)candidate->pid || !same_start) return 0;
     if (socket && json_field(text, (size_t)n, "messagingSocketPath", socket, socket_size) != 1) socket[0] = 0;
     return 1;
+}
+
+/* The process `identify_harness` will name, read cheaply before anything
+ * waits: the parent, or the grandparent through a shell that did not exec. */
+static pid_t expected_harness(void) {
+    proc_record parent, grandparent;
+    if (!proc_lookup(getppid(), &parent)) return -1;
+    if (is_shell(parent.comm)) return proc_lookup(parent.ppid, &grandparent) ? grandparent.pid : -1;
+    return parent.pid;
 }
 
 static int identify_harness(child_state *child) {
@@ -694,6 +706,8 @@ static void child_hint(child_state *child) {
     jb_field(&body, "type", "hint");
     jb_field(&body, "session_id", child->session);
     jb_field(&body, "hook_event", child->event);
+    /* The process this hook ran in: a SessionStart says it (re)opened the conversation. */
+    if (child->harness_pid > 1) jb_number(&body, "harness_pid", child->harness_pid);
     jb_text(&body, "}");
     if (!hint.failed && !body.failed) { send_frame(fd, hint.data); send_frame(fd, body.data); }
     free(hint.data);
@@ -706,6 +720,7 @@ static int session_child_main(int argc, char **argv, const char *self, const cha
     memset(&child, 0, sizeof(child));
     child.hub = -1;
     child.lock = -1;
+    child.writer = -1;
     child.stamp_wall = wall_ms();
     child.stamp_mono = monotonic_ns();
     signal(SIGPIPE, SIG_IGN);
@@ -730,23 +745,52 @@ static int session_child_main(int argc, char **argv, const char *self, const cha
     if (!state_directory(child.state, sizeof(child.state)) ||
         !hub_paths(child.state, child.run, sizeof(child.run), child.socket_path, sizeof(child.socket_path))) return 0;
 
-    /* One child per session. The lock dies with its holder, whatever kills it. */
+    /* One child per session and harness process: two processes can host one
+     * conversation (two terminals, a terminal and the desktop app), and each
+     * gets its own child, so the hub knows every live writer. The lock dies
+     * with its holder, whatever kills it. The session lock that earlier
+     * builds take alone is held too while it is free, so their children of
+     * other processes still only hint. */
     char children[PATH_MAX], lock_path[PATH_MAX];
-    if (snprintf(children, sizeof(children), "%s/children", child.run) >= (int)sizeof(children) ||
+    pid_t expected = expected_harness();
+    child.harness_pid = expected;
+    if (expected <= 1 ||
+        snprintf(children, sizeof(children), "%s/children", child.run) >= (int)sizeof(children) ||
         !private_directory(children) ||
-        snprintf(lock_path, sizeof(lock_path), "%s/%016llx.lock", children, fnv64(child.session)) >= (int)sizeof(lock_path)) return 0;
-    child.lock = open(lock_path, O_RDWR | O_CREAT | O_CLOEXEC, 0600);
-    if (child.lock < 0) return 0;
-    if (flock(child.lock, LOCK_EX | LOCK_NB)) {
+        snprintf(lock_path, sizeof(lock_path), "%s/%016llx.lock", children, fnv64(child.session)) >= (int)sizeof(lock_path) ||
+        snprintf(child.writer_lock, sizeof(child.writer_lock), "%s/%016llx-%ld.lock", children, fnv64(child.session), (long)expected)
+            >= (int)sizeof(child.writer_lock)) return 0;
+    child.writer = open(child.writer_lock, O_RDWR | O_CREAT | O_CLOEXEC, 0600);
+    if (child.writer < 0) { child.writer_lock[0] = 0; return 0; }
+    if (flock(child.writer, LOCK_EX | LOCK_NB)) {
+        child.writer_lock[0] = 0;
         child_hint(&child);
         return 0;
     }
+    child.lock = open(lock_path, O_RDWR | O_CREAT | O_CLOEXEC, 0600);
+    if (child.lock >= 0 && flock(child.lock, LOCK_EX | LOCK_NB)) {
+        /* Another child holds the session. One from an earlier build that
+         * serves this very process needs only a hint; any other serves
+         * another process, and this child is one more writer. */
+        char held[128];
+        ssize_t n = pread(child.lock, held, sizeof(held) - 1, 0);
+        held[n > 0 ? n : 0] = 0;
+        char *space = strchr(held, ' ');
+        close(child.lock);
+        child.lock = -1;
+        if (space && strtol(space + 1, NULL, 10) == (long)expected) {
+            child.writer_lock[0] = 0;
+            child_hint(&child);
+            return 0;
+        }
+    }
     /* A Codex Interrupt hook lives three seconds: never a resident. */
-    if (!strcmp(child.event, "Interrupt")) { child_hint(&child); return 0; }
-    if (!identify_harness(&child)) return 0;
+    if (!strcmp(child.event, "Interrupt")) { child.writer_lock[0] = 0; child_hint(&child); return 0; }
+    if (!identify_harness(&child) || child.harness_pid != expected) { child.writer_lock[0] = 0; return 0; }
     char record[128];
     int record_length = snprintf(record, sizeof(record), "%ld %ld\n", (long)getpid(), (long)child.harness_pid);
-    if (ftruncate(child.lock, 0) == 0) write_all(child.lock, record, (size_t)record_length);
+    if (ftruncate(child.writer, 0) == 0) write_all(child.writer, record, (size_t)record_length);
+    if (child.lock >= 0 && ftruncate(child.lock, 0) == 0) write_all(child.lock, record, (size_t)record_length);
     boot_identity(child.boot, sizeof(child.boot));
     const char *socket = getenv("CLAUDE_CODE_MESSAGING_SOCKET"), *token = getenv("CLAUDE_CODE_MESSAGING_TOKEN");
     const char *exported = getenv("CLAUDE_CODE_SESSION_ID");

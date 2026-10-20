@@ -77,17 +77,20 @@ export async function notifyHubSessionEnded(env: NodeJS.ProcessEnv, sessionId: s
 }
 
 /**
- * A Codex SessionEnd for a conversation of the Codex app or IDE extension:
- * ask the hub that attends it to decide whether it closed or was only
- * unloaded. True only when the hub holds the decision; otherwise the caller
- * ends the session as before. Never starts a hub: a hub that is not running
- * attends nothing it could keep open.
+ * A Claude Code or Codex SessionEnd: ask the hub that attends the session to
+ * decide after the end confirmation whether it closed, came back at once (a
+ * reload, a handoff to another place), goes on in another place it is open
+ * in, or was only unloaded by its app. `harnessPid` is the process that ran
+ * the hook, when known. True only when the hub holds the decision; otherwise
+ * the caller ends the session at once, as before. Never starts a hub: a hub
+ * that is not running attends nothing it could keep open.
  */
-export async function holdCodexSessionEnd(env: NodeJS.ProcessEnv, sessionId: string, transcriptPath: string | undefined,
-  timeoutMs = 800): Promise<boolean> {
+export async function holdSessionEnd(env: NodeJS.ProcessEnv, sessionId: string,
+  details: { harnessPid?: number | undefined; transcriptPath?: string | undefined } = {}, timeoutMs = 800): Promise<boolean> {
   if (!hubSupported()) return false
   const reply = await requestHub(env, { type: 'session-end-candidate', session_id: sessionId,
-    ...(transcriptPath === undefined ? {} : { transcript_path: transcriptPath }) }, { timeoutMs })
+    ...(details.harnessPid === undefined ? {} : { harness_pid: details.harnessPid }),
+    ...(details.transcriptPath === undefined ? {} : { transcript_path: details.transcriptPath }) }, { timeoutMs })
   return reply?.['type'] === 'ok' && reply['held'] === true
 }
 

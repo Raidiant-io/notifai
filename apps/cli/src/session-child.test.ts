@@ -12,8 +12,8 @@ import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest'
 import type { AttendanceBatchRequestT, AttendanceBatchResponse } from '@raidiant/notifai-protocol'
 import type { ApiClient } from './client.js'
 import type { CommandDeps } from './commands-core.js'
-import { recordSessionNotified } from './hook-session-state.js'
-import { childLockPath, endedRecordsDir } from './hub-ipc.js'
+import { readSessionIncarnation, recordSessionNotified } from './hook-session-state.js'
+import { childLockPath, endedRecordsDir, writerLockPath } from './hub-ipc.js'
 import { Hub, peerVerifierFor } from './hub.js'
 import { nullLogger } from './logging.js'
 
@@ -86,8 +86,8 @@ function scratch(): { root: string; env: NodeJS.ProcessEnv } {
     CLAUDE_CONFIG_DIR: path.join(root, 'claude') } }
 }
 
-async function startHarness(root: string, env: NodeJS.ProcessEnv, mode: 'direct' | 'shell'): Promise<Harness> {
-  const child = spawn(process.execPath, [path.join(root, 'harness.mjs'), mode, launcher, SESSION, env['CLAUDE_CONFIG_DIR']!, path.join(root, 'inbox.sock')],
+async function startHarness(root: string, env: NodeJS.ProcessEnv, mode: 'direct' | 'shell', inbox = 'inbox.sock'): Promise<Harness> {
+  const child = spawn(process.execPath, [path.join(root, 'harness.mjs'), mode, launcher, SESSION, env['CLAUDE_CONFIG_DIR']!, path.join(root, inbox)],
     { env, stdio: ['pipe', 'pipe', 'inherit'] })
   const harness: Harness = { process: child, lines: [], pid: child.pid! }
   let buffered = ''
@@ -148,7 +148,7 @@ function startHubWith(env: NodeJS.ProcessEnv, fake: Service): { hub: Hub; done: 
     store: { load: () => ({ machineId: 'mch_test', secret: 's', baseUrl: 'https://example.invalid', machineName: 't' }), save: () => undefined, clear: () => undefined, describe: () => 'memory' },
     env, cwd: '/tmp', logger: nullLogger(), clientFactory: () => fake.client,
   }
-  const hub = new Hub(deps, { deps, verifyPeer: peerVerifierFor(launcher), idleExitMs: 500, bootIdentity: () => null })
+  const hub = new Hub(deps, { deps, verifyPeer: peerVerifierFor(launcher), idleExitMs: 500, bootIdentity: () => null, endConfirmMs: 500 })
   cleanups.push(() => hub.requestExit('test-cleanup'))
   return { hub, done: hub.run() }
 }
@@ -214,6 +214,40 @@ describe.skipIf(!supported)('native session child', () => {
     harness.process.kill('SIGKILL')
     await until(() => fake.batches.some((batch) => batch.sessions.some((entry) => entry.state === 'ended')))
     expect(await second.done).toBe(0)
+  }, 40_000)
+
+  it('gives each process hosting one conversation its own child: the most recently opened receives, and the other takes over when it exits', async () => {
+    const { root, env } = scratch()
+    recordSessionNotified(SESSION, env, Date.now())
+    const fake = service()
+    const { hub, done } = startHubWith(env, fake)
+    const first = await startHarness(root, env, 'direct', 'first.sock')
+    await until(() => hub.sessions.get(SESSION)?.child !== null && hub.sessions.get(SESSION) !== undefined)
+    // A second terminal resumes the same conversation (Claude Code allows it).
+    const second = await startHarness(root, env, 'direct', 'second.sock')
+    await until(() => hub.sessions.get(SESSION)?.harnessProcess.pid === second.pid)
+    const session = hub.sessions.get(SESSION)!
+    expect(session.standbys.map((writer) => writer.harnessProcess.pid)).toEqual([first.pid])
+    expect(readSessionIncarnation(SESSION, env)?.harness_process?.pid).toBe(second.pid)
+    for (const harness of [first, second]) {
+      expect(readFileSync(writerLockPath(env, SESSION, harness.pid), 'utf8').trim().split(' ')[1]).toBe(String(harness.pid))
+    }
+    // A note is handed to exactly one place: the most recently opened.
+    fake.notes.push({ body: 'hello' })
+    await until(() => second.lines.some((line) => 'inbox' in line))
+    await new Promise((resolve) => setTimeout(resolve, 1_000))
+    expect(first.lines.some((line) => 'inbox' in line)).toBe(false)
+    expect(second.lines.filter((line) => 'inbox' in line)).toHaveLength(1)
+    // The newer place closes: the conversation goes on in the other, not ended.
+    second.process.kill('SIGKILL')
+    await until(() => hub.sessions.get(SESSION)?.harnessProcess.pid === first.pid)
+    expect(readSessionIncarnation(SESSION, env)?.harness_process?.pid).toBe(first.pid)
+    await new Promise((resolve) => setTimeout(resolve, 1_000))
+    expect(fake.batches.flatMap((batch) => batch.sessions).some((entry) => entry.state === 'ended')).toBe(false)
+    // The last place closes: ended after the end confirmation.
+    first.process.kill('SIGKILL')
+    await until(() => fake.batches.some((batch) => batch.sessions.some((entry) => entry.state === 'ended')))
+    expect(await done).toBe(0)
   }, 40_000)
 
   it('records the close locally when no hub can be reached', async () => {

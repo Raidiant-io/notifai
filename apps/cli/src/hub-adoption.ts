@@ -16,7 +16,7 @@ import { stateDir } from './config.js'
 import { codexTranscriptState } from './codex-session-end.js'
 import { claimHolderMayRun, readClaimFile } from './hook-question-lock.js'
 import { endsIncarnation, readSessionEndMarker, readSessionIncarnation, readSessionState } from './hook-session-state.js'
-import { childLockPath } from './hub-ipc.js'
+import { childLockPath, writerLockPath } from './hub-ipc.js'
 import { pidExists, processIdentityLiveness, type ProcessIdentity } from './process-identity.js'
 import { attendantClaimPath } from './session-attendant-state.js'
 
@@ -33,6 +33,11 @@ export interface AdoptionRecord {
   dormant_since: number | null
   /** The rollout existed at some point, so its absence means an archive or delete. */
   transcript_seen: boolean
+  /**
+   * Wall-clock milliseconds an end signal arrived that the hub was still
+   * confirming; null when none was pending. The next hub confirms it.
+   */
+  end_candidate_since: number | null
 }
 
 const text = (value: unknown): string | null => typeof value === 'string' && value.length > 0 && value.length <= 4096 ? value : null
@@ -51,6 +56,7 @@ export function parseAdoptionRecord(value: unknown): AdoptionRecord | null {
       typeof owner['pid'] !== 'number' || !Number.isSafeInteger(owner['pid']) || owner['pid'] <= 1 || text(owner['start']) === null) return null
   const ticks = text(record['harness_ticks'])
   const dormant = record['dormant_since']
+  const candidate = record['end_candidate_since']
   return {
     harness,
     harness_process: { pid: owner['pid'], start: owner['start'] as string },
@@ -62,6 +68,7 @@ export function parseAdoptionRecord(value: unknown): AdoptionRecord | null {
     codex_home: absolute(record['codex_home']),
     dormant_since: typeof dormant === 'number' && Number.isFinite(dormant) ? dormant : null,
     transcript_seen: record['transcript_seen'] === true,
+    end_candidate_since: typeof candidate === 'number' && Number.isFinite(candidate) ? candidate : null,
   }
 }
 
@@ -99,22 +106,25 @@ export function adoptionRecord(env: NodeJS.ProcessEnv, sessionId: string, status
     dormant_since: status['reason'] === 'dormant-open' && typeof status['updated_at'] === 'number' ? status['updated_at'] : null,
     // The native turn was read from that rollout.
     transcript_seen: true,
+    end_candidate_since: null,
   }
 }
 
 /**
  * Whether a session child still runs for this session and harness process:
- * it writes `<pid> <harness pid>` into its lock, which it holds for life. A
+ * it writes `<pid> <harness pid>` into its locks, which it holds for life. A
  * live child has its own kernel watch, reconnects to whichever hub runs, and
  * reports the end itself.
  */
 export function childWatching(env: NodeJS.ProcessEnv, sessionId: string, harnessPid: number): boolean {
-  try {
-    const [child, harness] = readFileSync(childLockPath(env, sessionId), 'utf8').trim().split(' ').map(Number)
-    return harness === harnessPid && child !== undefined && pidExists(child)
-  } catch {
-    return false
-  }
+  return [writerLockPath(env, sessionId, harnessPid), childLockPath(env, sessionId)].some((file) => {
+    try {
+      const [child, harness] = readFileSync(file, 'utf8').trim().split(' ').map(Number)
+      return harness === harnessPid && child !== undefined && pidExists(child)
+    } catch {
+      return false
+    }
+  })
 }
 
 export interface AdoptionCandidate {

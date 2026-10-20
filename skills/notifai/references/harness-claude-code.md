@@ -26,7 +26,13 @@ socket receives a wake-up: an idle Agent Session starts a new turn, and a busy
 one receives it between tool calls or when its current turn ends. The wake-up
 carries no answer; Claude Code shows it as a message from another session. The prompt hook or the named
 `notifai receive` command drains the current notes and answers together.
-Closing the Agent Session ends its questions; Notifai never resumes it.
+Closing the Agent Session ends its questions within seconds: exiting, closing
+its terminal, or replacing it there with `/clear` or another conversation's
+`/resume`. Notifai never resumes it. When the same conversation continues at
+once elsewhere (`/desktop`, the desktop app reopening it, a resume in another
+terminal), its questions stay open and their answers follow it. Open in two
+places at once, it receives answers and notes in the most recently opened one
+only; closing one leaves the other.
 
 The inbox is a socket on macOS and Linux from Claude Code 2.1.224, and a
 named pipe on Windows from 2.1.234. On an older Claude Code the answer is

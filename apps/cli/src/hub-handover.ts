@@ -44,8 +44,9 @@ export type HandoverWait = WaitingReason
 
 /**
  * Two reads of an older hub's status this far apart, both clear: longer than
- * the hub's Codex end confirmation (5 s), so an end it was still classifying
- * at the first read shows by the second.
+ * an earlier hub's Codex end confirmation (5 s), so an end it was still
+ * classifying at the first read shows by the second. A hub of a later build
+ * hands itself over and leaves its own undecided ends on disk.
  */
 export const HANDOVER_CONFIRM_MS = 6_000
 /** Hooks start the detached check at most this often while an older hub runs. */

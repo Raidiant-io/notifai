@@ -2,13 +2,15 @@
  * What a Codex `SessionEnd` means.
  *
  * Codex reports `reason: "other"` for every end, so the reason cannot tell a
- * close from an unload. An unload of a conversation the Codex app (or the
- * Codex IDE extension) still lists, while that app runs, leaves the
- * conversation open: its questions stay answerable and an answer waits in it
- * until the User opens it again. Every other end is a close, and a closed
- * session's questions expire.
+ * close from a reload or an unload. The hub decides after its end
+ * confirmation. A thread its host holds again by then (the shared server
+ * reloads a thread in place when a terminal resumes it) was never closed. An
+ * unload of a conversation the Codex app (or the Codex IDE extension) still
+ * lists, while that app runs, leaves the conversation open: its questions
+ * stay answerable and an answer waits in it until the User opens it again.
+ * Every other end is a close, and a closed session's questions expire.
  *
- * The evidence, in order:
+ * The evidence after the confirmation, in order:
  * 1. the thread's rollout is gone (archived or deleted): closed;
  * 2. the host process (the process that ran the hook) is gone: closed, which
  *    covers quitting the app;
@@ -17,7 +19,9 @@
  * 4. anything else, including evidence that cannot be read: closed.
  */
 import { execFileSync } from 'node:child_process'
-import { closeSync, existsSync, openSync, readSync } from 'node:fs'
+import { closeSync, existsSync, openSync, readdirSync, readlinkSync, readSync, realpathSync } from 'node:fs'
+import os from 'node:os'
+import path from 'node:path'
 
 /**
  * Rollout originators of the Codex app and the Codex IDE extension. The
@@ -111,4 +115,47 @@ export function codexHostKind(pid: number): CodexHostKind {
   const serving = words.includes('app-server')
   const shared = words.includes('daemon') || words.includes('--listen') || words.includes('remote-control')
   return serving && !shared ? 'app-server' : 'other'
+}
+
+/** Codex's per-thread writer lock: held open by the process that has the thread loaded. */
+export function codexThreadWriterLockPath(codexHome: string | null, threadId: string): string {
+  return path.join(codexHome ?? path.join(os.homedir(), '.codex'), 'thread-writer-locks', `${threadId}.lock`)
+}
+
+/**
+ * Whether this exact process has the thread loaded now: it holds the
+ * thread's writer lock open. The shared server reloading a thread in place
+ * (a `codex resume` of a conversation no terminal shows) runs SessionEnd and
+ * holds the lock again about two seconds later; a closed or unloaded thread's
+ * lock is released. False when it cannot be read (Windows, no `lsof`).
+ */
+export function codexHostHoldsThread(codexHome: string | null, threadId: string, pid: number,
+  platform: NodeJS.Platform = process.platform): boolean {
+  if (!Number.isInteger(pid) || pid <= 1) return false
+  const lock = codexThreadWriterLockPath(codexHome, threadId)
+  if (!existsSync(lock)) return false
+  if (platform === 'linux') {
+    let target: string
+    try { target = realpathSync(lock) } catch { return false }
+    try {
+      const fds = path.join('/proc', String(pid), 'fd')
+      return readdirSync(fds).some((fd) => {
+        try { return readlinkSync(path.join(fds, fd)) === target } catch { return false }
+      })
+    } catch {
+      return false
+    }
+  }
+  if (platform !== 'darwin') return false
+  try {
+    // One process only (`-a -p`): a few tens of milliseconds, not a scan of every process.
+    const output = execFileSync('lsof', ['-t', '-a', '-p', String(pid), '--', lock], {
+      encoding: 'utf8', timeout: 2_000, stdio: ['ignore', 'pipe', 'ignore'],
+      env: { PATH: '/usr/sbin:/usr/bin:/bin:/sbin', LC_ALL: 'C' },
+    })
+    return output.split(/\s+/).includes(String(pid))
+  } catch {
+    // `lsof` exits 1 when the process does not have the file open.
+    return false
+  }
 }
