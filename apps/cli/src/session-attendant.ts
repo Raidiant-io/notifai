@@ -143,6 +143,12 @@ export interface SessionAttendantOptions {
   publishProbeStatus?: boolean
   /** Resolves when a termination signal arrived. */
   signalled?: Promise<void>
+  /**
+   * Resolves when the host hands this session to a newer attendant while the
+   * session stays open (an OpenClaw plugin generation replaced in the running
+   * Gateway). The attendant steps aside as superseded: withdrawn, never ended.
+   */
+  handedOver?: Promise<void>
   probeIntervalMs?: number
   waitSeconds?: number
 }
@@ -370,6 +376,7 @@ export async function runSessionAttendant(options: SessionAttendantOptions): Pro
     }
   })()
   void options.signalled?.then(() => stop('signal'))
+  void options.handedOver?.then(() => stop('superseded'))
 
   /** Wait until a probe tick changes something this loop waits on, or a stop. */
   const nextChange = async (): Promise<void> => {

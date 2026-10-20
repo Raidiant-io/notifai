@@ -108,6 +108,8 @@ export interface AttendantSeams {
   clock?: AttendantClock
   /** Resolves to simulate SIGTERM/SIGHUP/SIGINT. */
   signalled?: Promise<void>
+  /** Resolves to simulate the OpenClaw plugin's generation handover (SIGUSR2). */
+  handedOver?: Promise<void>
   probeIntervalMs?: number
   waitSeconds?: number
   /** How long a new start waits for a superseded attendant to step aside. */
@@ -406,6 +408,7 @@ export async function attendHook(
   })
   let wakeCleanup: Promise<void> | null = null
   const signals = seams.signalled === undefined ? terminationSignal() : null
+  const handover = harness === 'openclaw' && seams.handedOver === undefined ? openclawHandoverSignal() : null
   try {
     const result = await runSessionAttendant({
       sessionId,
@@ -475,12 +478,14 @@ export async function attendHook(
         ])
       },
       signalled: seams.signalled ?? signals!.promise,
+      ...(harness !== 'openclaw' ? {} : { handedOver: seams.handedOver ?? handover!.promise }),
       ...(seams.probeIntervalMs === undefined ? {} : { probeIntervalMs: seams.probeIntervalMs }),
       ...(seams.waitSeconds === undefined ? {} : { waitSeconds: seams.waitSeconds }),
     })
     seams.onExit?.(result)
   } finally {
     signals?.dispose()
+    handover?.dispose()
     if (token !== null) releaseClaimFile(claimFile, token)
   }
   return EXIT.ok
@@ -771,6 +776,27 @@ function terminationSignal(): { promise: Promise<void>; dispose(): void } {
     promise,
     dispose: () => {
       for (const signal of signals) process.off(signal, onSignal)
+    },
+  }
+}
+
+/**
+ * The OpenClaw plugin sends SIGUSR2 when OpenClaw replaces its generation in a
+ * Gateway that keeps running (install, update, reload, disable). The session is
+ * still open, so the attendant steps aside for the next generation's attendant
+ * instead of ending the session. SIGTERM still means the Gateway is stopping.
+ */
+function openclawHandoverSignal(): { promise: Promise<void>; dispose(): void } {
+  let resolve!: () => void
+  const promise = new Promise<void>((done) => {
+    resolve = done
+  })
+  const onSignal = (): void => resolve()
+  if (process.platform !== 'win32') process.on('SIGUSR2', onSignal)
+  return {
+    promise,
+    dispose: () => {
+      if (process.platform !== 'win32') process.off('SIGUSR2', onSignal)
     },
   }
 }

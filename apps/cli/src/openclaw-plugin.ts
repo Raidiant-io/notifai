@@ -45,7 +45,7 @@ export const OPENCLAW_PLUGIN_FILENAME = 'index.js'
 export const OPENCLAW_PLUGIN_MANIFEST = 'openclaw.plugin.json'
 export const OPENCLAW_PLUGIN_PACKAGE = 'package.json'
 
-const OPENCLAW_ADAPTER_VERSION = 6
+const OPENCLAW_ADAPTER_VERSION = 7
 
 export function openclawStateDir(
   env: NodeJS.ProcessEnv = process.env,
@@ -117,7 +117,78 @@ let JOURNAL_DIR = null
 let MESSAGE_JOURNAL_DIR = null
 let pendingMessageJournals = null
 let awaitingMessageContexts = new Map()
-const GATEWAY_BOOT_ID = randomUUID()
+// One Gateway process keeps one boot identity across plugin generations. A
+// live plugin replacement re-imports this module in the same process; it is
+// not a Gateway restart, so in-flight Session Note custody must survive it.
+const GATEWAY_BOOT_KEY = Symbol.for("notifai.openclaw.gateway-boot")
+const GATEWAY_BOOT_ID = (() => {
+  const held = globalThis[GATEWAY_BOOT_KEY]
+  if (held !== null && typeof held === "object" && held.pid === process.pid &&
+      typeof held.id === "string") return held.id
+  const id = randomUUID()
+  globalThis[GATEWAY_BOOT_KEY] = { pid: process.pid, id }
+  return id
+})()
+// A retired generation hands journal custody to its successor only after
+// every write it already admitted has settled. OpenClaw allows a replaced
+// service 5 s to stop; a write still running after this budget is reconciled
+// by its idempotency key, never replayed blindly.
+const STOP_DRAIN_MS = 4_000
+
+// Stopping this service means one of two different things. When the Gateway
+// stops, the sessions it hosts close: their attendants end them, so their
+// questions expire. When OpenClaw replaces this plugin generation (install,
+// update, reload, disable) inside the same running Gateway, every session stays
+// open: attendants hand over to the next generation without ending anything.
+// OpenClaw's gateway_stop hook names which: "gateway stopping" before services
+// stop, "plugin replacement" after this service stopped.
+let gatewayStopObserved = false
+let gatewayStopping = false
+const retainedAttendants = new Set()
+let retainedTimer = null
+const ATTENDANT_HANDOVER_FALLBACK_MS = 15_000
+
+function signalAttendant(child, signal) {
+  if (child.exitCode !== null || child.signalCode !== null) return
+  try { child.kill(signal) } catch { /* Already gone. */ }
+  // Close this generation's ends of the private pipes: the attendant's final
+  // report travels to the service, and a pipe left open would keep the
+  // stepped-aside process alive until the Gateway exits.
+  try { child.stdio?.[3]?.destroy?.() } catch { /* Already closed. */ }
+  try { child.stdio?.[4]?.end?.() } catch { /* Already closed. */ }
+}
+
+function releaseRetention() {
+  if (retainedTimer !== null) clearTimeout(retainedTimer)
+  retainedTimer = null
+  process.off("exit", endAttendants)
+}
+
+function handOverAttendants() {
+  releaseRetention()
+  // SIGUSR2 tells the attendant to step aside (withdrawn, not ended).
+  const signal = process.platform === "win32" ? "SIGTERM" : "SIGUSR2"
+  for (const child of retainedAttendants) signalAttendant(child, signal)
+  retainedAttendants.clear()
+}
+
+function endAttendants() {
+  releaseRetention()
+  for (const child of retainedAttendants) signalAttendant(child, "SIGTERM")
+  retainedAttendants.clear()
+}
+
+function retainAttendants(children) {
+  for (const child of children) retainedAttendants.add(child)
+  if (retainedAttendants.size === 0) return
+  // A live process after this delay was not a Gateway shutdown; an exit
+  // before it was, so the sessions it hosted end with it.
+  if (retainedTimer === null) {
+    retainedTimer = setTimeout(handOverAttendants, ATTENDANT_HANDOVER_FALLBACK_MS)
+    retainedTimer.unref?.()
+    process.once("exit", endAttendants)
+  }
+}
 
 // Persistent discovery, not a process lease. A host may use a state directory
 // that the CLI's environment cannot reconstruct. Register before publishing
@@ -202,6 +273,7 @@ function writeReadiness(target) {
   mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 })
   const temp = file + "." + randomUUID() + ".tmp"
   writeFileSync(temp, JSON.stringify({ pid: process.pid, start, boot_id: GATEWAY_BOOT_ID,
+    integration_revision: NOTIFAI_INTEGRATION_REVISION,
     script: target.script, script_mtime: statSync(target.script).mtimeMs }) + "\\n",
     { mode: 0o600, flag: "wx" })
   ownHostFile(temp)
@@ -584,6 +656,23 @@ function makeContinuationService(config, logger, api) {
   let scanning = false
   let ready = false
   let gatewayTarget = null
+  // Writes this generation admitted after its last retirement check. The
+  // successor reads the journals only after these settle (stop drains them).
+  const writing = new Set()
+  const lifecycleSignal = api?.lifecycle?.signal
+
+  /** A stopped or host-retired generation never claims, journals or submits. */
+  function retired() {
+    return stopped || lifecycleSignal?.aborted === true
+  }
+
+  /** Run one admitted write; the successor waits for it before taking custody. */
+  async function admittedWrite(write) {
+    if (retired()) return false
+    const run = (async () => { await write(); return true })()
+    writing.add(run)
+    try { return await run } finally { writing.delete(run) }
+  }
 
   function report(record, reason) {
     if (reported.get(record.delivery_id) === reason) return
@@ -592,7 +681,7 @@ function makeContinuationService(config, logger, api) {
   }
 
   async function deliver(record) {
-    if (uninstallPending() || delivering.has(record.delivery_id) || record.phase === "transcript") return
+    if (uninstallPending() || retired() || delivering.has(record.delivery_id) || record.phase === "transcript") return
     delivering.add(record.delivery_id)
     try {
       const envelope = { session_id: record.session_key, cwd: record.cwd,
@@ -604,31 +693,36 @@ function makeContinuationService(config, logger, api) {
           ...envelope, openclaw_request_ids: record.request_ids })
         if (proved?.trim() !== "committed") return
         record = { ...record, phase: "committed" }
-        saveJournal(record)
+        if (!await admittedWrite(() => saveJournal(record))) return
       }
       const target = await verifiedGatewayTarget(config, logger)
       if (target === null) { report(record, "gateway-target-unverified"); return }
       const state = await inspectSubmission(target, record)
       if (state === "unconfirmed") { report(record, "history-unconfirmed"); return }
       if (state === "transcript") {
-        saveJournal({ ...record, phase: "transcript" })
+        await admittedWrite(() => saveJournal({ ...record, phase: "transcript" }))
         return
       }
       if (state === "pending") {
-        if (record.phase !== "admitted") saveJournal({ ...record, phase: "admitted" })
+        if (record.phase !== "admitted") await admittedWrite(() => saveJournal({ ...record, phase: "admitted" }))
         return
       }
       if (state === "interrupted" || (state === "absent" && record.phase === "admitted")) {
         record = { ...record, attempt: record.attempt + 1, phase: "committed" }
-        saveJournal(record)
+        if (!await admittedWrite(() => saveJournal(record))) return
       }
       if (state !== "absent" && state !== "interrupted") return
-      saveJournal({ ...record, phase: "submitting" })
-      report(record, "submitting-pointer")
-      await gatewayCall(target, "chat.send", { sessionKey: record.session_key,
-        message: pointerMessage(record), queueMode: "followup",
-        idempotencyKey: submissionKey(record) })
-      saveJournal({ ...record, phase: "admitted" })
+      // The submission and its journal phases are one admitted write: a
+      // retiring generation finishes it before its successor reads the journal.
+      const submitted = await admittedWrite(async () => {
+        saveJournal({ ...record, phase: "submitting" })
+        report(record, "submitting-pointer")
+        await gatewayCall(target, "chat.send", { sessionKey: record.session_key,
+          message: pointerMessage(record), queueMode: "followup",
+          idempotencyKey: submissionKey(record) })
+        saveJournal({ ...record, phase: "admitted" })
+      })
+      if (!submitted) { report(record, "generation-retired"); return }
       report(record, "pointer-admitted")
     } catch {
       // An uncertain RPC is reconciled by identity before any retry.
@@ -639,7 +733,7 @@ function makeContinuationService(config, logger, api) {
   }
 
   async function deliverMessageOnce(record) {
-    if (uninstallPending()) return false
+    if (uninstallPending() || retired()) return false
     try {
       if (record.boot_id !== GATEWAY_BOOT_ID) {
         settleMessageJournal(record, "unconfirmed")
@@ -694,14 +788,15 @@ function makeContinuationService(config, logger, api) {
         return false
       }
       if (await currentSession(target, record) === null) return false
-      saveMessageJournal({ ...record, phase: "submitting" })
-      await gatewayCall(target, "chat.send", {
-        sessionKey: record.session_key, message: messagePointer(record),
-        queueMode: "followup",
-        idempotencyKey: submissionKey(record),
+      return await admittedWrite(async () => {
+        saveMessageJournal({ ...record, phase: "submitting" })
+        await gatewayCall(target, "chat.send", {
+          sessionKey: record.session_key, message: messagePointer(record),
+          queueMode: "followup",
+          idempotencyKey: submissionKey(record),
+        })
+        saveMessageJournal({ ...record, phase: "admitted" })
       })
-      saveMessageJournal({ ...record, phase: "admitted" })
-      return true
     } catch {
       // An uncertain admission is reconciled by identity, never blindly replayed.
       return false
@@ -753,7 +848,7 @@ function makeContinuationService(config, logger, api) {
           const existing = readMessageJournal(deliveryId)
           const current = active.get(session.session_key)
           let written = false
-          if (current?.attendant === child && record.native_revision !== null &&
+          if (!retired() && current?.attendant === child && record.native_revision !== null &&
               (existing === null ||
                 (existing.message_id === record.message_id &&
                   existing.session_key === record.session_key &&
@@ -772,7 +867,7 @@ function makeContinuationService(config, logger, api) {
   }
 
   function startSettlement(session, entry) {
-    if (uninstallPending()) return
+    if (uninstallPending() || retired()) return
     const envelope = { session_id: session.session_key, cwd: session.cwd,
       openclaw_session_id: session.session_id, hook_event_name: "SessionStart" }
     const child = spawnOwnedHook("openclaw-settlement", envelope, true)
@@ -789,6 +884,7 @@ function makeContinuationService(config, logger, api) {
         buffer = buffer.slice(end + 1)
         let payload
         try { payload = JSON.parse(line) } catch { continue }
+        if (retired()) continue
         if (payload.type === "prepare") {
           const ids = payload.request_ids
           if (payload.session_key !== session.session_key ||
@@ -827,7 +923,7 @@ function makeContinuationService(config, logger, api) {
   }
 
   function startSession(session) {
-    if (uninstallPending()) return
+    if (uninstallPending() || retired()) return
     const envelope = { session_id: session.session_key, cwd: session.cwd,
       openclaw_session_id: session.session_id, hook_event_name: "SessionStart" }
     const entry = { generation: session.generation,
@@ -845,7 +941,7 @@ function makeContinuationService(config, logger, api) {
   }
 
   async function tick() {
-    if (stopped || scanning) return
+    if (retired() || scanning) return
     // Native children observe the same barrier and report withdrawn through
     // their gates. Never turn uninstall into an ended signal to the harness.
     if (uninstallPending()) {
@@ -860,7 +956,7 @@ function makeContinuationService(config, logger, api) {
     try {
       if (!ready) {
         const target = await verifiedGatewayTarget(config, logger)
-        if (target === null || !writeReadiness(target)) return
+        if (target === null || retired() || !writeReadiness(target)) return
         gatewayTarget = target
         ready = true
       }
@@ -908,6 +1004,7 @@ function makeContinuationService(config, logger, api) {
         entry.attendant.kill("SIGTERM")
         active.delete(key)
       }
+      if (retired()) return
       for (const record of readJournals()) void deliver(record)
       for (const [deliveryId] of awaitingMessageContexts) {
         const record = readMessageJournal(deliveryId)
@@ -935,15 +1032,31 @@ function makeContinuationService(config, logger, api) {
 
   return {
     start() { pendingMessageJournals = null; timer = setInterval(() => { void tick() }, 2_000); void tick() },
-    stop() {
+    /** OpenClaw awaits this before registering a replacement generation. */
+    async stop() {
       stopped = true
       clearReadiness()
       if (timer !== null) clearInterval(timer)
+      const attendants = []
       if (!uninstallPending()) for (const entry of active.values()) {
+        // A settlement child holds an answer claim; its exit releases the
+        // claim to the next generation's settlement, which resumes from the
+        // journal.
         if (entry.child !== null) entry.child.kill("SIGTERM")
-        entry.attendant.kill("SIGTERM")
+        attendants.push(entry.attendant)
       }
       active.clear()
+      if (gatewayStopping || !gatewayStopObserved) for (const child of attendants) signalAttendant(child, "SIGTERM")
+      else retainAttendants(attendants)
+      // Journal custody passes to the successor only after admitted writes
+      // settle. Anything not yet admitted stays in the journal for it.
+      const deadline = Date.now() + STOP_DRAIN_MS
+      while (writing.size > 0 && Date.now() < deadline) {
+        let timeout
+        await Promise.race([Promise.allSettled([...writing]),
+          new Promise((resolve) => { timeout = setTimeout(resolve, Math.max(0, deadline - Date.now())) })])
+        clearTimeout(timeout)
+      }
     },
   }
 }
@@ -1117,9 +1230,11 @@ function envelopeFor(sessionKey, event, ctx, hookEventName) {
 function onIfSupported(api, name, handler) {
   try {
     api.on(name, handler)
+    return true
   } catch {
     // Older OpenClaw builds may reject a typed hook. The prompt fallback
     // remains available, while unobserved rotations cannot be guessed.
+    return false
   }
 }
 
@@ -1142,10 +1257,18 @@ function register(api) {
       continuationService = makeContinuationService(ctx.config, ctx.logger, api)
       continuationService.start()
     },
-    stop() {
-      continuationService?.stop()
+    async stop() {
+      const service = continuationService
       continuationService = null
+      await service?.stop()
     },
+  })
+  gatewayStopObserved = onIfSupported(api, "gateway_stop", (event) => {
+    if (event?.reason === "plugin replacement") handOverAttendants()
+    else {
+      gatewayStopping = true
+      endAttendants()
+    }
   })
   onIfSupported(api, "session_start", async (event, ctx) => {
     const sessionKey = sessionKeyOf(event, ctx)

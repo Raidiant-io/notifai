@@ -5,9 +5,12 @@ harness shares.
 
 ## Activation
 
-**OpenClaw:** restart the Gateway after installation because plugins load at
-startup, then start one fresh Agent Session, send one prompt, and run
-`notifai doctor`. Notifai owns its generated Gateway plugin and will not
+**OpenClaw:** installation applies a changed plugin to a running Gateway
+through `openclaw plugins reload notifai` and names the applied generation;
+with no Gateway running it loads at the next start. If it says the previous
+generation kept serving, run `openclaw plugins reload notifai --wait` (or
+restart the Gateway). Then start one fresh Agent Session, send one prompt, and
+run `notifai doctor`. Notifai owns its generated Gateway plugin and will not
 overwrite a foreign one. Exact Agent Session identity is the OpenClaw
 `sessionKey`; the transcript `sessionId` can stay the same across `/new` and
 `/reset`, while idle or daily rollover can change it. Notifai gives each
@@ -22,7 +25,8 @@ into the same Agent Session after the asking turn ends. It queues a pointer
 through OpenClaw's followup route; run `notifai replies <id>` from that
 session to read the answer and `notifai acknowledge <id>` before acting on it.
 Question Routing requires the current generation marker, an enabled Project,
-and a local Gateway whose CLI version and process identity match the plugin.
+and a local Gateway whose CLI version and process identity match the plugin
+and which runs the installed plugin generation.
 If this Project is disabled, run `notifai project enable` before `notifai ask`.
 On macOS, the same Gateway service attends the current generation and queues
 Session Notes and post-consumption Answer Edits as followup turns. It keeps
@@ -30,7 +34,8 @@ the message in a private local delivery journal and sends only an opaque
 pointer in the CLI call. The matching prompt receives the full context once,
 only within its original native generation and Gateway instance. Journal
 text is discarded after that prompt claims it, a generation change, or a
-Gateway restart. The agent acknowledges each `sm_` message after reading it.
+Gateway restart; a plugin reload hands it to the new plugin generation.
+The agent acknowledges each `sm_` message after reading it.
 If a Gateway crash interrupts a turn, OpenClaw may replay its pointer after
 the staged context was consumed. The pointer instructs the agent to say the
 context is missing and leave that message unacknowledged; the User may send

@@ -808,8 +808,8 @@ export function askCommand(
     if (active.harness === 'openclaw' && !openclawGatewayReady(deps.env)) {
       return askFailure(
         deps, flags, 'openclaw_gateway_unready', 'hook_contract',
-        'The local OpenClaw Gateway service has not proved a matching CLI and live process.',
-        'restart the Gateway with the installed Notifai plugin, then run `notifai doctor`',
+        'The local OpenClaw Gateway service has not proved a matching CLI, a live process and the installed Notifai plugin generation.',
+        'apply the installed plugin with `openclaw plugins reload notifai` (or start the Gateway), then run `notifai doctor`',
       )
     }
     if (state.harness !== active.harness ||

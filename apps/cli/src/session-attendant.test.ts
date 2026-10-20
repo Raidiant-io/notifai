@@ -273,6 +273,23 @@ describe('Session Attendant', () => {
     expect(await h.result).toEqual({ reason: 'signal', reported: 'ended' })
   })
 
+  it('steps aside without ending the session when the host hands it to a newer attendant', async () => {
+    let handOver!: () => void
+    const handedOver = new Promise<void>((resolve) => { handOver = resolve })
+    const h = startAttendant({ handedOver })
+    await h.clock.advance(1)
+    h.service.last().respond(h.service.attending(3))
+    await h.clock.advance(1)
+    handOver()
+    await h.clock.advance(1)
+    const final = h.service.last()
+    // Withdrawn releases the lease for the next generation; only ended closes
+    // the session and expires its questions.
+    expect(final.body).toEqual({ incarnation: 'inc_aaaaaaaaaaaa', generation: 3, state: 'withdrawn' })
+    final.respond({ status: 'withdrawn' })
+    expect(await h.result).toEqual({ reason: 'superseded', reported: 'withdrawn' })
+  })
+
   it('gives up the final report after its bound when the service does not answer', async () => {
     const h = startAttendant()
     await h.clock.advance(1)
