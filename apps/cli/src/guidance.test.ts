@@ -1,3 +1,4 @@
+import { execFileSync } from 'node:child_process'
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
@@ -324,18 +325,29 @@ describe('guidance commands', () => {
 
   it('writes a topic to the chosen layer and resolution picks it up', async () => {
     const { env, cwd, home } = setup()
+    // Shared Project guidance lives in a checkout, at its root.
+    const repo = path.dirname(cwd)
+    execFileSync('git', ['init', '-q'], { cwd: repo })
     const { deps } = makeDeps(env, cwd)
     const code = await guidanceSetCommand(deps, 'titles', 'Prefix titles with 🚀', {
       project: true,
       yes: true,
     })
     expect(code).toBe(0)
-    const file = path.join(cwd, '.notifai', 'guidance', 'titles.md')
+    const file = path.join(repo, '.notifai', 'guidance', 'titles.md')
     expect(readFileSync(file, 'utf8')).toBe('Prefix titles with 🚀\n')
     expect(resolveGuidance({ cwd, env })).toContainEqual(
       expect.objectContaining({ name: 'titles', content: 'Prefix titles with 🚀\n' }),
     )
     expect(home).toBeTruthy()
+  })
+
+  it('refuses shared Project guidance outside a checkout and points to --local', async () => {
+    const { env, cwd } = setup()
+    const { deps, captured } = makeDeps(env, cwd)
+    expect(await guidanceSetCommand(deps, 'titles', 'Prefix titles with 🚀', { project: true, yes: true })).toBe(2)
+    expect(captured.err.join('\n')).toContain('--local')
+    expect(existsSync(path.join(path.dirname(cwd), '.notifai', 'guidance', 'titles.md'))).toBe(false)
   })
 
   it('holds the confirmation gate: no --yes and no consent means no write', async () => {

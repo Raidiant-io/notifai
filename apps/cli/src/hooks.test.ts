@@ -4386,9 +4386,12 @@ describe('user-prompt-submit hook', () => {
     )
 
     expect(h.io.outLines).toEqual([])
+    // The prompt still records what a later reopen needs: here no terminal
+    // and no permission mode were seen.
     expect(readSessionState('presence-only', h.env)).toEqual({
       harness: 'claude-code',
       last_prompt_at: NOW,
+      reopen_launch: { terminal: null, terminal_seen: null, orca_pane: false, permission_mode: null },
     })
   })
 

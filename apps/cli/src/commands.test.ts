@@ -134,6 +134,7 @@ import { enableProject, projectBinding, projectEnabled } from './project-enablem
 import { firstRequiredBlocker, readinessJson } from './readiness.js'
 import { readOrcaSessionTitle, type OrcaCommand } from './orca-session-title.js'
 import { recordClaudePermissionMode } from './claude-command-approval.js'
+import { reopenLine, reopenReport } from './session-reopen.js'
 
 afterEach(() => {
   resetPublishedCliDistTagsForTest()
@@ -5317,6 +5318,8 @@ describe('config surfaces', () => {
     const globalFile = path.join(deps.env['XDG_CONFIG_HOME']!, 'notifai', 'config.toml')
     mkdirSync(path.dirname(globalFile), { recursive: true })
     writeFileSync(globalFile, 'wait_seconds = 20\n')
+    // Shared Project settings live in a checkout.
+    execFileSync('git', ['-C', deps.cwd, 'init'], { stdio: 'ignore' })
 
     expect(await configSetCommand(deps, 'wait_seconds', '10', { project: true, yes: true })).toBe(
       EXIT.ok,
@@ -5678,7 +5681,7 @@ describe('interactive command UX', () => {
     expect(io.intros).toEqual(['Notifai doctor'])
     expect(io.checks.some((check) => !check.ok && check.message.startsWith('This machine:'))).toBe(true)
     expect(io.checks.some((check) => check.message.startsWith('Notifai update:'))).toBe(false)
-    expect(io.outLines).toEqual([])
+    expect(io.outLines).toEqual(doctorReopenLines(deps))
 
     // Four tones, not two. A boolean has to round `optional-gap` and `unknown`
     // to pass or fail, and rounding them to pass put a tick beside things the
@@ -5751,6 +5754,12 @@ describe('interactive command UX', () => {
   })
 })
 
+/** Doctor's closing line on what reopens a stopped conversation, where reopening exists. */
+function doctorReopenLines(deps: CommandDeps): string[] {
+  const report = reopenReport(deps.env, deps.hookPlatform ?? process.platform)
+  return report.available ? [reopenLine(report)] : []
+}
+
 describe('compatibility-first update guidance', () => {
   const cases: Array<{
     name: string
@@ -5815,10 +5824,10 @@ describe('compatibility-first update guidance', () => {
     const states = [{ id: 'skill', title: 'Agent guidance skill', status: 'gap' as const,
       detail: 'Grok loads outdated guidance', harnesses: ['grok'] }]
     expect(await doctorCommand(deps, {}, { readiness: { states, harness: 'claude-code' } })).toBe(EXIT.ok)
-    expect(io.outLines).toEqual(['  --  Agent guidance skill (Grok, not this harness): Grok loads outdated guidance'])
+    expect(io.outLines).toEqual(['  --  Agent guidance skill (Grok, not this harness): Grok loads outdated guidance', ...doctorReopenLines(deps)])
     io.outLines = []
     expect(await doctorCommand(deps, {}, { readiness: { states, harness: 'grok' } })).toBe(EXIT.failed)
-    expect(io.outLines).toEqual(['FAIL  Agent guidance skill: Grok loads outdated guidance'])
+    expect(io.outLines).toEqual(['FAIL  Agent guidance skill: Grok loads outdated guidance', ...doctorReopenLines(deps)])
   })
 
   it.each(cases)(
@@ -5844,9 +5853,10 @@ describe('compatibility-first update guidance', () => {
       expect(
         await doctorCommand(deps, {}, { readiness: { states: [contract!] } }),
       ).toBe(exit)
-      expect(humanIo.outLines).toEqual(
-        status === 'ready' ? [] : [detail, updateCliCommand(deps)],
-      )
+      expect(humanIo.outLines).toEqual([
+        ...(status === 'ready' ? [] : [detail, updateCliCommand(deps)]),
+        ...doctorReopenLines(deps),
+      ])
       expect(humanIo.errLines).toEqual([])
       expect(humanIo.outros).toEqual(
         status === 'ready' ? ['Everything looks good'] : [],
@@ -6020,7 +6030,7 @@ describe('compatibility-first update guidance', () => {
     expect(
       await doctorCommand(deps, {}, { readiness: { states: [contract!] } }),
     ).toBe(EXIT.ok)
-    expect(io.outLines).toEqual(['The service is being updated; try again later.'])
+    expect(io.outLines).toEqual(['The service is being updated; try again later.', ...doctorReopenLines(deps)])
     expect(io.outLines.join('\n')).not.toContain('notifai update')
 
     const sendIo = new CapturedIo()
@@ -6374,6 +6384,8 @@ describe('init', () => {
 
   it('honors an explicit --project-id', async () => {
     const cwd = mkdtempSync(path.join(os.tmpdir(), 'init-explicit-'))
+    // An explicit id is a shared override, written in the Project's checkout.
+    execFileSync('git', ['-C', cwd, 'init'], { stdio: 'ignore' })
     const io = new CapturedIo()
     const deps = { ...makeDeps(io, {} as ApiClient), cwd }
 
@@ -8147,6 +8159,7 @@ describe('init', () => {
 
     for (const name of ['worktree-a', 'worktree-b']) {
       const cwd = mkdtempSync(path.join(os.tmpdir(), `${name}-`))
+      execFileSync('git', ['-C', cwd, 'init'], { stdio: 'ignore' })
       const io = new CapturedIo()
       const deps = {
         ...makeDeps(io, client),

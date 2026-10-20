@@ -94,7 +94,7 @@ afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: 
 function setup(options: { enabled?: boolean; signedIn?: boolean; signals?: NodeJS.Signals[] } = {}) {
   const root = mkdtempSync(path.join(os.tmpdir(), 'notifai-opencode-question-'))
   roots.push(root)
-  const env = { HOME: root, XDG_CONFIG_HOME: path.join(root, 'config'), XDG_STATE_HOME: path.join(root, 'state') }
+  const env = { HOME: path.join(root, 'home'), XDG_CONFIG_HOME: path.join(root, 'config'), XDG_STATE_HOME: path.join(root, 'state') }
   execFileSync('git', ['init', '-q'], { cwd: root })
   if (options.enabled !== false) enableProject(projectBinding(root, env)!)
   let answer: ReplyView | null = null

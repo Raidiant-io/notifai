@@ -14,7 +14,7 @@ import {
   describeSource,
   formatValue,
 } from '../config-schema.js'
-import { glyph, pad, style, terminalWidth, wrap } from './theme.js'
+import { glyph, pad, style, terminalWidth, width, wrap } from './theme.js'
 
 /**
  * The full settings listing, grouped and explained.
@@ -30,7 +30,6 @@ export function renderConfigList(
 ): string[] {
   const columns = terminalWidth()
   const lines: string[] = []
-  const nameWidth = Math.max(...CONFIG_KEYS.map((key) => key.length))
   const SUMMARY_INDENT = '      '
 
   for (const group of CONFIG_GROUPS) {
@@ -44,19 +43,30 @@ export function renderConfigList(
     for (const line of wrap(group.blurb, columns - 2)) lines.push(style.dim(`  ${line}`))
     lines.push('')
 
+    // Each group aligns its own names, so one long name does not push every
+    // value in the listing to the right.
+    const nameWidth = Math.max(...keys.map((info) => info.key.length))
+    const valueIndent = ' '.repeat(2 + nameWidth + 2)
     for (const info of keys) {
       const entry = config[info.key]
       const source = describeSource(entry.source)
       const value = formatValue(info.key, entry.value)
       const isSet = source.label !== 'default'
+      // A value too long for the row continues under itself rather than
+      // letting the terminal wrap it into the next key's column.
+      const valueLines = wrap(value, columns - valueIndent.length).map((line) => (isSet ? style.value(line) : style.unset(line)))
+      valueLines[0] = `  ${style.code(pad(info.key, nameWidth))}  ${valueLines[0]}`
+      for (let index = 1; index < valueLines.length; index += 1) valueLines[index] = `${valueIndent}${valueLines[index]}`
       // The provenance mark is only drawn when there is provenance to show;
       // an empty dim segment still emits escape codes, so a `trimEnd` on the
       // finished string cannot remove it.
-      const provenance = isSet ? `  ${style.dim(`${glyph.bullet} ${source.label}`)}` : ''
-      lines.push(
-        `  ${style.code(pad(info.key, nameWidth))}  ` +
-          `${isSet ? style.value(value) : style.unset(value)}${provenance}`,
-      )
+      if (isSet) {
+        const provenance = style.dim(`${glyph.bullet} ${source.label}`)
+        const last = valueLines.length - 1
+        if (width(valueLines[last]!) + 2 + width(provenance) <= columns) valueLines[last] = `${valueLines[last]}  ${provenance}`
+        else valueLines.push(`${valueIndent}${provenance}`)
+      }
+      lines.push(...valueLines)
       for (const line of wrap(info.summary, columns - SUMMARY_INDENT.length)) {
         lines.push(style.dim(`${SUMMARY_INDENT}${line}`))
       }

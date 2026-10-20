@@ -2,6 +2,7 @@ import { readFileSync, readdirSync } from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { describe, expect, it } from 'vitest'
+import { claudeLaunchOptions, claudeResumeArgs, codexResumeArgs } from './reopen-terminal.js'
 import {
   HARNESS_CAPABILITIES,
   HARNESS_LABELS,
@@ -108,10 +109,14 @@ describe('harness contract', () => {
     expect(HARNESS_CAPABILITIES.grok.deliveryContract).toMatch(/closing the session ends its questions/)
   })
 
-  it('passes no resume argument to any harness from CLI source', () => {
-    // The CLI's own `notifai update --resume` handoff is the only `--resume`
-    // it may pass; `claude -p --resume` and `codex exec resume` revive a
-    // closed session and must never return.
+  it('revives no conversation headlessly, and resumes one only from the modules that may', () => {
+    // `claude -p --resume` and `codex exec resume` revive a closed session with
+    // nobody watching; they must never return. A resume is allowed in exactly
+    // two places, besides the CLI's own `notifai update --resume` handoff:
+    // the reopen module, which brings a User's stopped conversation back in a
+    // visible terminal (and refuses a print-mode one), and the Codex attach
+    // canary, which resumes only the throwaway thread it created itself.
+    const resumers = new Set(['reopen-terminal.ts', 'codex-attach-canary.ts'])
     const root = path.dirname(fileURLToPath(import.meta.url))
     const sources = readdirSync(root, { recursive: true, encoding: 'utf8' })
       .filter((file) => file.endsWith('.ts') && !file.endsWith('.test.ts'))
@@ -120,10 +125,22 @@ describe('harness contract', () => {
     for (const file of sources) {
       readFileSync(path.join(root, file), 'utf8').split('\n').forEach((line, index) => {
         const ownUpdate = /'update', '--resume'/.test(line) || /\.option\('--resume', /.test(line)
-        if (/(['"])(?:--)?resume\1/.test(line) && !ownUpdate) offenders.push(`${file}:${index + 1}: ${line.trim()}`)
+        if (!/(['"])(?:--)?resume\1/.test(line) || ownUpdate) return
+        // An argv literal that resumes and also runs headless: `exec` or `-p`.
+        const headless = (line.match(/\[[^[\]]*\]/g) ?? []).some((argv) =>
+          /(['"])(?:--)?resume\1/.test(argv) && /(['"])(?:exec|-p|--print)\1/.test(argv))
+        if (headless || !resumers.has(file)) offenders.push(`${file}:${index + 1}: ${line.trim()}`)
       })
     }
     expect(offenders).toEqual([])
+    // The reopen module's own argv: an interactive resume, never a print run.
+    expect(claudeLaunchOptions(['claude', '-p', 'hi'])).toBeNull()
+    expect(claudeLaunchOptions(['claude', '--print', 'hi'])).toBeNull()
+    const claude = claudeResumeArgs('s1', [], null, 'same')
+    expect(claude.slice(0, 2)).toEqual(['--resume', 's1'])
+    expect(claude).not.toContain('-p')
+    expect(claude).not.toContain('--print')
+    expect(codexResumeArgs('t1', [], 'same').slice(0, 2)).toEqual(['resume', 't1'])
   })
 
   it('keeps each harness on its supported continuation routes', () => {

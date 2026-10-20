@@ -82,7 +82,7 @@ function setup(options: { signedIn?: boolean; enabled?: boolean; leased?: boolea
   const root = mkdtempSync(path.join(os.tmpdir(), 'notifai-claude-picker-'))
   roots.push(root)
   const owner = options.host ?? currentProcessIdentity()!
-  const env: NodeJS.ProcessEnv = { HOME: root, XDG_CONFIG_HOME: path.join(root, 'config'), XDG_STATE_HOME: path.join(root, 'state'),
+  const env: NodeJS.ProcessEnv = { HOME: path.join(root, 'home'), XDG_CONFIG_HOME: path.join(root, 'config'), XDG_STATE_HOME: path.join(root, 'state'),
     ...(options.hookSource === undefined ? {} : { NOTIFAI_HOOK_SOURCE_PID: String(options.hookSource) }) }
   const incarnation = beginSessionIncarnation(SESSION, env, { stamp: lifecycleStamp(), harnessProcess: owner })
   writeSessionState(SESSION, env, { harness: 'claude-code', last_prompt_at: 1 })

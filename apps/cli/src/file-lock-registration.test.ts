@@ -68,26 +68,34 @@ it('bounds registration retries when directory access never recovers', () => {
   expect(existsSync(lock)).toBe(false)
 })
 
-it.each([3, 4, 5, 6])(
-  'does not register again after publication when directory read %i is denied',
+it.each([1, 2, 3, 4])(
+  'does not register again when directory read %i after publication is denied',
   (deniedRead) => {
     const lock = fixture()
+    // Counted from publication, so a pre-publication check added later does not
+    // move a denial in front of the entry it is meant to follow.
     let reads = 0
+    let published = false
     let actions = 0
     let registrations = 0
     vi.mocked(lstatSync).mockImplementation((file, options) => {
-      if (file === lock && ++reads === deniedRead) {
+      if (published && file === lock && ++reads === deniedRead) {
         expect(readdirSync(lock)).toHaveLength(1)
         throw denied()
       }
       return realFs.lstatSync(file, options)
     })
 
+    // A real permission failure after publication reaches the caller.
     expect(() => withFileLock(lock, () => { actions += 1 }, {
       observe(observation) {
-        if (observation.phase === 'registering') registrations += 1
+        if (observation.phase === 'registering') {
+          registrations += 1
+          published = true
+        }
       },
     })).toThrow(/lock directory is inaccessible/)
+    expect(reads).toBeGreaterThanOrEqual(deniedRead)
     expect(registrations).toBe(1)
     expect(actions).toBe(0)
     expect(existsSync(lock)).toBe(false)

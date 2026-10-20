@@ -1965,10 +1965,12 @@ describe('hub and Codex SessionEnd', () => {
       let ownEnd: unknown = null
       let candidateAfter: unknown = 'unset'
       let hubRef: Hub | null = null
+      // The watch already looks during setup: the terminal closes only once the question is open.
+      let terminalClosed = false
       const run = await sharedServer({
         watchMs: 50,
         state: async (input) => {
-          if (input.confirm !== 'closed') return { state: 'unknown', confirmed: false, reason: 'test' }
+          if (!terminalClosed || input.confirm !== 'closed') return { state: 'unknown', confirmed: false, reason: 'test' }
           // The confirming request reloads the thread: Codex runs SessionEnd from the shared server.
           input.beforeConfirm?.()
           ownEnd = await requestHub(input.env, { type: 'session-end-candidate', session_id: SESSION, harness_pid: HARNESS.pid })
@@ -1979,6 +1981,7 @@ describe('hub and Codex SessionEnd', () => {
       hubRef = run.hub
       try {
         question(run.env)
+        terminalClosed = true
         await until(() => reportedEnd(run.service))
         expect(ownEnd).toEqual({ type: 'ok', held: true })
         // Not an end candidate: the hub decided from its own request.
@@ -1993,10 +1996,14 @@ describe('hub and Codex SessionEnd', () => {
       const run = await sharedServer({ watchMs: 50, state: () => ({ state: 'attached', confirmed: true, reason: 'terminal-gone+joined' }) })
       try {
         question(run.env)
+        // The watch already looks during setup, and setup's own turn lets it look again:
+        // count only from the look that found a terminal and paused it.
+        const paused = (): boolean => run.hub.sessions.get(SESSION)?.attachWatchPaused === true
+        await until(paused)
         const turn = async (): Promise<number> => {
           const before = run.asked.length
           await requestHub(run.env, { type: 'hint', session_id: SESSION }, { role: 'hint' })
-          await until(() => run.asked.length > before)
+          await until(() => run.asked.length > before && paused())
           // One look: a terminal shows it, so nothing more is asked until the next turn.
           await new Promise((resolve) => setTimeout(resolve, 400))
           return run.asked.length - before
