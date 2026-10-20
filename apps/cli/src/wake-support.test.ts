@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
-import { cancelledDelivery, holdForNextTurn, runWakeCommand, WriteDeadlineError } from './wake-support.js'
+import { cancelledDelivery, holdForNextTurn, runWakeCommand, WAKE_OUTPUT_DRAIN_MS, WriteDeadlineError } from './wake-support.js'
 
 describe('shared wake outcomes', () => {
   it('journals one canonical hold outcome', () => {
@@ -25,6 +25,27 @@ describe('shared wake outcomes', () => {
     await expect(
       runWakeCommand(process.execPath, ['-e', 'process.stderr.write("nope"); process.exit(7)']),
     ).rejects.toThrow(/exited 7: nope$/)
+  })
+
+  it.skipIf(process.platform === 'win32')('returns output that arrives after the command exited', async () => {
+    // The shell exits at once; the output reaches the pipe after its 'exit'.
+    await expect(runWakeCommand('/bin/sh', ['-c', '(sleep 0.2; printf ready) &'])).resolves.toBe('ready')
+  })
+
+  it.skipIf(process.platform === 'win32')('stops waiting on output a leftover process holds open', async () => {
+    let pgid = 0
+    const started = Date.now()
+    try {
+      const output = runWakeCommand('/bin/sh', ['-c', 'printf ready; sleep 30 &'], {
+        onSpawn: (group) => {
+          pgid = group
+        },
+      })
+      await expect(output).resolves.toBe('ready')
+      expect(Date.now() - started).toBeLessThan(WAKE_OUTPUT_DRAIN_MS + 10_000)
+    } finally {
+      if (pgid > 0) process.kill(-pgid, 'SIGKILL')
+    }
   })
 
   it('starts a subprocess writer in its own process group and reports it at once', async () => {
