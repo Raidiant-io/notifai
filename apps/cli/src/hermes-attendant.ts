@@ -271,9 +271,10 @@ export async function hermesAttendCommand(deps: CommandDeps, input: Readable, ou
       client: api, config: loadConfig({ cwd, env: deps.env, sessionId }), env: deps.env,
       ...(serviceIdentity === undefined ? {} : { service_identity: serviceIdentity }),
       now, sleep, harness: 'hermes', log: logger,
-      waitForFirstReply: async (requestId, timeoutSeconds) => {
-        const result = await waitForReply(api, requestId, { timeoutSeconds, afterSeq: 0, now, sleep })
-        return { replies: result.response.replies, timedOut: result.timedOut, degraded: result.degraded }
+      waitForFirstReply: async (requestId, timeoutSeconds, expiresAt) => {
+        const result = await waitForReply(api, requestId, { timeoutSeconds, afterSeq: 0, now, sleep, expiresAt })
+        return { replies: result.response.replies, timedOut: result.timedOut, degraded: result.degraded,
+          ...(result.closed === true ? { closed: true } : {}) }
       },
       answerClaims: {
         lease: () => readAttendantLease(sessionId, deps.env), writer,

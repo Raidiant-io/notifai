@@ -2095,6 +2095,76 @@ describe('command contracts', () => {
     expect(io.errLines.join('\n')).toContain(`notifai close ${receipt.request_id}`)
   })
 
+  it('stops waiting as soon as the question is dismissed, and says no answer will come', async () => {
+    const io = new CapturedIo()
+    let now = 0
+    let polls = 0
+    const client = {
+      submit: async () => receipt,
+      replies: async (_requestId: string, options: { waitSeconds: number }) => {
+        polls += 1
+        now += options.waitSeconds * 1_000
+        // The User dismissed it during the first hold: its window closed then, unanswered.
+        return polls === 1 ? replyResponse() : { ...replyResponse(), reply_expires_at: '2026-08-02T12:00:30.000Z' }
+      },
+      closeReplies: async () => { throw new Error('a dismissed question needs no close') },
+    } as unknown as ApiClient
+    const deps = { ...makeDeps(io, client), now: () => now, sleep: async () => {} }
+
+    expect(await sendCommand(deps, { title: 'Question', body: 'Deploy?', reply: true, replyTimeout: 900 })).toBe(EXIT.noReply)
+    // One hold to learn of it, not the whole 900 s.
+    expect(polls).toBe(2)
+    expect(now).toBeLessThan(60_000)
+    expect(io.outLines).toContain(`no reply for request ${receipt.request_id}; the reply window has closed`)
+    expect(io.errLines.at(-1)).toBe(`No reply: the reply window for ${receipt.request_id} has closed, so no answer will come.`)
+    expect(io.errLines.join('\n')).not.toContain('notifai close')
+  })
+
+  it('stops at its first poll when the question was dismissed while the send waited for its receipt', async () => {
+    const io = new CapturedIo()
+    // The receipt came back with its window already closed: dismissed on arrival.
+    let now = Date.parse(receipt.reply_expires_at!) - 2_000
+    let polls = 0
+    const client = {
+      submit: async () => receipt,
+      replies: async (_requestId: string, options: { waitSeconds: number }) => {
+        polls += 1
+        now += options.waitSeconds * 1_000
+        return replyResponse()
+      },
+    } as unknown as ApiClient
+    const deps = { ...makeDeps(io, client), now: () => now, sleep: async () => {} }
+    expect(await sendCommand(deps, { title: 'Question', body: 'Deploy?', reply: true, replyTimeout: 900 })).toBe(EXIT.noReply)
+    expect(polls).toBe(1)
+    expect(io.errLines.at(-1)).toBe(`No reply: the reply window for ${receipt.request_id} has closed, so no answer will come.`)
+    // A replayed receipt is an earlier send's: its deadline stands, and the wait runs as before.
+    const replayIo = new CapturedIo()
+    polls = 0
+    now = Date.parse(receipt.reply_expires_at!) - 2_000
+    const replayed = { ...client, submit: async () => ({ ...receipt, replayed: true }) } as unknown as ApiClient
+    expect(await sendCommand({ ...makeDeps(replayIo, replayed), now: () => now, sleep: async () => {} },
+      { title: 'Question', body: 'Deploy?', reply: true, replyTimeout: 100 })).toBe(EXIT.noReply)
+    expect(polls).toBe(4)
+  })
+
+  it('keeps waiting through an unchanged window, as before', async () => {
+    const io = new CapturedIo()
+    let now = 0
+    let polls = 0
+    const client = {
+      submit: async () => receipt,
+      replies: async (_requestId: string, options: { waitSeconds: number }) => {
+        polls += 1
+        now += options.waitSeconds * 1_000
+        return replyResponse()
+      },
+    } as unknown as ApiClient
+    const deps = { ...makeDeps(io, client), now: () => now, sleep: async () => {} }
+    expect(await sendCommand(deps, { title: 'Question', body: 'Deploy?', reply: true, replyTimeout: 100 })).toBe(EXIT.noReply)
+    expect(polls).toBe(4)
+    expect(io.errLines.join('\n')).toContain(`notifai replies ${receipt.request_id}`)
+  })
+
   it('prints one combined reply_result object with the receipt when answered', async () => {
     const io = new CapturedIo()
     const client = {

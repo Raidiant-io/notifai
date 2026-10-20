@@ -97,6 +97,7 @@ import {
   writeShutdownMarker,
 } from './hub-ipc.js'
 import { SessionLease, type LeaseOutcome } from './hub-lease.js'
+import { dropExpiredHeldAnswers, moveQuestionsToSuccessor } from './stopped-hold.js'
 import { shareGitIdentityAnswers } from './git-query.js'
 import { ingressRefusal, parseIngressRequest, resultFrames, runIngressHook, type IngressHost, type IngressIdentity } from './hub-ingress.js'
 import { currentRuntimeBuild } from './launch-self.js'
@@ -448,6 +449,14 @@ class HubSession implements AttendedSession {
   lastActivity: number
   /** Later hooks at which a fork's parent is looked for again; 0 when not a fork. */
   forkChecks = 0
+  /** It was stopped when it ended (its Codex wake is only detached then). */
+  wasStopped = false
+  /**
+   * Session Notes and Answer Edits the service holds for this conversation
+   * while it is stopped (seen, never claimed): each keeps it waiting for its
+   * own hold.
+   */
+  held: { message_id: string; created_at: string }[] = []
 
   constructor(
     readonly hub: Hub,
@@ -560,7 +569,18 @@ class HubSession implements AttendedSession {
   stoppedOwes(wall: number): boolean {
     if (this.stopped === null) return false
     const lease = this.lease.generation === null ? null : { incarnation: this.lease.incarnation, generation: this.lease.generation }
-    return owesWhileStopped(this.id, this.env, this.stopped.since, lease, wall)
+    return owesWhileStopped(this.id, this.env, this.stopped.since, lease, wall, this.held)
+  }
+
+  /**
+   * The service holds this conversation as stopped and drops an unread
+   * answer at its question's window: drop it here at the same moment, so it
+   * is never handed in after the User was told it did not arrive.
+   */
+  dropExpiredAnswers(): void {
+    if (!this.lease.stopReported) return
+    const dropped = dropExpiredHeldAnswers(this.id, this.env, this.hub.clock.wall())
+    if (dropped.length > 0) this.hub.logger.info('hub.session', { event: 'held-answers-dropped', session: this.id, answers: dropped.length, reason: 'window-over' })
   }
 
   /** Asked of the process table when no kernel watch is connected: ticks on Linux, the start text elsewhere. */
@@ -653,7 +673,22 @@ class HubSession implements AttendedSession {
 
   settled(outcome: LeaseOutcome): void {
     if (outcome.kind === 'rotated') this.rekeyClaim()
-    if (outcome.kind === 'reported') { this.hub.forget(this, `reported-${outcome.state}`); return }
+    if (outcome.kind === 'reported') {
+      if (outcome.successor !== null) { this.hub.continuedAt(this, outcome.successor); return }
+      this.hub.forget(this, `reported-${outcome.state}`)
+      return
+    }
+    if (outcome.kind === 'successor-refused') { this.hub.successorRefused(this, outcome.successor); return }
+    if (outcome.kind === 'stopped') {
+      const held = outcome.messages.map((message) => ({ message_id: message.message_id, created_at: message.created_at }))
+      const changed = held.length !== this.held.length || held.some((message, index) => message.message_id !== this.held[index]?.message_id)
+      this.held = held
+      if (changed) {
+        this.hub.logger.info('hub.session', { event: 'stopped-held', session: this.id, messages: held.length })
+        this.hub.touch()
+      }
+    }
+    if (outcome.kind === 'stop-refused') this.hub.logger.info('hub.session', { event: 'stopped-not-held', session: this.id })
     this.writeStatus()
   }
 
@@ -870,7 +905,8 @@ class HubSession implements AttendedSession {
  * window: a question asked of the User, an answer to one, a staged note
  * (24 h). Never longer than one answer window from the stop.
  */
-function owesWhileStopped(sessionId: string, env: NodeJS.ProcessEnv, since: number, lease: DeliveryLease | null, wall: number): boolean {
+function owesWhileStopped(sessionId: string, env: NodeJS.ProcessEnv, since: number, lease: DeliveryLease | null, wall: number,
+  held: readonly { created_at: string }[] = []): boolean {
   if (wall - since >= STOPPED_CEILING_MS) return false
   const state = readSessionState(sessionId, env)
   const open = (deadline: number | undefined): boolean => deadline === undefined || deadline > wall
@@ -879,6 +915,8 @@ function owesWhileStopped(sessionId: string, env: NodeJS.ProcessEnv, since: numb
   for (const answer of [...(state.accepted?.answers ?? []), ...(state.waiting_answers ?? [])]) {
     if (open(answer.pending.reply_deadline_at)) return true
   }
+  // A note the service holds for it, within the note's own hold.
+  if (held.some((message) => wall - Date.parse(message.created_at) < STOPPED_NOTE_HOLD_MS)) return true
   if (wall - since >= STOPPED_NOTE_HOLD_MS) return false
   return lease !== null && hasSessionInputs(sessionId, env, lease)
 }
@@ -1859,9 +1897,13 @@ export class Hub {
   /**
    * A new conversation that is a fork of one this hub attends. When that one
    * is stopped, or ending with nowhere left to run, it continues only in the
-   * fork: it has moved. Until the service can re-home its questions to the
-   * fork, they expire as for a close. A fork of a conversation still open
-   * somewhere is a new conversation beside it, and changes nothing.
+   * fork: it has moved. Where the service can move its questions (it offers
+   * `session_stopped_hold` and already knows the fork), they continue there,
+   * with its held answers and notes; otherwise they expire as for a close. A
+   * fork of a conversation still open somewhere is a new conversation beside
+   * it, and changes nothing. Only a fork that records its origin counts
+   * (Claude Code's `/branch`, a Codex fork); one that records none is a new
+   * conversation.
    */
   checkFork(fork: HubSession): void {
     if (fork.forkChecks <= 0) return
@@ -1876,8 +1918,36 @@ export class Hub {
     const stillOpen = parent.stopped === null && (parent.endCandidate === null || (primary !== null && parent.hosts(primary)) ||
       parent.nextPrimary() !== null)
     if (stillOpen) return
-    this.logger.info('hub.session', { event: 'moved', session: parent.id, to: fork.id, from_state: parent.stopped !== null ? 'stopped' : 'ending' })
-    this.endSession(parent, 'moved')
+    const continued = this.driver.offers('session_stopped_hold') && fork.notified
+    this.logger.info('hub.session', { event: 'moved', session: parent.id, to: fork.id, from_state: parent.stopped !== null ? 'stopped' : 'ending',
+      follows: continued })
+    this.endSession(parent, 'moved', continued ? fork.id : null)
+  }
+
+  /**
+   * The service moved a continued conversation's questions, held answers and
+   * notes to its successor: the local records follow, the successor's answer
+   * owner collects what is answered, and what waited is handed in there.
+   * What this session asked but never submitted ends with it.
+   */
+  continuedAt(session: HubSession, successorId: string): void {
+    const moved = moveQuestionsToSuccessor(session.id, successorId, session.env)
+    this.logger.info('hub.session', { event: 'continued', session: session.id, to: successorId, questions: moved.questions.length,
+      answers: moved.answers.length })
+    this.endLocally(session)
+    this.forget(session, 'reported-continued')
+    const successor = this.sessions.get(successorId)
+    if (successor === undefined) return
+    const state = readSessionState(successorId, successor.env)
+    if (pendingList(state).length > 0 || state.accepted !== undefined) this.settle(successorId, successor.harness, successor.registration.cwd, 'settlement')
+    successor.checkInput()
+  }
+
+  /** The service would not continue it under that successor (unknown to it, or ended): it ends as a close. */
+  successorRefused(session: HubSession, successorId: string): void {
+    this.logger.info('hub.session', { event: 'continued-refused', session: session.id, to: successorId })
+    this.endLocally(session)
+    this.driver.poke()
   }
 
   /**
@@ -1908,7 +1978,15 @@ export class Hub {
   private resumeStopped(session: HubSession, writer: Writer): HubSession | string {
     if (!placeReceives(writer.registration.place)) return 'place-receives-nothing'
     const from = session.stopped!
+    // An answer whose window ended while it was stopped is never handed in.
+    session.dropExpiredAnswers()
     session.stopped = null
+    session.held = []
+    session.lease.holdStopped = false
+    // A service holding it as stopped takes it back only from a new
+    // incarnation: its refusal of this one's renewal then rotates it.
+    session.lease.resumedFromStop = true
+    session.lease.stopReported = false
     session.standbys = []
     // The same process may have run SessionEnd when it stopped (a Codex app-server unloading it).
     session.left.delete(writer.harnessProcess.pid)
@@ -2118,16 +2196,36 @@ export class Hub {
    * SessionEnd would have (when it did not run), report `ended`, and let the
    * child go.
    */
-  endSession(session: HubSession, reason: EndReason): void {
+  endSession(session: HubSession, reason: EndReason, successor: string | null = null): void {
     if (session.ending !== null) return
     session.ending = reason
     if (session.endCandidate !== null) { clearTimeout(session.endCandidate.timer); session.endCandidate = null }
     // A stopped thread is loaded nowhere this hub can reach without a control
     // connection to a User's server: its wake is only detached.
-    const wasStopped = session.stopped !== null
+    session.wasStopped = session.stopped !== null
     session.stopped = null
     session.reloadedAt = null
+    session.lease.holdStopped = false
+    // Continued: its records wait for the service to move its questions, and
+    // follow them there (`continuedAt`); a refusal ends it as a close.
+    if (successor === null || !session.notified) this.endLocally(session)
+    // The harness may outlive this session (`/clear`, `/resume`): its child
+    // has nothing left to watch for it.
+    session.child?.send({ type: 'bye' })
+    for (const standby of session.standbys) standby.child.send({ type: 'bye' })
+    this.logger.info('hub.session', { event: 'ending', session: session.id, reason, ...(successor === null ? {} : { successor }) })
+    if (session.notified) {
+      session.lease.final = 'ended'
+      session.lease.successor = successor
+      session.lease.pausedUntil = 0
+      this.driver.poke()
+    } else this.forget(session, `ended-${reason}`)
+  }
+
+  /** Clean up an ended session locally, as its SessionEnd would have, unless that already ran. */
+  private endLocally(session: HubSession): void {
     const ended = !endsIncarnation(readSessionEndMarker(session.id, session.env), session.record)
+    const wasStopped = session.wasStopped
     this.trackLocalEnd((async () => {
       // Best effort, never relied on: take back a wake Notifai queued that
       // the closed thread has not shown. The prompt hook blocks one that stays.
@@ -2142,16 +2240,6 @@ export class Hub {
       }
       this.drainRetirements()
     })())
-    // The harness may outlive this session (`/clear`, `/resume`): its child
-    // has nothing left to watch for it.
-    session.child?.send({ type: 'bye' })
-    for (const standby of session.standbys) standby.child.send({ type: 'bye' })
-    this.logger.info('hub.session', { event: 'ending', session: session.id, reason })
-    if (session.notified) {
-      session.lease.final = 'ended'
-      session.lease.pausedUntil = 0
-      this.driver.poke()
-    } else this.forget(session, `ended-${reason}`)
   }
 
   /**
@@ -2334,6 +2422,10 @@ export class Hub {
     session.reloadedAt = null
     session.lease.setPhase('uncertain', 'stopped')
     session.lease.lose()
+    // Where the service holds stopped sessions, it is told, and the session
+    // stays in the exchange to see notes sent to it meanwhile.
+    session.lease.holdStopped = true
+    session.lease.needsFresh = true
     // A Claude Code wake written into the process that went never shows; the
     // next place gets its own. A Codex wake waits in the thread's own queue
     // and runs when the thread loads again.
@@ -2363,6 +2455,7 @@ export class Hub {
   private checkStopped(session: HubSession): void {
     const stopped = session.stopped
     if (stopped === null) return
+    session.dropExpiredAnswers()
     if (!session.stoppedOwes(this.clock.wall())) { this.endSession(session, 'window-over'); return }
     const record = this.recordPresent(session)
     if (record === 'deleted') { this.endSession(session, 'session-deleted'); return }
@@ -2823,6 +2916,7 @@ export class Hub {
     session.transcriptSeen = record.transcript_seen
     session.stopped = record.stopped
     session.lease.setPhase('uncertain', 'stopped')
+    session.lease.holdStopped = true
     session.claimToken = await this.takeClaim(session)
     if (session.claimToken === null) return
     if (this.sessions.has(sessionId) || this.exiting) {

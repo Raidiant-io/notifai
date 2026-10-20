@@ -1057,17 +1057,19 @@ export async function hookRunCommand(
       env: deps.env,
       now,
       sleep: deps.sleep ?? ((ms) => new Promise((resolve) => setTimeout(resolve, ms))),
-      waitForFirstReply: async (requestId, timeoutSeconds) => {
+      waitForFirstReply: async (requestId, timeoutSeconds, expiresAt) => {
         const result = await waitForReply(client, requestId, {
           timeoutSeconds,
           afterSeq: 0,
           now: deps.now,
           sleep: deps.sleep,
+          expiresAt,
         })
         return {
           replies: result.response.replies,
           timedOut: result.timedOut,
           degraded: result.degraded,
+          ...(result.closed === true ? { closed: true } : {}),
         }
       },
       log: logger,

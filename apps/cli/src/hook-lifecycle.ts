@@ -326,30 +326,35 @@ async function waitForAnyReply(
   interruption?: () => WaiterInterruption | null,
   correctionOnly: () => ReadonlySet<string> = () => new Set(),
   liveRequests: () => ReadonlySet<string> = () => new Set(requestIds),
+  /** When each question's window was due to close (epoch ms), to see one closed early. */
+  dueAt: ReadonlyMap<string, number> = new Map(),
 ): Promise<{
   byRequest: Map<string, ReplyView[]>
   degraded: boolean
   permanentFailures: Map<string, string>
   interrupted: WaiterInterruption | null
+  /** Questions whose window the service closed early with no reply (dismissed by the User). */
+  closed: Set<string>
 }> {
   const deadline = ctx.now() + timeoutSeconds * 1000
   let degraded = false
   let firstPoll = true
   const permanentFailures = new Map<string, string>()
   const lastCorrectionPollAt = new Map<string, number>()
+  const closed = new Set<string>()
 
   if (timeoutSeconds <= 0 || deadline <= ctx.now()) {
-    return { byRequest: new Map(), degraded: false, permanentFailures, interrupted: null }
+    return { byRequest: new Map(), degraded: false, permanentFailures, interrupted: null, closed }
   }
 
   for (;;) {
     const beforePoll = interruption?.() ?? null
     if (beforePoll !== null) {
-      return { byRequest: new Map(), degraded, permanentFailures, interrupted: beforePoll }
+      return { byRequest: new Map(), degraded, permanentFailures, interrupted: beforePoll, closed }
     }
     const remainingMs = Math.max(0, deadline - ctx.now())
     if (!firstPoll && remainingMs === 0) {
-      return { byRequest: new Map(), degraded, permanentFailures, interrupted: null }
+      return { byRequest: new Map(), degraded, permanentFailures, interrupted: null, closed }
     }
     firstPoll = false
     const corrections = correctionOnly()
@@ -358,7 +363,7 @@ async function waitForAnyReply(
     const live = liveRequests()
     const polling = requestIds.filter((requestId) => live.has(requestId) && !permanentFailures.has(requestId))
     if (polling.length === 0) {
-      return { byRequest: new Map(), degraded, permanentFailures, interrupted: null }
+      return { byRequest: new Map(), degraded, permanentFailures, interrupted: null, closed }
     }
     const holdSeconds = polling.filter((requestId) => !corrections.has(requestId)).length > 1
       ? CONCURRENT_REPLY_POLL_SECONDS : REPLY_POLL_SECONDS
@@ -377,7 +382,7 @@ async function waitForAnyReply(
           const correction = corrections.has(requestId)
           if (correction) lastCorrectionPollAt.set(requestId, ctx.now())
           try {
-            return { requestId, ...(await ctx.waitForFirstReply(requestId, correction ? 0 : pollSeconds)) }
+            return { requestId, ...(await ctx.waitForFirstReply(requestId, correction ? 0 : pollSeconds, dueAt.get(requestId))) }
           } catch (err) {
             // Our own requests were cancelled (the hub hands over, or the
             // credential changed): nothing was learnt; check ownership now.
@@ -401,6 +406,7 @@ async function waitForAnyReply(
         permanentFailures.set(result.requestId, result.permanentFailure)
       }
       if (result.replies.length > 0) byRequest.set(result.requestId, result.replies)
+      else if ('closed' in result && result.closed === true) closed.add(result.requestId)
     }
     const afterPoll = interruption?.() ?? null
     // SessionEnd or terminal-side retirement wins even if an in-flight poll
@@ -409,13 +415,14 @@ async function waitForAnyReply(
     // A successor that took this owner's claim observes that answer itself:
     // nothing here consumed or closed it.
     if (afterPoll === 'ownership-ended' || afterPoll === 'handed-off') {
-      return { byRequest: new Map(), degraded, permanentFailures, interrupted: afterPoll }
+      return { byRequest: new Map(), degraded, permanentFailures, interrupted: afterPoll, closed: new Set() }
     }
-    if (byRequest.size > 0 || permanentFailures.size === requestIds.length) {
-      return { byRequest, degraded, permanentFailures, interrupted: null }
+    // A question the User dismissed ends now, as its window would have.
+    if (byRequest.size > 0 || closed.size > 0 || permanentFailures.size === requestIds.length) {
+      return { byRequest, degraded, permanentFailures, interrupted: null, closed }
     }
     if (afterPoll === 'new-question') {
-      return { byRequest: new Map(), degraded, permanentFailures, interrupted: afterPoll }
+      return { byRequest: new Map(), degraded, permanentFailures, interrupted: afterPoll, closed }
     }
     // Every poll was cancelled and this owner still holds the session: its
     // requests stay cancelled until it is run again, so pause, never spin.
@@ -2361,6 +2368,8 @@ async function escalate(
     )
     const waitDeadline = Math.min(ceilingAt, nextReplyDeadline)
     timeoutSeconds = Math.max(0, Math.ceil((waitDeadline - ctx.now()) / 1000))
+    const dueAt = new Map(activeWaiting.flatMap((entry) =>
+      entry.reply_deadline_at === undefined ? [] : [[entry.request_id!, entry.reply_deadline_at] as const]))
     waited = await waitForAnyReply(
       ctx,
       activeWaiting.map((entry) => entry.request_id!),
@@ -2380,6 +2389,7 @@ async function escalate(
         const requestId = entry.request_id ?? entry.submission?.request_id
         return requestId === undefined ? [] : [requestId]
       })),
+      dueAt,
     )
     if (waited.interrupted === 'new-question') {
       // Native observers can renew their process ceiling for a later question.
@@ -2420,6 +2430,7 @@ async function escalate(
     for (const entry of removedDuringPoll) {
       waited.byRequest.delete(entry.request_id!)
       waited.permanentFailures.delete(entry.request_id!)
+      waited.closed.delete(entry.request_id!)
     }
     if (removedDuringPoll.length > 0) {
       notes.push(
@@ -2435,10 +2446,12 @@ async function escalate(
     // A permanent rejection is authoritative immediately. Time-based expiry is
     // authoritative only when this owner reached that question's committed
     // server deadline; reaching the process ceiling first preserves the record.
+    // A dismissed question closed early: it expires now, and only it does.
+    const closedEarly = waited.closed.size > 0
     const expired = activeWaiting.filter(
       (entry) =>
-        entry.reply_deadline_at === undefined ||
-        entry.reply_deadline_at <= waitDeadline ||
+        waited.closed.has(entry.request_id!) ||
+        (!closedEarly && (entry.reply_deadline_at === undefined || entry.reply_deadline_at <= waitDeadline)) ||
         waited.permanentFailures.has(entry.request_id!),
     )
     const stillAnswerable = activeWaiting.filter((entry) => !expired.includes(entry))
@@ -2464,7 +2477,7 @@ async function escalate(
       for (const answer of finalAnswers) reportAnswer(ctx, notes, answer, false)
       return deliverAcceptedAnswers(ctx, sessionId, route, accepted, notes, envelope.cwd)
     }
-    if (stillAnswerable.length > 0 && waitDeadline < ceilingAt) {
+    if (stillAnswerable.length > 0 && (waitDeadline < ceilingAt || closedEarly)) {
       activeWaiting = stillAnswerable
       continue
     }
