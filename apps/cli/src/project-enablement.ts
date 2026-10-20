@@ -36,7 +36,7 @@ export function projectBinding(
   explicitProject?: string | null,
 ): ProjectBinding | null {
   const root = projectIdentityRoot(cwd)
-  const project = explicitProject ?? inferInvocationContext(root).project
+  const project = explicitProject ?? inferInvocationContext(root, undefined, { branch: false }).project
   if (project === null) return null
   const repository = gitCommonDirectory(cwd) ?? root
   const key = createHash('sha256')

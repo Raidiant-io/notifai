@@ -1,23 +1,12 @@
-import { execFileSync } from 'node:child_process'
 import path from 'node:path'
 import { type SourceContextT } from '@raidiant/notifai-protocol'
 import type { SourceContextHarness } from './harnesses.js'
+import { gitQuery } from './git-query.js'
 import { resolveSessionLabel } from './session-labels.js'
 
 export type GitCommand = (cwd: string, args: readonly string[]) => string | null
 
-const runGit: GitCommand = (cwd, args) => {
-  try {
-    return execFileSync('git', ['-C', cwd, ...args], {
-      encoding: 'utf8',
-      stdio: ['ignore', 'pipe', 'ignore'],
-      timeout: 2_000,
-      windowsHide: true,
-    }).trim()
-  } catch {
-    return null
-  }
-}
+const runGit: GitCommand = (cwd, args) => gitQuery(cwd, args)
 
 /** The useful, privacy-safe context inferred from one invocation directory. */
 export interface InvocationContext {
@@ -81,6 +70,8 @@ export function truncateContext(value: string, maxLength: number): string {
 export function inferInvocationContext(
   cwd: string,
   git: GitCommand = runGit,
+  /** Project identity alone needs no branch, and asks Git one question fewer. */
+  include: { branch: boolean } = { branch: true },
 ): InvocationContext {
   const commonRaw = git(cwd, ['rev-parse', '--git-common-dir'])
   if (commonRaw === null || commonRaw === '') {
@@ -114,7 +105,7 @@ export function inferInvocationContext(
         : commonName
   const project = projectSlugFrom(projectName)
 
-  const branchRaw = git(cwd, ['rev-parse', '--abbrev-ref', 'HEAD'])
+  const branchRaw = include.branch ? git(cwd, ['rev-parse', '--abbrev-ref', 'HEAD']) : null
   const branch =
     branchRaw === null || branchRaw === '' || branchRaw === 'HEAD'
       ? undefined

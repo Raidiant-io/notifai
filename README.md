@@ -458,6 +458,18 @@ close: children restart it and register again, and nothing expires. Only an
 opaque id leaves the machine: never process ids, paths, or session files.
 `notifai doctor` shows the hub and the sessions it attends.
 
+While the hub runs it also answers the frequent hooks, so they start no
+runtime: SessionStart, SubagentStart, UserPromptSubmit and Stop for Claude Code
+and Codex, and Codex's PostToolUse. The native launcher reads the hook's input
+and hands it to the hub, which runs the same handler with the hook's own
+environment and directory and returns what the hook prints, activation
+guidance included. Only a quiet session's hooks go this way: nothing asked,
+answered, staged or owed. Every other hook, and every hook while no hub runs or
+while the hub is an older build than the one installed, starts the runtime
+with the same input, as before. Claude Code's inbox token never reaches the
+hub. `notifai doctor --json` counts the hooks the hub answered and why it left
+others to the runtime.
+
 On Windows, Claude Code keeps the earlier per-session Session Attendant until the
 hub is verified there.
 OpenClaw's Gateway service also owns a current-generation attendant on macOS.
