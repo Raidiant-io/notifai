@@ -1,4 +1,4 @@
-import { execFileSync } from 'node:child_process'
+import { execFileSync, spawn } from 'node:child_process'
 import { mkdtempSync, rmSync } from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
@@ -37,7 +37,7 @@ import { recordConfirmedNativeAnswerTarget } from './native-answer-operation.js'
 import { beginSessionIncarnation, lifecycleStamp, readSessionState, updateSessionState, writeSessionState } from './hook-session-state.js'
 import type { AnsweredPending, HookEnvelope, PendingQuestion, SessionState } from './hook-types.js'
 import { createLogger, readLogRecords } from './logging.js'
-import { currentProcessIdentity } from './process-identity.js'
+import { currentProcessIdentity, processStartTime, type ProcessIdentity } from './process-identity.js'
 import { enableProject, projectBinding } from './project-enablement.js'
 import { attendantClaimPath, writeAttendantStatus } from './session-attendant-state.js'
 import { readDeliveryJournal } from './session-delivery.js'
@@ -68,11 +68,22 @@ const FORM = picker([
 const roots: string[] = []
 afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }) })
 
-function setup(options: { signedIn?: boolean; enabled?: boolean; leased?: boolean } = {}) {
+/** Another Claude Code process: alive until the test stops it. */
+async function otherProcess(): Promise<{ identity: ProcessIdentity; exit: () => Promise<void> }> {
+  const child = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { stdio: 'ignore' })
+  const exited = new Promise<void>((resolve) => { child.once('exit', () => resolve()) })
+  const pid = child.pid!
+  const start = processStartTime(pid)
+  if (start === null) throw new Error('the other process did not start')
+  return { identity: { pid, start }, exit: async () => { child.kill('SIGKILL'); await exited } }
+}
+
+function setup(options: { signedIn?: boolean; enabled?: boolean; leased?: boolean; host?: ProcessIdentity; hookSource?: number } = {}) {
   const root = mkdtempSync(path.join(os.tmpdir(), 'notifai-claude-picker-'))
   roots.push(root)
-  const owner = currentProcessIdentity()!
-  const env = { HOME: root, XDG_CONFIG_HOME: path.join(root, 'config'), XDG_STATE_HOME: path.join(root, 'state') }
+  const owner = options.host ?? currentProcessIdentity()!
+  const env: NodeJS.ProcessEnv = { HOME: root, XDG_CONFIG_HOME: path.join(root, 'config'), XDG_STATE_HOME: path.join(root, 'state'),
+    ...(options.hookSource === undefined ? {} : { NOTIFAI_HOOK_SOURCE_PID: String(options.hookSource) }) }
   const incarnation = beginSessionIncarnation(SESSION, env, { stamp: lifecycleStamp(), harnessProcess: owner })
   writeSessionState(SESSION, env, { harness: 'claude-code', last_prompt_at: 1 })
   // A Project is a repository the User enabled.
@@ -748,6 +759,32 @@ describe('Claude Code picker hooks', () => {
       },
     })
     expect(outcome).toBe('answered')
+  })
+
+  it('follows the process showing the picker, not the conversation\'s primary place', async () => {
+    // Open in two places: the primary exits while a standby place shows the picker.
+    const primary = await otherProcess()
+    const standby = setup({ host: primary.identity, hookSource: process.pid })
+    let exited = false
+    expect(await claudePermissionRequest(standby.deps, standby.envelope(), standby.logger, {
+      sleep: async () => {
+        if (!exited) { exited = true; await primary.exit(); return }
+        standby.confirm()
+        standby.stage([{ question_id: standby.registration().questions[0]!.question.id, choice_ids: ['production'] }])
+      },
+    })).toBe('answered')
+    expect(standby.decision().hookSpecificOutput.decision.updatedInput.answers).toEqual({ [REWORDED]: 'Production' })
+
+    // The place showing the picker exits while the primary lives on: the picker went with it.
+    const shown = await otherProcess()
+    const gone = setup({ hookSource: shown.identity.pid })
+    let questionId = ''
+    expect(await claudePermissionRequest(gone.deps, gone.envelope(), gone.logger, {
+      sleep: async () => { questionId = gone.held(); await shown.exit() },
+    })).toBe('left-to-terminal')
+    expect(gone.gates.at(-1)).toMatchObject({ stage: 'session-ended' })
+    expect(gone.pendingOf(questionId)).toBeUndefined()
+    expect(gone.output).toEqual([])
   })
 
   it('maps a device answer only onto its own registration', () => {
