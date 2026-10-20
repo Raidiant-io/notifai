@@ -278,6 +278,34 @@ it('verifies the definition a host refreshed into a selected Codex copy instead 
   expect(JSON.parse(readFileSync(path.join(f.root, 'state', 'notifai', 'integration-repair.json'), 'utf8')).requirements).toEqual([])
 })
 
+it('settles a selected Codex home\'s recorded repair from a shell that selects no Codex home', async () => {
+  const f = fixture()
+  const plain: NodeJS.ProcessEnv = { ...f.deps.env }
+  delete plain['CODEX_HOME']
+  f.deps.env['CODEX_HOME'] = path.join(f.home, 'accounts', 'selected')
+  expect(hooksInstallCommand(f.deps, { harness: 'codex', narrate: false })).toBe(0)
+  const selected = findInstallations(f.deps.env, f.home).find(entry => entry.harness === 'codex')!
+  const other = path.join(f.home, 'accounts', 'other', 'hooks.json')
+  mkdirSync(path.dirname(other), { recursive: true })
+  writeFileSync(other, 'another account remains User-owned')
+  removeToolHook(selected.file)
+  expect(await updateResumeCommand(f.deps, { json: true })).toBe(0)
+  const record = path.join(f.root, 'state', 'notifai', 'integration-repair.json')
+  expect(JSON.parse(readFileSync(record, 'utf8')).requirements).toEqual([expect.objectContaining({ file: selected.file })])
+  // The same requirement, resumed where CODEX_HOME is unset: the recorded file
+  // is inspected in its own home, not reported as out of scope.
+  f.deps.env = plain
+  expect(await updateResumeCommand(f.deps, { json: true })).toBe(0)
+  const pending = JSON.parse(f.out.at(-1)!).pending_actions as string[]
+  expect(pending).toEqual([`native-approval-pending: Codex has not approved Notifai's changed hooks in ${path.dirname(selected.file)}. ` +
+    `Open /hooks in a Codex session whose CODEX_HOME is ${path.dirname(selected.file)} and approve the Notifai handlers.`])
+  trustCodex(selected, { ...plain, CODEX_HOME: path.dirname(selected.file) }, f.home)
+  expect(await updateResumeCommand(f.deps, { json: true })).toBe(0)
+  expect(JSON.parse(f.out.at(-1)!)).toMatchObject({ migration_complete: true, pending_actions: [] })
+  expect(JSON.parse(readFileSync(record, 'utf8')).requirements).toEqual([])
+  expect(readFileSync(other, 'utf8')).toBe('another account remains User-owned')
+})
+
 it('settles a recorded requirement whose intended revision never reached its healthy, approved definition', async () => {
   const f = fixture()
   // A requirement as an earlier build left it: its file now holds another

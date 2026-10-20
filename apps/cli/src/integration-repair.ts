@@ -14,7 +14,8 @@ import { codexToolHookReady, CODEX_TOOL_HOOK_RECOVERY } from './codex-tool-messa
 import { stateDir } from './config.js'
 import { withFileLock } from './file-lock.js'
 import { isHookInstallableHarness, questionRoutingCapability } from './harnesses.js'
-import { buildHookConfig, buildCursorHookConfig, NON_ROUTING_BLOCKING_STOP_TIMEOUT_SECONDS, settingsFile, codexTrustProblems, type Installation } from './install-hooks.js'
+import { buildHookConfig, buildCursorHookConfig, NON_ROUTING_BLOCKING_STOP_TIMEOUT_SECONDS, settingsFile, codexTrustProblems,
+  findInstallations, machineHookFiles, type Installation } from './install-hooks.js'
 import { hookAdapterPath, inspectHookAdapter } from './hook-adapter.js'
 import { opencodePluginSource } from './opencode-plugin.js'
 import { openclawPluginSource } from './openclaw-plugin.js'
@@ -90,6 +91,30 @@ export function withHookRepairIntent<T>(deps: CommandDeps, installation: Install
   }, { waitMs: 1_000 })
 }
 
+/** The home variable that selects where each harness reads the recorded file,
+ * and its value for that file. Only harnesses whose home a session manager can
+ * select this way appear here. */
+const HOME_VARIABLE: Partial<Record<Installation['harness'], (file: string) => [string, string]>> = {
+  codex: file => ['CODEX_HOME', path.dirname(file)],
+  'claude-code': file => ['CLAUDE_CONFIG_DIR', path.dirname(file)],
+  grok: file => ['GROK_HOME', path.dirname(path.dirname(file))],
+}
+
+/** The recorded file inspected where it is, from any shell. It names exactly
+ * one file Notifai wrote, so selecting its own home enumerates no other
+ * account. Null when no home variable selects this very file; 'absent' when
+ * the file no longer holds Notifai's hooks. */
+function recordedScope(deps: CommandDeps, requirement: Requirement):
+  { installation: Installation; env: NodeJS.ProcessEnv } | 'absent' | null {
+  const home = HOME_VARIABLE[requirement.harness]?.(requirement.file)
+  if (home === undefined) return null
+  const env = { ...deps.env, [home[0]]: home[1] }
+  if (!machineHookFiles(requirement.harness, env, deps.hookPlatform).includes(requirement.file)) return null
+  const installation = findInstallations(env, deps.hookAdapterHome, deps.hookPlatform)
+    .find(item => item.harness === requirement.harness && item.file === requirement.file)
+  return installation === undefined ? 'absent' : { installation, env }
+}
+
 /** Resolve only against the changed scope's real trust and callback evidence.
  * Unrelated pre-existing defects never become migration requirements. Caller
  * holds the publication fence through this final synchronous assessment. */
@@ -99,17 +124,22 @@ export function pendingHookRepairs(deps: CommandDeps,
   return withFileLock(`${file}.lock`, () => {
     const remaining: Requirement[] = [], pending: string[] = []
     for (let requirement of read(file)) {
-      const selected = installations.find(item => item.installation.file === requirement.file)
-      if (!selected) {
+      const inScope = installations.find(item => item.installation.file === requirement.file)
+      const selected = inScope ?? recordedScope(deps, requirement)
+      if (selected === null || selected === 'absent') {
         remaining.push(requirement)
-        pending.push(`The changed ${requirement.harness} integration at ${requirement.file} is outside this inspection scope; run notifai update --resume --json where that file is the active ${requirement.harness} configuration.`)
+        pending.push(selected === 'absent'
+          ? `The changed ${requirement.harness} integration at ${requirement.file} no longer holds Notifai's hooks; run notifai hooks install --harness ${requirement.harness} where that file is the active ${requirement.harness} configuration.`
+          : `The changed ${requirement.harness} integration at ${requirement.file} is outside this inspection scope; run notifai update --resume --json where that file is the active ${requirement.harness} configuration.`)
         continue
       }
       const { installation, env } = selected
       const faults = installationFaults(installation, deps.hookPlatform, { ...deps, env })
       if (faults.length > 0) {
         remaining.push(requirement)
-        pending.push(`The owned ${requirement.harness} hook repair remains incomplete.`)
+        // This run repairs only what its own scope loads.
+        pending.push(inScope ? `The owned ${requirement.harness} hook repair remains incomplete.`
+          : `The owned ${requirement.harness} hook repair at ${requirement.file} remains incomplete; run notifai update --resume --json where that file is the active ${requirement.harness} configuration.`)
         continue
       }
       // If publication never happened, an unchanged healthy definition needs

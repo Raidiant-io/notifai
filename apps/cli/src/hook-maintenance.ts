@@ -73,6 +73,19 @@ export function spawnRetirement(launch: HookMaintenanceLaunch): void {
 }
 
 /**
+ * Wait out the end confirmation of a SessionEnd no hub decides, in a detached
+ * process (see `session-end-confirmation.ts`).
+ */
+export function spawnEndConfirmation(launch: HookMaintenanceLaunch): void {
+  launchSelf(['hook', 'end-confirmation', '--owner', 'notifai', ...(launch.harness === undefined ? [] : ['--harness', launch.harness])], {
+    cwd: launch.cwd,
+    env: launch.env ?? process.env,
+    ...(launch.detachTimeoutMs === undefined ? {} : { detachTimeoutMs: launch.detachTimeoutMs }),
+    retain: () => undefined,
+  })
+}
+
+/**
  * Replace a hub from an earlier build with this (active) build's, in a
  * detached process: the check reads its status twice, seconds apart.
  */

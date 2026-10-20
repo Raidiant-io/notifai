@@ -93,14 +93,68 @@ export interface SessionEndMarker {
 
 export function markSessionEnded(sessionId: string, env: NodeJS.ProcessEnv, now: number): SessionEndMarker {
   const stateFile = sessionStatePath(sessionId, env)
-  return withFileLock(`${stateFile}.lock`, () => {
-    const current = readSessionIncarnation(sessionId, env)
-    const marker = { stamp: lifecycleStamp(now), ends: current?.key ?? null }
-    atomicWriteFileSync(
-      sessionEndMarkerPath(sessionId, env),
-      `${JSON.stringify(marker)}\n`,
-    )
+  return withFileLock(`${stateFile}.lock`, () => markSessionEndedUnlocked(sessionId, env, now))
+}
+
+function markSessionEndedUnlocked(sessionId: string, env: NodeJS.ProcessEnv, now: number): SessionEndMarker {
+  const current = readSessionIncarnation(sessionId, env)
+  const marker = { stamp: lifecycleStamp(now), ends: current?.key ?? null }
+  atomicWriteFileSync(
+    sessionEndMarkerPath(sessionId, env),
+    `${JSON.stringify(marker)}\n`,
+  )
+  return marker
+}
+
+/**
+ * A SessionEnd that no hub decides waits here for its end confirmation (see
+ * `session-end-confirmation.ts`). It is written, cancelled and concluded under
+ * the session-state lock, so a SessionStart and the end it would cancel are
+ * ordered.
+ */
+export function endCandidatePath(sessionId: string, env: NodeJS.ProcessEnv): string {
+  return path.join(endCandidatesDir(env), `${sanitizeSessionId(sessionId)}.json`)
+}
+
+export function endCandidatesDir(env: NodeJS.ProcessEnv): string {
+  return path.join(stateDir(env), 'end-candidates')
+}
+
+/** When the waiting end was signalled; undefined when none waits, null when unreadable. */
+function endCandidateSince(sessionId: string, env: NodeJS.ProcessEnv): LifecycleStamp | null | undefined {
+  let raw: string
+  try {
+    raw = readFileSync(endCandidatePath(sessionId, env), 'utf8')
+  } catch {
+    return undefined
+  }
+  try {
+    return parseStamp((JSON.parse(raw) as Record<string, unknown>)['since'])
+  } catch {
+    return null
+  }
+}
+
+/**
+ * The end confirmation found no restart: end the session, unless a start
+ * since cancelled this exact end. Null when it did; the session goes on.
+ */
+export function concludeEndCandidate(sessionId: string, env: NodeJS.ProcessEnv, since: LifecycleStamp,
+  now: number): SessionEndMarker | null {
+  return withFileLock(`${sessionStatePath(sessionId, env)}.lock`, () => {
+    if (endCandidateSince(sessionId, env)?.mono !== since.mono) return null
+    const marker = markSessionEndedUnlocked(sessionId, env, now)
+    rmSync(endCandidatePath(sessionId, env), { force: true })
     return marker
+  })
+}
+
+/** The conversation came back: drop this exact waiting end. False when it was already gone. */
+export function withdrawEndCandidate(sessionId: string, env: NodeJS.ProcessEnv, since: LifecycleStamp): boolean {
+  return withFileLock(`${sessionStatePath(sessionId, env)}.lock`, () => {
+    if (endCandidateSince(sessionId, env)?.mono !== since.mono) return false
+    rmSync(endCandidatePath(sessionId, env), { force: true })
+    return true
   })
 }
 
@@ -297,6 +351,12 @@ export function beginSessionIncarnation(
       happenedBefore(marker.stamp, options.stamp)
     ) {
       rmSync(sessionEndMarkerPath(sessionId, env), { force: true })
+    }
+    // The same conversation started again within its end confirmation (a
+    // reload, a handoff): the end waiting for that confirmation is cancelled.
+    const waitingEnd = options.clearEarlierEnd === false ? undefined : endCandidateSince(sessionId, env)
+    if (waitingEnd !== undefined && happenedBefore(waitingEnd, options.stamp)) {
+      rmSync(endCandidatePath(sessionId, env), { force: true })
     }
     if (next !== current) {
       atomicWriteFileSync(sessionIncarnationPath(sessionId, env), `${JSON.stringify(next)}\n`)

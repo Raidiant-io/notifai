@@ -28,7 +28,7 @@ import { inHookScope } from './hook-scope.js'
 import { HOOK_INSTALLABLE_HARNESSES, type HookInstallableHarness } from './harnesses.js'
 import { readSessionState, sessionHasEnded } from './hook-session-state.js'
 import type { HookEnvelope, SessionState } from './hook-types.js'
-import { spawnHookMaintenance, spawnRetirement } from './hook-maintenance.js'
+import { spawnEndConfirmation, spawnHookMaintenance, spawnRetirement } from './hook-maintenance.js'
 import { hookStepBudgets, OWNER_STEP_BUDGETS } from './hook-budgets.js'
 import { bootstrapLogger } from './logging.js'
 import { isSessionInputWake, readSessionMessagesFile } from './session-inputs.js'
@@ -220,6 +220,7 @@ export async function runIngressHook(host: IngressHost, request: IngressRequest)
         // Detached work starts from the hook's environment, as the runtime would start it.
         spawnHookMaintenance: (launch) => spawnHookMaintenance({ ...launch, env }),
         spawnRetirement: (launch) => spawnRetirement({ ...launch, env }),
+        spawnEndConfirmation: (launch) => spawnEndConfirmation({ ...launch, env }),
         // The hub already owns question submission and answer waiting in-process.
         spawnQuestionSettlement: (launch) => host.settle(launch.envelope.session_id ?? '', launch.harness,
           launch.envelope.cwd ?? null, launch.purpose === 'submission' ? 'submission' : 'settlement'),
