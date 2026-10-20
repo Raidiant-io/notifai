@@ -118,6 +118,8 @@ export interface CommandDeps {
    * is staged for a session, so the hub hands it in without waiting for a tick.
    */
   onSessionInputStaged?: (sessionId: string) => void
+  /** Set by the hub for its in-process question owners; detached owners leave it unset. */
+  questionOwnerRole?: 'hub'
   /**
    * Starts the detached daily hook maintenance (prune, update lookup). Absent,
    * hooks start none; the production entry point supplies the real launcher.

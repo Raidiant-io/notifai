@@ -42,7 +42,17 @@ import {
   stopAnswerOutput,
 } from './hook-acknowledgements.js'
 import { clearMatchingProjectSession, writeProjectSession } from './hook-project-sessions.js'
-import { acquireClaimFile, releaseClaimFile, claimHandoffState, claimQuestionPush, releaseQuestionPush } from './hook-question-lock.js'
+import {
+  acquireClaimFile,
+  releaseClaimFile,
+  claimHandoffState,
+  claimQuestionPush,
+  questionPushHeld,
+  QUESTION_OWNER_SUPERSEDE_WAIT_MS,
+  releaseQuestionPush,
+  supersedeQuestionOwner,
+  type QuestionOwnerRole,
+} from './hook-question-lock.js'
 import {
   closeQuietly,
   drainOrphanRetirements,
@@ -68,6 +78,7 @@ import {
 } from './hook-question-state.js'
 import {
   clearSessionStateUnlocked,
+  endsIncarnation,
   markSessionEnded,
   pendingList,
   readSessionState,
@@ -80,7 +91,7 @@ import {
   writeSessionStateUnlocked,
   recordSessionNotified,
 } from './hook-session-state.js'
-import { currentProcessIdentity, processIdentityLiveness } from './process-identity.js'
+import { currentProcessIdentity, pidExists, processIdentityLiveness } from './process-identity.js'
 import { userPromptContextOutput } from './session-activation.js'
 import {
   answersAlreadyWritten,
@@ -312,14 +323,14 @@ async function waitForAnyReply(
   ctx: HookContext,
   requestIds: string[],
   timeoutSeconds: number,
-  interruption?: () => 'ownership-ended' | 'new-question' | null,
+  interruption?: () => WaiterInterruption | null,
   correctionOnly: () => ReadonlySet<string> = () => new Set(),
   liveRequests: () => ReadonlySet<string> = () => new Set(requestIds),
 ): Promise<{
   byRequest: Map<string, ReplyView[]>
   degraded: boolean
   permanentFailures: Map<string, string>
-  interrupted: 'ownership-ended' | 'new-question' | null
+  interrupted: WaiterInterruption | null
 }> {
   const deadline = ctx.now() + timeoutSeconds * 1000
   let degraded = false
@@ -392,7 +403,9 @@ async function waitForAnyReply(
     // SessionEnd or terminal-side retirement wins even if an in-flight poll
     // happened to return an answer. A newly registered question merely asks
     // this owner to yield; an answer already observed remains authoritative.
-    if (afterPoll === 'ownership-ended') {
+    // A successor that took this owner's claim observes that answer itself:
+    // nothing here consumed or closed it.
+    if (afterPoll === 'ownership-ended' || afterPoll === 'handed-off') {
       return { byRequest: new Map(), degraded, permanentFailures, interrupted: afterPoll }
     }
     if (byRequest.size > 0 || permanentFailures.size === requestIds.length) {
@@ -404,21 +417,55 @@ async function waitForAnyReply(
   }
 }
 
+/** Why a long-lived answer owner stops waiting before an answer or its deadline. */
+type WaiterInterruption = 'ownership-ended' | 'new-question' | 'handed-off'
+
+/** A session host that still exists is re-identified (PID and start) at most this often. */
+const SESSION_HOST_IDENTITY_CHECK_MS = 60_000
+const sessionHostCheckedAt = new Map<string, number>()
+
+/**
+ * Positive local evidence that the process hosting this session incarnation
+ * is gone, read from the process table: its PID is free, or (at most once a
+ * minute) a different process now has it. A session whose host is gone is
+ * closed, whether or not a SessionEnd hook or the hub recorded it.
+ */
+function sessionHostGone(sessionId: string, env: NodeJS.ProcessEnv, now: number): boolean {
+  const host = readSessionIncarnation(sessionId, env)?.harness_process
+  if (host === undefined) return false
+  if (!pidExists(host.pid)) return true
+  const checkedAt = sessionHostCheckedAt.get(sessionId)
+  if (checkedAt !== undefined && now - checkedAt < SESSION_HOST_IDENTITY_CHECK_MS) return false
+  sessionHostCheckedAt.set(sessionId, now)
+  return processIdentityLiveness(host) === 'gone'
+}
+
 /**
  * Local lifecycle signal for a long-lived observer.
  *
  * SessionEnd and terminal-side retirement remove an owned request from pending
  * state; the detached process must stop instead of recreating that session.
- * A newly registered or submitted question asks a native observer to hand off
- * to an owner whose lifetime covers the later answer window.
+ * A host process that is gone closes the session the same way, here, rather
+ * than at the end of the answer window. A newly registered or submitted
+ * question asks a native observer to hand off to an owner whose lifetime
+ * covers the later answer window, and a successor that took this owner's
+ * claim (a newer runtime, or the hub) ends this observer at once.
  */
 function waiterInterruption(
   sessionId: string,
   env: NodeJS.ProcessEnv,
   requestIds: readonly string[],
   attemptedLocal: ReadonlySet<string>,
-): 'ownership-ended' | 'new-question' | null {
+  watchHost: { now: () => number } | null = null,
+): WaiterInterruption | null {
+  if (watchHost !== null && !sessionHasEnded(sessionId, env) && sessionHostGone(sessionId, env, watchHost.now())) {
+    const incarnation = readSessionIncarnation(sessionId, env)
+    if (incarnation !== null && !endsIncarnation(readSessionEndMarker(sessionId, env), incarnation)) {
+      handleSessionEnd(env, { session_id: sessionId }, Date.now())
+    }
+  }
   if (sessionHasEnded(sessionId, env)) return 'ownership-ended'
+  if (!questionPushHeld(sessionId, env)) return 'handed-off'
   const pending = pendingList(readSessionState(sessionId, env))
   const owned = new Set(requestIds)
   if (pending.some((entry) => entry.request_id !== undefined
@@ -1029,6 +1076,7 @@ export async function handleStop(
   route: EscalationDeliveryRoute = hookContinuationRoute(),
   recordStop = true,
   hubHandoff = false,
+  owner: QuestionOwnerRole = 'stop',
 ): Promise<HookOutcome> {
   const sessionId = envelope.session_id
   if (!sessionId) {
@@ -1042,6 +1090,7 @@ export async function handleStop(
     processDeadlineAt,
     recordStop,
     hubHandoff,
+    owner,
   })
 }
 
@@ -1050,14 +1099,37 @@ export async function handleStop(
  * newly registered question. The live owner sees that state on its next reply
  * poll and yields; without this handoff the new question could sit unpushed for
  * the older question's complete answer window.
+ *
+ * A background owner (detached, or the hub) also takes over from an owner
+ * that must not keep the session's questions: one from an older runtime, one
+ * that outlived its own window, or, for the hub, a detached one
+ * (`supersedeQuestionOwner`). A Stop hook never waits for that.
  */
 async function acquireQuestionOwner(
   ctx: HookContext,
   sessionId: string,
   hardDeadlineAt: number,
+  owner: QuestionOwnerRole,
 ): Promise<boolean> {
   if (sessionHasEnded(sessionId, ctx.env)) return false
-  if (claimQuestionPush(sessionId, ctx.env, Date.now(), undefined, hardDeadlineAt)) return true
+  const claim = (): boolean => claimQuestionPush(sessionId, ctx.env, Date.now(), undefined, hardDeadlineAt, owner)
+  if (claim()) return true
+
+  if (owner !== 'stop') {
+    const supersedeUntil = Math.min(hardDeadlineAt, ctx.now() + QUESTION_OWNER_SUPERSEDE_WAIT_MS)
+    let logged = false
+    while (ctx.now() < supersedeUntil) {
+      const step = supersedeQuestionOwner(sessionId, ctx.env, owner)
+      if (step.action === 'none') break
+      if (!logged) {
+        logged = true
+        ctx.log?.info('hook.answer', { stage: 'owner-superseded', action: step.action, reason: step.reason, holder_pid: step.pid })
+      }
+      await ctx.sleep(Math.min(CLAIM_HANDOFF_POLL_MS, Math.max(0, supersedeUntil - ctx.now())))
+      if (sessionHasEnded(sessionId, ctx.env)) return false
+      if (claim()) return true
+    }
+  }
 
   while (ctx.now() < hardDeadlineAt) {
     const handoff = claimHandoffState(sessionId, ctx.env)
@@ -1073,7 +1145,7 @@ async function acquireQuestionOwner(
       Math.min(CLAIM_HANDOFF_POLL_MS, holderReleaseDeadlineAt - ctx.now()),
     )
     if (sessionHasEnded(sessionId, ctx.env)) return false
-    if (claimQuestionPush(sessionId, ctx.env, Date.now(), undefined, hardDeadlineAt)) return true
+    if (claim()) return true
   }
   return false
 }
@@ -1114,7 +1186,8 @@ export async function runEscalationWaiter(
   // polling, close fencing, route delivery, and every retirement path.
   // Real clock, deliberately, not `ctx.now` — the claim answers whether
   // another process is alive right now, which an injected clock cannot know.
-  if (!(await acquireQuestionOwner(ctx, sessionId, hardDeadlineAt))) {
+  const owner = options.owner ?? 'stop'
+  if (!(await acquireQuestionOwner(ctx, sessionId, hardDeadlineAt, owner))) {
     gate(ctx, 'held', 'claimed-elsewhere', { stage: 'queued' })
     notes.push('another hook is already handling this session; a newly registered question remains queued for the next owner')
     return { notes }
@@ -1235,6 +1308,7 @@ export async function runEscalationWaiter(
       // child writes the inbox as the harness's own child.
       options.recordStop !== false && ((ctx.harness === 'codex' && options.route.kind === 'session-queue') ||
         (ctx.harness === 'claude-code' && options.hubHandoff === true)),
+      owner,
     )
   } finally {
     releaseQuestionPush(sessionId, ctx.env)
@@ -1698,6 +1772,7 @@ async function handleClaimedStop(
   hardDeadlineAt: number,
   route: EscalationDeliveryRoute,
   handoffToDetachedOwner: boolean,
+  owner: QuestionOwnerRole,
 ): Promise<HookOutcome> {
   const live = pending.filter((entry) => entry.request_id !== undefined)
   const unasked = pending.filter((entry) => entry.request_id === undefined)
@@ -1805,6 +1880,7 @@ async function handleClaimedStop(
         hardDeadlineAt,
         route,
         handoffToDetachedOwner,
+        owner,
       )
     }
     // Questions registered after the earlier push still owe the user their
@@ -1825,6 +1901,7 @@ async function handleClaimedStop(
     hardDeadlineAt,
     route,
     handoffToDetachedOwner,
+    owner,
   )
 }
 
@@ -2190,6 +2267,7 @@ async function escalate(
   hardDeadlineAt: number,
   route: EscalationDeliveryRoute,
   handoffToDetachedOwner: boolean,
+  owner: QuestionOwnerRole,
 ): Promise<HookOutcome> {
   const ceilingAt = hardDeadlineAt
   const attemptedLocal = new Set(pendingList(readSessionState(sessionId, ctx.env))
@@ -2276,6 +2354,9 @@ async function escalate(
           ctx.env,
           [...knownRequestIds],
           attemptedLocal,
+          // The hub learns of a closed session from its child; any other
+          // long-lived owner reads the process table itself.
+          owner === 'hub' ? null : { now: () => ctx.now() },
         ),
       () => settledNativeRequestIds(readSessionState(sessionId, ctx.env)),
       () => new Set(pendingList(readSessionState(sessionId, ctx.env)).flatMap((entry) => {
@@ -2298,6 +2379,11 @@ async function escalate(
       for (const entry of activeWaiting) knownRequestIds.add(entry.request_id!)
       if (activeWaiting.length === 0) return { notes }
       continue
+    }
+    if (waited.interrupted === 'handed-off') {
+      notes.push('handed this session\'s questions to a newer answer owner; stopping this one')
+      ctx.log?.info('hook.answer', { answered: false, stage: 'owner-handed-off' })
+      return { notes }
     }
     if (waited.interrupted === 'ownership-ended') {
       notes.push('answer ownership ended locally; stopping this observer without delivering into a closed session')

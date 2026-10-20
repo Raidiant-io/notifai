@@ -1098,6 +1098,9 @@ export async function hookRunCommand(
         // and hands the answer window to the hub instead of waiting through it.
         event === 'stop' && harness === 'claude-code' && envelope.session_id !== undefined &&
           hubSupported(deps.hookPlatform ?? process.platform) && hubAttendsSession(envelope.session_id, deps.env),
+        // A background answer owner, in the hub or detached, takes over from
+        // one that must not keep this session's questions.
+        event === 'question-settlement' ? deps.questionOwnerRole ?? 'detached' : 'stop',
       )
     }
     if (

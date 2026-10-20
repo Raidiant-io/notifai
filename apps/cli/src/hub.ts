@@ -1445,6 +1445,7 @@ export class Hub {
       spawnQuestionSettlement: (launch) => this.settle(launch.envelope.session_id ?? '', launch.harness,
         launch.envelope.cwd ?? null, launch.purpose === 'submission' ? 'submission' : 'settlement'),
       onSessionInputStaged: (sessionId) => this.inputStaged(sessionId),
+      questionOwnerRole: 'hub',
     }
     delete deps.spawnHookMaintenance
     delete deps.spawnRetirement

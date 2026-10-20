@@ -475,6 +475,8 @@ export interface EscalationWaiterOptions {
   recordStop?: boolean
   /** Claude Code with the hub: hand the answer window to the hub after admission. */
   hubHandoff?: boolean
+  /** Who runs this waiter; a background owner takes over from one that must not keep the questions. */
+  owner?: 'stop' | 'detached' | 'hub'
 }
 
 export interface HookContext {
