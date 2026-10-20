@@ -792,6 +792,10 @@ export class Hub {
     if (this.settlements.size > 0) reasons.add('question-waiting')
     for (const session of this.sessions.values()) {
       if (session.lease.final !== null) reasons.add('session-ending')
+      // A dormant-open Codex conversation, or one whose end is still being
+      // classified, lives only in this hub's memory: a handover now could lose
+      // it, so wait until it reopens, ends or stops owing anything.
+      if (session.dormantSince !== null || session.endCandidate !== null) reasons.add('session-dormant')
       const generation = session.lease.generation
       if (generation !== null && hasSessionInputs(session.id, session.env, { incarnation: session.lease.incarnation, generation })) {
         reasons.add('session-input-pending')

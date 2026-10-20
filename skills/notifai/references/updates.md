@@ -29,7 +29,7 @@ Offer to perform an update only when one of these holds:
   for approval in `/hooks`), `session-child-incompatible`, `continuity` or
   `candidate-unverified`, or the staged update has waited a week.
 
-`question-waiting`, `session-input-pending` and `session-ending` clear by
+`question-waiting`, `session-input-pending`, `session-ending` and `session-dormant` clear by
 themselves; never end sessions or drop work to let an update in.
 
 The switch is one setting for the whole machine. Change it only when the User

@@ -50,6 +50,8 @@ export type WaitingReason =
   | 'session-input-pending'
   /** A closed session's end report has not reached the service yet. */
   | 'session-ending'
+  /** A dormant-open Codex conversation is held only by the running hub. */
+  | 'session-dormant'
   /** The new build would rewrite Codex or Claude Code hook definitions. */
   | 'hook-approval'
   /** A running session child speaks an IPC version the new hub does not serve. */

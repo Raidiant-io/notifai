@@ -767,6 +767,11 @@ describe('hub', () => {
     expect(child.frames[0]).toMatchObject({ type: 'registered' })
     expect(await hub.runAutomaticUpdate()).toMatchObject({ outcome: 'waiting' })
     expect(seen).toEqual([[1]])
+    // A dormant-open conversation exists only in this hub: it holds an activation back.
+    expect(hub.updateBlockers()).toEqual([])
+    hub.sessions.get(SESSION)!.dormantSince = 1
+    expect(hub.updateBlockers()).toEqual(['session-dormant'])
+    hub.sessions.get(SESSION)!.dormantSince = null
     await new Promise((resolve) => setTimeout(resolve, 100))
     expect(child.closed).toBe(false)
     expect(successors).toBe(0)
