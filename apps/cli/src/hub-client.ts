@@ -2,7 +2,7 @@
  * The CLI's side of the hub: hand it work, start it when nothing answers, tell
  * it when the credential changed, and read its status for `doctor`.
  */
-import { existsSync, readFileSync, statSync } from 'node:fs'
+import { existsSync, linkSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { atomicWriteFileSync } from './atomic-file.js'
@@ -40,7 +40,9 @@ const SESSION_VARIABLES = /^NOTIFAI_(HOOK_SOURCE_PID$|ACTIVE_|NATIVE_|INTERNAL_)
 /**
  * How this machine reaches the service: proxy and certificate settings. The
  * hub takes them from one deliberate record, written when the User signs in
- * (`recordHubNetwork`), never from whichever process happened to start it.
+ * (`recordHubNetwork`) or, on a machine signed in before there was one, once
+ * by the first hub starter (`initHubNetwork`); never from whichever process
+ * happens to start it after that.
  * The native session child reads the same record (`session-child.h`).
  */
 export const HUB_NETWORK_VARIABLES = ['HTTPS_PROXY', 'https_proxy', 'HTTP_PROXY', 'http_proxy', 'ALL_PROXY', 'all_proxy',
@@ -83,7 +85,30 @@ export function recordHubNetwork(env: NodeJS.ProcessEnv): boolean {
   return JSON.stringify(Object.entries(before).sort()) !== JSON.stringify(Object.entries(next).sort())
 }
 
+/**
+ * No record yet (a machine signed in before there was one): write it once
+ * from the starting process's own settings, as the native child does, so a
+ * proxy that worked before keeps working. A record that exists is never
+ * replaced here; only sign-in changes it.
+ */
+export function initHubNetwork(env: NodeJS.ProcessEnv): void {
+  if (existsSync(hubNetworkPath(env))) return
+  const file = hubNetworkPath(env)
+  const temp = `${file}.${process.pid}.tmp`
+  try {
+    ensurePrivateDirectory(hubRunDir(env))
+    writeFileSync(temp, `${JSON.stringify(networkVariables(env))}\n`, { mode: 0o600, flag: 'wx' })
+    // Linked into place: a record another starter wrote first is kept.
+    try { linkSync(temp, file) } catch { /* already recorded */ }
+  } catch {
+    // Unwritable: the hub starts with no network settings, as before.
+  } finally {
+    rmSync(temp, { force: true })
+  }
+}
+
 export function hubEnvironment(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+  initHubNetwork(env)
   const clean: NodeJS.ProcessEnv = {}
   for (const [name, value] of Object.entries(env)) {
     if (value !== undefined && HUB_VARIABLES.test(name) && !SESSION_VARIABLES.test(name)) clean[name] = value

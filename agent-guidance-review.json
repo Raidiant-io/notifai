@@ -1,8 +1,8 @@
 {
   "version": 1,
-  "behavior_digest": "sha256:7c481aeaf5eea7fbcef0b8f7793b426d9664ae12be65bf6efc654eb41948571b",
+  "behavior_digest": "sha256:b0aea6c402686bd13fc2453280985ef76fa5d806b955fff98417618cdcb247d3",
   "outcome": "reviewed-no-impact",
-  "reason": "Reviewed lifecycle hooks, the shipped skill and harness references, harness setup, CLI readiness and domain terms for three hub corrections: a SessionEnd the hub answered late is now decided by the hub alone (so a conversation its app or machine only stopped stays open, as the guidance already says), Linux names a process by its boot and kernel start ticks so a clock step no longer reads live sessions as gone, and the hub takes its proxy and certificate settings from the sign-in record while each session carries its own PATH and desktop. No agent-facing behaviour, command, flag or wording changed.",
+  "reason": "Reviewed lifecycle hooks, the shipped skill and harness references, harness setup, CLI readiness and domain terms for three hub corrections: a SessionEnd the hub answered late is now decided by the hub alone (so a conversation its app or machine only stopped stays open, as the guidance already says), Linux names a process by its boot and kernel start ticks so a clock step no longer reads live sessions as gone, and the hub takes its proxy and certificate settings from the sign-in record (written once by the first hub starter on a machine signed in before there was one) while each session carries its own PATH and desktop. No agent-facing behaviour, command, flag or wording changed.",
   "surfaces_reviewed": [
     "lifecycle-hooks",
     "notifai-skill",

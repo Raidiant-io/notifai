@@ -358,10 +358,39 @@ static const char *network_names[] = { "HTTPS_PROXY", "https_proxy", "HTTP_PROXY
     "NO_PROXY", "no_proxy", "NODE_EXTRA_CA_CERTS", "SSL_CERT_FILE", "SSL_CERT_DIR", NULL };
 static char network_entries[11][4200];
 
+/* No record yet (a machine signed in before there was one): write it once
+ * from this process's own settings, as `initHubNetwork` does, and use it.
+ * Linked into place, so a record another starter wrote first is kept. */
+static void init_hub_network(const char *file) {
+    jbuf b = {0};
+    jb_text(&b, "{");
+    for (int i = 0; network_names[i]; i++) {
+        const char *value = getenv(network_names[i]);
+        if (!value || !value[0] || strlen(value) > 4096 || strpbrk(value, "\r\n")) continue;
+        jb_field(&b, network_names[i], value);
+    }
+    jb_text(&b, "}\n");
+    char temp[PATH_MAX];
+    if (!b.failed && snprintf(temp, sizeof(temp), "%s.%ld.tmp", file, (long)getpid()) < (int)sizeof(temp)) {
+        int fd = open(temp, O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC | O_NOFOLLOW, 0600);
+        if (fd >= 0) {
+            int ok = write_all(fd, b.data, b.length) && fsync(fd) == 0;
+            close(fd);
+            if (ok) (void)link(temp, file);
+            unlink(temp);
+        }
+    }
+    free(b.data);
+}
+
 static int hub_network(const child_state *child, char **out, int room) {
     char file[PATH_MAX], text[65536];
     if (snprintf(file, sizeof(file), "%s/network.json", child->run) >= (int)sizeof(file)) return 0;
     int fd = open(file, O_RDONLY | O_CLOEXEC | O_NOFOLLOW);
+    if (fd < 0 && errno == ENOENT) {
+        init_hub_network(file);
+        fd = open(file, O_RDONLY | O_CLOEXEC | O_NOFOLLOW);
+    }
     if (fd < 0) return 0;
     ssize_t n = read(fd, text, sizeof(text) - 1);
     close(fd);

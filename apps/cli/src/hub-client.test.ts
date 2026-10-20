@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync, statSync } from 'node:fs'
+import { existsSync, mkdtempSync, rmSync, statSync } from 'node:fs'
 import path from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
 import { hubEnvironment, hubNetworkPath, readHubNetwork, recordHubNetwork } from './hub-client.js'
@@ -35,5 +35,16 @@ describe('the hub environment', () => {
     expect(recordHubNetwork(direct)).toBe(true)
     expect(readHubNetwork(direct)).toEqual({})
     expect(hubEnvironment(starter)['HTTPS_PROXY']).toBeUndefined()
+  })
+
+  it('records the first starter\'s settings once on a machine signed in before there was a record', () => {
+    const first = stateEnv({ HTTPS_PROXY: 'http://proxy.example:3128', OPENAI_API_KEY: 'sk-dummy' })
+    expect(existsSync(hubNetworkPath(first))).toBe(false)
+    expect(hubEnvironment(first)['HTTPS_PROXY']).toBe('http://proxy.example:3128')
+    expect(statSync(hubNetworkPath(first)).mode & 0o777).toBe(0o600)
+    expect(readHubNetwork(first)).toEqual({ HTTPS_PROXY: 'http://proxy.example:3128' })
+    // A later starter with other settings changes nothing: only sign-in does.
+    const later = { ...first, HTTPS_PROXY: 'http://other.example:8080' }
+    expect(hubEnvironment(later)['HTTPS_PROXY']).toBe('http://proxy.example:3128')
   })
 })
