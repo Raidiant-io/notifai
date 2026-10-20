@@ -376,7 +376,9 @@ static void init_hub_network(const char *file) {
         if (fd >= 0) {
             int ok = write_all(fd, b.data, b.length) && fsync(fd) == 0;
             close(fd);
-            if (ok) (void)link(temp, file);
+            if (ok && link(temp, file) != 0) {
+                /* The first record wins: another starter wrote it, or none could be written. */
+            }
             unlink(temp);
         }
     }
