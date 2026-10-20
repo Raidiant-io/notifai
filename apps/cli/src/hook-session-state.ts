@@ -366,7 +366,14 @@ export function recordSessionNotified(sessionId: string, env: NodeJS.ProcessEnv,
     const file = sessionNotifiedPath(sessionId, env)
     if (existsSync(file)) return
     mkdirSync(path.dirname(file), { recursive: true })
-    atomicWriteFileSync(file, `${now}\n`)
+    // Exclusive creation: of several first sends racing in one session, exactly
+    // one records the marker and tells the hub; the rest find it present.
+    try {
+      writeFileSync(file, `${now}\n`, { mode: 0o600, flag: 'wx' })
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code === 'EEXIST') return
+      throw err
+    }
     // The hub attends a session only once it notified; tell it now.
     finishBeforeExit(import('./hub-client.js').then(({ notifyHubSessionNotified }) => notifyHubSessionNotified(env, sessionId)))
   } catch {

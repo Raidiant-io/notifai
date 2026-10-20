@@ -446,10 +446,20 @@ export class SecretServiceStore implements CredentialStore {
     if (result.status === 0) {
       const stored = parseCredentialJson(result.stdout.toString('utf8').trim())
       if (stored) {
-        if (this.file.contentsHash() !== expectedContentsSha256) {
-          throw new Error('Credential authority changed during Secret Service lookup; retry')
+        const changed = new Error('Credential authority changed during Secret Service lookup; retry')
+        if (state.kind === 'missing') {
+          try {
+            this.file.recordLinuxAuthority('secret-service', expectedContentsSha256)
+          } catch (err) {
+            // A concurrent load recorded the same authority first. Anything
+            // else (a sign-out, a file credential) still refuses this lookup.
+            const now = this.file.readState()
+            if (now.kind === 'authority' && now.authority === 'secret-service') return stored
+            throw this.file.contentsHash() === expectedContentsSha256 ? err : changed
+          }
+        } else if (this.file.contentsHash() !== expectedContentsSha256) {
+          throw changed
         }
-        if (state.kind === 'missing') this.file.recordLinuxAuthority('secret-service', expectedContentsSha256)
         return stored
       }
     }

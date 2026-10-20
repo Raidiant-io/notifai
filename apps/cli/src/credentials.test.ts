@@ -584,6 +584,24 @@ describe('SecretServiceStore', () => {
       expect(desktop.load()).toBeNull()
     }
   })
+
+  it('loads when a concurrent load records the same service authority during lookup', () => {
+    const { env } = sandbox('secret-service-concurrent-authority')
+    const fileStore = new FileStore(env, { platform: 'linux' })
+    const service = mockSecretTool()
+    service.vault.set(['service', 'io.notifai.cli', 'account', 'machine'].join('\0'), JSON.stringify(SAMPLE))
+    const runner: ProcessRunner = {
+      run(spec) {
+        const result = service.runner.run(spec)
+        if (spec.args[0] === 'lookup' && fileStore.readState().kind === 'missing') {
+          fileStore.recordLinuxAuthority('secret-service')
+        }
+        return result
+      },
+    }
+    expect(new SecretServiceStore(env, { run: runner }).load()).toEqual(SAMPLE)
+    expect(fileStore.readState()).toEqual({ kind: 'authority', authority: 'secret-service' })
+  })
 })
 
 describe('secretServiceAvailable', () => {

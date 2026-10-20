@@ -1,7 +1,8 @@
 import { createHash } from 'node:crypto'
 import { existsSync, readFileSync, unlinkSync } from 'node:fs'
 import path from 'node:path'
-import { atomicWriteFileSync } from './atomic-file.js'
+import { atomicWriteFileSync, ensurePrivateDirectory } from './atomic-file.js'
+import { withTargetFileLock } from './file-lock.js'
 import { gitCommonDirectory, globalConfigDir, projectIdentityRoot } from './config.js'
 import { inferInvocationContext } from './invocation-context.js'
 
@@ -61,25 +62,47 @@ export function projectEnabled(binding: ProjectBinding | null): boolean {
   }
 }
 
+/**
+ * Record that the User enabled this Project.
+ *
+ * Every send and ask in an enabled Project reaches here, often from several
+ * Agent Sessions at the same instant. The record carries a decision, not a
+ * heartbeat, so a Project that is already enabled is left untouched: concurrent
+ * senders then only read it. The first enablement, and any racing disable, is
+ * serialized under the record's lock, so a sibling's write is never mistaken
+ * for a foreign replacement by the atomic write's guard.
+ */
 export function enableProject(binding: ProjectBinding, now: Date = new Date()): void {
-  const marker: ProjectEnablementMarker = {
-    version: 1,
-    project: binding.project,
-    enabled: true,
-    updated_at: now.toISOString(),
-  }
-  atomicWriteFileSync(binding.markerPath, `${JSON.stringify(marker, null, 2)}\n`, {
-    mode: 0o600,
-    preserveMode: false,
-    requireCurrentUserOwner: true,
-    directoryMode: 0o700,
+  if (projectEnabled(binding)) return
+  withEnablementLock(binding, () => {
+    if (projectEnabled(binding)) return
+    const marker: ProjectEnablementMarker = {
+      version: 1,
+      project: binding.project,
+      enabled: true,
+      updated_at: now.toISOString(),
+    }
+    atomicWriteFileSync(binding.markerPath, `${JSON.stringify(marker, null, 2)}\n`, {
+      mode: 0o600,
+      preserveMode: false,
+      requireCurrentUserOwner: true,
+      directoryMode: 0o700,
+    })
   })
 }
 
 export function disableProject(binding: ProjectBinding): void {
-  try {
-    unlinkSync(binding.markerPath)
-  } catch (err) {
-    if ((err as NodeJS.ErrnoException).code !== 'ENOENT') throw err
-  }
+  if (!existsSync(binding.markerPath)) return
+  withEnablementLock(binding, () => {
+    try {
+      unlinkSync(binding.markerPath)
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code !== 'ENOENT') throw err
+    }
+  })
+}
+
+function withEnablementLock(binding: ProjectBinding, action: () => void): void {
+  ensurePrivateDirectory(path.dirname(binding.markerPath))
+  withTargetFileLock(binding.markerPath, action)
 }

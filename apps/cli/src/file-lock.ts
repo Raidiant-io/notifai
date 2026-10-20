@@ -295,7 +295,9 @@ function publishChoosing(
         if ((err as NodeJS.ErrnoException).code !== 'EEXIST') throw err
       }
       const registrar = assertOwnedDirectory(directory)
-      chmodSync(directory, 0o700)
+      // Creation normally yields the private mode already. Skip the redundant
+      // change a sandbox can forbid while it still allows the private write.
+      if ((lstatSync(directory).mode & 0o7777) !== 0o700) chmodSync(directory, 0o700)
       // Recover before registration so a delayed stale cleanup can only name an
       // old owner's unique path, never this contender's future one.
       liveEntries(directory, registrar, options, deadline)
