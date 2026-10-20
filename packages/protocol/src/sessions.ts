@@ -23,9 +23,22 @@ import {
 
 /**
  * Server Features a Companion App must see before advertising the capability
- * of the same name at registration. Clients ignore names they do not know.
+ * of the same name at registration, or before offering the action a feature
+ * names. Clients ignore names they do not know.
+ *
+ * - `session_stopped_hold`: a stopped Agent Session (presence `out_of_reach`
+ *   with `accepts_messages: true`) accepts Session Notes and post-read Answer
+ *   Edits and holds them until it is reopened.
+ * - `question_dismiss`: an open question can be dismissed
+ *   (`POST /api/v1/notifications/:request_id/dismiss`).
  */
-export const SERVER_FEATURES = ['session_notes', 'answer_edits', 'machine_approval'] as const
+export const SERVER_FEATURES = [
+  'session_notes',
+  'answer_edits',
+  'machine_approval',
+  'session_stopped_hold',
+  'question_dismiss',
+] as const
 export type ServerFeature = (typeof SERVER_FEATURES)[number]
 
 /** `GET /api/v1/features` (user auth). A 404 means a server with none of them. */
@@ -62,9 +75,19 @@ export type SessionPresenceView =
       last_seen_at: string
     }
   | {
-      /** The lease lapsed without an end: the process may be alive but unreachable. */
+      /**
+       * The lease lapsed without an end: the process may be alive but
+       * unreachable. Also how a stopped Agent Session reads: its harness
+       * stopped without the User closing it and may be reopened in place.
+       */
       state: 'out_of_reach'
       last_seen_at: string
+      /**
+       * Present and true only for a stopped Agent Session (server feature
+       * `session_stopped_hold`): Session Notes and post-read Answer Edits are
+       * accepted and held until it is reopened. Absent otherwise.
+       */
+      accepts_messages?: true
     }
   | { state: 'ended'; ended_at: string }
   | { state: 'unknown' }
@@ -93,12 +116,39 @@ const attendanceIdentity = {
  * - `ended` records that the harness session ended; presence becomes `ended`.
  *   Its open questions expire with it and an answer the agent never read is
  *   dropped (reported `not_delivered`, reason `session_ended`).
+ *   With `end_reason: 'continued'` and `successor_session_id` (server feature
+ *   `session_stopped_hold`) the session continues under that Agent Session
+ *   instead: its open questions, held answers and pending Session Messages
+ *   move there and nothing expires. The questions stay listed under the
+ *   session that asked them.
+ * - `stopped` (holder only, server feature `session_stopped_hold`): the
+ *   harness stopped without the User closing it and may be reopened in place.
+ *   The lease stops; questions stay open for their own windows; Session Notes
+ *   and post-read Answer Edits are accepted and held. The holder may repeat
+ *   `stopped` to see held messages (never claimable while stopped) and may
+ *   still send `ended`; a new incarnation acquires the session with `running`.
  * - `withdrawn` gives the lease up without an end (Project disabled, CLI
  *   contract changed); presence becomes `unknown`.
  *
  * Delivery outcomes never travel here; every writer reports on the Delivery
  * Attempt route so superseded incarnations and restarted journals share one path.
  */
+const messageCursor = Type.String({ minLength: 1, maxLength: 512, pattern: '^[A-Za-z0-9_-]+$' })
+
+/** Why a session ended, when it did not simply close. */
+export const SESSION_END_REASONS = ['continued'] as const
+export type SessionEndReason = (typeof SESSION_END_REASONS)[number]
+
+/**
+ * `ended` fields. `end_reason` and `successor_session_id` travel together;
+ * the successor is another Agent Session of the same Account.
+ */
+const endedFields = {
+  state: Type.Literal('ended'),
+  end_reason: Type.Optional(Type.Literal('continued')),
+  successor_session_id: Type.Optional(Type.String({ minLength: 1, maxLength: 128 })),
+} as const
+
 export const AttendanceRequest = Type.Union([
   Type.Object(
     {
@@ -111,18 +161,25 @@ export const AttendanceRequest = Type.Union([
        * exchange only while no Session Message newer than it exists; absent
        * means answer at once with every claimable message.
        */
-      message_cursor: Type.Optional(
-        Type.String({ minLength: 1, maxLength: 512, pattern: '^[A-Za-z0-9_-]+$' }),
-      ),
+      message_cursor: Type.Optional(messageCursor),
     },
     { additionalProperties: false },
   ),
   Type.Object(
-    { ...attendanceIdentity, state: Type.Literal('ended') },
+    { ...attendanceIdentity, ...endedFields },
     { additionalProperties: false },
   ),
   Type.Object(
     { ...attendanceIdentity, state: Type.Literal('withdrawn') },
+    { additionalProperties: false },
+  ),
+  Type.Object(
+    {
+      ...attendanceIdentity,
+      state: Type.Literal('stopped'),
+      /** As for `running`: the exchange is held while no newer held message exists. */
+      message_cursor: Type.Optional(messageCursor),
+    },
     { additionalProperties: false },
   ),
 ])
@@ -169,6 +226,17 @@ export type AttendanceResponse =
       /** The server holds no lease for this incarnation; stop attending. */
       status: 'withdrawn'
     }
+  | {
+      /**
+       * Answer to `stopped`: this incarnation still holds the stopped session
+       * (it may send `ended`). `messages` are held for the session and cannot
+       * be claimed until it is reopened and attended `running`.
+       */
+      status: 'stopped'
+      generation: number
+      message_cursor: string
+      messages: AttendanceMessage[]
+    }
 
 // ---------------------------------------------------------------------------
 // Batched Session Attendance (one process attending many Agent Sessions)
@@ -186,9 +254,9 @@ const batchSessionId = { session_id: Type.String({ minLength: 1, maxLength: 128 
  *
  * Each entry is exactly one per-session exchange, applied in order and with
  * the same lease and generation rules. One cursor covers the whole batch: the
- * server holds the exchange only while every entry is attending, none was
- * acquired by this exchange, and no attending session has a claimable Session
- * Message newer than the cursor.
+ * server holds the exchange only while every entry is attending or already
+ * stopped, none was acquired or stopped by this exchange, and no such session
+ * has a claimable or held Session Message newer than the cursor.
  */
 export const AttendanceBatchEntry = Type.Union([
   Type.Object(
@@ -202,11 +270,15 @@ export const AttendanceBatchEntry = Type.Union([
     { additionalProperties: false },
   ),
   Type.Object(
-    { ...batchSessionId, ...attendanceIdentity, state: Type.Literal('ended') },
+    { ...batchSessionId, ...attendanceIdentity, ...endedFields },
     { additionalProperties: false },
   ),
   Type.Object(
     { ...batchSessionId, ...attendanceIdentity, state: Type.Literal('withdrawn') },
+    { additionalProperties: false },
+  ),
+  Type.Object(
+    { ...batchSessionId, ...attendanceIdentity, state: Type.Literal('stopped') },
     { additionalProperties: false },
   ),
 ])
@@ -224,10 +296,15 @@ export const AttendanceBatchRequest = Type.Object(
 )
 export type AttendanceBatchRequestT = Static<typeof AttendanceBatchRequest>
 
-/** One entry's outcome, in request order. `unknown_session` replaces the per-session 404. */
+/**
+ * One entry's outcome, in request order. `unknown_session` replaces the
+ * per-session 404; `unknown_successor` refuses a `continued` end whose
+ * successor is not an Agent Session of this Account, changing nothing.
+ */
 export type AttendanceBatchResult = { session_id: string } & (
   | AttendanceResponse
   | { status: 'unknown_session' }
+  | { status: 'unknown_successor' }
 )
 
 export interface AttendanceBatchResponse {
@@ -414,7 +491,8 @@ export const SESSION_NOTE_MAX_LENGTH = 4000
 /**
  * `POST /api/v1/agent-sessions/:session_id/notes` (user auth, companion
  * capability `session_notes`). Accepted only while the Agent Session is
- * `running` with `accepts_messages`; otherwise 409
+ * `running` with `accepts_messages`, or stopped (presence `out_of_reach` with
+ * `accepts_messages`, held for 24 hours until it is reopened); otherwise 409
  * `session_not_accepting_messages` and the app keeps the draft.
  */
 export const CreateSessionNoteRequest = Type.Object(
@@ -505,7 +583,8 @@ export interface GetSessionMessageAcknowledgementResponse {
  *
  * While the reply window is open the edit is an ordinary correction reply
  * (latest wins). After a `deliver` close it becomes an `answer_edit` Session
- * Message and needs a `running` session with `accepts_messages`. Otherwise 409
+ * Message and needs a `running` session with `accepts_messages`, or a stopped
+ * one (held like a Session Note). Otherwise 409
  * `answer_not_editable`; a stale `base_version` is 409 `answer_changed`.
  */
 export const CreateAnswerEditRequest = Type.Object(

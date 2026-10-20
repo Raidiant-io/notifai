@@ -14,6 +14,7 @@ import {
   PutSessionMessageAcknowledgementRequest,
   RegisterInstallationRequest,
   ReportDeliveryAttemptRequest,
+  SERVER_FEATURES,
   SESSION_NOTE_MAX_LENGTH,
   UpdateAccountPreferencesRequest,
 } from './index.js'
@@ -119,6 +120,33 @@ describe('Session Attendance exchange', () => {
     ).toBe(false)
   })
 
+  it('reports a stop that keeps the session reopenable, with no presence detail', () => {
+    expect(Value.Check(AttendanceRequest, { incarnation, generation: 2, state: 'stopped' })).toBe(true)
+    expect(
+      Value.Check(AttendanceRequest, { incarnation, generation: 2, state: 'stopped', message_cursor: 'c_7' }),
+    ).toBe(true)
+    expect(
+      Value.Check(AttendanceRequest, { incarnation, state: 'stopped', accepts_messages: true }),
+    ).toBe(false)
+  })
+
+  it('names a continued end with its successor, and nothing else, as the end reason', () => {
+    expect(
+      Value.Check(AttendanceRequest, {
+        incarnation, generation: 2, state: 'ended', end_reason: 'continued', successor_session_id: 'sess-next',
+      }),
+    ).toBe(true)
+    expect(
+      Value.Check(AttendanceRequest, { incarnation, state: 'ended', end_reason: 'closed', successor_session_id: 'x' }),
+    ).toBe(false)
+    expect(
+      Value.Check(AttendanceRequest, { incarnation, state: 'ended', successor_session_id: '' }),
+    ).toBe(false)
+    expect(
+      Value.Check(AttendanceRequest, { incarnation, state: 'withdrawn', end_reason: 'continued' }),
+    ).toBe(false)
+  })
+
   it('refuses local process identity as an incarnation', () => {
     expect(
       Value.Check(AttendanceRequest, { incarnation: '48213', state: 'withdrawn' }),
@@ -149,6 +177,23 @@ describe('Batched Session Attendance', () => {
     const many = Array.from({ length: ATTENDANCE_BATCH_MAX_SESSIONS + 1 }, (_, i) => running(`s${i}`))
     expect(Value.Check(AttendanceBatchRequest, { sessions: many })).toBe(false)
     expect(Value.Check(AttendanceBatchRequest, { sessions: many.slice(1) })).toBe(true)
+  })
+
+  it('carries stopped entries and continued ends', () => {
+    expect(Value.Check(AttendanceBatchRequest, {
+      sessions: [
+        { session_id: 'a', incarnation, generation: 1, state: 'stopped' },
+        { session_id: 'b', incarnation, generation: 1, state: 'ended', end_reason: 'continued', successor_session_id: 'c' },
+      ],
+    })).toBe(true)
+    expect(Value.Check(AttendanceBatchRequest, {
+      sessions: [{ session_id: 'a', incarnation, state: 'stopped', message_cursor: 'c_1' }],
+    })).toBe(false)
+  })
+
+  it('names the stopped hold and Dismiss as capabilities a server may list', () => {
+    expect(SERVER_FEATURES).toEqual(expect.arrayContaining(['session_stopped_hold', 'question_dismiss']))
+    expect(Value.Check(CapabilityAdvertisement, ['session_stopped_hold', 'question_dismiss'])).toBe(true)
   })
 
   it('names the batch as a capability a server may list', () => {

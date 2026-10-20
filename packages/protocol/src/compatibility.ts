@@ -16,6 +16,12 @@ import type { Platform } from './notification.js'
  * - `harness_answers` (CLI): records agent-reported harness submissions and
  *   scoped acknowledgements. Server support does not prove local native UI
  *   settlement or the provenance of a User interaction.
+ * - `session_stopped_hold` (server only): attendance accepts `stopped` and a
+ *   `continued` end, and a stopped Agent Session holds Session Notes and
+ *   post-read Answer Edits until it is reopened. A CLI sends either only when
+ *   the server lists it.
+ * - `question_dismiss` (server only): the User can dismiss an open question
+ *   from a Companion App. Listed as a Server Feature of the same name.
  */
 export const CLIENT_CAPABILITIES = [
   'answer',
@@ -26,6 +32,8 @@ export const CLIENT_CAPABILITIES = [
   'machine_approval',
   'answer_edits',
   'harness_answers',
+  'session_stopped_hold',
+  'question_dismiss',
 ] as const
 export type ClientCapability = (typeof CLIENT_CAPABILITIES)[number]
 
