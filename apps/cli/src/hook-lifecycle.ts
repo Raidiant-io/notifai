@@ -44,9 +44,11 @@ import {
 import { clearMatchingProjectSession, writeProjectSession } from './hook-project-sessions.js'
 import {
   acquireClaimFile,
+  CLAIM_GUARD_TTL_MS,
   releaseClaimFile,
   claimHandoffState,
   claimQuestionPush,
+  questionClaimGuardPresent,
   questionPushHeld,
   QUESTION_OWNER_SUPERSEDE_WAIT_MS,
   releaseQuestionPush,
@@ -1140,6 +1142,17 @@ async function acquireQuestionOwner(
   if (sessionHasEnded(sessionId, ctx.env)) return false
   const claim = (): boolean => claimQuestionPush(sessionId, ctx.env, Date.now(), undefined, hardDeadlineAt, owner)
   if (claim()) return true
+
+  // Refused by the claim's guard, not by a holder of the claim: a holder in
+  // the middle of its few file operations, or a crashed one that cannot be
+  // proved gone. Nothing would run this owner again once it gave up, so wait
+  // for the guard to go (it ages out within its limit) and claim then.
+  const guardUntil = Math.min(hardDeadlineAt, ctx.now() + CLAIM_GUARD_TTL_MS + CLAIM_HANDOFF_POLL_MS)
+  while (questionClaimGuardPresent(sessionId, ctx.env) && ctx.now() < guardUntil) {
+    await ctx.sleep(Math.min(CLAIM_HANDOFF_POLL_MS, guardUntil - ctx.now()))
+    if (sessionHasEnded(sessionId, ctx.env)) return false
+    if (claim()) return true
+  }
 
   if (owner !== 'stop') {
     const supersedeUntil = Math.min(hardDeadlineAt, ctx.now() + QUESTION_OWNER_SUPERSEDE_WAIT_MS)

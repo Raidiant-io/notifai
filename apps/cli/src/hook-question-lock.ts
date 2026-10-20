@@ -4,12 +4,17 @@ import { execFileSync } from 'node:child_process'
 import { randomBytes } from 'node:crypto'
 import {
   closeSync,
+  existsSync,
+  fstatSync,
+  linkSync,
   mkdirSync,
   openSync,
   readFileSync,
+  renameSync,
   rmSync,
   statSync,
   writeFileSync,
+  type Stats,
 } from 'node:fs'
 import path from 'node:path'
 import { sanitizeSessionId, stateDir } from './config.js'
@@ -40,15 +45,19 @@ import { compareVersions } from './version.js'
 const CLAIM_TTL_MS = LEGACY_QUESTION_CLAIM_TTL_SECONDS * 1000
 
 /**
- * How long a crashed claim *guard* blocks the next hook.
+ * How long a crashed claim *guard* whose holder cannot be proved gone blocks
+ * the next hook.
  *
  * The claim itself may legitimately be held for the whole waiter, so it takes
  * that ceiling. The guard is a short lock around the claim's own bookkeeping —
  * a few file operations — and borrowing the waiter's ceiling for it meant a
  * hook killed at exactly the wrong moment wedged this session's Stop path for
  * eight minutes, for a critical section that never runs longer than a second.
+ * A guard names its holder, so one left by a process that died is recovered at
+ * once; this age limit is only the backstop for a holder that cannot be named
+ * or checked.
  */
-const CLAIM_GUARD_TTL_MS = 30_000
+export const CLAIM_GUARD_TTL_MS = 30_000
 
 const heldClaims = new Map<string, string>()
 
@@ -390,24 +399,96 @@ export function releaseQuestionPush(sessionId: string, env: NodeJS.ProcessEnv): 
   }
 }
 
-/** The guard serializes stale replacement and release; recover a crashed guard. */
+/**
+ * The guard serializes stale replacement and release. It appears already
+ * naming its holder, so a guard left by a process that died inside its few
+ * file operations is recovered at once instead of refusing every owner until
+ * it ages out. Only a guard whose holder cannot be named or checked waits for
+ * `CLAIM_GUARD_TTL_MS`.
+ */
 function acquireClaimGuard(file: string): boolean {
-  for (let attempt = 0; attempt < 2; attempt += 1) {
-    try {
-      const handle = openSync(file, 'wx', 0o600)
-      closeSync(handle)
-      return true
-    } catch (err) {
-      if ((err as NodeJS.ErrnoException).code !== 'EEXIST') return false
-      try {
-        if (Date.now() - statSync(file).mtimeMs < CLAIM_GUARD_TTL_MS) return false
-      } catch {
-        // A vanished/corrupt guard is safe to retry once.
-      }
-      rmSync(file, { force: true })
-    }
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    if (createClaimGuard(file)) return true
+    if (!removeDeadClaimGuard(file)) return false
   }
   return false
+}
+
+function createClaimGuard(file: string): boolean {
+  const self = currentProcessIdentity()
+  const body = `${JSON.stringify({ pid: process.pid, ...(self === null ? {} : { start: self.start }) })}\n`
+  const staged = `${file}.${process.pid}.${randomBytes(6).toString('hex')}`
+  try {
+    writeFileSync(staged, body, { mode: 0o600, flag: 'wx' })
+    // Linking is atomic and refuses an existing guard, so no guard is ever seen without its holder.
+    linkSync(staged, file)
+    return true
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === 'EEXIST') return false
+    // No directory (nothing to guard), or a file system without hard links: create it in place.
+    try {
+      writeFileSync(file, body, { mode: 0o600, flag: 'wx' })
+      return true
+    } catch {
+      return false
+    }
+  } finally {
+    rmSync(staged, { force: true })
+  }
+}
+
+/**
+ * Remove a guard whose holder is gone (or, unnamed, aged out). True when the
+ * caller should try to take the guard again; false when a holder may be running.
+ */
+function removeDeadClaimGuard(file: string): boolean {
+  let judged: Stats
+  let holder: Record<string, unknown> | null = null
+  try {
+    const handle = openSync(file, 'r')
+    try {
+      judged = fstatSync(handle)
+      try {
+        const parsed: unknown = JSON.parse(readFileSync(handle, 'utf8'))
+        if (typeof parsed === 'object' && parsed !== null && !Array.isArray(parsed)) holder = parsed as Record<string, unknown>
+      } catch {
+        // An older build's empty guard, or one cut short: it can only age out.
+      }
+    } finally {
+      closeSync(handle)
+    }
+  } catch {
+    // Released meanwhile.
+    return true
+  }
+  const gone = holder !== null && typeof holder['pid'] === 'number' && !claimHolderMayRun(holder)
+  if (!gone && Date.now() - judged.mtimeMs < CLAIM_GUARD_TTL_MS) return false
+  // Remove exactly the guard judged, never one a contender recovered and took since.
+  const moved = `${file}.${process.pid}.${randomBytes(6).toString('hex')}.stale`
+  try {
+    renameSync(file, moved)
+  } catch {
+    return true
+  }
+  try {
+    const taken = statSync(moved)
+    if (taken.ino !== judged.ino || taken.dev !== judged.dev) {
+      try { linkSync(moved, file) } catch { /* Its holder releases a guard that is already gone. */ }
+      return false
+    }
+    return true
+  } finally {
+    rmSync(moved, { force: true })
+  }
+}
+
+/**
+ * Whether a session's claim guard is still there: a holder in the middle of
+ * its few file operations, or one that crashed and cannot be proved gone,
+ * whose guard ages out within `CLAIM_GUARD_TTL_MS`.
+ */
+export function questionClaimGuardPresent(sessionId: string, env: NodeJS.ProcessEnv): boolean {
+  return existsSync(`${claimPath(sessionId, env)}.guard`)
 }
 
 function claimPath(sessionId: string, env: NodeJS.ProcessEnv): string {

@@ -50,14 +50,19 @@ const OUTPUT_CHUNK = 256 * 1024
 /**
  * Session state fields that change nothing a quiet hook does: bookkeeping,
  * identity and observations. A state holding any other field (a question, an
- * answer, a picker, a wake, an owed acknowledgement, or a field this build does
- * not know) is not quiet, and its hooks keep the runtime.
+ * answer, a picker, a wake, an owed acknowledgement or picker context, or a
+ * field this build does not know) is not quiet, and its hooks keep the runtime.
+ *
+ * Every field a session's ordinary hooks record on every turn must be here, or
+ * no session of that harness is ever quiet: Claude Code records its permission
+ * mode at every main-session hook. The wake pacing count outlives a wake that
+ * found nothing to hand in, and paces only input that is itself not quiet.
  */
 const QUIET_STATE_FIELDS: ReadonlySet<string> = new Set([
   'grok_activation_context', 'integration_observation', 'runtime_builds', 'codex_native_turn', 'codex_tool_hook',
   'harness', 'activation_cwd', 'codex_stop_definition_fingerprint', 'cursor_activation_claimed_at',
   'cursor_activation_confirmed_at', 'last_prompt_at', 'last_stop_at', 'question_history', 'harness_session_title',
-  'codex_question_marker_counter', 'codex_card_tool', 'reopen_launch',
+  'codex_question_marker_counter', 'codex_card_tool', 'reopen_launch', 'claude_permission_mode', 'input_wake_unanswered',
 ])
 
 /** Variables the launcher scrubs before it starts the runtime, and the admission markers the runtime consumes. */
