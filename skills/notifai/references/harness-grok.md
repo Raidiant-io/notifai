@@ -42,8 +42,10 @@ A long answer arrives as a `notifai replies <request_id>
 delivery on the fallback route; the agent's acknowledgement confirms receipt
 to the User on either route.
 
-Keep the Grok process running while a question is pending. Cancellation can
-interrupt the held hook; a later turn can recover the durable answer. Shutdown
+Keep the Grok process running while a question is pending: closing the
+Agent Session ends its questions, and an answer that arrives later is dropped.
+Cancellation can interrupt the held hook; a later turn can recover the durable
+answer. Shutdown
 observations neither submit questions nor consume answers. Headless runs use
 the same Stop route. Grok's native question card has no linked Notifai reply
 operation; ask in plain conversation and leave harness permissions in Grok.

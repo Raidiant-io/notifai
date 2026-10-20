@@ -114,7 +114,7 @@ const GROK_CAPABILITY: HarnessCapability = {
   stopContinuation: 'decision-block',
   deliveryRoutes: ['session-queue', 'hook-continuation', 'hold-for-next-turn'],
   deliveryContract:
-    'the Stop hook waits for the answer; an exact shared-leader session receives a claimed interjection, otherwise a native decision block continues the same session within Grok\'s per-turn continuation limit',
+    'the Stop hook waits for the answer; an exact shared-leader session receives a claimed interjection, otherwise a native decision block continues the same session within Grok\'s per-turn continuation limit; closing the session ends its questions',
 }
 
 export const HERMES_CLASSIC_CLI_QUESTION_CAPABILITY: HarnessCapability = {
