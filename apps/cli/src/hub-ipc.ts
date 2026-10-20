@@ -6,7 +6,7 @@
  * `hello` naming its role and IPC version; nothing secret crosses it. The
  * native child computes the same paths (`launcher/session-child.h`).
  */
-import { lstatSync, chmodSync, mkdirSync } from 'node:fs'
+import { lstatSync, chmodSync, mkdirSync, readFileSync } from 'node:fs'
 import { createConnection, type Socket } from 'node:net'
 import path from 'node:path'
 import { stateDir } from './config.js'
@@ -57,6 +57,29 @@ export function hubStatusPath(env: NodeJS.ProcessEnv): string {
 
 export function hubHistoryPath(env: NodeJS.ProcessEnv): string {
   return path.join(hubRunDir(env), 'hub-history.json')
+}
+
+/**
+ * The process ids of hubs that ran recently, from the hub's start history.
+ * One hub runs at a time, so any of these that still runs and is not the
+ * caller is a hub that was replaced and is leaving.
+ */
+export function formerHubPids(env: NodeJS.ProcessEnv): ReadonlySet<number> {
+  try {
+    const history = JSON.parse(readFileSync(hubHistoryPath(env), 'utf8')) as { starts?: unknown }
+    if (!Array.isArray(history.starts)) return new Set()
+    return new Set(history.starts.flatMap((start: unknown) => {
+      const pid = (start as { pid?: unknown } | null)?.pid
+      return typeof pid === 'number' && pid !== process.pid ? [pid] : []
+    }))
+  } catch {
+    return new Set()
+  }
+}
+
+/** Question settlements the hub runs, one file each, so the next hub runs them again. */
+export function hubSettlementsDir(env: NodeJS.ProcessEnv): string {
+  return path.join(hubRunDir(env), 'settlements')
 }
 
 /** Non-secret marker bumped whenever the Machine credential changes. */

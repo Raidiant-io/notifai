@@ -4,13 +4,15 @@
  * The hub runs this outside every agent sandbox. At most once a day it looks
  * up the release its saved channel points to and, when that release is newer,
  * downloads, verifies and stages it as an immutable, inactive version. It
- * activates the staged version only when nothing on this machine waits:
+ * activates the staged version whatever the sessions on this machine wait
+ * for: the hub restarts seamlessly, and the next hub takes over every
+ * question, answer, Note and session the old one held (`Hub.handOver`). It
+ * activates only when:
  *
- * - no question waits for the User and no answer, Note or Answer Edit is still
- *   on its way to its agent;
  * - every connected session child speaks an IPC version the new hub serves;
  * - the new build would not rewrite Codex or Claude Code hook definitions
- *   (Codex skips a changed hook until the User trusts it again);
+ *   (Codex skips a changed hook until the User trusts it again; Claude Code's
+ *   shell/exec form alone is not counted);
  * - the installation's local continuity contract admits it.
  *
  * It never changes the saved channel (beta stays beta, stable stays stable)
@@ -20,21 +22,17 @@
  * here touches it.
  */
 import { spawn } from 'node:child_process'
-import { existsSync, lstatSync, readdirSync, readFileSync, statSync } from 'node:fs'
+import { lstatSync, readFileSync } from 'node:fs'
 import path from 'node:path'
-import { REPLY_MAX_WINDOW_SECONDS } from '@raidiant/notifai-protocol'
 import type { ActivationPlan } from './activation-plan.js'
 import { atomicWriteFileSync } from './atomic-file.js'
 import { automaticUpdatesSetting, stateDir } from './config.js'
 import { buildIdentity } from './distribution.js'
 import { hubSupported } from './hub-ipc.js'
 import { withFileLock } from './file-lock.js'
-import type { SessionState } from './hook-types.js'
-import { pendingList } from './hook-session-state.js'
 import type { Installation } from './installation.js'
 import { ContinuityPending } from './local-continuity.js'
 import type { Logger } from './logging.js'
-import { processIdentityLiveness } from './process-identity.js'
 import { compareReleasePrecedence, isSemVer } from './version.js'
 
 /** One release lookup a day per machine. */
@@ -44,14 +42,6 @@ export const STAGED_OFFER_AFTER_MS = 7 * 24 * 60 * 60 * 1000
 
 /** Why a staged update has not been activated yet. */
 export type WaitingReason =
-  /** A question waits for the User, or an answer or acknowledgement is still owed. */
-  | 'question-waiting'
-  /** A Note or Answer Edit has not reached its agent yet. */
-  | 'session-input-pending'
-  /** A closed session's end report has not reached the service yet. */
-  | 'session-ending'
-  /** A dormant-open Codex conversation is held only by the running hub. */
-  | 'session-dormant'
   /** The new build would rewrite Codex or Claude Code hook definitions. */
   | 'hook-approval'
   /** A running session child speaks an IPC version the new hub does not serve. */
@@ -149,45 +139,6 @@ export function automaticUpdateReport(env: NodeJS.ProcessEnv, options: { runsHer
   }
 }
 
-/**
- * Work outstanding in any open Agent Session of this OS user and state
- * directory. A session whose harness process is gone is closed, and its
- * questions are expired, so it does not hold an update back. A session with no
- * recorded harness process counts while its state could still be live (within
- * the longest answer window).
- */
-export function waitingSessionWork(env: NodeJS.ProcessEnv, now: number = Date.now()): WaitingReason[] {
-  const directory = path.join(stateDir(env), 'sessions')
-  let names: string[]
-  try { names = readdirSync(directory) } catch { return [] }
-  for (const name of names) {
-    if (!/^[^.]+\.json$/.test(name)) continue
-    const stem = name.slice(0, -'.json'.length)
-    if (existsSync(path.join(directory, `${stem}.ended`))) continue
-    const file = path.join(directory, name)
-    let state: SessionState
-    try { state = JSON.parse(readFileSync(file, 'utf8')) as SessionState } catch { continue }
-    const owes = pendingList(state).length > 0 || state.accepted !== undefined || (state.waiting_answers?.length ?? 0) > 0 ||
-      (state.delivered_answers?.length ?? 0) > 0 || (state.acknowledgement_due?.length ?? 0) > 0 ||
-      (state.message_acknowledgement_due?.length ?? 0) > 0 ||
-      (state.native_answer_operations?.some(operation => operation.acknowledgement === undefined) ?? false)
-    if (!owes) continue
-    let harness: { pid: number; start: string } | null = null
-    try {
-      const record = JSON.parse(readFileSync(path.join(directory, `${stem}.incarnation.json`), 'utf8')) as { harness_process?: { pid?: unknown; start?: unknown } }
-      const owner = record.harness_process
-      if (owner && typeof owner.pid === 'number' && typeof owner.start === 'string') harness = { pid: owner.pid, start: owner.start }
-    } catch { /* No recorded harness process. */ }
-    if (harness !== null) {
-      if (processIdentityLiveness(harness) === 'gone') continue
-    } else {
-      try { if (now - statSync(file).mtimeMs > REPLY_MAX_WINDOW_SECONDS * 1000) continue } catch { continue }
-    }
-    return ['question-waiting']
-  }
-  return []
-}
-
 export interface AutomaticUpdateHost {
   env: NodeJS.ProcessEnv
   now(): number
@@ -195,8 +146,6 @@ export interface AutomaticUpdateHost {
   installation(): Installation
   /** The build this process runs, or null outside a managed installation. */
   running(): { build: string; version: string } | null
-  /** Work the hub sees outstanding right now (questions, settlements, staged Notes). */
-  blockers(): WaitingReason[]
   /** IPC versions of the session children connected now. */
   childIpcVersions(): number[]
   /** Ask the staged build what activating it would change. Null when it cannot say. */
@@ -217,7 +166,7 @@ function recent(timestamp: number | undefined, now: number, interval: number): b
   return timestamp !== undefined && now >= timestamp - 60_000 && now - timestamp < interval
 }
 
-/** One pass: look up (at most daily), stage, and activate when nothing waits. */
+/** One pass: look up (at most daily), stage, and activate unless a gate holds it back. */
 export async function attemptAutomaticUpdate(host: AutomaticUpdateHost): Promise<AttemptOutcome> {
   const { env, logger } = host
   if (!automaticUpdatesSetting(env).enabled) return { outcome: 'off' }
@@ -266,7 +215,7 @@ export async function attemptAutomaticUpdate(host: AutomaticUpdateHost): Promise
     }
 
     const candidate = installation.versionRelease(staged.build)
-    const reasons = new Set<WaitingReason>(host.blockers())
+    const reasons = new Set<WaitingReason>()
     const plan = await host.plan(candidate.launcher)
     if (plan === null) reasons.add('candidate-unverified')
     else {
@@ -306,13 +255,10 @@ function hold(host: AutomaticUpdateHost, version: string | null, waiting: Waitin
 }
 
 /**
- * An activation journal left by an interrupted swap. The same gates apply to
- * finishing it; until then the previous build keeps serving.
+ * An activation journal left by an interrupted swap: finish it, then hand
+ * the hub over as after any activation.
  */
 async function recoverInterrupted(host: AutomaticUpdateHost, installation: Installation): Promise<AttemptOutcome> {
-  const pending = installation.pendingRelease()
-  const blockers = host.blockers()
-  if (blockers.length > 0) return hold(host, pending?.version ?? null, blockers)
   installation.recover()
   const active = installation.activeRelease()
   const running = host.running()

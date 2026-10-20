@@ -170,17 +170,60 @@ On macOS and Linux the shared hub is also the automatic updater
 the machine configuration file. At most once a day the hub resolves the saved
 channel and stages a release only when it is newer than the active build, so a
 withdrawn build moves forward or stays put and the saved channel never changes.
-Activation of the staged build waits while any open Agent Session on the
-machine has a waiting question, an answer, Note or Answer Edit not yet handed to
-its agent, or an owed acknowledgement or end report. Before activating, the hub
-runs the staged build's hidden `activation-plan` command: activation is also
-refused while a connected session child speaks an IPC version outside the new
-hub's range, or while the new build would rewrite Codex or Claude Code hook
-definitions. The activation uses the ordinary journal, so an interrupted swap is
-recovered under the same gates. Integration then resumes with
-`update --resume --automatic`, which never rewrites those hooks. The old hub
-writes every lease, releases its lock and exits; the new build's hub takes the
-leases over at the same generation, and the children reconnect. State lives in
+The hub restarts seamlessly, so activation does not wait for waiting questions,
+answers, Notes, Answer Edits, acknowledgements or end reports. Before
+activating, the hub runs the staged build's hidden `activation-plan` command.
+Activation is refused in three cases:
+
+- a connected session child speaks an IPC version outside the new hub's range;
+- the new build would rewrite Codex or Claude Code hook definitions (Claude
+  Code's shell/exec form alone does not count);
+- the local continuity contract does not admit the new build.
+
+The activation uses the ordinary journal, so an interrupted swap is recovered
+at the next pass. Integration then resumes with `update --resume --automatic`,
+which never rewrites those hooks.
+
+The same handover follows any change of the active build (`hub.ts`
+`handOver`):
+
+- The old hub stops serving hooks and starting writes.
+- It finishes hooks, writes and wakes already in flight, bounded at 30 s.
+- It asks its in-process answer owners to step aside at their next check.
+  They stop without consuming, closing or retiring anything.
+- It leaves.
+
+Everything a session waits for is already on disk:
+
+- questions with their frozen submission intents;
+- the accepted-answer journal;
+- staged Session Messages and the delivery journal;
+- owed acknowledgements;
+- end markers;
+- the answer owners it ran (`run/settlements`);
+- for each session, the record the next hub needs to adopt it without its
+  child (`adoption` in the attendance status).
+
+The next hub, started through the stable launcher, does four things:
+
+- continues every lease at the same generation;
+- reruns the recorded answer owners;
+- adopts the Codex conversations no child brings back: a dormant-open
+  conversation stays open with its answer queued, and an end still being
+  decided is decided again from fresh evidence;
+- reports the ends of sessions that closed while no hub ran.
+
+The children reconnect.
+
+A hub from 13.1.0-beta.5 or earlier recorded none of this. A hook replaces it
+from the active build (`hub-handover.ts`). The new build rebuilds what that
+hub held from its status and the local records. It waits only while the old
+hub:
+
+- is handing an answer to its agent;
+- is writing a wake;
+- runs an answer owner for a session it does not attend;
+- holds a Codex conversation whose rollout was never recorded. State lives in
 `<state>/automatic-update.json`; `update --check --json` reports it. An install
 made through the npm launcher updates its native runtime this way and leaves the
 npm package alone. Windows has no hub yet, so agents keep offering updates there.

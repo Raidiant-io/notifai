@@ -24,6 +24,7 @@ import type {
 import { ATTENDANCE_MAX_WAIT_SECONDS } from '@raidiant/notifai-protocol'
 import { ApiCallError, type ApiClient } from './client.js'
 import type { Logger } from './logging.js'
+import type { AdoptionRecord } from './hub-adoption.js'
 
 /** Local probe cadence. */
 export const ATTENDANT_PROBE_INTERVAL_MS = 2_000
@@ -90,6 +91,8 @@ export interface AttendantStatus {
   /** Fresh in-process proof that a harness writer still targets this session. */
   writer_ready?: boolean
   updated_at: number
+  /** The hub's record for taking this session over without its child (`hub-adoption.ts`). */
+  adoption?: AdoptionRecord
 }
 
 export interface AttendantClock {

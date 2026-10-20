@@ -47,8 +47,9 @@ export async function updateResumeCommand(deps: CommandDeps, flags: { json?: boo
   const changed: string[] = []
   const diagnostics: string[] = []
   const report = (filesComplete: boolean): number => {
-    // A hub still on the previous build is replaced once nothing waits. (A hub
-    // from this build onward replaces itself; an automatic update's hub leaves anyway.)
+    // A hub still on an earlier build is replaced now, unless it is in the
+    // middle of something the next hub cannot take over. (A hub from this build
+    // onward replaces itself; an automatic update's hub leaves anyway.)
     if (flags.automatic !== true && deps.spawnHubHandover !== undefined) {
       try { if (claimOlderHubHandover(deps.env)) deps.spawnHubHandover({ cwd: deps.cwd }) } catch { /* The next hook checks again. */ }
     }

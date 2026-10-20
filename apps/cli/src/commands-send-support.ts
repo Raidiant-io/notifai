@@ -2,7 +2,7 @@ import { NOTIFICATION_IMAGE_MAX_BYTES, type ListRepliesResponse } from '@raidian
 import { sha256Hex } from '@raidiant/notifai-protocol/node'
 import { existsSync, readFileSync } from 'node:fs'
 import path from 'node:path'
-import { ApiCallError, isRetryableReplyPollError, type ApiClient } from './client.js'
+import { ApiCallError, isRetryableReplyPollError, RequestCancelledError, type ApiClient } from './client.js'
 import { fetchMediaUrl } from './url-policy.js'
 import { buildSourceContext, inferInvocationContext } from './invocation-context.js'
 import { readSessionState } from './hook-session-state.js'
@@ -130,7 +130,9 @@ export async function waitForReply(
         confirmAtDeadline = now() >= deadline
       }
     } catch (err) {
-      if (!isRetryableReplyPollError(err)) throw err
+      // Cancelled by the caller (a hub handing over, a credential change):
+      // every retry would carry the same cancelled signal, so stop now.
+      if (err instanceof RequestCancelledError || !isRetryableReplyPollError(err)) throw err
       lastTransientError = err instanceof Error ? err : new Error(String(err))
       consecutiveTransientErrors += 1
       const remainingAfterError = Math.max(0, deadline - now())

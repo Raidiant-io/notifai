@@ -497,8 +497,9 @@ export async function hookRunCommand(
       logger.error('hook.gate', { stage: 'maintenance', outcome: 'ignored', ...failureData(err) })
     }
   }
-  // A hub from an earlier build cannot hand itself over: this active build
-  // replaces it, in a detached check, once nothing waits. One file read when none runs.
+  // A hub from an earlier build cannot hand over seamlessly: this active build
+  // replaces it, in a detached check, unless it is in the middle of something
+  // the next hub cannot take over. One file read when none runs.
   const startDueHubHandover = (): void => {
     if (deps.spawnHubHandover === undefined) return
     try {

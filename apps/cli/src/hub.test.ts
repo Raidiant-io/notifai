@@ -1,5 +1,5 @@
 import { spawn } from 'node:child_process'
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { createConnection, createServer, type Socket } from 'node:net'
 import os from 'node:os'
 import path from 'node:path'
@@ -15,7 +15,8 @@ import { ApiCallError, type ApiClient } from './client.js'
 import type { CommandDeps } from './commands-core.js'
 import type { CredentialStore, MachineCredential } from './credentials.js'
 import { claudeDescriptorDir } from './claude-wake.js'
-import { beginSessionIncarnation, lifecycleStamp, readSessionEndMarker, readSessionIncarnation, readSessionState, recordSessionNotified, updateSessionState } from './hook-session-state.js'
+import { beginSessionIncarnation, lifecycleStamp, markSessionEnded, readSessionEndMarker, readSessionIncarnation, readSessionState, recordSessionNotified, updateSessionState } from './hook-session-state.js'
+import { claimQuestionPush, questionPushHeld, releaseQuestionPush } from './hook-question-lock.js'
 import { hookRunCommand } from './commands-hook-run.js'
 import type { CodexWakeAdapters } from './codex-wake.js'
 import { sessionInputWake, stageSessionMessages } from './session-inputs.js'
@@ -701,9 +702,8 @@ describe('hub', () => {
       const first = startHub(env, service, peers, memoryStore(), undefined, {}, { automaticUpdate: {
         firstDelayMs: 3_600_000,
         attempt: async (host) => {
-          // The gates the real updater reads: every child connected now, and nothing outstanding.
+          // The gate the real updater reads from the hub: every child connected now.
           expect(host.childIpcVersions()).toEqual([1, 1, 1])
-          expect(host.blockers()).toEqual([])
           return { outcome: 'activated', from: '1.0.0', to: '1.1.0' }
         },
         startSuccessor: () => { successor = startHub(env, service, peers) },
@@ -767,11 +767,6 @@ describe('hub', () => {
     expect(child.frames[0]).toMatchObject({ type: 'registered' })
     expect(await hub.runAutomaticUpdate()).toMatchObject({ outcome: 'waiting' })
     expect(seen).toEqual([[1]])
-    // A dormant-open conversation exists only in this hub: it holds an activation back.
-    expect(hub.updateBlockers()).toEqual([])
-    hub.sessions.get(SESSION)!.dormantSince = 1
-    expect(hub.updateBlockers()).toEqual(['session-dormant'])
-    hub.sessions.get(SESSION)!.dormantSince = null
     await new Promise((resolve) => setTimeout(resolve, 100))
     expect(child.closed).toBe(false)
     expect(successors).toBe(0)
@@ -793,7 +788,7 @@ describe('hub', () => {
     expect(attempts).toBe(0)
   })
 
-  it('hands over to another active build once nothing waits, keeping every lease', async () => {
+  it('hands over to another active build at once, even while a question waits, keeping every lease and the question', async () => {
     const env = hubEnv()
     writeDescriptor(env, SESSION)
     recordSessionNotified(SESSION, env, Date.now())
@@ -802,14 +797,19 @@ describe('hub', () => {
     const running = 'a'.repeat(64), incompatible = 'b'.repeat(64), next = 'c'.repeat(64)
     let active = running
     const planned: string[] = []
+    const owners: string[] = []
+    const runHook = async (event: string, envelope: Record<string, unknown> | null): Promise<number> => {
+      if (event === 'question-settlement') owners.push(String(envelope?.['session_id']))
+      return 0
+    }
     let successor: { hub: Hub; done: Promise<number> } | null = null
-    const first = startHub(env, service, peers, memoryStore(), undefined, {}, { handover: {
+    const first = startHub(env, service, peers, memoryStore(), undefined, {}, { runHook, handover: {
       builds: () => ({ running, active }),
       plan: async (build) => {
         planned.push(build)
         return { schema: 1, version: '1.1.0', hub_ipc_versions: build === incompatible ? { min: 2, max: 2 } : { min: 1, max: 1 }, hook_changes: [] }
       },
-      startSuccessor: () => { successor = startHub(env, service, peers) },
+      startSuccessor: () => { successor = startHub(env, service, peers, memoryStore(), undefined, {}, { runHook }) },
     } })
     await hubListening(env)
     const peer = (pid: number) => peerOf(pid, { pid: HARNESS.pid, comm: 'claude', start: HARNESS.start })
@@ -820,24 +820,22 @@ describe('hub', () => {
     expect(await first.hub.checkBuildHandover()).toBeNull()
     expect(first.hub.status()).toMatchObject({ handover: null })
 
-    // Another build became active (a manual update) while a question waits: it stays and says why.
-    active = next
-    updateSessionState(SESSION, env, (state) => ({ ...state, pending: [{ question: 'Deploy?', summary: 'Deploy?', request_id: 'req_wait' } as never] }))
-    expect(await first.hub.checkBuildHandover()).toEqual(['question-waiting'])
-    expect(first.hub.status()).toMatchObject({ handover: { active_build: next, waiting_for: ['question-waiting'] } })
-    expect(planned).toEqual([])
-    updateSessionState(SESSION, env, (state) => ({ ...state, pending: [] }))
-    // An active build whose hub could not serve this child: it stays too.
+    // An active build whose hub could not serve this child: it stays, and says why.
     active = incompatible
     expect(await first.hub.checkBuildHandover()).toEqual(['session-child-incompatible'])
+    expect(first.hub.status()).toMatchObject({ seamless_handover: true, handover: { active_build: incompatible, waiting_for: ['session-child-incompatible'] } })
     await new Promise((resolve) => setTimeout(resolve, 50))
     expect(child.closed).toBe(false)
 
-    // Nothing waits: it leaves, keeping the lease, and the next hub continues it.
+    // Another build became active (a manual update) while a question waits: it leaves at once,
+    // keeping the lease and the question, and the next hub continues both.
     active = next
+    const question = { question: 'Deploy?', summary: 'Deploy?', request_id: 'req_wait' }
+    updateSessionState(SESSION, env, (state) => ({ ...state, pending: [question as never] }))
     expect(await first.hub.checkBuildHandover()).toEqual([])
     service.release()
     expect(await first.done).toBe(0)
+    expect(readSessionState(SESSION, env).pending).toEqual([question])
     await until(() => child.closed)
     await until(() => successor !== null)
     await hubListening(env)
@@ -851,9 +849,98 @@ describe('hub', () => {
     expect(after.every((entry) => entry.generation === 1)).toBe(true)
     expect(readSessionEndMarker(SESSION, env)).toBeNull()
     expect(planned).toEqual([incompatible, next])
+    // Its child re-registered with the question still waiting: the next hub runs its answer owner.
+    expect(owners).toContain(SESSION)
     again.socket.destroy()
     service.release()
     await (successor as { done: Promise<number> } | null)!.done
+  })
+
+  it('stands its answer owners down when it hands over, and the next hub runs them again', async () => {
+    const env = hubEnv()
+    const service = fakeService()
+    const peers = new Map<number, PeerCredentials>()
+    const runs: string[] = []
+    let finish = false
+    // A stand-in answer owner: it holds its session's question claim, as the real one does, until it is asked to step aside.
+    const owner = (name: string) => async (event: string, envelope: Record<string, unknown> | null, _harness: unknown, ownerEnv: NodeJS.ProcessEnv): Promise<number> => {
+      if (event !== 'question-settlement') return 0
+      const sessionId = String(envelope?.['session_id'])
+      if (!claimQuestionPush(sessionId, ownerEnv, Date.now(), undefined, undefined, 'hub')) { runs.push(`${name} ${sessionId} claimed-elsewhere`); return 0 }
+      runs.push(`${name} ${sessionId} running`)
+      try {
+        while (questionPushHeld(sessionId, ownerEnv) && !finish) await new Promise((resolve) => setTimeout(resolve, 10))
+        runs.push(`${name} ${sessionId} ${finish ? 'finished' : 'stood-down'}`)
+      } finally {
+        releaseQuestionPush(sessionId, ownerEnv)
+      }
+      return 0
+    }
+    const records = (): string[] => { try { return readdirSync(path.join(env['XDG_STATE_HOME']!, 'notifai', 'run', 'settlements')) } catch { return [] } }
+    let successor: { hub: Hub; done: Promise<number> } | null = null
+    const first = startHub(env, service, peers, memoryStore(), undefined, {}, { runHook: owner('first'), handover: {
+      builds: () => null,
+      startSuccessor: () => { successor = startHub(env, service, peers, memoryStore(), undefined, {}, { runHook: owner('second') }) },
+    } })
+    await hubListening(env)
+    expect(await requestHub(env, { type: 'settle', session_id: SESSION, harness: 'claude-code', cwd: '/tmp' })).toEqual({ type: 'ok' })
+    await until(() => runs.includes(`first ${SESSION} running`))
+    expect(records()).toHaveLength(1)
+
+    const handing = first.hub.handOver('build-superseded')
+    // An owner asked for while it hands over is only recorded, for the next hub.
+    expect(await requestHub(env, { type: 'settle', session_id: OTHER, harness: 'codex', cwd: '/tmp' })).toEqual({ type: 'ok' })
+    await handing
+    service.release()
+    expect(await first.done).toBe(0)
+    expect(runs).toEqual([`first ${SESSION} running`, `first ${SESSION} stood-down`])
+    expect(records()).toHaveLength(2)
+
+    await until(() => successor !== null)
+    await until(() => runs.includes(`second ${SESSION} running`) && runs.includes(`second ${OTHER} running`))
+    expect(runs.filter((run) => run.includes('claimed-elsewhere'))).toEqual([])
+    // Finished, they are no longer anybody's to run again.
+    finish = true
+    await until(() => records().length === 0)
+    service.release()
+    await (successor as { done: Promise<number> } | null)!.done
+  })
+
+  it('reports the end of a session that ended while no hub ran, though its harness lives on', async () => {
+    const env = hubEnv()
+    writeDescriptor(env, SESSION)
+    recordSessionNotified(SESSION, env, Date.now())
+    const service = fakeService()
+    const peers = new Map<number, PeerCredentials>()
+    const first = startHub(env, service, peers)
+    await hubListening(env)
+    const child = await registered(env, SESSION, 900130, peerOf(900130, { pid: HARNESS.pid, comm: 'claude', start: HARNESS.start }), peers)
+    await until(() => service.batches.length >= 2)
+    expect(readAttendantEndingLease(SESSION, env)).toMatchObject({ generation: 1 })
+    first.hub.requestExit('test-crash')
+    service.release()
+    await first.done
+    child.socket.destroy()
+    // SessionEnd ran (a /clear, say) while no hub ran; the harness process is still alive.
+    markSessionEnded(SESSION, env, Date.now())
+    const before = service.batches.length
+    const second = startHub(env, service, peers)
+    await until(() => service.batches.slice(before).some((batch) => batch.body.sessions.some((entry) => entry.session_id === SESSION && entry.state === 'ended')))
+    expect(service.batches.slice(before).flatMap((batch) => batch.body.sessions).find((entry) => entry.session_id === SESSION))
+      .toMatchObject({ state: 'ended', generation: 1 })
+    await until(() => JSON.parse(readFileSync(attendantStatusPath(SESSION, env), 'utf8'))['phase'] === 'exited')
+    let exited = false
+    void second.done.then(() => { exited = true })
+    while (!exited) { service.release(); await new Promise((resolve) => setTimeout(resolve, 50)) }
+    // Reported once: a later hub does not report it again.
+    const after = service.batches.length
+    const third = startHub(env, service, peers)
+    await hubListening(env)
+    await new Promise((resolve) => setTimeout(resolve, 300))
+    expect(service.batches.slice(after).flatMap((batch) => batch.body.sessions).filter((entry) => entry.session_id === SESSION)).toEqual([])
+    third.hub.requestExit('test')
+    service.release()
+    await third.done
   })
 
     it('names the child lock file the way the native child does', () => {
@@ -1093,6 +1180,103 @@ describe('hub and Codex SessionEnd', () => {
     hub.requestExit('test')
     service.release()
     await done
+  })
+
+  it('adopts a dormant conversation after a restart: still open, its answer owner running, its answer queued, ended when the app quits', async () => {
+    const env = hubEnv()
+    recordSessionNotified(SESSION, env, Date.now())
+    const transcript = codexRollout(env, 'Codex Desktop')
+    const app = spawn('sleep', ['60'], { stdio: 'ignore' })
+    await until(() => processStartTime(app.pid!) !== null)
+    const host = { pid: app.pid!, start: processStartTime(app.pid!)! }
+    const queued: string[] = []
+    const wake: CodexWakeAdapters = { available: () => true, queue: async (threadId) => { queued.push(threadId) } }
+    const owners: string[] = []
+    const runHook = async (event: string, envelope: Record<string, unknown> | null): Promise<number> => {
+      if (event === 'question-settlement') owners.push(String(envelope?.['session_id']))
+      return 0
+    }
+    const service = fakeService()
+    const peers = new Map<number, PeerCredentials>()
+    const options = { codexEndConfirmMs: 50, codexHostKind: () => 'app-server' as const, wake }
+    const first = startHub(env, service, peers, memoryStore(), 100, options, { runHook })
+    let second: { hub: Hub; done: Promise<number> } | null = null
+    try {
+      await hubListening(env)
+      const child = await codexSession(env, service, peers, 900140, transcript, host)
+      await requestHub(env, { type: 'session-end-candidate', session_id: SESSION, transcript_path: transcript })
+      child.socket.destroy()
+      await until(() => status(env)['reason'] === 'dormant-open')
+      // What the next hub needs is on disk.
+      expect(status(env)['adoption']).toMatchObject({ harness: 'codex', transcript_path: transcript, transcript_seen: true,
+        harness_process: host, dormant_since: expect.any(Number) })
+      updateSessionState(SESSION, env, (state) => ({ ...state, pending: [{ question: 'Deploy?', summary: 'Deploy?', request_id: 'req_dormant' } as never] }))
+      // The hub goes away without handing anything over (a crash looks the same).
+      first.hub.requestExit('test-crash')
+      service.release()
+      await first.done
+
+      const before = service.batches.length
+      second = startHub(env, service, peers, memoryStore(), 100, options, { runHook })
+      await until(() => second!.hub.sessions.get(SESSION)?.dormantSince !== null && second!.hub.sessions.get(SESSION) !== undefined)
+      await until(() => owners.includes(SESSION))
+      expect(status(env)).toMatchObject({ reason: 'dormant-open', generation: 1 })
+      for (let i = 0; i < 3; i += 1) { service.release(); await new Promise((resolve) => setTimeout(resolve, 100)) }
+      // Still open: no renewal, no end.
+      expect(service.batches.slice(before).flatMap((batch) => batch.body.sessions).filter((entry) => entry.session_id === SESSION)).toEqual([])
+      expect(readSessionEndMarker(SESSION, env)).toBeNull()
+      // An answer staged for it waits in the conversation as one queued wake.
+      const incarnation = readSessionIncarnation(SESSION, env)!.incarnation
+      stageSessionMessages(SESSION, env, { incarnation, generation: 1 }, [{ message_id: 'sm_adopted', kind: 'note', body: 'Later',
+        created_at: new Date().toISOString(), agent_acknowledgement_text_required: true }])
+      second.hub.inputStaged(SESSION)
+      await until(() => queued.length === 1)
+      // Quitting the app ends it and its questions expire.
+      app.kill('SIGKILL')
+      service.release()
+      await until(() => reportedEnd(service))
+      await until(() => readSessionEndMarker(SESSION, env) !== null)
+    } finally {
+      app.kill('SIGKILL')
+      second?.hub.requestExit('test')
+      service.release()
+      await second?.done
+    }
+  })
+
+  it.each([
+    ['decides an end the previous hub was still deciding', false],
+    ['reports the end of a conversation archived while no hub ran', true],
+  ])('%s', async (_name, archive) => {
+    const env = hubEnv()
+    recordSessionNotified(SESSION, env, Date.now())
+    const transcript = codexRollout(env, 'Codex Desktop')
+    const service = fakeService()
+    const peers = new Map<number, PeerCredentials>()
+    // The first hub would decide only after a minute: it is gone before then.
+    const first = startHub(env, service, peers, memoryStore(), 100, { codexEndConfirmMs: 60_000, codexHostKind: () => 'app-server', wake: noWake })
+    await hubListening(env)
+    const child = await codexSession(env, service, peers, 900150, transcript)
+    expect(await requestHub(env, { type: 'session-end-candidate', session_id: SESSION, transcript_path: transcript })).toMatchObject({ held: true })
+    child.socket.destroy()
+    await new Promise((resolve) => setTimeout(resolve, 100))
+    first.hub.requestExit('test-crash')
+    service.release()
+    await first.done
+    if (archive) rmSync(transcript)
+    const second = startHub(env, service, peers, memoryStore(), 100, { codexEndConfirmMs: 50, codexHostKind: () => 'app-server', wake: noWake })
+    if (archive) {
+      await until(() => reportedEnd(service))
+      await until(() => readSessionEndMarker(SESSION, env) !== null)
+    } else {
+      await until(() => status(env)['reason'] === 'dormant-open')
+      expect(second.hub.sessions.get(SESSION)?.dormantSince).not.toBeNull()
+      expect(reportedEnd(service)).toBe(false)
+      expect(readSessionEndMarker(SESSION, env)).toBeNull()
+    }
+    second.hub.requestExit('test')
+    service.release()
+    await second.done
   })
 
   it('refuses to hold the end of a session it does not attend, so the hook ends it itself', async () => {

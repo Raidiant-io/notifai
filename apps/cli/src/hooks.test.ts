@@ -26,7 +26,7 @@ import {
   type SubmitNotificationRequestT,
 } from '@raidiant/notifai-protocol'
 import { describe, expect, it, vi } from 'vitest'
-import { ApiCallError, NetworkError, type ApiClient } from './client.js'
+import { ApiCallError, NetworkError, RequestCancelledError, type ApiClient } from './client.js'
 import { CLAUDE_POST_SEND_LIVENESS_MS, type ClaudeWakeAdapters } from './claude-wake.js'
 import type { CodexWakeAdapters } from './codex-wake.js'
 import { readStdinWithTimeout } from './hook-input.js'
@@ -72,7 +72,8 @@ import {
   readProjectSession,
   writeProjectSession,
 } from './hook-project-sessions.js'
-import { acquireClaimFile, claimQuestionPush, releaseQuestionPush, supersedeQuestionOwner } from './hook-question-lock.js'
+import { acquireClaimFile, claimQuestionPush, questionPushHeld, releaseQuestionPush, standDownQuestionOwners, supersedeQuestionOwner } from './hook-question-lock.js'
+import { hubHistoryPath } from './hub-ipc.js'
 import { attendantClaimPath, writeAttendantStatus } from './session-attendant-state.js'
 import { deliveryJournalPath, readDeliveryJournal } from './session-delivery.js'
 import { owedAcknowledgements, recordMessageAcknowledgementDue } from './hook-acknowledgements.js'
@@ -5717,6 +5718,30 @@ describe('a newer answer owner taking over a session\'s questions', () => {
     expect(h.io.errLines.join('\n')).toContain('handed this session\'s questions to a newer answer owner')
   })
 
+  it('stops at once when its reply poll is cancelled after a successor took its claim, without waiting out the poll', async () => {
+    const h = harness([])
+    const sessionId = 'owner-cancelled'
+    writeSessionState(sessionId, h.env, { last_prompt_at: AWAY, pending: [live(sessionId)] })
+    let cancelledAt: number | null = null
+    h.recorder.beforeReplies = async () => {
+      if (cancelledAt !== null) return
+      // A hub handing over: it asks the owner to step aside, then cancels its requests.
+      const held = JSON.parse(readFileSync(claimFile(h.env, sessionId), 'utf8')) as Record<string, unknown>
+      writeFileSync(claimFile(h.env, sessionId), `${JSON.stringify({ ...held, token: 'successor', handoff: true, handoff_from: held['token'] })}\n`)
+      cancelledAt = h.deps.now!()
+      throw new RequestCancelledError('GET replies was cancelled by the caller')
+    }
+
+    await hookRunCommand(h.deps, 'question-settlement', stdin({ session_id: sessionId, cwd: h.deps.cwd }), 'codex')
+
+    expect(cancelledAt).not.toBeNull()
+    // Not the rest of the 25 s poll window: the owner checked its claim at once.
+    expect(h.deps.now!() - cancelledAt!).toBeLessThan(2_000)
+    expect(h.recorder.closed).toEqual([])
+    expect(readSessionState(sessionId, h.env).pending?.map((entry) => entry.request_id)).toEqual([`req_${sessionId}`])
+    expect(h.io.errLines.join('\n')).toContain('handed this session\'s questions to a newer answer owner')
+  })
+
   it('stops an older runtime\'s detached owner and takes its questions over', async () => {
     const h = harness([])
     const sessionId = 'owner-legacy'
@@ -5785,7 +5810,8 @@ describe('a newer answer owner taking over a session\'s questions', () => {
     }
     try {
       expect(case_('peer', {}, 'detached')).toEqual({ action: 'none' })
-      expect(case_('peer-hub', { owner_role: 'hub' }, 'hub')).toEqual({ action: 'none' })
+      // One hub runs at a time: another hub owner is one this hub replaced, on its way out.
+      expect(case_('peer-hub', { owner_role: 'hub' }, 'hub')).toMatchObject({ action: 'asked', reason: 'hub-replaced' })
       expect(case_('newer', { runtime_version: '999.0.0' }, 'hub')).toEqual({ action: 'none' })
       expect(case_('older', { runtime_version: '1.0.0' }, 'detached')).toMatchObject({ action: 'asked', reason: 'older-runtime' })
       expect(case_('outlived', { owner_deadline_at: 1_000 }, 'detached')).toMatchObject({ action: 'asked', reason: 'outlived-window' })
@@ -5797,6 +5823,46 @@ describe('a newer answer owner taking over a session\'s questions', () => {
     } finally {
       child.kill('SIGKILL')
     }
+  })
+
+  it('waits out an earlier hub it replaced that cannot be asked, and never signals it', async () => {
+    const h = harness([])
+    const { child, start } = await holderProcess()
+    const signalled: number[] = []
+    try {
+      // What a 13.1.0-beta.3 hub's in-process owner wrote: no role, no hand-off support.
+      writeSessionState('replaced-hub', h.env, { pending: [live('replaced-hub')] })
+      writeHolder(h.env, 'replaced-hub', { pid: child.pid, start, pending_question_ids: ['q_replaced-hub'] })
+      // Not known as a hub: an older detached owner by its command line, stopped only if it is one.
+      expect(supersedeQuestionOwner('replaced-hub', h.env, 'hub', Date.now(), { commandLine: () => 'notifai hub --owner notifai',
+        signal: (pid) => { signalled.push(pid) } })).toEqual({ action: 'none' })
+      // Its start history names it as a hub: wait for it to leave.
+      mkdirSync(path.dirname(hubHistoryPath(h.env)), { recursive: true })
+      writeFileSync(hubHistoryPath(h.env), JSON.stringify({ starts: [{ at: Date.now(), pid: child.pid, clean: false }] }))
+      expect(supersedeQuestionOwner('replaced-hub', h.env, 'hub', Date.now(), { commandLine: () => 'notifai hub --owner notifai',
+        signal: (pid) => { signalled.push(pid) } })).toEqual({ action: 'waiting', pid: child.pid, reason: 'hub-replaced' })
+      // A detached owner is not a hub, whatever that history says.
+      expect(supersedeQuestionOwner('replaced-hub', h.env, 'detached', Date.now(), { commandLine: () => 'notifai hub --owner notifai',
+        signal: (pid) => { signalled.push(pid) } })).toEqual({ action: 'none' })
+      expect(signalled).toEqual([])
+    } finally {
+      child.kill('SIGKILL')
+    }
+  })
+
+  it('asks every answer owner of a hub handing over to step aside, leaving the questions untouched', () => {
+    const h = harness([])
+    writeSessionState('handing-over', h.env, { pending: [live('handing-over')] })
+    expect(claimQuestionPush('handing-over', h.env, Date.now(), undefined, undefined, 'hub')).toBe(true)
+    expect(questionPushHeld('handing-over', h.env)).toBe(true)
+    expect(standDownQuestionOwners()).toBe(1)
+    // The owner sees it at its next check and stops; releasing hands the claim to the next hub at once.
+    expect(questionPushHeld('handing-over', h.env)).toBe(false)
+    expect(JSON.parse(readFileSync(claimFile(h.env, 'handing-over'), 'utf8'))).toMatchObject({ handoff: true, owner_role: 'hub' })
+    releaseQuestionPush('handing-over', h.env)
+    expect(existsSync(claimFile(h.env, 'handing-over'))).toBe(false)
+    expect(readSessionState('handing-over', h.env).pending?.map((entry) => entry.request_id)).toEqual(['req_handing-over'])
+    expect(standDownQuestionOwners()).toBe(0)
   })
 
   it('closes the session itself when its host process is gone, instead of waiting out the window', async () => {

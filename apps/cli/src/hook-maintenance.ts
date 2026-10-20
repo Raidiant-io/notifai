@@ -73,8 +73,8 @@ export function spawnRetirement(launch: HookMaintenanceLaunch): void {
 }
 
 /**
- * Replace a hub from an earlier build with this (active) build's once nothing
- * waits, in a detached process: the check reads its status twice, seconds apart.
+ * Replace a hub from an earlier build with this (active) build's, in a
+ * detached process: the check reads its status twice, seconds apart.
  */
 export function spawnHubHandover(launch: HookMaintenanceLaunch): void {
   launchSelf(['hook', 'hub-handover', '--owner', 'notifai'], {

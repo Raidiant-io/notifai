@@ -1960,7 +1960,7 @@ function sessionHubCheck(deps: CommandDeps): HookCheck | null {
   }
   // Process, transport and timing stay in the JSON detail; the line says what the User gets.
   const reachable = sessions.filter((session) => session['phase'] === 'attending').length
-  // A hub left on an earlier build after an update hands over once nothing waits.
+  // A hub left on an earlier build after an update, and what it still finishes before it hands over.
   const handover = hubHandoverReport(deps.env)
   return {
     name: 'session hub',

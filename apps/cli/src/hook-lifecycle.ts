@@ -20,7 +20,7 @@ import { markCodexOrdinaryPresentation, mayRetireFromPrompt, reserveCurrentCodex
 import { isDeepStrictEqual } from 'node:util'
 import { currentCodexTurn } from './session-attendant-state.js'
 import { reserveClaudeQuestion } from './claude-question-bindings.js'
-import { ApiCallError, isRetryableReplyPollError } from './client.js'
+import { ApiCallError, isRetryableReplyPollError, RequestCancelledError } from './client.js'
 import { withFileLock } from './file-lock.js'
 import { HARNESS_CAPABILITIES } from './harnesses.js'
 import { gate } from './hook-gates.js'
@@ -379,6 +379,9 @@ async function waitForAnyReply(
           try {
             return { requestId, ...(await ctx.waitForFirstReply(requestId, correction ? 0 : pollSeconds)) }
           } catch (err) {
+            // Our own requests were cancelled (the hub hands over, or the
+            // credential changed): nothing was learnt; check ownership now.
+            if (err instanceof RequestCancelledError) return { requestId, replies: [] as ReplyView[], degraded: true, cancelled: true }
             if (isRetryableReplyPollError(err)) {
               return { requestId, replies: [] as ReplyView[], degraded: true }
             }
@@ -413,6 +416,11 @@ async function waitForAnyReply(
     }
     if (afterPoll === 'new-question') {
       return { byRequest: new Map(), degraded, permanentFailures, interrupted: afterPoll }
+    }
+    // Every poll was cancelled and this owner still holds the session: its
+    // requests stay cancelled until it is run again, so pause, never spin.
+    if (results.every((result) => 'cancelled' in result && result.cancelled === true)) {
+      await ctx.sleep(Math.max(0, Math.min(1_000, deadline - ctx.now())))
     }
   }
 }

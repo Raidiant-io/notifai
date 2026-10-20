@@ -6,10 +6,11 @@ Notifai keeps itself current. On a native installation on macOS and Linux,
 the shared hub looks for a release once a day and installs a newer one by
 itself, on the channel this machine already uses: beta stays beta, stable stays
 stable, and nothing older is ever installed. A withdrawn version moves forward
-to its replacement or stays put. It waits while any question on this machine
-waits for the User, or an answer, Note or Answer Edit is still on its way to its
-agent. It keeps the update staged rather than rewrite Codex or Claude Code hook
-definitions. Sessions, questions and their IDs survive the switch. Do not offer
+to its replacement or stays put. The hub restarts seamlessly: waiting
+questions, answers on their way, Notes, Answer Edits, acknowledgements and open
+sessions, including a Codex app conversation Codex unloaded, carry over to the
+new hub with their IDs, so an update never waits for them. Only an update that
+would rewrite Codex or Claude Code hook definitions stays staged. Do not offer
 an update that automatic updates will install.
 
 After an automatic update one agent is told once that Notifai updated itself
@@ -29,14 +30,17 @@ Offer to perform an update only when one of these holds:
   for approval in `/hooks`), `session-child-incompatible`, `continuity` or
   `candidate-unverified`, or the staged update has waited a week.
 
-`question-waiting`, `session-input-pending`, `session-ending` and `session-dormant`
-(a Codex app conversation Codex unloaded while something still waits on it) clear
-by themselves; never end sessions or drop work to let an update in.
+`installation-busy` clears by itself. Never end sessions or drop work to let an
+update in.
 
 After any update, including one the User ran, a hub still running the earlier
-build hands its sessions to the new one once the same work no longer waits.
-`update --check --json` reports such a hub as `hub_handover` (its version and
-`waiting_for`); it is `null` otherwise. It needs no action and no restart.
+build hands its sessions to the new one at once. A hub from 13.1.0-beta.5 or
+earlier is replaced at the next hook, unless it is in the middle of something
+the new hub cannot take over: `answer-delivering`, `wake-writing`,
+`question-unattended`, or `session-dormant` (a Codex conversation whose rollout
+was never recorded). `update --check --json` reports such a hub as
+`hub_handover` (its version and `waiting_for`); it is `null` otherwise. It needs
+no action and no restart.
 
 The switch is one setting for the whole machine. Change it only when the User
 asks: `notifai config set updates.automatic off --yes` turns automatic updates
