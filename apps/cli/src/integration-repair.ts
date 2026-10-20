@@ -98,11 +98,11 @@ export function pendingHookRepairs(deps: CommandDeps,
   const file = location(deps)
   return withFileLock(`${file}.lock`, () => {
     const remaining: Requirement[] = [], pending: string[] = []
-    for (const requirement of read(file)) {
+    for (let requirement of read(file)) {
       const selected = installations.find(item => item.installation.file === requirement.file)
       if (!selected) {
         remaining.push(requirement)
-        pending.push(`The changed ${requirement.harness} integration is outside this inspection scope; resume in its original context.`)
+        pending.push(`The changed ${requirement.harness} integration at ${requirement.file} is outside this inspection scope; run notifai update --resume --json where that file is the active ${requirement.harness} configuration.`)
         continue
       }
       const { installation, env } = selected
@@ -115,13 +115,24 @@ export function pendingHookRepairs(deps: CommandDeps,
       // If publication never happened, an unchanged healthy definition needs
       // no activation proof. Retrying repairs a still-damaged definition first.
       if (digest(installation.file) === requirement.before) continue
-      const problems: string[] = []
-      if (installation.harness === 'codex' && codexTrustProblems([installation], env).length > 0) {
-        problems.push('native-approval-pending: Changed Codex hooks require approval through /hooks.')
-      }
       const revision = sourceIntegrationRevision(['hermes', 'openclaw', 'opencode'].includes(installation.harness)
         ? readFileSync(installation.file, 'utf8') : JSON.stringify(installation.handlers))
-      if (revision !== requirement.expected) problems.push(`The intended ${requirement.harness} definition changed before verification; inspect its owned repair.`)
+      if (revision === null) {
+        remaining.push(requirement)
+        pending.push(`The ${requirement.harness} hooks at ${requirement.file} carry no single Notifai revision, so their activation cannot be verified; run notifai hooks install --harness ${requirement.harness} where that file is the active configuration.`)
+        continue
+      }
+      // The healthy definition present supersedes the recorded one: a later
+      // install, another build, or a host refreshing this copy from its source
+      // replaced it, and nothing will ever republish the recorded revision.
+      // Trust and activation proof now bind to what the harness will load.
+      if (revision !== requirement.expected) requirement = { ...requirement, expected: revision }
+      const problems: string[] = []
+      if (installation.harness === 'codex' && codexTrustProblems([installation], env).length > 0) {
+        const home = path.dirname(installation.file)
+        problems.push(`native-approval-pending: Codex has not approved Notifai's changed hooks in ${home}. ${env['CODEX_HOME']
+          ? `Open /hooks in a Codex session whose CODEX_HOME is ${home}` : 'Start codex, open /hooks'} and approve the Notifai handlers.`)
+      }
       let owner = requirement.owner
       if (owner?.sessionId && sessionHasEnded(owner.sessionId, env)) {
         // SessionEnd ends this activation requirement, not its question/ack
@@ -137,7 +148,7 @@ export function pendingHookRepairs(deps: CommandDeps,
         }
       }
       if (owner) {
-        if (revision !== requirement.expected || owner.sessionId === undefined || !loadedIntegrationObserved(owner.sessionId, requirement.expected, env)) {
+        if (owner.sessionId === undefined || !loadedIntegrationObserved(owner.sessionId, requirement.expected, env)) {
           problems.push(`The changed ${owner.label} definition has not been observed in this Agent Session. Preserve existing work and verify a real lifecycle callback after the harness loads the repaired definition.`)
         }
       }
