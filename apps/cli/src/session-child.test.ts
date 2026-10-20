@@ -138,19 +138,24 @@ function service(): Service {
   return { client, batches, notes }
 }
 
-function startHub(env: NodeJS.ProcessEnv, fake: Service): Promise<number> {
-  return startHubWith(env, fake).done
-}
+interface RunningHub { hub: Hub; done: Promise<number>; stop: () => Promise<number> }
 
-function startHubWith(env: NodeJS.ProcessEnv, fake: Service, options: Partial<HubOptions> = {}): { hub: Hub; done: Promise<number> } {
+/**
+ * An in-process hub that stays up until the test stops it. With a short idle
+ * exit it would race the stand-in harness: a node process that can take
+ * longer than the idle window to start on a loaded machine, leaving its child
+ * no hub to register with. The idle exit itself is the hub tests' subject.
+ */
+function startHub(env: NodeJS.ProcessEnv, fake: Service, options: Partial<HubOptions> = {}): RunningHub {
   const deps: CommandDeps = {
     io: { out: () => undefined, err: () => undefined, confirm: async () => false, openUrl: () => undefined },
     store: { load: () => ({ machineId: 'mch_test', secret: 's', baseUrl: 'https://example.invalid', machineName: 't' }), save: () => undefined, clear: () => undefined, describe: () => 'memory' },
     env, cwd: '/tmp', logger: nullLogger(), clientFactory: () => fake.client,
   }
-  const hub = new Hub(deps, { deps, verifyPeer: peerVerifierFor(launcher), idleExitMs: 500, bootIdentity: () => null, endConfirmMs: 500, ...options })
+  const hub = new Hub(deps, { deps, verifyPeer: peerVerifierFor(launcher), bootIdentity: () => null, endConfirmMs: 500, ...options })
   cleanups.push(() => hub.requestExit('test-cleanup'))
-  return { hub, done: hub.run() }
+  const done = hub.run()
+  return { hub, done, stop: () => { hub.requestExit('test-done'); return done } }
 }
 
 describe.skipIf(!supported)('native session child', () => {
@@ -158,7 +163,7 @@ describe.skipIf(!supported)('native session child', () => {
     const { root, env } = scratch()
     recordSessionNotified(SESSION, env, Date.now())
     const fake = service()
-    const done = startHub(env, fake)
+    const { stop } = startHub(env, fake)
     const harness = await startHarness(root, env, 'direct')
     await until(() => fake.batches.some((batch) => batch.sessions.some((entry) => entry.session_id === SESSION && entry.state === 'running')))
     const spawned = harness.lines.find((line) => 'spawned' in line)!['spawned'] as number
@@ -174,7 +179,7 @@ describe.skipIf(!supported)('native session child', () => {
 
     harness.process.kill('SIGKILL')
     await until(() => fake.batches.some((batch) => batch.sessions.some((entry) => entry.state === 'ended')))
-    expect(await done).toBe(0)
+    expect(await stop()).toBe(0)
   }, 30_000)
 
   it('reports where the conversation runs and the process that started it, so only the desktop app can pause one', async () => {
@@ -182,14 +187,14 @@ describe.skipIf(!supported)('native session child', () => {
     env['CLAUDE_CODE_ENTRYPOINT'] = 'claude-desktop'
     recordSessionNotified(SESSION, env, Date.now())
     const fake = service()
-    const { hub, done } = startHubWith(env, fake)
+    const { hub, stop } = startHub(env, fake)
     const harness = await startHarness(root, env, 'direct')
     await until(() => hub.sessions.get(SESSION)?.registration.place === 'claude-desktop')
     // The harness's parent: here this test process, in the app its main process.
     expect(hub.sessions.get(SESSION)?.registration.hostApp?.pid).toBe(process.pid)
     harness.process.kill('SIGKILL')
     await until(() => fake.batches.some((batch) => batch.sessions.some((entry) => entry.state === 'ended')))
-    expect(await done).toBe(0)
+    expect(await stop()).toBe(0)
   }, 30_000)
 
   it('says when the harness runs in an Orca pane, so the hub records the pane\'s terminal host', async () => {
@@ -200,21 +205,21 @@ describe.skipIf(!supported)('native session child', () => {
     const fake = service()
     const asked: number[] = []
     const terminalHost = { pid: process.pid, start: 'Tue Oct 20 10:00:00 2026' }
-    const { hub, done } = startHubWith(env, fake, { orcaTerminalHostOf: (pid) => { asked.push(pid); return terminalHost } })
+    const { hub, stop } = startHub(env, fake, { orcaTerminalHostOf: (pid) => { asked.push(pid); return terminalHost } })
     const harness = await startHarness(root, env, 'direct')
     await until(() => hub.sessions.get(SESSION)?.registration.terminalHost !== null && hub.sessions.get(SESSION) !== undefined)
     expect(asked).toEqual([harness.pid])
     expect(hub.sessions.get(SESSION)?.registration.place).toBe('terminal')
     harness.process.kill('SIGKILL')
     await until(() => fake.batches.some((batch) => batch.sessions.some((entry) => entry.state === 'ended')))
-    expect(await done).toBe(0)
+    expect(await stop()).toBe(0)
   }, 30_000)
 
   it('adopts the harness through a shell that does not exec, and a second attend only hints', async () => {
     const { root, env } = scratch()
     recordSessionNotified(SESSION, env, Date.now())
     const fake = service()
-    const done = startHub(env, fake)
+    const { stop } = startHub(env, fake)
     const harness = await startHarness(root, env, 'shell')
     await until(() => fake.batches.some((batch) => batch.sessions.some((entry) => entry.session_id === SESSION)))
     const locked = readFileSync(childLockPath(env, SESSION), 'utf8').trim().split(' ')
@@ -225,35 +230,35 @@ describe.skipIf(!supported)('native session child', () => {
     const second = harness.lines.filter((line) => 'spawned' in line)[1]!['spawned'] as number
     await until(() => spawnSync('kill', ['-0', String(second)]).status !== 0, 5_000)
     harness.process.kill('SIGKILL')
-    expect(await done).toBe(0)
+    expect(await stop()).toBe(0)
   }, 30_000)
 
   it('reconnects to a restarted hub and registers again, with no end reported', async () => {
     const { root, env } = scratch()
     recordSessionNotified(SESSION, env, Date.now())
     const fake = service()
-    const first = startHubWith(env, fake)
+    const first = startHub(env, fake)
     const harness = await startHarness(root, env, 'direct')
     await until(() => fake.batches.some((batch) => batch.sessions.some((entry) => entry.state === 'running')))
     // The hub goes away; its leases stay saved, and the child stays.
     first.hub.requestExit('test-crash')
     expect(await first.done).toBe(0)
     const before = fake.batches.length
-    const second = startHubWith(env, fake)
+    const second = startHub(env, fake)
     await until(() => fake.batches.length > before, 15_000)
     const after = fake.batches.slice(before).flatMap((batch) => batch.sessions)
     expect(after.every((entry) => entry.state === 'running' && entry.generation === 1)).toBe(true)
     expect(fake.batches.flatMap((batch) => batch.sessions).some((entry) => entry.state === 'ended')).toBe(false)
     harness.process.kill('SIGKILL')
     await until(() => fake.batches.some((batch) => batch.sessions.some((entry) => entry.state === 'ended')))
-    expect(await second.done).toBe(0)
+    expect(await second.stop()).toBe(0)
   }, 40_000)
 
   it('gives each process hosting one conversation its own child: the most recently opened receives, and the other takes over when it exits', async () => {
     const { root, env } = scratch()
     recordSessionNotified(SESSION, env, Date.now())
     const fake = service()
-    const { hub, done } = startHubWith(env, fake)
+    const { hub, stop } = startHub(env, fake)
     const first = await startHarness(root, env, 'direct', 'first.sock')
     await until(() => hub.sessions.get(SESSION)?.child !== null && hub.sessions.get(SESSION) !== undefined)
     // A second terminal resumes the same conversation (Claude Code allows it).
@@ -280,7 +285,7 @@ describe.skipIf(!supported)('native session child', () => {
     // The last place closes: ended after the end confirmation.
     first.process.kill('SIGKILL')
     await until(() => fake.batches.some((batch) => batch.sessions.some((entry) => entry.state === 'ended')))
-    expect(await done).toBe(0)
+    expect(await stop()).toBe(0)
   }, 40_000)
 
   it('records the close locally when no hub can be reached', async () => {

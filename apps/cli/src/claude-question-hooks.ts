@@ -41,6 +41,7 @@ import { CodexControlNotSent } from './codex-native-control.js'
 import { admitBoundNativeAnswer, terminateCodexQuestions, type CodexQuestionRegistration } from './codex-question-bindings.js'
 import { buildAskDraft } from './commands-ask.js'
 import { makeClient, type CommandDeps } from './commands-core.js'
+import { claudeHookSourcePid } from './commands-harness-context.js'
 import { resolveDraftInvocation } from './commands-send-support.js'
 import { loadConfig } from './config.js'
 import { projectBinding, projectEnabled } from './project-enablement.js'
@@ -66,7 +67,7 @@ import {
   resolveNativeAnswerOperation,
   type NativeOperationOwner,
 } from './native-answer-operation.js'
-import { currentProcessIdentity, processIdentityLiveness, type ProcessIdentity } from './process-identity.js'
+import { currentProcessIdentity, processIdentityLiveness, processStartTime, type ProcessIdentity } from './process-identity.js'
 import { spawnQuestionSettlement } from './question-settlement-process.js'
 import { readAttendantLease } from './session-attendant-state.js'
 import type { DeliveryLease } from './session-delivery.js'
@@ -376,6 +377,21 @@ function pickerPresentation(input: {
   }
 }
 
+/**
+ * The Claude Code process showing this picker: the one that ran the hook.
+ * Open in two places, a conversation has one primary host and standby places,
+ * and each picker belongs to the place that shows it. A picker in a standby
+ * place outlives a primary that exits first, so its waiter follows its own
+ * process, never the session's host. Without a named source, the session's
+ * host is the only process there is to follow.
+ */
+function pickerHost(deps: CommandDeps, sessionHost: ProcessIdentity): ProcessIdentity | null {
+  const pid = claudeHookSourcePid(deps.env, deps.hookPlatform ?? process.platform)
+  if (pid === undefined) return sessionHost
+  const start = processStartTime(pid)
+  return start === null ? null : { pid, start }
+}
+
 export interface ClaudePickerSeams {
   sleep?: (milliseconds: number) => Promise<void>
   /** Monotonic milliseconds. */
@@ -424,8 +440,9 @@ export async function claudePermissionRequest(
   }
   const incarnation = readSessionIncarnation(sessionId, deps.env)
   const writer = currentProcessIdentity()
-  if (incarnation === null || writer === null || sessionHasEnded(sessionId, deps.env) ||
-      incarnation.harness_process === undefined || processIdentityLiveness(incarnation.harness_process) !== 'alive') {
+  const host = incarnation?.harness_process === undefined ? null : pickerHost(deps, incarnation.harness_process)
+  if (incarnation === null || writer === null || host === null || sessionHasEnded(sessionId, deps.env) ||
+      processIdentityLiveness(host) !== 'alive') {
     return terminalOnly('session-not-live')
   }
   if (readSessionState(sessionId, deps.env).harness !== 'claude-code') return terminalOnly('session-not-admitted')
@@ -448,7 +465,7 @@ export async function claudePermissionRequest(
 
   const sleep = seams.sleep ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)))
   const monotonic = seams.monotonic ?? (() => performance.now())
-  const parentAlive = seams.parentAlive ?? (() => processIdentityLiveness(incarnation.harness_process!) === 'alive')
+  const parentAlive = seams.parentAlive ?? (() => processIdentityLiveness(host) === 'alive')
   let stopped = false
   void seams.signalled?.then(() => { stopped = true })
   const holding = (state: SessionState): boolean =>
