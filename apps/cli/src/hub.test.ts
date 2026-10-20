@@ -1,5 +1,5 @@
 import { spawn } from 'node:child_process'
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs'
 import { createConnection, createServer, type Socket } from 'node:net'
 import os from 'node:os'
 import path from 'node:path'
@@ -1315,6 +1315,9 @@ describe('hub and Codex SessionEnd', () => {
   const status = (env: NodeJS.ProcessEnv): Record<string, unknown> => JSON.parse(readFileSync(attendantStatusPath(SESSION, env), 'utf8')) as Record<string, unknown>
   const reportedEnd = (service: FakeService): boolean => service.batches.some((batch) => batch.body.sessions.some((entry) => entry.state === 'ended'))
   const noWake: CodexWakeAdapters = { available: () => true, queue: async () => { throw new Error('no wake expected') } }
+  const question = (env: NodeJS.ProcessEnv, sessionId = SESSION): void => updateSessionState(sessionId, env, (state) => ({ ...state,
+    pending: [{ question: 'Deploy?', summary: 'Deploy?', request_id: `req_${sessionId.slice(0, 4)}` } as never] }))
+  const stopped = (hub: Hub, sessionId = SESSION): boolean => (hub.sessions.get(sessionId)?.stopped ?? null) !== null
 
   it('keeps an unloaded Codex app conversation open, sends no renewals, and attends it again when it is opened', async () => {
     const env = hubEnv()
@@ -1325,13 +1328,14 @@ describe('hub and Codex SessionEnd', () => {
     const { hub, done } = startHub(env, service, peers, memoryStore(), 100, { endConfirmMs: 50, codexHostKind: () => 'app-server', wake: noWake })
     await hubListening(env)
     const child = await codexSession(env, service, peers, 900060, transcript)
+    question(env)
 
     // Codex unloads it: SessionEnd asks the hub, then Codex stops the child.
     expect(await requestHub(env, { type: 'session-end-candidate', session_id: SESSION, transcript_path: transcript })).toEqual({ type: 'ok', held: true })
     child.socket.destroy()
-    await until(() => status(env)['reason'] === 'dormant-open')
+    await until(() => status(env)['reason'] === 'stopped')
+    expect(hub.sessions.get(SESSION)?.stopped).toMatchObject({ cause: 'app', watch: 'harness' })
     // Its question still waits, so the hub stays to watch the app.
-    updateSessionState(SESSION, env, (state) => ({ ...state, pending: [{ question: 'Deploy?', summary: 'Deploy?', request_id: 'req_dormant' } as never] }))
     await new Promise((resolve) => setTimeout(resolve, 600))
     service.release()
     await new Promise((resolve) => setTimeout(resolve, 300))
@@ -1389,15 +1393,16 @@ describe('hub and Codex SessionEnd', () => {
     const { hub, done } = startHub(env, service, peers, memoryStore(), 100, { endConfirmMs: 50, codexHostKind: () => 'app-server', wake: noWake })
     await hubListening(env)
     const child = await codexSession(env, service, peers, 900075, transcript)
+    question(env)
     child.socket.destroy()
-    await until(() => status(env)['reason'] === 'dormant-open')
+    await until(() => status(env)['reason'] === 'stopped')
     expect(reportedEnd(service)).toBe(false)
     hub.requestExit('test')
     service.release()
     await done
   })
 
-  it('stays for a dormant conversation while its question waits, then leaves once nothing is owed, without ending it', async () => {
+  it('stays for a stopped conversation while its question waits, then ends it once nothing is owed and leaves', async () => {
     const env = hubEnv()
     recordSessionNotified(SESSION, env, Date.now())
     const transcript = codexRollout(env, 'Codex Desktop')
@@ -1408,25 +1413,24 @@ describe('hub and Codex SessionEnd', () => {
     void done.then(() => { exited = true })
     await hubListening(env)
     const child = await codexSession(env, service, peers, 900077, transcript)
-    updateSessionState(SESSION, env, (state) => ({ ...state, pending: [{ question: 'Deploy?', summary: 'Deploy?', request_id: 'req_dormant' } as never] }))
+    question(env)
     expect(await requestHub(env, { type: 'session-end-candidate', session_id: SESSION, transcript_path: transcript })).toEqual({ type: 'ok', held: true })
     child.socket.destroy()
-    await until(() => status(env)['reason'] === 'dormant-open')
+    await until(() => status(env)['reason'] === 'stopped')
     // No child is connected, but the question still waits: the hub outlives its idle limit to watch the app.
     for (let i = 0; i < 4; i += 1) {
       service.release()
       await new Promise((resolve) => setTimeout(resolve, 250))
     }
     expect(exited).toBe(false)
-    // Nothing is owed any more: the hub leaves idle, and the conversation is not reported ended.
+    // Nothing is owed any more: the stopped conversation ends, and then the hub leaves.
     updateSessionState(SESSION, env, (state) => ({ ...state, pending: [] }))
     while (!exited) {
       service.release()
       await new Promise((resolve) => setTimeout(resolve, 50))
     }
     expect(await done).toBe(0)
-    expect(reportedEnd(service)).toBe(false)
-    expect(readSessionEndMarker(SESSION, env)).toBeNull()
+    expect(reportedEnd(service)).toBe(true)
   })
 
   it('cancels the end when the conversation starts again inside the delay', async () => {
@@ -1454,7 +1458,7 @@ describe('hub and Codex SessionEnd', () => {
     await done
   })
 
-  it('leaves an answer waiting in a dormant conversation as one queued wake, and ends it when the app quits', async () => {
+  it('leaves an answer waiting in a stopped conversation as one queued wake, and ends it when the app quits', async () => {
     const env = hubEnv()
     recordSessionNotified(SESSION, env, Date.now())
     const transcript = codexRollout(env, 'Codex Desktop')
@@ -1470,9 +1474,10 @@ describe('hub and Codex SessionEnd', () => {
     try {
       await hubListening(env)
       const child = await codexSession(env, service, peers, 900090, transcript, host)
+      question(env)
       await requestHub(env, { type: 'session-end-candidate', session_id: SESSION, transcript_path: transcript })
       child.socket.destroy()
-      await until(() => status(env)['reason'] === 'dormant-open')
+      await until(() => status(env)['reason'] === 'stopped')
       // A note arrives for it (an answer is staged the same way): it waits in
       // the conversation as one content-free wake, started when it is opened.
       const incarnation = readSessionIncarnation(SESSION, env)!.incarnation
@@ -1515,7 +1520,7 @@ describe('hub and Codex SessionEnd', () => {
     await done
   })
 
-  it('adopts a dormant conversation after a restart: still open, its answer owner running, its answer queued, ended when the app quits', async () => {
+  it('adopts a stopped conversation after a restart: still open, its answer owner running, its answer queued, ended when the app quits', async () => {
     const env = hubEnv()
     recordSessionNotified(SESSION, env, Date.now())
     const transcript = codexRollout(env, 'Codex Desktop')
@@ -1537,13 +1542,13 @@ describe('hub and Codex SessionEnd', () => {
     try {
       await hubListening(env)
       const child = await codexSession(env, service, peers, 900140, transcript, host)
+      question(env)
       await requestHub(env, { type: 'session-end-candidate', session_id: SESSION, transcript_path: transcript })
       child.socket.destroy()
-      await until(() => status(env)['reason'] === 'dormant-open')
+      await until(() => status(env)['reason'] === 'stopped')
       // What the next hub needs is on disk.
       expect(status(env)['adoption']).toMatchObject({ harness: 'codex', transcript_path: transcript, transcript_seen: true,
-        harness_process: host, dormant_since: expect.any(Number) })
-      updateSessionState(SESSION, env, (state) => ({ ...state, pending: [{ question: 'Deploy?', summary: 'Deploy?', request_id: 'req_dormant' } as never] }))
+        harness_process: host, place: 'codex-app', stopped: { cause: 'app', watch: 'harness' } })
       // The hub goes away without handing anything over (a crash looks the same).
       first.hub.requestExit('test-crash')
       service.release()
@@ -1551,9 +1556,9 @@ describe('hub and Codex SessionEnd', () => {
 
       const before = service.batches.length
       second = startHub(env, service, peers, memoryStore(), 100, options, { runHook })
-      await until(() => second!.hub.sessions.get(SESSION)?.dormantSince !== null && second!.hub.sessions.get(SESSION) !== undefined)
+      await until(() => stopped(second!.hub))
       await until(() => owners.includes(SESSION))
-      expect(status(env)).toMatchObject({ reason: 'dormant-open', generation: 1 })
+      expect(status(env)).toMatchObject({ phase: 'exited', reason: 'stopped', generation: 1 })
       for (let i = 0; i < 3; i += 1) { service.release(); await new Promise((resolve) => setTimeout(resolve, 100)) }
       // Still open: no renewal, no end.
       expect(service.batches.slice(before).flatMap((batch) => batch.body.sessions).filter((entry) => entry.session_id === SESSION)).toEqual([])
@@ -1590,6 +1595,7 @@ describe('hub and Codex SessionEnd', () => {
     const first = startHub(env, service, peers, memoryStore(), 100, { endConfirmMs: 60_000, codexHostKind: () => 'app-server', wake: noWake })
     await hubListening(env)
     const child = await codexSession(env, service, peers, 900150, transcript)
+    question(env)
     expect(await requestHub(env, { type: 'session-end-candidate', session_id: SESSION, transcript_path: transcript })).toMatchObject({ held: true })
     child.socket.destroy()
     await new Promise((resolve) => setTimeout(resolve, 100))
@@ -1602,8 +1608,8 @@ describe('hub and Codex SessionEnd', () => {
       await until(() => reportedEnd(service))
       await until(() => readSessionEndMarker(SESSION, env) !== null)
     } else {
-      await until(() => status(env)['reason'] === 'dormant-open')
-      expect(second.hub.sessions.get(SESSION)?.dormantSince).not.toBeNull()
+      await until(() => status(env)['reason'] === 'stopped')
+      expect(stopped(second.hub)).toBe(true)
       expect(reportedEnd(service)).toBe(false)
       expect(readSessionEndMarker(SESSION, env)).toBeNull()
     }
@@ -2264,5 +2270,428 @@ describe('hub: conversations stopped by their app or the machine', () => {
       }
       await stopHub(second.hub, service, second.done)
     }
+  })
+})
+
+describe('hub: Codex conversations stopped by their app or the machine, Orca panes, and forks', () => {
+  interface StandIn { pid: number; start: string; process: ChildProcess }
+  const standIns: ChildProcess[] = []
+  afterEach(() => { for (const proc of standIns.splice(0)) proc.kill('SIGKILL') })
+  const noHook = async (): Promise<number> => 0
+
+  async function standIn(): Promise<StandIn> {
+    const proc = spawn('sleep', ['60'], { stdio: 'ignore' })
+    standIns.push(proc)
+    await until(() => processStartTime(proc.pid!) !== null)
+    return { pid: proc.pid!, start: processStartTime(proc.pid!)!, process: proc }
+  }
+
+  function codexHome(env: NodeJS.ProcessEnv): string {
+    return path.join(env['XDG_STATE_HOME']!, '..', 'codex')
+  }
+
+  function rollout(env: NodeJS.ProcessEnv, sessionId: string, originator: string, forkedFrom?: string): string {
+    const directory = path.join(codexHome(env), 'sessions', '2026', '10', '20')
+    mkdirSync(directory, { recursive: true })
+    const file = path.join(directory, `rollout-2026-10-20T08-00-00-${sessionId}.jsonl`)
+    writeFileSync(file, `${JSON.stringify({ type: 'session_meta', payload: { id: sessionId, originator,
+      ...(forkedFrom === undefined ? {} : { forked_from_id: forkedFrom }) } })}\n`)
+    return file
+  }
+
+  function archive(env: NodeJS.ProcessEnv, file: string): void {
+    const target = path.join(codexHome(env), 'archived_sessions', path.basename(file))
+    mkdirSync(path.dirname(target), { recursive: true })
+    renameSync(file, target)
+  }
+
+  /** A Codex host registered for a thread, idle after one turn. */
+  async function codexChild(env: NodeJS.ProcessEnv, peers: Map<number, PeerCredentials>, childPid: number, host: StandIn, transcript: string,
+    extra: Record<string, unknown> = {}, app?: StandIn, sessionId = SESSION): Promise<FakeChild> {
+    const child = await registered(env, sessionId, childPid, peerOf(childPid, { pid: host.pid, comm: 'codex', start: host.start },
+      app === undefined ? undefined : { pid: app.pid, comm: 'node', start: app.start }), peers,
+    { harness: 'codex', harness_pid: host.pid, harness_start: host.start, transcript_path: transcript, codex_home: codexHome(env),
+      claude_config_dir: undefined, inbox_token: undefined, stamp_wall: Date.now(), ...extra })
+    if (child.frames[0]?.['type'] === 'registered') {
+      const key = readSessionIncarnation(sessionId, env)!.key
+      recordTurnStart(sessionId, env, key, 'turn-1')
+      recordTurnEnd(sessionId, env, 'turn-1')
+    }
+    return child
+  }
+
+  const ended = (service: FakeService, sessionId = SESSION): boolean => service.batches.some((batch) => batch.body.sessions.some((entry) =>
+    entry.session_id === sessionId && entry.state === 'ended'))
+  const renewals = (service: FakeService, sessionId = SESSION): number => service.batches.flatMap((batch) => batch.body.sessions)
+    .filter((entry) => entry.session_id === sessionId && entry.state === 'running').length
+  const status = (env: NodeJS.ProcessEnv): Record<string, unknown> => JSON.parse(readFileSync(attendantStatusPath(SESSION, env), 'utf8')) as Record<string, unknown>
+  const question = (env: NodeJS.ProcessEnv, sessionId = SESSION): void => updateSessionState(sessionId, env, (state) => ({ ...state,
+    pending: [{ question: 'Deploy?', summary: 'Deploy?', request_id: `req_${sessionId.slice(0, 4)}` } as never] }))
+  const note = (env: NodeJS.ProcessEnv, id: string): void => {
+    const incarnation = readSessionIncarnation(SESSION, env)!.incarnation
+    stageSessionMessages(SESSION, env, { incarnation, generation: 1 }, [{ message_id: id, kind: 'note', body: 'Later',
+      created_at: new Date().toISOString(), agent_acknowledgement_text_required: true }])
+  }
+  /** The harness goes: the child's kernel watch reports it. */
+  const exit = (child: FakeChild, host: StandIn): void => {
+    host.process.kill('SIGKILL')
+    child.send({ type: 'ended', session_id: SESSION, harness_pid: host.pid, reason: 'harness-gone' })
+  }
+  async function stopHub(hub: Hub, service: FakeService, done: Promise<number>): Promise<void> {
+    let exited = false
+    void done.then(() => { exited = true })
+    hub.requestExit('test')
+    while (!exited) { service.release(); await new Promise((resolve) => setTimeout(resolve, 20)) }
+  }
+  const queueing = (queued: string[]): CodexWakeAdapters => ({ available: () => true, queue: async (threadId) => { queued.push(threadId) } })
+
+  it('expires an app conversation whose app quit, or that was archived, within the confirmation', async () => {
+    for (const variant of ['quit', 'archive'] as const) {
+      const env = hubEnv()
+      recordSessionNotified(SESSION, env, Date.now())
+      const transcript = rollout(env, SESSION, 'Codex Desktop')
+      const server = await standIn()
+      const service = fakeService()
+      const peers = new Map<number, PeerCredentials>()
+      const { hub, done } = startHub(env, service, peers, memoryStore(), 100, { endConfirmMs: 150, codexHostKind: () => 'app-server',
+        wake: queueing([]) }, { powerWatch: false, runHook: noHook })
+      await hubListening(env)
+      const child = await codexChild(env, peers, 900600, server, transcript)
+      await until(() => renewals(service) >= 1)
+      question(env)
+      if (variant === 'quit') exit(child, server)
+      else {
+        // `codex archive`: SessionEnd names the old path, the rollout moves.
+        archive(env, transcript)
+        await requestHub(env, { type: 'session-end-candidate', session_id: SESSION, transcript_path: transcript, harness_pid: server.pid })
+        child.socket.destroy()
+      }
+      await until(() => ended(service), 5_000)
+      await until(() => readSessionEndMarker(SESSION, env) !== null)
+      expect(hub.sessions.get(SESSION)?.stopped ?? null).toBeNull()
+      child.socket.destroy()
+      await stopHub(hub, service, done)
+    }
+  })
+
+  it('ends a stopped app conversation the User then archives', async () => {
+    const env = hubEnv()
+    recordSessionNotified(SESSION, env, Date.now())
+    const transcript = rollout(env, SESSION, 'Codex Desktop')
+    const server = await standIn()
+    const service = fakeService()
+    const peers = new Map<number, PeerCredentials>()
+    const { hub, done } = startHub(env, service, peers, memoryStore(), 100, { endConfirmMs: 150, codexHostKind: () => 'app-server',
+      wake: queueing([]) }, { powerWatch: false, runHook: noHook })
+    await hubListening(env)
+    const child = await codexChild(env, peers, 900610, server, transcript)
+    await until(() => renewals(service) >= 1)
+    question(env)
+    await requestHub(env, { type: 'session-end-candidate', session_id: SESSION, transcript_path: transcript, harness_pid: server.pid })
+    child.socket.destroy()
+    await until(() => hub.sessions.get(SESSION)?.stopped?.cause === 'app', 5_000)
+    expect(ended(service)).toBe(false)
+    archive(env, transcript)
+    await until(() => ended(service), 5_000)
+    await stopHub(hub, service, done)
+  })
+
+  it('keeps a T3 thread stopped 31 minutes after its last activity while T3 runs, queues one wake, and delivers at the next send', async () => {
+    const env = hubEnv()
+    recordSessionNotified(SESSION, env, Date.now())
+    const transcript = rollout(env, SESSION, 'T3 Code')
+    const t3 = await standIn()
+    const server = await standIn()
+    const queued: string[] = []
+    let shift = 0
+    const clock = { monotonic: () => performance.now(), wall: () => Date.now() + shift }
+    const service = fakeService()
+    const peers = new Map<number, PeerCredentials>()
+    const { hub, done } = startHub(env, service, peers, memoryStore(), 100, { endConfirmMs: 150, codexHostKind: () => 'app-server',
+      wake: queueing(queued) }, { powerWatch: false, runHook: noHook, clock })
+    await hubListening(env)
+    const child = await codexChild(env, peers, 900620, server, transcript, { originator_override: 'T3 Code' }, t3)
+    expect(child.frames[0]).toEqual({ type: 'registered', session_id: SESSION })
+    await until(() => renewals(service) >= 1)
+    question(env)
+    // Half an hour later T3 stops its idle provider: the app-server goes.
+    shift = 31 * 60_000
+    exit(child, server)
+    await until(() => hub.sessions.get(SESSION)?.stopped !== null && hub.sessions.get(SESSION)?.stopped !== undefined, 5_000)
+    expect(hub.sessions.get(SESSION)?.stopped).toMatchObject({ cause: 'app', watch: 'host-app' })
+    expect(status(env)).toMatchObject({ phase: 'exited', reason: 'stopped' })
+    expect((status(env)['adoption'] as Record<string, unknown>)['place']).toBe('t3')
+    // An answer (a note here) arrives: one content-free wake goes into the thread's own queue.
+    note(env, 'sm_t3')
+    hub.inputStaged(SESSION)
+    await until(() => queued.length === 1)
+    hub.inputStaged(SESSION)
+    await new Promise((resolve) => setTimeout(resolve, 200))
+    expect(queued).toEqual([SESSION])
+    expect(ended(service)).toBe(false)
+    // The User's next send: T3 starts a provider again and the thread loads, its queued wake first.
+    const again = await standIn()
+    const back = await codexChild(env, peers, 900621, again, transcript, { originator_override: 'T3 Code', source: 'resume' }, t3)
+    expect(back.frames[0]).toEqual({ type: 'registered', session_id: SESSION })
+    expect(hub.sessions.get(SESSION)?.stopped).toBeNull()
+    expect(readSessionIncarnation(SESSION, env)?.harness_process?.pid).toBe(again.pid)
+    const before = renewals(service)
+    await until(() => { service.release(); return renewals(service) > before }, 5_000)
+    expect(ended(service)).toBe(false)
+    back.socket.destroy()
+    child.socket.destroy()
+    await stopHub(hub, service, done)
+  })
+
+  it('expires a T3 thread stopped before 30 minutes, or after T3 itself quit', async () => {
+    for (const variant of ['early', 'quit'] as const) {
+      const env = hubEnv()
+      recordSessionNotified(SESSION, env, Date.now())
+      const transcript = rollout(env, SESSION, 'T3 Code')
+      const t3 = await standIn()
+      const server = await standIn()
+      let shift = 0
+      const clock = { monotonic: () => performance.now(), wall: () => Date.now() + shift }
+      const service = fakeService()
+      const peers = new Map<number, PeerCredentials>()
+      const { hub, done } = startHub(env, service, peers, memoryStore(), 100, { endConfirmMs: 150, codexHostKind: () => 'app-server',
+        wake: queueing([]) }, { powerWatch: false, runHook: noHook, clock })
+      await hubListening(env)
+      const child = await codexChild(env, peers, 900630, server, transcript, { originator_override: 'T3 Code' }, t3)
+      await until(() => renewals(service) >= 1)
+      question(env)
+      shift = (variant === 'early' ? 29 : 31) * 60_000
+      if (variant === 'quit') t3.process.kill('SIGKILL')
+      exit(child, server)
+      await until(() => ended(service), 5_000)
+      expect(hub.sessions.get(SESSION)?.stopped ?? null).toBeNull()
+      child.socket.destroy()
+      await stopHub(hub, service, done)
+    }
+  })
+
+  it('never hands a stopped thread to a `codex exec` run of it, and that run\'s end ends nothing', async () => {
+    const env = hubEnv()
+    recordSessionNotified(SESSION, env, Date.now())
+    const transcript = rollout(env, SESSION, 'Codex Desktop')
+    const server = await standIn()
+    const exec = await standIn()
+    const service = fakeService()
+    const peers = new Map<number, PeerCredentials>()
+    const { hub, done } = startHub(env, service, peers, memoryStore(), 100, { endConfirmMs: 150,
+      codexHostKind: (pid) => pid === exec.pid ? 'exec' : 'app-server', wake: queueing([]) }, { powerWatch: false, runHook: noHook })
+    await hubListening(env)
+    const child = await codexChild(env, peers, 900640, server, transcript)
+    await until(() => renewals(service) >= 1)
+    question(env)
+    await requestHub(env, { type: 'session-end-candidate', session_id: SESSION, transcript_path: transcript, harness_pid: server.pid })
+    child.socket.destroy()
+    await until(() => hub.sessions.get(SESSION)?.stopped?.cause === 'app', 5_000)
+    const run = await codexChild(env, peers, 900641, exec, transcript, { source: 'resume' })
+    expect(run.frames[0]).toMatchObject({ type: 'refused', reason: 'place-receives-nothing', retry: false })
+    expect(await requestHub(env, { type: 'session-end-candidate', session_id: SESSION, transcript_path: transcript, harness_pid: exec.pid }))
+      .toEqual({ type: 'ok', held: true })
+    await new Promise((resolve) => setTimeout(resolve, 400))
+    expect(hub.sessions.get(SESSION)?.stopped?.cause).toBe('app')
+    expect(readSessionIncarnation(SESSION, env)?.harness_process?.pid).toBe(server.pid)
+    expect(ended(service)).toBe(false)
+    run.socket.destroy()
+    await stopHub(hub, service, done)
+  })
+
+  it('follows a terminal thread to the restarted shared server that holds it now, with nothing expired', async () => {
+    const env = hubEnv()
+    recordSessionNotified(SESSION, env, Date.now())
+    const transcript = rollout(env, SESSION, 'codex-tui')
+    const daemon = await standIn()
+    const restarted = await standIn()
+    let holders: number[] = []
+    const service = fakeService()
+    const peers = new Map<number, PeerCredentials>()
+    const { hub, done } = startHub(env, service, peers, memoryStore(), 100, { endConfirmMs: 300, codexHostKind: () => 'other', wake: queueing([]),
+      codexHostHoldsThread: (_home, _thread, pid) => holders.includes(pid) }, { powerWatch: false, runHook: noHook, codexThreadHolders: () => holders })
+    await hubListening(env)
+    const child = await codexChild(env, peers, 900660, daemon, transcript)
+    await until(() => renewals(service) >= 1)
+    question(env)
+    // `codex app-server daemon stop`: SessionEnd, the server goes; `daemon start`: the terminal reconnects and the new server loads the thread.
+    await requestHub(env, { type: 'session-end-candidate', session_id: SESSION, transcript_path: transcript, harness_pid: daemon.pid })
+    exit(child, daemon)
+    holders = [restarted.pid]
+    await new Promise((resolve) => setTimeout(resolve, 900))
+    service.release()
+    expect(ended(service)).toBe(false)
+    expect(hub.sessions.get(SESSION)?.endCandidate).toBeNull()
+    expect(hub.sessions.get(SESSION)?.reloadedAt).not.toBeNull()
+    expect(readSessionIncarnation(SESSION, env)?.harness_process?.pid).toBe(restarted.pid)
+    expect(readSessionState(SESSION, env).pending).toHaveLength(1)
+    child.socket.destroy()
+    await stopHub(hub, service, done)
+  })
+
+  it('keeps a terminal thread the machine took down (power loss) and queues its wake for the resume', async () => {
+    const env = hubEnv()
+    recordSessionNotified(SESSION, env, Date.now())
+    const transcript = rollout(env, SESSION, 'codex-tui')
+    const tui = await standIn()
+    const queued: string[] = []
+    const service = fakeService()
+    const peers = new Map<number, PeerCredentials>()
+    const options = { endConfirmMs: 150, codexHostKind: () => 'other' as const, wake: queueing(queued) }
+    const first = startHub(env, service, peers, memoryStore(), 100, options, { powerWatch: false, runHook: noHook })
+    await hubListening(env)
+    const child = await codexChild(env, peers, 900650, tui, transcript)
+    await until(() => renewals(service) >= 1)
+    question(env)
+    // The power goes: nothing reports anything.
+    await stopHub(first.hub, service, first.done)
+    child.socket.destroy()
+    tui.process.kill('SIGKILL')
+    const second = startHub(env, service, peers, memoryStore(), 100, options, { powerWatch: false, runHook: noHook, bootIdentity: () => 'after-power-loss' })
+    await until(() => second.hub.sessions.get(SESSION)?.stopped?.cause === 'machine', 5_000)
+    expect(ended(service)).toBe(false)
+    note(env, 'sm_power')
+    second.hub.inputStaged(SESSION)
+    await until(() => queued.length === 1)
+    await stopHub(second.hub, service, second.done)
+  })
+
+  // -- Claude Code in an Orca terminal pane, and forks ---------------------------
+
+  function describeHost(env: NodeJS.ProcessEnv, host: StandIn, sessionId = SESSION): void {
+    writeFileSync(path.join(claudeDescriptorDir(env), `${host.pid}.json`), JSON.stringify({
+      pid: host.pid, sessionId, cwd: '/tmp', startedAt: Date.now(), procStart: host.start, version: '2.1.304', peerProtocol: 1,
+      messagingSocketPath: `/tmp/b3hub-${host.pid}.sock`, status: 'idle',
+    }))
+  }
+
+  function claudeTranscript(env: NodeJS.ProcessEnv, sessionId: string, lines: unknown[] = [{}]): string {
+    const directory = path.join(env['CLAUDE_CONFIG_DIR']!, 'projects', '-tmp')
+    mkdirSync(directory, { recursive: true })
+    const file = path.join(directory, `${sessionId}.jsonl`)
+    writeFileSync(file, lines.map((line) => JSON.stringify(line)).join('\n') + '\n')
+    return file
+  }
+
+  async function claudeChild(env: NodeJS.ProcessEnv, peers: Map<number, PeerCredentials>, childPid: number, host: StandIn,
+    overrides: Record<string, unknown> = {}, sessionId = SESSION): Promise<FakeChild> {
+    return registered(env, sessionId, childPid, peerOf(childPid, { pid: host.pid, comm: 'claude', start: host.start }), peers,
+      { harness_pid: host.pid, harness_start: host.start, stamp_wall: Date.now(), entrypoint: 'cli', session_id: sessionId, ...overrides })
+  }
+
+  /** A Claude Code conversation in an Orca pane, with a question waiting; returns what ends it. */
+  async function paneSession(env: NodeJS.ProcessEnv, service: FakeService, peers: Map<number, PeerCredentials>, childPid: number,
+    host: StandIn): Promise<FakeChild> {
+    describeHost(env, host)
+    const child = await claudeChild(env, peers, childPid, host, { orca_pane: '1', transcript_path: claudeTranscript(env, SESSION) })
+    expect(child.frames[0]).toEqual({ type: 'registered', session_id: SESSION })
+    await until(() => renewals(service) >= 1)
+    question(env)
+    return child
+  }
+
+  const paneEnd = async (env: NodeJS.ProcessEnv, child: FakeChild, host: StandIn): Promise<void> => {
+    await requestHub(env, { type: 'session-end-candidate', session_id: SESSION, harness_pid: host.pid })
+    exit(child, host)
+  }
+
+  it('keeps a conversation whose Orca pane lost its terminal host, and expires one whose pane the User closed', async () => {
+    for (const variant of ['host-died', 'pane-closed'] as const) {
+      const env = hubEnv()
+      recordSessionNotified(SESSION, env, Date.now())
+      const terminalHost = await standIn()
+      const host = await standIn()
+      const service = fakeService()
+      const peers = new Map<number, PeerCredentials>()
+      const { hub, done } = startHub(env, service, peers, memoryStore(), 100, { endConfirmMs: 150 },
+        { powerWatch: false, claudeDesktop: null, runHook: noHook, orcaTerminalHostOf: () => ({ pid: terminalHost.pid, start: terminalHost.start }) })
+      await hubListening(env)
+      const child = await paneSession(env, service, peers, 900700, host)
+      expect((status(env)['adoption'] as Record<string, unknown>)['terminal_host']).toEqual({ pid: terminalHost.pid, start: terminalHost.start })
+      if (variant === 'host-died') terminalHost.process.kill('SIGKILL')
+      await paneEnd(env, child, host)
+      if (variant === 'host-died') {
+        await until(() => hub.sessions.get(SESSION)?.stopped?.cause === 'app', 5_000)
+        expect(hub.sessions.get(SESSION)?.stopped?.watch).toBeNull()
+        await new Promise((resolve) => setTimeout(resolve, 400))
+        expect(ended(service)).toBe(false)
+        // Orca resumes it in the same pane when the User opens the tab.
+        const resumed = await standIn()
+        describeHost(env, resumed)
+        const back = await claudeChild(env, peers, 900701, resumed, { orca_pane: '1', source: 'resume' })
+        expect(back.frames[0]).toEqual({ type: 'registered', session_id: SESSION })
+        expect(hub.sessions.get(SESSION)?.stopped).toBeNull()
+        back.socket.destroy()
+      } else {
+        await until(() => ended(service), 5_000)
+        expect(hub.sessions.get(SESSION)).toBeUndefined()
+      }
+      child.socket.destroy()
+      await stopHub(hub, service, done)
+    }
+  })
+
+  it('expires a stopped conversation its `/branch` fork continues (moved), and leaves a running one its fork branched from', async () => {
+    for (const parentState of ['stopped', 'running'] as const) {
+      const env = hubEnv()
+      recordSessionNotified(SESSION, env, Date.now())
+      const terminalHost = await standIn()
+      const host = await standIn()
+      const service = fakeService()
+      const peers = new Map<number, PeerCredentials>()
+      const { hub, done } = startHub(env, service, peers, memoryStore(), 100, { endConfirmMs: 150 },
+        { powerWatch: false, claudeDesktop: null, runHook: noHook, orcaTerminalHostOf: () => ({ pid: terminalHost.pid, start: terminalHost.start }) })
+      await hubListening(env)
+      const child = await paneSession(env, service, peers, 900710, host)
+      if (parentState === 'stopped') {
+        terminalHost.process.kill('SIGKILL')
+        await paneEnd(env, child, host)
+        await until(() => hub.sessions.get(SESSION)?.stopped?.cause === 'app', 5_000)
+      }
+      // The fork: a new id whose copied lines name the parent.
+      const forkHost = await standIn()
+      describeHost(env, forkHost, OTHER)
+      const fork = await claudeChild(env, peers, 900711, forkHost, { source: 'fork',
+        transcript_path: claudeTranscript(env, OTHER, [{ type: 'mode', sessionId: OTHER }, { type: 'user', sessionId: OTHER, forkedFrom: { sessionId: SESSION, messageUuid: 'u1' } }]) },
+      OTHER)
+      expect(fork.frames[0]).toEqual({ type: 'registered', session_id: OTHER })
+      if (parentState === 'stopped') {
+        await until(() => ended(service), 5_000)
+        await until(() => readSessionEndMarker(SESSION, env) !== null)
+      } else {
+        await new Promise((resolve) => setTimeout(resolve, 400))
+        service.release()
+        expect(ended(service)).toBe(false)
+        expect(hub.sessions.get(SESSION)?.stopped ?? null).toBeNull()
+        expect(readSessionState(SESSION, env).pending).toHaveLength(1)
+      }
+      fork.socket.destroy()
+      child.socket.destroy()
+      await stopHub(hub, service, done)
+    }
+  })
+
+  it('expires a stopped Codex thread its fork (`forked_from_id`) continues', async () => {
+    const env = hubEnv()
+    recordSessionNotified(SESSION, env, Date.now())
+    const transcript = rollout(env, SESSION, 'Codex Desktop')
+    const server = await standIn()
+    const service = fakeService()
+    const peers = new Map<number, PeerCredentials>()
+    const { hub, done } = startHub(env, service, peers, memoryStore(), 100, { endConfirmMs: 150, codexHostKind: () => 'app-server',
+      wake: queueing([]) }, { powerWatch: false, runHook: noHook })
+    await hubListening(env)
+    const child = await codexChild(env, peers, 900720, server, transcript)
+    await until(() => renewals(service) >= 1)
+    question(env)
+    await requestHub(env, { type: 'session-end-candidate', session_id: SESSION, transcript_path: transcript, harness_pid: server.pid })
+    child.socket.destroy()
+    await until(() => hub.sessions.get(SESSION)?.stopped?.cause === 'app', 5_000)
+    const forkHost = await standIn()
+    const fork = await codexChild(env, peers, 900721, forkHost, rollout(env, OTHER, 'codex-tui', SESSION), { source: 'startup' }, undefined, OTHER)
+    expect(fork.frames[0]).toEqual({ type: 'registered', session_id: OTHER })
+    await until(() => ended(service), 5_000)
+    fork.socket.destroy()
+    await stopHub(hub, service, done)
   })
 })

@@ -2,9 +2,9 @@ import { mkdtempSync, rmSync } from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
-import { claudeRunElsewhere } from './commands-hook-run.js'
+import { claudeRunElsewhere, codexRunElsewhere } from './commands-hook-run.js'
 import { beginSessionIncarnation, lifecycleStamp } from './hook-session-state.js'
-import { claudePlaceOf, claudePlaceSignals, placeReceives } from './session-place.js'
+import { claudePlaceOf, claudePlaceSignals, codexPlaceOf, placeReceives } from './session-place.js'
 
 const roots: string[] = []
 afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }) })
@@ -42,6 +42,22 @@ describe('Claude Code place', () => {
   })
 })
 
+describe('Codex place', () => {
+  it('names each host\'s place: the host decides, not where the thread was born', () => {
+    expect(codexPlaceOf({ hostKind: 'other' })).toBe('terminal')
+    expect(codexPlaceOf({ hostKind: 'other', originator: 'Codex Desktop' })).toBe('terminal')
+    expect(codexPlaceOf({ hostKind: 'app-server', originator: 'Codex Desktop' })).toBe('codex-app')
+    expect(codexPlaceOf({ hostKind: 'app-server', originator: 'codex-tui' })).toBe('codex-app')
+    expect(codexPlaceOf({ hostKind: 'app-server', originator: 'codex_vscode' })).toBe('codex-ide')
+    expect(codexPlaceOf({ hostKind: 'app-server', originatorOverride: 'T3 Code' })).toBe('t3')
+    expect(codexPlaceOf({ hostKind: 'app-server', orcaStructured: true })).toBe('orca-chat')
+    expect(codexPlaceOf({ hostKind: 'exec' })).toBe('headless')
+    expect(codexPlaceOf({ hostKind: 'unknown' })).toBe('unknown')
+    expect(placeReceives('headless')).toBe(false)
+    for (const place of ['terminal', 'codex-app', 'codex-ide', 't3'] as const) expect(placeReceives(place)).toBe(true)
+  })
+})
+
 describe('a prompt in a scripted run of a conversation another process hosts', () => {
   const SESSION = '11111111-2222-3333-4444-555555555555'
   function env(entrypoint?: string): NodeJS.ProcessEnv {
@@ -60,5 +76,15 @@ describe('a prompt in a scripted run of a conversation another process hosts', (
     expect(claudeRunElsewhere(SESSION, env('sdk-cli'), 4242)).toBe(false)
     expect(claudeRunElsewhere(SESSION, env('cli'), 5151)).toBe(false)
     expect(claudeRunElsewhere(SESSION, env(), 5151)).toBe(false)
+  })
+
+  it('hands a `codex exec` run of a thread another process hosts nothing, and asks the process table only then', () => {
+    const asked: number[] = []
+    const kind = (result: string) => (pid: number): string => { asked.push(pid); return result }
+    expect(codexRunElsewhere(SESSION, env(), 5151, kind('exec'))).toBe(true)
+    expect(codexRunElsewhere(SESSION, env(), 5151, kind('other'))).toBe(false)
+    expect(codexRunElsewhere(SESSION, env(), 4242, kind('exec'))).toBe(false)
+    expect(codexRunElsewhere(SESSION, env(), undefined, kind('exec'))).toBe(false)
+    expect(asked).toEqual([5151, 5151])
   })
 })

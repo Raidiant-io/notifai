@@ -36,9 +36,8 @@ update in.
 After any update, including one the User ran, a hub still running the earlier
 build hands its sessions to the new one at once. A hub from 13.1.0-beta.5 or
 earlier is replaced at the next hook, unless it is in the middle of something
-the new hub cannot take over: `answer-delivering`, `wake-writing`,
-`question-unattended`, or `session-dormant` (a Codex conversation whose rollout
-was never recorded). `update --check --json` reports such a hub as
+the new hub cannot take over: `answer-delivering`, `wake-writing`, or
+`question-unattended`. `update --check --json` reports such a hub as
 `hub_handover` (its version and `waiting_for`); it is `null` otherwise. It needs
 no action and no restart.
 

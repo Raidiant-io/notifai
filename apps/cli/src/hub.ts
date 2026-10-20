@@ -27,13 +27,15 @@ import { createClient, type ApiClient } from './client.js'
 import { codexInputObserver, refreshCodexInputActivity } from './codex-input-lifecycle.js'
 import { connectCodexQueue } from './codex-queue-control.js'
 import {
-  classifyCodexSessionEnd,
-  codexDormantSurface,
+  codexAppSurface,
   codexHostHoldsThread,
   codexHostKind,
-  codexTranscriptState,
+  codexThreadHeld,
+  codexThreadHolders,
+  locateCodexRollout,
+  readCodexSessionMeta,
   readCodexThreadOriginator,
-  type CodexEndVerdict,
+  type RolloutPlace,
 } from './codex-session-end.js'
 import { readNativeTurnSnapshot } from './codex-native-turn.js'
 import { inspectCodexQueue, systemCodexWakeAdapters, type CodexWakeAdapters } from './codex-wake.js'
@@ -66,7 +68,8 @@ import {
   type AutomaticUpdateHost,
   type WaitingReason,
 } from './automatic-update.js'
-import { adoptionCandidates, childWatching, parseAdoptionRecord, recordedRolloutArchived, stoppedCandidates, type AdoptionRecord } from './hub-adoption.js'
+import { adoptionCandidates, childWatching, parseAdoptionRecord, recordedRolloutArchived, stoppedCandidates, type AdoptionRecord,
+  type StoppedRecord, type StoppedWatch } from './hub-adoption.js'
 import { hubEnvironment } from './hub-client.js'
 import { readActiveBuild } from './hub-handover.js'
 import type { ActivationPlan } from './activation-plan.js'
@@ -126,15 +129,21 @@ import {
 } from './session-inputs.js'
 import { compareVersions } from './version.js'
 import { QUESTION_WAITER_CEILING_SECONDS } from './question-timing.js'
-import { claudePlaceOf, placeReceives, type ClaudePlace } from './session-place.js'
+import { claudePlaceOf, codexPlaceOf, orcaTerminalHostOf, parentProcessOf, placeReceives, type SessionPlace } from './session-place.js'
 import {
   classifyClaudeEnd,
+  classifyCodexEnd,
   claudeDesktopPauseLogged,
   claudeDesktopPaths,
+  claudeForkParent,
   claudeTranscriptPresent,
   machineDownEarlierBoot,
   readClaudeDesktopRecord,
+  type AppStopReason,
+  type ClaudeEndEvidence,
   type CloseVerdict,
+  type CodexEndEvidence,
+  type Recorded,
 } from './session-close-classifier.js'
 import { systemdStopping, systemPowerWatch, type PowerEvent, type PowerWatch, type PowerWatchFactory } from './power-watch.js'
 
@@ -177,8 +186,10 @@ const SHELLS: ReadonlySet<string> = new Set(['sh', 'dash', 'bash', 'zsh', 'ksh',
  * closed, and its questions expire.
  */
 export const END_CONFIRM_MS = 10_000
-/** A dormant conversation keeps the hub alive at most one answer window. */
-const DORMANT_CEILING_MS = QUESTION_WAITER_CEILING_SECONDS * 1000
+/** A stopped conversation keeps the hub alive at most one answer window. */
+const STOPPED_CEILING_MS = QUESTION_WAITER_CEILING_SECONDS * 1000
+/** A fork's transcript may not name its parent yet at its first hook: looked at again at this many later hooks. */
+const FORK_CHECKS = 5
 /**
  * A Session Note staged for a stopped conversation waits this long from the
  * stop (Proposal). Before the service holds notes for stopped sessions, only a
@@ -235,6 +246,14 @@ export interface HubOptions {
   codexHostKind?: typeof codexHostKind
   /** Test seam: whether a process holds a Codex thread's writer lock; production asks `lsof` or `/proc`. */
   codexHostHoldsThread?: (codexHome: string | null, threadId: string, pid: number) => boolean
+  /** Test seam: whether any process has a Codex thread loaded; production asks `lsof` or `/proc`. */
+  codexThreadHeld?: (codexHome: string | null, threadId: string) => boolean | 'unknown'
+  /** Test seam: which processes have a Codex thread loaded; production asks `lsof` or `/proc`. */
+  codexThreadHolders?: (codexHome: string | null, threadId: string) => number[] | 'unknown'
+  /** Test seam: the Orca terminal host above a harness in an Orca pane; production walks the process table. */
+  orcaTerminalHostOf?: (harnessPid: number) => ProcessIdentity | null
+  /** Test seam: the process that started another; production asks `ps`. */
+  parentProcessOf?: (pid: number) => ProcessIdentity | null
   /** Test seam: the build and installation this hub runs; production reads its own managed build once. */
   ingressIdentity?: () => IngressIdentity | null
   /**
@@ -330,7 +349,9 @@ type Probe =
 
 type EndReason = 'harness-gone' | 'session-replaced' | 'session-end-hook' | 'session-archived' |
   /** A stopped conversation: every window it waited for ended, it was deleted or archived, or its app quit. */
-  'window-over' | 'session-deleted' | 'app-quit'
+  'window-over' | 'session-deleted' | 'app-quit' |
+  /** It continued as a fork with a new id; until the service can re-home its items there, they expire. */
+  'moved'
 
 /** Why a conversation stopped without the User closing it: its app paused it, or the machine went down. */
 export type StopCause = 'app' | 'machine'
@@ -351,10 +372,12 @@ interface Registration {
   codexHome: string | null
   /** Linux: the harness's start in kernel ticks, which Claude's descriptor carries and no clock step moves. */
   harnessTicks: string | null
-  /** Where a Claude Code conversation runs (see `session-place.ts`). */
-  place: ClaudePlace
-  /** The process that started the harness (the desktop app's main process), when the peer check saw it. */
+  /** Where the conversation runs (see `session-place.ts`). */
+  place: SessionPlace
+  /** The process that started the harness (the desktop app's main process, T3 Code's server, Orca's supervisor), when known. */
   hostApp: ProcessIdentity | null
+  /** An Orca pane's terminal host, when the harness runs in one. */
+  terminalHost: ProcessIdentity | null
 }
 
 /**
@@ -411,24 +434,20 @@ class HubSession implements AttendedSession {
   /** An end signal waiting for the end confirmation (see `END_CONFIRM_MS`). */
   endCandidate: { child: ChildLink | null; transcriptPath: string | null; timer: ReturnType<typeof setTimeout>; reason: EndReason;
     since: number } | null = null
-  /**
-   * Monotonic time Codex unloaded this conversation while its app still
-   * lists it (dormant-open): no lease renewal, no writes, and the answer
-   * waits in the conversation until the User opens it.
-   */
-  dormantSince: number | null = null
-  /** The same moment on the wall clock, for the next hub (see `hub-adoption.ts`). */
-  dormantSinceWall: number | null = null
   /** The rollout existed at some point; only then does its absence mean an archive or delete. */
   transcriptSeen = false
   /**
-   * A Claude Code conversation stopped by its app or by the machine, not
-   * closed by the User (wall-clock milliseconds): nothing runs it, its
-   * questions stay open for their windows, and what is answered meanwhile
-   * reaches it when it comes back in place. The lease is not renewed (the
-   * session shows as out of reach) but its fencing identity is kept.
+   * A conversation stopped by its app or by the machine, not closed by the
+   * User (wall-clock milliseconds): nothing runs it, its questions stay open
+   * for their windows, and what is answered meanwhile reaches it when it
+   * comes back in place. The lease is not renewed (the session shows as out
+   * of reach) but its fencing identity is kept.
    */
-  stopped: { since: number; cause: StopCause; boot: string | null } | null = null
+  stopped: StoppedRecord | null = null
+  /** Wall-clock milliseconds of the last hook the hub saw for this conversation. */
+  lastActivity: number
+  /** Later hooks at which a fork's parent is looked for again; 0 when not a fork. */
+  forkChecks = 0
 
   constructor(
     readonly hub: Hub,
@@ -441,6 +460,7 @@ class HubSession implements AttendedSession {
     public registration: Registration,
   ) {
     this.lease = new SessionLease(record.incarnation, (expected) => this.rotate(expected))
+    this.lastActivity = registration.stamp.wall
     this.observeCodex()
   }
 
@@ -518,12 +538,19 @@ class HubSession implements AttendedSession {
       owner.pid === this.harnessProcess.pid && normalizeProcessStart(owner.start) === normalizeProcessStart(this.harnessProcess.start)
   }
 
+  /** Where the Codex rollout this session writes is now, found by its id. */
+  rollout(): RolloutPlace {
+    const home = this.registration.codexHome ?? this.env['CODEX_HOME'] ?? null
+    const place = locateCodexRollout(home, this.id, this.registration.transcriptPath).place
+    if (place === 'sessions') this.transcriptSeen = true
+    return place
+  }
+
   /** The Codex rollout this session writes was archived or deleted (E5). */
   transcriptGone(): boolean {
-    if (this.harness !== 'codex') return false
-    const state = codexTranscriptState(this.registration.transcriptPath)
-    if (state === 'present') this.transcriptSeen = true
-    return state === 'missing' && this.transcriptSeen
+    if (this.harness !== 'codex' || this.registration.transcriptPath === null) return false
+    const place = this.rollout()
+    return (place === 'missing' || place === 'archived') && this.transcriptSeen
   }
 
   /**
@@ -534,15 +561,6 @@ class HubSession implements AttendedSession {
     if (this.stopped === null) return false
     const lease = this.lease.generation === null ? null : { incarnation: this.lease.incarnation, generation: this.lease.generation }
     return owesWhileStopped(this.id, this.env, this.stopped.since, lease, wall)
-  }
-
-  /** Something still waits on this dormant conversation: a question, an answer, a note. */
-  dormantOwes(now: number): boolean {
-    if (this.dormantSince === null || now - this.dormantSince >= DORMANT_CEILING_MS) return false
-    const state = readSessionState(this.id, this.env)
-    if (pendingList(state).length > 0 || state.accepted !== undefined || (state.waiting_answers?.length ?? 0) > 0) return true
-    const lease = this.lease.generation === null ? null : { incarnation: this.lease.incarnation, generation: this.lease.generation }
-    return hasSessionInputs(this.id, this.env, lease)
   }
 
   /** Asked of the process table when no kernel watch is connected: ticks on Linux, the start text elsewhere. */
@@ -609,8 +627,6 @@ class HubSession implements AttendedSession {
     if (this.stopped !== null) return false
     const probe = this.probe()
     if (probe.state === 'ended') { this.hub.closing(this, probe.reason); return false }
-    // Dormant-open: Notifai cannot reach the conversation until it loads again.
-    if (this.dormantSince !== null) return false
     if (probe.state === 'uncertain') {
       this.lease.setPhase('uncertain', probe.reason)
       this.writeStatus()
@@ -657,6 +673,8 @@ class HubSession implements AttendedSession {
   /** A hook boundary passed (prompt, turn end, interrupt): read activity again. */
   hinted(): void {
     if (this.stopped !== null) return
+    this.lastActivity = Math.max(this.lastActivity, this.hub.clock.wall())
+    if (this.forkChecks > 0) this.hub.checkFork(this)
     if (this.harness === 'codex') refreshCodexInputActivity(this.id, this.env, this.record.key,
       this.registration.transcriptPath ?? undefined, (owner) => this.harnessAlive(owner))
     if (this.lease.phase === 'withdrawn') {
@@ -679,8 +697,9 @@ class HubSession implements AttendedSession {
   /** Staged input that needs a wake: cut the held exchange and hand it in. */
   checkInput(): void {
     // A hub handing over starts no new write; the next hub hands the input in.
-    if (this.hub.handingOver || this.stopped !== null) return
-    if (this.dormantSince !== null) { void this.hub.dormantWake(this); return }
+    if (this.hub.handingOver) return
+    // Stopped: a Codex thread gets one wake in its own queue, run when it loads again.
+    if (this.stopped !== null) { if (this.harness === 'codex') void this.hub.stoppedWake(this); return }
     if (!this.notified || this.lease.generation === null || this.hub.clock.monotonic() < this.lease.pausedUntil) return
     const lease: DeliveryLease = { incarnation: this.lease.incarnation, generation: this.lease.generation }
     let pending = false
@@ -796,11 +815,12 @@ class HubSession implements AttendedSession {
       transcript_path: registration.transcriptPath,
       claude_config_dir: registration.claudeConfigDir,
       codex_home: registration.codexHome,
-      dormant_since: this.dormantSinceWall,
+      last_activity_at: this.lastActivity,
       transcript_seen: this.transcriptSeen,
       end_candidate_since: this.endCandidate?.since ?? null,
       place: registration.place,
       host_app: registration.hostApp,
+      terminal_host: registration.terminalHost,
       stopped: this.stopped,
     }
   }
@@ -820,8 +840,9 @@ class HubSession implements AttendedSession {
   }
 
   writeStatus(force = false): void {
+    // The last activity counts by the minute: the next hub needs it only for a 30-minute idle stop.
     const phase = `${this.lease.phase}|${this.lease.reason}|${this.lease.generation}|${this.activityValue}|${this.writerAvailable()}|` +
-      `${this.dormantSinceWall}|${this.transcriptSeen}|${this.endCandidate?.since ?? null}|${this.harnessProcess.pid}|${this.stopped?.cause ?? null}`
+      `${Math.floor(this.lastActivity / 60_000)}|${this.transcriptSeen}|${this.endCandidate?.since ?? null}|${this.harnessProcess.pid}|${this.stopped?.cause ?? null}`
     if (!force && phase === this.lastPhaseWritten) return
     this.lastPhaseWritten = phase
     try {
@@ -850,7 +871,7 @@ class HubSession implements AttendedSession {
  * (24 h). Never longer than one answer window from the stop.
  */
 function owesWhileStopped(sessionId: string, env: NodeJS.ProcessEnv, since: number, lease: DeliveryLease | null, wall: number): boolean {
-  if (wall - since >= DORMANT_CEILING_MS) return false
+  if (wall - since >= STOPPED_CEILING_MS) return false
   const state = readSessionState(sessionId, env)
   const open = (deadline: number | undefined): boolean => deadline === undefined || deadline > wall
   // Asked of the User (a request exists, or its submission began) and not past its window.
@@ -860,6 +881,24 @@ function owesWhileStopped(sessionId: string, env: NodeJS.ProcessEnv, since: numb
   }
   if (wall - since >= STOPPED_NOTE_HOLD_MS) return false
   return lease !== null && hasSessionInputs(sessionId, env, lease)
+}
+
+/** A recorded process's liveness now; null when none was recorded or it cannot be told. */
+function recordedLiveness(identity: ProcessIdentity | null): Recorded {
+  if (identity === null) return null
+  const liveness = processIdentityLiveness(identity)
+  return liveness === 'unknown' ? null : liveness
+}
+
+/**
+ * Which process quitting, once the app stopped a conversation, means the User
+ * quit that app: the app-server itself for the Codex app and IDE extension,
+ * the app that started the harness for the Claude desktop app, Orca chats and
+ * T3 Code. Nothing for an Orca pane, whose terminal host is already gone.
+ */
+function watchedAfter(reason: AppStopReason): StoppedWatch {
+  if (reason === 'app-unloaded' || reason === 'ide-unloaded') return 'harness'
+  return reason === 'terminal-host-died' ? null : 'host-app'
 }
 
 /** A stopped conversation the start sweep or a previous hub recorded; nothing a scripted run may take over. */
@@ -1200,7 +1239,7 @@ export class Hub {
     const settle = async (done: () => boolean): Promise<void> => {
       while (!done() && !this.exiting && this.clock.monotonic() < deadline) await new Promise((resolve) => setTimeout(resolve, 50))
     }
-    await settle(() => this.ingressInFlight === 0 && this.handIns === 0 && this.localEnds.size === 0 && this.dormantWaking.size === 0 &&
+    await settle(() => this.ingressInFlight === 0 && this.handIns === 0 && this.localEnds.size === 0 && this.stoppedWaking.size === 0 &&
       ![...this.links].some((link) => link.writesInFlight > 0))
     // The answer owners stop at their next check, without consuming, closing
     // or retiring anything; their reply polls end now.
@@ -1648,11 +1687,13 @@ export class Hub {
       inboxToken: frame['inbox_token'] === 'present', claudeConfigDir: absolute('claude_config_dir'), codexHome: absolute('codex_home'),
       harnessTicks: /^\d{1,30}$/.test(text('harness_ticks', 32) ?? '') ? text('harness_ticks', 32) : null,
       // A child from an earlier build reports no entrypoint: interactive, as before.
+      // A Codex thread's place depends on its host, read once the peer is verified.
       place: harness === 'claude-code'
         ? claudePlaceOf({ entrypoint: text('entrypoint', 64), sessionKind: text('session_kind', 32),
           orcaStructured: frame['orca_structured'] === '1' })
         : 'unreported',
       hostApp: null,
+      terminalHost: null,
     }
   }
 
@@ -1689,6 +1730,7 @@ export class Hub {
     if (owner === peer.parent && peer.grandparent !== undefined && peer.grandparent !== null) {
       registration.hostApp = { pid: peer.grandparent.pid, start: peer.grandparent.start }
     }
+    this.placeOf(registration, frame, owner.pid)
     const env = this.sessionEnv(registration)
     if (registration.harness === 'claude-code') {
       // Claude Code publishes its descriptor before it has every field (a
@@ -1723,13 +1765,11 @@ export class Hub {
         existing.child = link
         existing.registration = registration
         existing.reloadedAt = null
-        if (existing.endCandidate !== null || existing.dormantSince !== null) {
+        if (existing.endCandidate !== null) {
           // The User opened the conversation again (SessionStart resume): it
           // was never closed, and what waited for it is handed in now.
-          if (existing.endCandidate !== null) clearTimeout(existing.endCandidate.timer)
+          clearTimeout(existing.endCandidate.timer)
           existing.endCandidate = null
-          existing.dormantSince = null
-          existing.dormantSinceWall = null
           existing.writeStatus(true)
           this.logger.info('hub.session', { event: 'reopened', session: existing.id })
         }
@@ -1747,19 +1787,12 @@ export class Hub {
         this.touch()
         return existing
       }
-      if (existing.dormantSince !== null) {
-        // A Codex app conversation the app unloaded, now hosted by another
-        // process: the earlier one ends, as before.
-        this.endSession(existing, 'harness-gone')
-        if (this.sessions.get(registration.sessionId) === existing) return 'session-ending'
-      } else {
-        // A scripted run of the same conversation never becomes a place it is in.
-        if (!placeReceives(registration.place)) return 'place-receives-nothing'
-        // Another process hosts this same conversation: a second place it is
-        // open in, or the place it continues in after a handoff.
-        this.addWriter(existing, { child: link, harnessProcess: registration.harnessProcess, registration, env })
-        return existing
-      }
+      // A scripted run of the same conversation never becomes a place it is in.
+      if (!placeReceives(registration.place)) return 'place-receives-nothing'
+      // Another process hosts this same conversation: a second place it is
+      // open in, or the place it continues in after a handoff.
+      this.addWriter(existing, { child: link, harnessProcess: registration.harnessProcess, registration, env })
+      return existing
     }
     // A stopped conversation this hub has not taken back yet: never into a scripted run.
     if (!placeReceives(registration.place) && stoppedOnDisk(registration.sessionId, env)) return 'place-receives-nothing'
@@ -1792,9 +1825,59 @@ export class Hub {
     if (pendingList(state).length > 0 || state.accepted !== undefined) {
       this.settle(session.id, session.harness, registration.cwd, 'settlement')
     }
+    // A fork names the conversation it continues: Claude Code in its copied
+    // lines (written by the first prompt at the latest), Codex in its rollout's first line.
+    if (registration.harness === 'claude-code' ? registration.source === 'fork' : starting) {
+      session.forkChecks = registration.harness === 'claude-code' ? FORK_CHECKS : 1
+      this.checkFork(session)
+    }
     this.touch()
     this.driver.poke()
     return session
+  }
+
+  /**
+   * Where a Codex thread runs (its host decides), the app that started an
+   * app-server (T3 Code's server, Orca's supervisor), and an Orca pane's
+   * terminal host.
+   */
+  private placeOf(registration: Registration, frame: Record<string, unknown>, harnessPid: number): void {
+    if (registration.harness === 'codex') {
+      const override = frame['originator_override']
+      registration.place = codexPlaceOf({ hostKind: (this.options.codexHostKind ?? codexHostKind)(harnessPid),
+        originatorOverride: typeof override === 'string' ? override : null, orcaStructured: frame['orca_structured'] === '1',
+        originator: readCodexThreadOriginator(registration.transcriptPath) })
+    }
+    if ((registration.place === 't3' || registration.place === 'orca-chat') && registration.hostApp === null) {
+      registration.hostApp = (this.options.parentProcessOf ?? parentProcessOf)(harnessPid)
+    }
+    if (frame['orca_pane'] === '1' && (registration.place === 'terminal' || registration.place === 'unreported')) {
+      registration.terminalHost = (this.options.orcaTerminalHostOf ?? orcaTerminalHostOf)(harnessPid)
+    }
+  }
+
+  /**
+   * A new conversation that is a fork of one this hub attends. When that one
+   * is stopped, or ending with nowhere left to run, it continues only in the
+   * fork: it has moved. Until the service can re-home its questions to the
+   * fork, they expire as for a close. A fork of a conversation still open
+   * somewhere is a new conversation beside it, and changes nothing.
+   */
+  checkFork(fork: HubSession): void {
+    if (fork.forkChecks <= 0) return
+    fork.forkChecks -= 1
+    const parentId = fork.harness === 'claude-code' ? claudeForkParent(fork.registration.transcriptPath, fork.id)
+      : readCodexSessionMeta(fork.registration.transcriptPath)?.forkedFrom ?? null
+    if (parentId === null) return
+    fork.forkChecks = 0
+    const parent = this.sessions.get(parentId)
+    if (parent === undefined || parent === fork || parent.ending !== null) return
+    const primary = parent.primary()
+    const stillOpen = parent.stopped === null && (parent.endCandidate === null || (primary !== null && parent.hosts(primary)) ||
+      parent.nextPrimary() !== null)
+    if (stillOpen) return
+    this.logger.info('hub.session', { event: 'moved', session: parent.id, to: fork.id, from_state: parent.stopped !== null ? 'stopped' : 'ending' })
+    this.endSession(parent, 'moved')
   }
 
   /**
@@ -1816,15 +1899,19 @@ export class Hub {
 
   /**
    * A stopped conversation opened again: in its place (a resume after a
-   * reboot, the desktop app reopening it) or in another interactive one (a
+   * reboot, the desktop app reopening it, the Codex app loading it again, the
+   * next send in an Orca chat or T3 thread) or in another interactive one (a
    * move follows the User). It is attended from this process on, and what
-   * waited for it is handed in here. A scripted run receives nothing.
+   * waited for it is handed in here: a Codex thread runs the wake already in
+   * its queue. A scripted run receives nothing.
    */
   private resumeStopped(session: HubSession, writer: Writer): HubSession | string {
     if (!placeReceives(writer.registration.place)) return 'place-receives-nothing'
     const from = session.stopped!
     session.stopped = null
     session.standbys = []
+    // The same process may have run SessionEnd when it stopped (a Codex app-server unloading it).
+    session.left.delete(writer.harnessProcess.pid)
     if (session.child !== null && !session.child.closed) this.letGo(session, { child: session.child, harnessProcess: session.harnessProcess,
       registration: session.registration, env: session.env })
     session.child = null
@@ -1940,8 +2027,7 @@ export class Hub {
     if (session.child?.ended === true || session.stopped !== null) return
     const probe = session.probe()
     if (probe.state === 'ended') { this.closing(session, probe.reason); return }
-    // Codex unloaded a conversation its app still lists: its child is gone, its host is not.
-    if (session.dormantSince !== null || session.endCandidate !== null) return
+    if (session.endCandidate !== null) return
     // A close nobody reported: the kernel watch went with the child, so ask
     // once (this is rare) whether that exact harness process still runs.
     if (session.harnessGone()) {
@@ -1963,7 +2049,7 @@ export class Hub {
     // Codex stops the child when it ends or unloads a session; the Codex app
     // does not always run SessionEnd for an unload. For an app or IDE
     // conversation, decide as SessionEnd would have.
-    if (session.harness === 'codex' && codexDormantSurface(readCodexThreadOriginator(session.registration.transcriptPath)) !== null) {
+    if (session.harness === 'codex' && codexAppSurface(readCodexThreadOriginator(session.registration.transcriptPath)) !== null) {
       this.holdEnd(session, 'session-end-hook', session.registration.transcriptPath)
     }
   }
@@ -2036,15 +2122,16 @@ export class Hub {
     if (session.ending !== null) return
     session.ending = reason
     if (session.endCandidate !== null) { clearTimeout(session.endCandidate.timer); session.endCandidate = null }
+    // A stopped thread is loaded nowhere this hub can reach without a control
+    // connection to a User's server: its wake is only detached.
+    const wasStopped = session.stopped !== null
     session.stopped = null
-    session.dormantSince = null
-    session.dormantSinceWall = null
     session.reloadedAt = null
     const ended = !endsIncarnation(readSessionEndMarker(session.id, session.env), session.record)
     this.trackLocalEnd((async () => {
       // Best effort, never relied on: take back a wake Notifai queued that
       // the closed thread has not shown. The prompt hook blocks one that stays.
-      if (session.harness === 'codex') await this.withdrawQueuedWakes(session.id, session.env)
+      if (session.harness === 'codex') await this.withdrawQueuedWakes(session.id, session.env, !wasStopped)
       if (ended) {
         const { handleSessionEnd } = await import('./hook-lifecycle.js')
         try {
@@ -2119,7 +2206,7 @@ export class Hub {
       const verdict = this.classifyClaudeStop(session, candidate.since)
       this.logger.info('hub.session', { event: 'end-classified', session: session.id, verdict: verdict.cause === 'app' ? 'stopped' : 'closed',
         reason: verdict.reason, place: session.registration.place })
-      if (verdict.cause === 'app') { this.stopSession(session, 'app', verdict.reason); return }
+      if (verdict.cause === 'app') { this.stopSession(session, 'app', verdict.reason, undefined, watchedAfter(verdict.reason)); return }
       this.endSession(session, candidate.reason)
       return
     }
@@ -2131,30 +2218,47 @@ export class Hub {
       kept('reloaded')
       return
     }
-    if (this.holdForShutdown(session, candidate)) return
-    const transcriptPath = candidate.transcriptPath ?? session.registration.transcriptPath
-    const evidence = {
-      transcript: codexTranscriptState(transcriptPath) === 'missing' || session.transcriptGone() ? 'missing' as const : 'present' as const,
-      host: session.harnessGone() ? 'gone' as const : 'alive' as const,
-      // No rollout, no originator: nothing then shows the app still lists it.
-      originator: readCodexThreadOriginator(transcriptPath),
-      hostKind: (this.options.codexHostKind ?? codexHostKind)(session.harnessProcess.pid),
+    // Another process holds it now (the shared server restarted and its
+    // terminal reconnected): the conversation runs there, and its next prompt
+    // brings a child back. Nothing is woken meanwhile.
+    const holder = this.codexHolderElsewhere(session)
+    if (holder !== null) {
+      if (primary !== null) this.letGo(session, primary)
+      session.child = null
+      session.harnessProcess = holder
+      session.registration = { ...session.registration, harnessProcess: holder, harnessTicks: null }
+      session.rehost(holder, session.registration.boot)
+      session.reloadedAt = this.clock.monotonic()
+      session.writeStatus(true)
+      kept('hosted-elsewhere')
+      return
     }
-    const verdict: CodexEndVerdict = classifyCodexSessionEnd(evidence)
-    this.logger.info('hub.session', { event: 'end-classified', session: session.id, verdict: verdict.state,
-      ...(verdict.state === 'ended' ? { reason: verdict.reason } : { surface: verdict.surface }),
-      originator: evidence.originator, host: evidence.host, host_kind: evidence.hostKind, transcript: evidence.transcript })
-    if (verdict.state === 'ended') { this.endSession(session, verdict.reason); return }
-    const child = session.child
-    session.dormantSince = this.clock.monotonic()
-    session.dormantSinceWall = this.clock.wall()
-    if (child !== null && !child.closed) child.send({ type: 'bye' })
-    session.lease.setPhase('uncertain', 'dormant-open')
-    // Durable before anything else: the next hub adopts it from this record.
-    session.writeStatus(true)
-    this.driver.poke()
-    void this.dormantWake(session)
-    this.touch()
+    if (this.holdForShutdown(session, candidate)) return
+    const { verdict, evidence } = this.classifyCodexStop(session, candidate)
+    this.logger.info('hub.session', { event: 'end-classified', session: session.id, verdict: verdict.cause === 'app' ? 'stopped' : 'closed',
+      reason: verdict.reason, place: evidence.place, originator: evidence.originator, host: evidence.host, host_kind: evidence.hostKind,
+      rollout: evidence.rollout })
+    if (verdict.cause === 'app') { this.stopSession(session, 'app', verdict.reason, undefined, watchedAfter(verdict.reason)); return }
+    this.endSession(session, verdict.reason === 'archived' ? 'session-archived' : verdict.reason === 'deleted' ? 'session-deleted'
+      : verdict.reason === 'harness-gone' ? 'harness-gone' : candidate.reason)
+  }
+
+  /** Who ended a Codex conversation the confirmation did not bring back (see `session-close-classifier.ts`). */
+  private classifyCodexStop(session: HubSession, candidate: NonNullable<HubSession['endCandidate']>): { verdict: CloseVerdict; evidence: CodexEndEvidence } {
+    const transcriptPath = candidate.transcriptPath ?? session.registration.transcriptPath
+    const located = locateCodexRollout(session.registration.codexHome ?? session.env['CODEX_HOME'] ?? null, session.id, transcriptPath)
+    const evidence: CodexEndEvidence = {
+      place: session.registration.place,
+      rollout: located.place,
+      host: session.harnessGone() ? 'gone' : 'alive',
+      hostKind: (this.options.codexHostKind ?? codexHostKind)(session.harnessProcess.pid),
+      // No rollout, no originator: nothing then shows the app still lists it.
+      originator: readCodexThreadOriginator(located.path ?? transcriptPath),
+      hostApp: recordedLiveness(session.registration.hostApp),
+      idleMs: Math.max(0, candidate.since - session.lastActivity),
+      terminalHost: recordedLiveness(session.registration.terminalHost),
+    }
+    return { verdict: classifyCodexEnd(evidence), evidence }
   }
 
   // -- stopped conversations and the machine going down --------------------------
@@ -2180,6 +2284,13 @@ export class Hub {
     return true
   }
 
+  /** Whether a conversation's rollout or transcript is where it can come back from. */
+  private recordPresent(session: HubSession): 'present' | 'archived' | 'deleted' {
+    if (session.harness === 'claude-code') return this.transcriptPresent(session) ? 'present' : 'deleted'
+    const place = session.rollout()
+    return place === 'archived' ? 'archived' : place === 'missing' ? 'deleted' : 'present'
+  }
+
   private desktopPaths(): { sessions: string; log: string } | null {
     if (this.options.claudeDesktop !== undefined) return this.options.claudeDesktop
     return process.platform === 'darwin' ? claudeDesktopPaths(accountHome(this.env)) : null
@@ -2193,12 +2304,16 @@ export class Hub {
   private classifyClaudeStop(session: HubSession, since: number): CloseVerdict {
     const registration = session.registration
     const transcript = this.transcriptPresent(session) ? 'present' : 'missing'
-    if (registration.place !== 'claude-desktop') return classifyClaudeEnd({ place: registration.place, transcript })
+    const place = registration.place as ClaudeEndEvidence['place']
+    if (place !== 'claude-desktop') {
+      return classifyClaudeEnd({ place, transcript, terminalHost: recordedLiveness(registration.terminalHost),
+        hostApp: recordedLiveness(registration.hostApp), idleMs: Math.max(0, since - session.lastActivity) })
+    }
     const paths = this.desktopPaths()
     const record = paths === null ? 'unreadable' as const : readClaudeDesktopRecord(paths.sessions, session.id)
     const appAlive = registration.hostApp !== null && processIdentityLiveness(registration.hostApp) === 'alive'
     const pauseLogged = paths !== null && typeof record === 'object' && claudeDesktopPauseLogged(paths.log, record.localId, since, this.clock.wall())
-    return classifyClaudeEnd({ place: registration.place, transcript, desktop: { appAlive, record, pauseLogged } })
+    return classifyClaudeEnd({ place, transcript, desktop: { appAlive, record, pauseLogged } })
   }
 
   /**
@@ -2208,10 +2323,10 @@ export class Hub {
    * renewed (the phone shows it out of reach) but its fencing identity is
    * kept, on disk too, so a later end can still be reported.
    */
-  stopSession(session: HubSession, cause: StopCause, reason: string, since = this.clock.wall()): void {
+  stopSession(session: HubSession, cause: StopCause, reason: string, since = this.clock.wall(), watch: StoppedWatch = null): void {
     if (session.ending !== null || session.stopped !== null) return
     if (session.endCandidate !== null) { clearTimeout(session.endCandidate.timer); session.endCandidate = null }
-    session.stopped = { since, cause, boot: (this.options.bootIdentity ?? currentBootIdentity)() }
+    session.stopped = { since, cause, boot: (this.options.bootIdentity ?? currentBootIdentity)(), watch }
     // Nothing is written through its process any more.
     for (const writer of [session.primary(), ...session.standbys]) if (writer !== null && !writer.child.closed) writer.child.send({ type: 'bye' })
     session.standbys = []
@@ -2219,18 +2334,24 @@ export class Hub {
     session.reloadedAt = null
     session.lease.setPhase('uncertain', 'stopped')
     session.lease.lose()
-    // A wake queued into the process that went never shows; the next place gets its own.
-    try {
-      updateSessionState(session.id, session.env, (state) => {
-        if (state.input_wake === undefined) return state
-        const next = { ...state }
-        delete next.input_wake
-        return next
-      })
-    } catch { /* A busy lock: the wake is replaced once it is overdue. */ }
+    // A Claude Code wake written into the process that went never shows; the
+    // next place gets its own. A Codex wake waits in the thread's own queue
+    // and runs when the thread loads again.
+    if (session.harness === 'claude-code') {
+      try {
+        updateSessionState(session.id, session.env, (state) => {
+          if (state.input_wake === undefined) return state
+          const next = { ...state }
+          delete next.input_wake
+          return next
+        })
+      } catch { /* A busy lock: the wake is replaced once it is overdue. */ }
+    }
     session.writeStatus(true)
     this.logger.info('hub.session', { event: 'stopped', session: session.id, cause, reason, place: session.registration.place })
     if (!session.stoppedOwes(this.clock.wall())) { this.endSession(session, 'window-over'); return }
+    if (session.harness === 'codex') void this.stoppedWake(session)
+    this.driver.poke()
     this.touch()
   }
 
@@ -2243,16 +2364,21 @@ export class Hub {
     const stopped = session.stopped
     if (stopped === null) return
     if (!session.stoppedOwes(this.clock.wall())) { this.endSession(session, 'window-over'); return }
-    if (!this.transcriptPresent(session)) { this.endSession(session, 'session-deleted'); return }
-    if (session.registration.place !== 'claude-desktop') return
-    const paths = this.desktopPaths()
-    const record = paths === null ? 'unreadable' : readClaudeDesktopRecord(paths.sessions, session.id)
-    if (record === 'missing') { this.endSession(session, 'session-deleted'); return }
-    if (typeof record === 'object' && record.archived) { this.endSession(session, 'session-archived'); return }
+    const record = this.recordPresent(session)
+    if (record === 'deleted') { this.endSession(session, 'session-deleted'); return }
+    if (record === 'archived') { this.endSession(session, 'session-archived'); return }
+    if (session.registration.place === 'claude-desktop') {
+      const paths = this.desktopPaths()
+      const desktop = paths === null ? 'unreadable' : readClaudeDesktopRecord(paths.sessions, session.id)
+      if (desktop === 'missing') { this.endSession(session, 'session-deleted'); return }
+      if (typeof desktop === 'object' && desktop.archived) { this.endSession(session, 'session-archived'); return }
+    }
+    // Its app quit while the machine stayed up: the User closed it after all.
     const boot = (this.options.bootIdentity ?? currentBootIdentity)()
-    const host = session.registration.hostApp
-    if (stopped.cause === 'app' && (stopped.boot === null || stopped.boot === boot) && host !== null && !this.shutdownInProgress() &&
-        processIdentityLiveness(host) === 'gone') this.endSession(session, 'app-quit')
+    const watched = stopped.watch === 'harness' ? session.harnessProcess : stopped.watch === 'host-app' ? session.registration.hostApp : null
+    if (stopped.cause === 'app' && (stopped.boot === null || stopped.boot === boot) && watched !== null && !this.shutdownInProgress() &&
+        processIdentityLiveness(watched) === 'gone') { this.endSession(session, 'app-quit'); return }
+    if (session.harness === 'codex') void this.stoppedWake(session)
   }
 
   /** The machine's shutdown signal: watched for the hub's life. */
@@ -2295,6 +2421,19 @@ export class Hub {
     this.statusChanged()
   }
 
+  /** A live process other than the recorded host that has the session's Codex thread loaded, or null. */
+  private codexHolderElsewhere(session: HubSession): ProcessIdentity | null {
+    const home = session.registration.codexHome ?? session.env['CODEX_HOME'] ?? null
+    const holders = (this.options.codexThreadHolders ?? codexThreadHolders)(home, session.id)
+    if (holders === 'unknown') return null
+    for (const pid of holders) {
+      if (pid === session.harnessProcess.pid || pid === process.pid) continue
+      const start = processStartTime(pid)
+      if (start !== null && !session.exited.has(identityKey({ pid, start }))) return { pid, start }
+    }
+    return null
+  }
+
   /** Whether the session's Codex host has the thread loaded: it holds the thread's writer lock. */
   codexHolds(session: HubSession): boolean {
     const home = session.registration.codexHome ?? session.env['CODEX_HOME'] ?? null
@@ -2323,43 +2462,53 @@ export class Hub {
     return best?.identity ?? null
   }
 
-  readonly dormantWaking = new Set<string>()
+  readonly stoppedWaking = new Set<string>()
 
   /**
-   * An answer (or anything else staged) for a dormant conversation waits in
-   * it: one content-free wake goes into that thread's own Codex queue, which
-   * Codex starts only when the conversation is loaded again, that is, when
-   * the User opens it. Nothing starts or loads the thread before that.
+   * An answer (or anything else staged) for a stopped Codex conversation
+   * waits in it: one content-free wake goes into that thread's own queue
+   * (`codex queue`, no connection to any Codex server), which Codex runs only
+   * when the conversation loads again, that is, when the User opens it in
+   * its app, sends in its Orca chat or T3 thread, or resumes it in a
+   * terminal. Nothing starts or loads the thread before that. A thread some
+   * process has loaded gets none: a wake into a thread loaded with nobody
+   * watching would run unseen, and a place that shows it registers first.
    */
-  async dormantWake(session: HubSession): Promise<void> {
-    if (session.dormantSince === null || session.ending !== null || this.handingOver || this.dormantWaking.has(session.id)) return
-    const open = (): boolean => session.dormantSince !== null && session.ending === null &&
-      !sessionHasEnded(session.id, session.env) && !session.harnessGone() && !session.transcriptGone()
+  async stoppedWake(session: HubSession): Promise<void> {
+    if (session.harness !== 'codex' || session.stopped === null || session.ending !== null || this.handingOver || this.stoppedWaking.has(session.id)) return
+    const home = session.registration.codexHome ?? session.env['CODEX_HOME'] ?? null
+    const open = (): boolean => session.stopped !== null && session.ending === null && !sessionHasEnded(session.id, session.env) &&
+      session.rollout() === 'sessions' && (this.options.codexThreadHeld ?? codexThreadHeld)(home, session.id) !== true
     const lease = session.lease.generation === null ? null : { incarnation: session.lease.incarnation, generation: session.lease.generation }
-    if (!open() || readSessionState(session.id, session.env).input_wake?.queued === true || !hasSessionInputs(session.id, session.env, lease)) return
-    this.dormantWaking.add(session.id)
+    if (readSessionState(session.id, session.env).input_wake?.queued === true || !hasSessionInputs(session.id, session.env, lease) || !open()) return
+    this.stoppedWaking.add(session.id)
     try {
       await wakeSessionInputs(session.id, session.env, async (text) => {
         if (!open() || !hasSessionInputs(session.id, session.env, lease)) return false
         const result = await deliverIntoCodexThread({ threadId: session.id, cwd: session.registration.cwd ?? process.cwd(), env: session.env,
           adapters: this.codexAdapters(session), text, begin: open })
-        this.logger.info('hub.session', { event: 'dormant-wake', session: session.id, outcome: result.status })
+        this.logger.info('hub.session', { event: 'stopped-wake', session: session.id, outcome: result.status })
         return result.status === 'written'
       }, this.logger)
     } catch (err) {
-      this.logger.error('hub.session', { event: 'dormant-wake', session: session.id, message: err instanceof Error ? err.message : String(err) })
+      this.logger.error('hub.session', { event: 'stopped-wake', session: session.id, message: err instanceof Error ? err.message : String(err) })
     } finally {
-      this.dormantWaking.delete(session.id)
+      this.stoppedWaking.delete(session.id)
     }
   }
 
-  /** Detach and delete Notifai's own unconsumed wakes from a closing thread's native queue, when that queue is reachable. */
-  private async withdrawQueuedWakes(sessionId: string, env: NodeJS.ProcessEnv): Promise<void> {
+  /**
+   * Detach Notifai's own unconsumed wakes from a closing thread, and delete
+   * them from its native queue when that queue is reachable. For a stopped
+   * thread nothing connects to any Codex server: the prompt hook blocks a
+   * wake the thread shows later.
+   */
+  private async withdrawQueuedWakes(sessionId: string, env: NodeJS.ProcessEnv, connect: boolean): Promise<void> {
     const scope = { sessionId, env }
     try {
       if (!readInputWakes(scope).some((attempt) => attempt.phase !== 'consumed' && attempt.phase !== 'cancelled')) return
       detachInputWakes({ ...scope, pendingIds: () => [] })
-      await reconcileSessionInputWakes(sessionId, env, this.deps.codexQueueControl ?? connectCodexQueue)
+      if (connect) await reconcileSessionInputWakes(sessionId, env, this.deps.codexQueueControl ?? connectCodexQueue)
     } catch {
       // Best effort: the prompt hook still blocks a wake the thread shows later.
     }
@@ -2443,7 +2592,8 @@ export class Hub {
         continue
       }
       // Its harness exited while the machine went down: stopped, not closed.
-      if (record['harness'] === 'claude-code' && this.stopAtStart(sessionId, typeof record['boot'] === 'string' ? record['boot'] : null,
+      if ((record['harness'] === 'claude-code' || record['harness'] === 'codex') &&
+        this.stopAtStart(sessionId, typeof record['boot'] === 'string' ? record['boot'] : null,
         typeof record['at'] === 'number' ? record['at'] : Number.NaN)) {
         rmSync(path.join(directory, name), { force: true })
         continue
@@ -2577,7 +2727,7 @@ export class Hub {
 
   /**
    * Take over what the previous hub held only in memory, whatever ended it:
-   * the Codex conversations no child will bring back (dormant-open, or whose
+   * the conversations no child will bring back (stopped, or whose
    * end it was still deciding), and the answer owners it ran.
    */
   async restore(): Promise<void> {
@@ -2602,8 +2752,8 @@ export class Hub {
    * Attend a Codex session a previous hub attended, without its child: take
    * the claim, continue the lease at its generation, restart its answer
    * owner when something is owed, and decide again, from fresh evidence, what
-   * the previous hub held: still dormant-open (and its answer queued in the
-   * thread), or closed (archived, its app quit), or to be classified now.
+   * the previous hub held: closed (archived, its host gone), or an end to
+   * confirm and classify now.
    */
   private async adopt(sessionId: string, record: AdoptionRecord): Promise<void> {
     const registration: Registration = {
@@ -2611,12 +2761,13 @@ export class Hub {
       stamp: { wall: this.clock.wall(), mono: '0' }, hookEvent: 'Adopted', source: null, cwd: record.cwd,
       transcriptPath: record.transcript_path, inboxSocket: null, inboxToken: false,
       claudeConfigDir: record.claude_config_dir, codexHome: record.codex_home, harnessTicks: record.harness_ticks,
-      place: record.place, hostApp: record.host_app,
+      place: record.place, hostApp: record.host_app, terminalHost: record.terminal_host,
     }
     const env = this.sessionEnv(registration)
     const incarnation = readSessionIncarnation(sessionId, env)
     if (incarnation === null) return
     const session = new HubSession(this, sessionId, record.harness, env, record.harness_process, incarnation, registration)
+    if (record.last_activity_at !== null) session.lastActivity = record.last_activity_at
     session.transcriptSeen = record.transcript_seen
     session.transcriptGone()
     session.claimToken = await this.takeClaim(session)
@@ -2628,20 +2779,15 @@ export class Hub {
     }
     this.sessions.set(sessionId, session)
     const now = this.clock.wall()
-    if (record.dormant_since !== null) {
-      session.dormantSinceWall = record.dormant_since
-      session.dormantSince = this.clock.monotonic() - Math.max(0, now - record.dormant_since)
-      session.lease.setPhase('uncertain', 'dormant-open')
-    } else session.lease.setPhase('uncertain', 'session-child-disconnected')
+    session.lease.setPhase('uncertain', 'session-child-disconnected')
     session.writeStatus(true)
-    this.logger.info('hub.session', { event: 'adopted', session: sessionId, harness: record.harness, dormant: record.dormant_since !== null })
+    this.logger.info('hub.session', { event: 'adopted', session: sessionId, harness: record.harness })
     const state = readSessionState(sessionId, env)
     if (pendingList(state).length > 0 || state.accepted !== undefined) this.settle(sessionId, record.harness, record.cwd, 'settlement')
     const probe = session.probe()
     if (probe.state === 'ended') this.endSession(session, probe.reason)
     else if (session.transcriptGone()) this.endSession(session, 'session-archived')
     else if (session.harnessGone()) this.closing(session, 'harness-gone')
-    else if (session.dormantSince !== null) void this.dormantWake(session)
     // An end the previous hub was still confirming: confirm what is left of it.
     else if (record.end_candidate_since !== null) {
       const waited = Math.max(0, now - record.end_candidate_since)
@@ -2651,7 +2797,7 @@ export class Hub {
     // An app or IDE conversation whose end was still being decided: decide
     // now, as its SessionEnd would have. Anything else stays attended,
     // watched by the process table until a child comes back or its host goes.
-    else if (codexDormantSurface(readCodexThreadOriginator(record.transcript_path)) !== null) this.holdEnd(session, 'session-end-hook', record.transcript_path)
+    else if (codexAppSurface(readCodexThreadOriginator(record.transcript_path)) !== null) this.holdEnd(session, 'session-end-hook', record.transcript_path)
     this.touch()
   }
 
@@ -2663,16 +2809,18 @@ export class Hub {
    */
   private async adoptStopped(sessionId: string, record: AdoptionRecord): Promise<void> {
     const registration: Registration = {
-      sessionId, harness: 'claude-code', harnessProcess: record.harness_process, boot: record.boot,
+      sessionId, harness: record.harness, harnessProcess: record.harness_process, boot: record.boot,
       stamp: { wall: this.clock.wall(), mono: '0' }, hookEvent: 'Adopted', source: null, cwd: record.cwd,
       transcriptPath: record.transcript_path, inboxSocket: null, inboxToken: false,
-      claudeConfigDir: record.claude_config_dir, codexHome: null, harnessTicks: record.harness_ticks,
-      place: record.place, hostApp: record.host_app,
+      claudeConfigDir: record.claude_config_dir, codexHome: record.codex_home, harnessTicks: record.harness_ticks,
+      place: record.place, hostApp: record.host_app, terminalHost: record.terminal_host,
     }
     const env = this.sessionEnv(registration)
     const incarnation = readSessionIncarnation(sessionId, env)
     if (incarnation === null || record.stopped === null) return
-    const session = new HubSession(this, sessionId, 'claude-code', env, record.harness_process, incarnation, registration)
+    const session = new HubSession(this, sessionId, record.harness, env, record.harness_process, incarnation, registration)
+    if (record.last_activity_at !== null) session.lastActivity = record.last_activity_at
+    session.transcriptSeen = record.transcript_seen
     session.stopped = record.stopped
     session.lease.setPhase('uncertain', 'stopped')
     session.claimToken = await this.takeClaim(session)
@@ -2683,18 +2831,19 @@ export class Hub {
     }
     this.sessions.set(sessionId, session)
     session.writeStatus(true)
-    this.logger.info('hub.session', { event: 'adopted', session: sessionId, harness: 'claude-code', stopped_by: record.stopped.cause })
+    this.logger.info('hub.session', { event: 'adopted', session: sessionId, harness: record.harness, stopped_by: record.stopped.cause })
     const state = readSessionState(sessionId, env)
-    if (pendingList(state).length > 0 || state.accepted !== undefined) this.settle(sessionId, 'claude-code', record.cwd, 'settlement')
+    if (pendingList(state).length > 0 || state.accepted !== undefined) this.settle(sessionId, record.harness, record.cwd, 'settlement')
     this.checkStopped(session)
     this.touch()
   }
 
   /**
-   * At the start sweep: a Claude Code conversation attended in an earlier
-   * boot that the machine going down stopped (see `machineDownEarlierBoot`)
-   * is kept as stopped, not ended, while something waits for it and its
-   * transcript is there. `endedAt` is its child's end record, when one exists.
+   * At the start sweep: a conversation attended in an earlier boot that the
+   * machine going down stopped (see `machineDownEarlierBoot`) is kept as
+   * stopped, not ended, while something waits for it and its transcript or
+   * rollout is there (an archived rollout was closed by the User). `endedAt`
+   * is its child's end record, when one exists.
    */
   private stopAtStart(sessionId: string, recordedBoot: string | null | undefined, endedAt: number | null): boolean {
     const declined = (reason: string): false => {
@@ -2705,18 +2854,21 @@ export class Hub {
     let status: Record<string, unknown>
     try { status = JSON.parse(readFileSync(file, 'utf8')) as Record<string, unknown> } catch { return declined('no-status') }
     const record = parseAdoptionRecord(status['adoption'])
-    if (record === null || record.harness !== 'claude-code') return declined('not-claude-code')
+    if (record === null) return declined('no-record')
     const boot = (this.options.bootIdentity ?? currentBootIdentity)()
     const marker = readShutdownMarker(this.env)
     if (!machineDownEarlierBoot({ recordedBoot, currentBoot: boot, endedAt, endPending: record.end_candidate_since !== null,
       shutdown: marker === null || marker.boot === null ? null : { boot: marker.boot, since: marker.since } })) return declined('not-machine-down')
-    const env = this.sessionEnv({ claudeConfigDir: record.claude_config_dir, codexHome: null })
+    const env = this.sessionEnv({ claudeConfigDir: record.claude_config_dir, codexHome: record.codex_home })
     const lease = readAttendantEndingLease(sessionId, env)
     if (lease === null) return declined('no-lease')
-    if (!claudeTranscriptPresent(path.dirname(claudeDescriptorDir(env)), sessionId, record.transcript_path)) return declined('transcript-missing')
+    const present = record.harness === 'claude-code'
+      ? claudeTranscriptPresent(path.dirname(claudeDescriptorDir(env)), sessionId, record.transcript_path)
+      : locateCodexRollout(record.codex_home, sessionId, record.transcript_path).place === 'sessions'
+    if (!present) return declined('transcript-missing')
     const updatedAt = typeof status['updated_at'] === 'number' ? status['updated_at'] : null
     const since = Math.min(this.clock.wall(), endedAt !== null && Number.isFinite(endedAt) ? endedAt : updatedAt ?? this.clock.wall())
-    const stopped = { since, cause: 'machine' as const, boot: typeof recordedBoot === 'string' ? recordedBoot : null }
+    const stopped: StoppedRecord = { since, cause: 'machine', boot: typeof recordedBoot === 'string' ? recordedBoot : null, watch: null }
     if (!owesWhileStopped(sessionId, env, since, lease, this.clock.wall())) return declined('nothing-waits')
     try {
       atomicWriteFileSync(file, `${JSON.stringify({ ...status, pid: process.pid, phase: 'exited', reason: 'stopped', accepts_messages: false,
@@ -2889,11 +3041,10 @@ export class Hub {
   private busy(): boolean {
     // An update pass in progress (a download, a staged write) finishes first.
     if (this.children > 0 || this.settlements.size > 0 || this.updating || this.ingressInFlight > 0 || this.handingOver) return true
-    // A dormant conversation still owed something: watch its app, so a quit expires it at once.
-    const now = this.clock.monotonic()
+    // A stopped conversation still owed something: watch its app, so a quit expires it at once.
     const wall = this.clock.wall()
     for (const session of this.sessions.values()) {
-      if (session.endCandidate !== null || session.dormantOwes(now) || session.stoppedOwes(wall)) return true
+      if (session.endCandidate !== null || session.stoppedOwes(wall)) return true
     }
     // Owed end reports keep the hub only while it can send them. Signed out
     // (or refused), they stay on disk and the next signed-in hub sends them.

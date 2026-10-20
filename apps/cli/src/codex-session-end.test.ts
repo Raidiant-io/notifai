@@ -1,17 +1,19 @@
 import { spawn } from 'node:child_process'
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, renameSync, rmSync, writeFileSync } from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
 import {
-  classifyCodexSessionEnd,
-  codexDormantSurface,
+  codexAppSurface,
+  codexHomeOfRollout,
   codexHostHoldsThread,
   codexHostKind,
+  codexSubcommand,
+  codexThreadHeld,
   codexThreadWriterLockPath,
-  codexTranscriptState,
+  locateCodexRollout,
+  readCodexSessionMeta,
   readCodexThreadOriginator,
-  type CodexEndEvidence,
 } from './codex-session-end.js'
 
 const roots: string[] = []
@@ -26,30 +28,58 @@ function rollout(originator: string, instructions = 'short'): string {
   return file
 }
 
-describe('Codex SessionEnd classification', () => {
-  const app: CodexEndEvidence = { transcript: 'present', host: 'alive', originator: 'Codex Desktop', hostKind: 'app-server' }
+describe('Codex thread records', () => {
+  const THREAD = '01a159b2-cf06-7590-a500-4917a76e96c2'
 
-  it.each<[string, CodexEndEvidence, ReturnType<typeof classifyCodexSessionEnd>]>([
-    ['an archived or deleted conversation is closed', { ...app, transcript: 'missing' }, { state: 'ended', reason: 'session-archived' }],
-    ['a quit app (its server gone) closes the conversation', { ...app, host: 'gone' }, { state: 'ended', reason: 'harness-gone' }],
-    ['an app conversation unloaded while the app runs stays open', app, { state: 'dormant-open', surface: 'app' }],
-    ['so does one from the newer Codex app', { ...app, originator: 'codex_work_desktop' }, { state: 'dormant-open', surface: 'app' }],
-    ['and one from the IDE extension', { ...app, originator: 'codex_vscode' }, { state: 'dormant-open', surface: 'ide' }],
-    ['a CLI conversation unloaded by the shared server is closed', { ...app, originator: 'codex-tui', hostKind: 'other' }, { state: 'ended', reason: 'session-end-hook' }],
-    ['even when it looks like an app-server', { ...app, originator: 'codex-tui' }, { state: 'ended', reason: 'session-end-hook' }],
-    ['an app conversation a terminal took over and closed is closed', { ...app, hostKind: 'other' }, { state: 'ended', reason: 'session-end-hook' }],
-    ['another app-server client is closed', { ...app, originator: 'orca_desktop' }, { state: 'ended', reason: 'session-end-hook' }],
-    ['an unreadable originator is closed', { ...app, originator: null }, { state: 'ended', reason: 'session-end-hook' }],
-    ['an unknown host is closed', { ...app, hostKind: 'unknown' }, { state: 'ended', reason: 'session-end-hook' }],
-    ['archive wins over everything', { ...app, transcript: 'missing', host: 'gone' }, { state: 'ended', reason: 'session-archived' }],
-  ])('%s', (_name, evidence, verdict) => {
-    expect(classifyCodexSessionEnd(evidence)).toEqual(verdict)
+  it('names only the app and IDE originators as apps that keep a conversation open', () => {
+    expect(codexAppSurface('Codex Desktop')).toBe('app')
+    expect(codexAppSurface('codex_work_desktop')).toBe('app')
+    expect(codexAppSurface('codex_vscode')).toBe('ide')
+    for (const other of ['codex-tui', 'codex_exec', 'orca_desktop', 'T3 Code', null]) expect(codexAppSurface(other)).toBeNull()
   })
 
-  it('names only the app and IDE originators as surfaces that keep a conversation open', () => {
-    expect(codexDormantSurface('Codex Desktop')).toBe('app')
-    expect(codexDormantSurface('codex_vscode')).toBe('ide')
-    for (const other of ['codex-tui', 'codex_exec', 'orca_desktop', 'T3 Code', null]) expect(codexDormantSurface(other)).toBeNull()
+  it('reads the thread a fork came from (`forked_from_id`, as Codex 0.163.0 writes it)', () => {
+    const file = rollout('codex-tui')
+    writeFileSync(file, `${JSON.stringify({ type: 'session_meta', payload: { id: 'f', originator: 'codex-tui', forked_from_id: THREAD,
+      history_base: { thread_id: THREAD } } })}\n`)
+    expect(readCodexSessionMeta(file)).toEqual({ originator: 'codex-tui', forkedFrom: THREAD })
+    expect(readCodexSessionMeta(rollout('codex-tui'))).toEqual({ originator: 'codex-tui', forkedFrom: null })
+  })
+
+  it('finds a rollout by its id where an archive or unarchive moved it, and knows when it is gone', () => {
+    const home = mkdtempSync(path.join(os.tmpdir(), 'notifai-codex-home-'))
+    roots.push(home)
+    const live = path.join(home, 'sessions', '2026', '10', '20', `rollout-2026-10-20T07-29-00-${THREAD}.jsonl`)
+    mkdirSync(path.dirname(live), { recursive: true })
+    writeFileSync(live, '{}\n')
+    mkdirSync(path.join(home, 'sessions', '2026', '10', '19'), { recursive: true })
+    writeFileSync(path.join(home, 'sessions', '2026', '10', '19', 'rollout-2026-10-19T00-00-00-01a159b2-0000-0000-0000-000000000000.jsonl'), '{}\n')
+    expect(locateCodexRollout(home, THREAD, live)).toEqual({ place: 'sessions', path: live })
+    // The hook names no path, or one an earlier move left behind.
+    expect(locateCodexRollout(home, THREAD, null)).toEqual({ place: 'sessions', path: live })
+    // Archived: the hook still names the old path.
+    const archived = path.join(home, 'archived_sessions', path.basename(live))
+    mkdirSync(path.dirname(archived), { recursive: true })
+    renameSync(live, archived)
+    expect(locateCodexRollout(home, THREAD, live)).toEqual({ place: 'archived', path: archived })
+    expect(locateCodexRollout(null, THREAD, archived)).toEqual({ place: 'archived', path: archived })
+    expect(codexHomeOfRollout(archived)).toBe(home)
+    expect(codexHomeOfRollout(live)).toBe(home)
+    // Deleted.
+    rmSync(archived)
+    expect(locateCodexRollout(home, THREAD, live)).toEqual({ place: 'missing', path: null })
+    // Nothing readable: unknown, never a delete.
+    expect(locateCodexRollout(path.join(home, 'nowhere'), THREAD, null)).toEqual({ place: 'unknown', path: null })
+    expect(locateCodexRollout(null, THREAD, null)).toEqual({ place: 'unknown', path: null })
+  })
+
+  it('tells a scripted `codex exec` run from a terminal and an app-server by its subcommand', () => {
+    expect(codexSubcommand(['codex', 'exec', 'resume', THREAD])).toBe('exec')
+    expect(codexSubcommand(['/opt/codex', '-c', 'model=x', '--model', 'gpt', 'exec', 'hi'])).toBe('exec')
+    expect(codexSubcommand(['codex', '--no-daemon', 'resume', THREAD])).toBe('resume')
+    expect(codexSubcommand(['codex', 'app-server', '--listen', 'unix://x'])).toBe('app-server')
+    expect(codexSubcommand(['codex'])).toBeNull()
+    expect(codexSubcommand(['codex', '-m', 'exec'])).toBeNull()
   })
 
   it('reads the originator from the rollout\'s first line, however long its instructions', () => {
@@ -65,14 +95,6 @@ describe('Codex SessionEnd classification', () => {
     expect(readCodexThreadOriginator(file)).toBeNull()
     writeFileSync(file, '')
     expect(readCodexThreadOriginator(file)).toBeNull()
-  })
-
-  it('tells a present rollout from a moved one, and knows when none was named', () => {
-    const file = rollout('Codex Desktop')
-    expect(codexTranscriptState(file)).toBe('present')
-    rmSync(file)
-    expect(codexTranscriptState(file)).toBe('missing')
-    expect(codexTranscriptState(undefined)).toBe('unknown')
   })
 
   it('does not take an ordinary process for an app-server', () => {
@@ -101,6 +123,7 @@ describe('Codex thread writer lock', () => {
           if (!held) await new Promise((resolve) => setTimeout(resolve, 50))
         }
         expect(held).toBe(true)
+        expect(codexThreadHeld(home, THREAD)).toBe(true)
         expect(codexHostHoldsThread(home, THREAD, process.pid)).toBe(false)
         expect(codexHostHoldsThread(home, '01a15732-0000-0000-0000-000000000000', host.pid!)).toBe(false)
       } finally {
@@ -108,9 +131,15 @@ describe('Codex thread writer lock', () => {
       }
       await new Promise((resolve) => host.once('exit', resolve))
       expect(codexHostHoldsThread(home, THREAD, host.pid!)).toBe(false)
+      expect(codexThreadHeld(home, THREAD)).toBe(false)
     })
 
   it('cannot tell on Windows, so a reload there is never assumed', () => {
     expect(codexHostHoldsThread(null, THREAD, process.pid, 'win32')).toBe(false)
+    const home = mkdtempSync(path.join(os.tmpdir(), 'notifai-codex-lock-'))
+    roots.push(home)
+    mkdirSync(path.join(home, 'thread-writer-locks'), { recursive: true })
+    writeFileSync(codexThreadWriterLockPath(home, THREAD), '')
+    expect(codexThreadHeld(home, THREAD, 'win32')).toBe('unknown')
   })
 })

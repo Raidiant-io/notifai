@@ -70,14 +70,14 @@ const CLAUDE_CODE_CAPABILITY: HarnessCapability = {
   stopContinuation: 'decision-block',
   deliveryRoutes: ['hook-continuation', 'inbox-socket', 'hold-for-next-turn'],
   deliveryContract:
-    'the Stop hook returns at once and waits out of band through the complete answer window, then posts the answer into this same open session over its own inbox socket, whether it is idle or busy; open in several places, the most recently opened receives; closing the session ends its questions, while the desktop app pausing it or the machine shutting down keeps them and the answer arrives when it comes back',
+    "the Stop hook returns at once and waits out of band through the complete answer window, then posts the answer into this same open session over its own inbox socket, whether it is idle or busy; open in several places, the most recently opened receives; closing the session ends its questions, while the desktop app pausing it, an Orca chat idling it out, Orca losing its pane's terminal or the machine shutting down keeps them and the answer arrives when it comes back",
 }
 
 const CODEX_CAPABILITY: HarnessCapability = {
   stopContinuation: 'decision-block',
   deliveryRoutes: ['session-queue', 'hold-for-next-turn'],
   deliveryContract:
-    "the Stop hook returns at once and waits out of band through the complete answer window, then queues the answer into this same thread's durable inbox; an idle session consumes it within seconds and a busy one at its next turn boundary; closing the session ends its questions",
+    "the Stop hook returns at once and waits out of band through the complete answer window, then queues the answer into this same thread's durable inbox; an idle session consumes it within seconds and a busy one at its next turn boundary; closing the session ends its questions, while its app unloading or idling it out, Orca losing its pane's terminal or the machine shutting down keeps them and the answer waits in the thread until it comes back",
 }
 
 const CURSOR_CAPABILITY: HarnessCapability = {
