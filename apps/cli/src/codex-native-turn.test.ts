@@ -496,3 +496,22 @@ it('grants fallback only for a continuous read gap, resetting even on an empty-i
   f.event('task_started', 'new-prompt')
   expect(observer.mayWake()).toBe(false)
 })
+
+it('never wakes an idle thread on the shared Codex server, and still wakes one on any other host', () => {
+  const kinds = ['shared-server', 'other', 'app-server', 'unknown'] as const
+  const asked: number[] = []
+  const wakes = Object.fromEntries(kinds.map(kind => {
+    const f = fixture(true)
+    recordTurnStart('root', f.env, f.key, 'done')
+    f.event('task_started', 'done')
+    f.event('task_complete', 'done')
+    const observer = codexInputObserver('root', f.env, f.key, () => 0, f.file, undefined, pid => { asked.push(pid); return kind })
+    expect(observer.observe()).toBe('idle')
+    return [kind, [observer.mayWake(), observer.mayWake()]]
+  }))
+  // A closed terminal leaves its thread loaded and idle on the shared server,
+  // and nothing says it closed: the input waits for the User's next prompt.
+  expect(wakes).toEqual({ 'shared-server': [false, false], other: [true, true], 'app-server': [true, true], unknown: [true, true] })
+  // One host question per process; an unknown answer is asked again.
+  expect(asked).toEqual(Array(5).fill(process.pid))
+})

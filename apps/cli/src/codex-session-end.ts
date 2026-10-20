@@ -33,7 +33,16 @@ const DORMANT_ORIGINATORS: Readonly<Record<string, 'app' | 'ide'>> = {
 /** The rollout's first line can carry long base instructions; read no further than this. */
 const MAX_META_BYTES = 1024 * 1024
 
-export type CodexHostKind = 'app-server' | 'other' | 'unknown'
+/**
+ * What kind of Codex process hosts a thread:
+ * - `app-server`: a server a client started for itself (the Codex app's, or
+ *   the IDE extension's);
+ * - `shared-server`: Codex's shared background server, which plain `codex`
+ *   terminals join and which keeps a closed terminal's thread loaded;
+ * - `other`: anything else, such as a terminal that hosts its own thread
+ *   (`codex --no-daemon`).
+ */
+export type CodexHostKind = 'app-server' | 'shared-server' | 'other' | 'unknown'
 
 export interface CodexEndEvidence {
   /** The rollout named by the hook: still at its path, or moved away (archive) or deleted. */
@@ -95,8 +104,8 @@ export function codexTranscriptState(transcriptPath: string | null | undefined):
 
 /**
  * Whether the host is an app-server a client started for itself (the Codex
- * app's, or the IDE extension's), rather than a terminal or the shared
- * background server, which a closed terminal leaves behind.
+ * app's, or the IDE extension's), the shared background server that plain
+ * terminals join, or something else, such as a terminal hosting its own thread.
  */
 export function codexHostKind(pid: number): CodexHostKind {
   if (process.platform === 'win32') return 'unknown'
@@ -106,9 +115,19 @@ export function codexHostKind(pid: number): CodexHostKind {
   } catch {
     return 'unknown'
   }
+  return codexHostKindOf(args)
+}
+
+/**
+ * The host kind from a process's command line. Codex 0.163.0 runs the shared
+ * server as `codex app-server --listen unix:// … --managed-daemon`; the Codex
+ * app runs its own as `codex … app-server …` on stdio, with no listener.
+ */
+export function codexHostKindOf(args: string): CodexHostKind {
   if (args === '') return 'unknown'
   const words = args.split(/\s+/)
-  const serving = words.includes('app-server')
-  const shared = words.includes('daemon') || words.includes('--listen') || words.includes('remote-control')
-  return serving && !shared ? 'app-server' : 'other'
+  if (!words.includes('app-server')) return 'other'
+  const shared = words.some((word) => word === 'daemon' || word === '--managed-daemon' || word === 'remote-control' ||
+    word === '--listen' || word.startsWith('--listen='))
+  return shared ? 'shared-server' : 'app-server'
 }

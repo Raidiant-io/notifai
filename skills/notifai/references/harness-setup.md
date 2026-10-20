@@ -107,7 +107,9 @@ Never bypass that gap with `notifai send --reply`.
 start a turn in this exact Agent Session after its ordinary continuation has
 returned. It never blocks Question Routing. Claude Code's inbox is a socket on
 macOS and Linux and a named pipe on Windows; where a Claude Code release is too
-old to publish one, the answer waits for the Agent Session's next turn.
+old to publish one, the answer waits for the Agent Session's next turn. The
+same holds for an idle Codex terminal on Codex's shared app-server, which
+Notifai never wakes.
 
 Notifai never writes trust approvals. If its diagnosis and Codex disagree,
 `/hooks` is authoritative.
@@ -234,7 +236,9 @@ default and up to three.
 Those are three different controls and only the last one decides whether an
 answer is still wanted. Question Routing owns that complete window. Claude Code
 waits out of band and wakes the Agent Session through its inbox,
-while Codex queues a wake-up into its Agent Session's durable inbox. Codex and
+while Codex queues a wake-up into its Agent Session's durable inbox (except an
+idle terminal on Codex's shared app-server, whose answer waits for its next
+turn). Codex and
 Claude Code keep pending input locally until a foreground drain; the native
 wake never stores a second copy of the User's answer.
 

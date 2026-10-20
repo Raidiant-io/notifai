@@ -33,6 +33,7 @@ import {
   codexTranscriptState,
   readCodexThreadOriginator,
   type CodexEndVerdict,
+  type CodexHostKind,
 } from './codex-session-end.js'
 import { readNativeTurnSnapshot } from './codex-native-turn.js'
 import { inspectCodexQueue, systemCodexWakeAdapters, type CodexWakeAdapters } from './codex-wake.js'
@@ -307,7 +308,7 @@ class HubSession implements AttendedSession {
     this.lease = new SessionLease(record.incarnation, (expected) => this.rotate(expected))
     if (harness === 'codex') {
       this.codexObserver = codexInputObserver(id, env, record.key, () => hub.clock.monotonic(),
-        registration.transcriptPath ?? undefined, (owner) => this.harnessAlive(owner))
+        registration.transcriptPath ?? undefined, (owner) => this.harnessAlive(owner), (pid) => hub.codexHostKind(pid))
     }
   }
 
@@ -1457,7 +1458,7 @@ export class Hub {
       host: session.harnessGone() ? 'gone' as const : 'alive' as const,
       // No rollout, no originator: nothing then shows the app still lists it.
       originator: readCodexThreadOriginator(transcriptPath),
-      hostKind: (this.options.codexHostKind ?? codexHostKind)(session.harnessProcess.pid),
+      hostKind: this.codexHostKind(session.harnessProcess.pid),
     }
     const verdict: CodexEndVerdict = classifyCodexSessionEnd(evidence)
     this.logger.info('hub.session', { event: 'end-classified', session: session.id, verdict: verdict.state,
@@ -1690,6 +1691,11 @@ export class Hub {
   /** An answer was staged for a session: hand it in now rather than at a later tick. */
   inputStaged(sessionId: string): void {
     this.sessions.get(sessionId)?.checkInput()
+  }
+
+  /** What kind of Codex process hosts a session: its own app, a terminal, or the shared server. */
+  codexHostKind(pid: number): CodexHostKind {
+    return (this.options.codexHostKind ?? codexHostKind)(pid)
   }
 
   codexAdapters(session: HubSession): CodexWakeAdapters {

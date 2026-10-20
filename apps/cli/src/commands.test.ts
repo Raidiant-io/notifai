@@ -10268,6 +10268,40 @@ describe('asking before the hooks have ever run', () => {
     expect(out).not.toContain('thread-writer-lock')
   })
 
+  it.each([
+    ['the shared Codex server', 'shared-server' as const, false],
+    ['a terminal hosting its own thread', 'other' as const, true],
+  ])('reports whether an idle Codex session on %s can be woken', async (_name, hostKind, wakes) => {
+    const cwd = mkdtempSync(path.join(os.tmpdir(), 'notifai-doctor-codex-host-'))
+    const io = new PlainInteractiveIo()
+    const sessionId = '9f1c2b3a-4d5e-6f70-8192-a3b4c5d6e7f9'
+    const env = { ...isolatedEnv(cwd), CODEX_THREAD_ID: sessionId }
+    const asked: number[] = []
+    const deps = {
+      ...makeDeps(io, {} as ApiClient),
+      cwd,
+      env,
+      hookPlatform: 'darwin' as NodeJS.Platform,
+      codexHostKind: (pid: number) => { asked.push(pid); return hostKind },
+    }
+    expect(hooksInstallCommand(deps, { harness: 'codex', execPath, scriptPath })).toBe(EXIT.ok)
+    writeSessionState(sessionId, env, { harness: 'codex', last_prompt_at: 42 })
+    writeProjectSession(cwd, env, sessionId, 42, 'codex')
+    beginSessionIncarnation(sessionId, env, { stamp: lifecycleStamp(), harnessProcess: currentProcessIdentity()! })
+
+    io.outLines = []
+    await doctorCommand(deps, {})
+    const out = io.outLines.join('\n')
+    expect(asked).toEqual([process.pid])
+    if (wakes) {
+      expect(out).toMatch(/ok\s+Direct wake route/)
+    } else {
+      expect(out).toMatch(/--\s+Direct wake route/)
+      expect(out).toContain('never starts a turn here while it is idle')
+      expect(out).toContain('at this session\'s next turn')
+    }
+  })
+
   it('documents the failing exit contract in doctor JSON', async () => {
     const cwd = mkdtempSync(path.join(os.tmpdir(), 'notifai-doctor-exit-json-'))
     const io = new CapturedIo()

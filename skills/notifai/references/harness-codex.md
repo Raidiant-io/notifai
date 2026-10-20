@@ -11,7 +11,8 @@ The synchronous `PostToolUse` handler delivers pending answers, Session Notes an
 after tools during an active turn. Install and approve that handler, then
 start a fresh Agent Session to use the new session child and hook definitions.
 Pending input also queues one coalesced wake-up, whether the session is
-working or idle. It carries no note or answer text. A trusted hook can drain
+working or idle, except on Codex's shared app-server (below). It carries no
+note or answer text. A trusted hook can drain
 the input first; a late wake-up may then find nothing pending. A running tool
 must return before its hook runs.
 Automatic goal continuations are observed at their first trusted tool
@@ -48,6 +49,13 @@ trusted tool hook can hand input into a working turn, Notifai uses that hook.
 Idle sessions, or sessions whose live input path cannot be established, use
 a content-free wake for the exact Agent Session in the same Codex home.
 Notifai does not cold-start or resume Codex to obtain a control connection.
+A plain `codex` terminal that joined Codex's shared app-server is never woken
+while idle. When that terminal closes, Codex keeps the conversation loaded with
+no client for about 30 minutes, and nothing tells Notifai the terminal closed,
+so a wake could start a turn nobody sees. There an answer or note waits for
+the User's next prompt in that session; `notifai doctor` says so under the wake
+route. Sessions started with `--no-daemon` host their own conversation and are
+woken as above.
 Closing the Agent Session ends its questions. In the Codex app or IDE
 extension, a conversation Codex unloads while the app still lists it stays
 open: its questions stay answerable, and an answer waits in that conversation

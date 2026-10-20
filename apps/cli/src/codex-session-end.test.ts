@@ -6,6 +6,7 @@ import {
   classifyCodexSessionEnd,
   codexDormantSurface,
   codexHostKind,
+  codexHostKindOf,
   codexTranscriptState,
   readCodexThreadOriginator,
   type CodexEndEvidence,
@@ -32,7 +33,8 @@ describe('Codex SessionEnd classification', () => {
     ['an app conversation unloaded while the app runs stays open', app, { state: 'dormant-open', surface: 'app' }],
     ['so does one from the newer Codex app', { ...app, originator: 'codex_work_desktop' }, { state: 'dormant-open', surface: 'app' }],
     ['and one from the IDE extension', { ...app, originator: 'codex_vscode' }, { state: 'dormant-open', surface: 'ide' }],
-    ['a CLI conversation unloaded by the shared server is closed', { ...app, originator: 'codex-tui', hostKind: 'other' }, { state: 'ended', reason: 'session-end-hook' }],
+    ['a CLI conversation unloaded by the shared server is closed', { ...app, originator: 'codex-tui', hostKind: 'shared-server' }, { state: 'ended', reason: 'session-end-hook' }],
+    ['so is an app conversation the shared server hosts', { ...app, hostKind: 'shared-server' }, { state: 'ended', reason: 'session-end-hook' }],
     ['even when it looks like an app-server', { ...app, originator: 'codex-tui' }, { state: 'ended', reason: 'session-end-hook' }],
     ['an app conversation a terminal took over and closed is closed', { ...app, hostKind: 'other' }, { state: 'ended', reason: 'session-end-hook' }],
     ['another app-server client is closed', { ...app, originator: 'orca_desktop' }, { state: 'ended', reason: 'session-end-hook' }],
@@ -74,5 +76,17 @@ describe('Codex SessionEnd classification', () => {
 
   it('does not take an ordinary process for an app-server', () => {
     expect(codexHostKind(process.pid)).toBe(process.platform === 'win32' ? 'unknown' : 'other')
+  })
+
+  // Command lines as `ps -o args=` printed them on macOS with Codex 0.163.0.
+  it.each([
+    ['the shared server', '/Users/u/.codex/packages/app-server-daemon/releases/0.163.0-aarch64-apple-darwin/bin/codex app-server --listen unix:// --analytics-default-enabled --managed-daemon', 'shared-server'],
+    ['a server listening on a socket', 'codex app-server --listen=ws://127.0.0.1:4500', 'shared-server'],
+    ['the Codex app\'s own server', '/Applications/ChatGPT.app/Contents/Resources/codex-cli/CodexCLI.app/Contents/MacOS/codex -c features.code_mode_host=true app-server --analytics-default-enabled -c plugins.code-review@openai-bundled.mcp_servers.code-review.enabled=true', 'app-server'],
+    ['a terminal hosting its own thread', '/opt/homebrew/bin/codex --no-daemon', 'other'],
+    ['a plain terminal', 'codex', 'other'],
+    ['nothing', '', 'unknown'],
+  ] as const)('classifies %s', (_name, args, kind) => {
+    expect(codexHostKindOf(args)).toBe(kind)
   })
 })

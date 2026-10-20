@@ -33,6 +33,8 @@ import {
 } from './hook-project-sessions.js'
 import { readSessionIncarnation, readSessionState } from './hook-session-state.js'
 import { codexSharedServerState } from './codex-shared-server-health.js'
+import { codexHostWakesIdle } from './codex-input-lifecycle.js'
+import { codexHostKind } from './codex-session-end.js'
 import { assessCodexCommandRules } from './codex-command-rules.js'
 import { openclawGatewayReady } from './openclaw-gateway-readiness.js'
 import {
@@ -1903,6 +1905,17 @@ function wakeRouteCheck(
   }
   if (active.harness === 'codex') {
     const readiness = inspectCodexQueue(active.sessionId, deps.env)
+    const host = readiness.state === 'ready' ? readSessionIncarnation(readiness.threadId, deps.env)?.harness_process : undefined
+    if (host !== undefined &&
+        !codexHostWakesIdle((deps.codexHostKind ?? codexHostKind)(host.pid))) {
+      return {
+        name: 'hooks (wake route)',
+        ok: false,
+        reportOnly: true,
+        technical: { direct_wake_optional: true, codex_host: 'shared-server' },
+        detail: 'this session runs on Codex\'s shared app-server, which keeps a closed terminal\'s conversation loaded without telling anyone the terminal closed, so Notifai never starts a turn here while it is idle. Answers are still delivered, at this session\'s next turn rather than on their own',
+      }
+    }
     return {
       name: 'hooks (wake route)',
       ok: readiness.state === 'ready',

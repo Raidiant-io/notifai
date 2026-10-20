@@ -18,7 +18,7 @@ import { claudeDescriptorDir } from './claude-wake.js'
 import { beginSessionIncarnation, lifecycleStamp, readSessionEndMarker, readSessionIncarnation, readSessionState, recordSessionNotified, updateSessionState } from './hook-session-state.js'
 import { hookRunCommand } from './commands-hook-run.js'
 import type { CodexWakeAdapters } from './codex-wake.js'
-import { sessionInputWake, stageSessionMessages } from './session-inputs.js'
+import { hasSessionInputs, sessionInputWake, stageSessionMessages } from './session-inputs.js'
 import { attendantStatusPath, recordTurnEnd, recordTurnStart } from './session-attendant-state.js'
 import { ExchangeDriver, type AttendedSession, type ExchangeHost } from './hub-exchange.js'
 import { credentialGenerationPath, encodeFrame, ensurePrivateDirectory, FrameDecoder, fnv64Hex, hubLockPath, hubSocketPath, requestHub } from './hub-ipc.js'
@@ -28,7 +28,7 @@ import { spawn, type ChildProcess } from 'node:child_process'
 import { nullLogger } from './logging.js'
 import { pidExists, processStartTime } from './process-identity.js'
 import { readHubReport } from './hub-client.js'
-import { readAttendantEndingLease } from './session-attendant-state.js'
+import { readAttendantEndingLease, readAttendantLease } from './session-attendant-state.js'
 
 const SESSION = '11111111-2222-3333-4444-555555555555'
 const OTHER = '22222222-3333-4444-5555-666666666666'
@@ -1030,6 +1030,60 @@ describe('hub and Codex SessionEnd', () => {
     hub.requestExit('test')
     service.release()
     await done
+  })
+
+  it.each([
+    ['a terminal that hosts its own thread', 'other' as const, 1],
+    ['a terminal on the shared Codex server', 'shared-server' as const, 0],
+  ])('wakes an idle CLI thread hosted by %s only when Notifai can tell its terminal is open', async (_name, hostKind, wakes) => {
+    const env = hubEnv()
+    recordSessionNotified(SESSION, env, Date.now())
+    const transcript = codexRollout(env, 'codex-tui')
+    const queued: string[] = []
+    const wake: CodexWakeAdapters = { available: () => true, queue: async (threadId) => { queued.push(threadId) } }
+    // The service hands the session a Session Note once it is attended.
+    let note = false
+    const service = fakeService({ batch: (body) => ({
+      message_cursor: 'c1',
+      sessions: body.sessions.map((entry) => entry.state === 'running'
+        ? { session_id: entry.session_id, status: 'attending' as const, generation: entry.generation ?? 1, lease_remaining_ms: 120_000, message_cursor: 'c1',
+            messages: note ? [{ message_id: 'sm_idle', kind: 'note' as const, body: 'Later', created_at: '2026-10-20T00:00:00.000Z', agent_acknowledgement_text_required: true }] : [] }
+        : { session_id: entry.session_id, status: 'withdrawn' as const }),
+    }) })
+    const peers = new Map<number, PeerCredentials>()
+    const { hub, done } = startHub(env, service, peers, memoryStore(), 100, { codexHostKind: () => hostKind, wake })
+    try {
+      await hubListening(env)
+      const child = await codexSession(env, service, peers, 900110, transcript)
+      // Codex's own record of that finished turn: the thread is idle.
+      for (const type of ['task_started', 'task_complete']) {
+        writeFileSync(transcript, `${JSON.stringify({ type: 'event_msg', payload: { type, turn_id: 'turn-1' } })}\n`, { flag: 'a' })
+      }
+      note = true
+      const pending = (): boolean => {
+        const lease = readAttendantLease(SESSION, env)
+        return lease !== null && hasSessionInputs(SESSION, env, lease)
+      }
+      for (let i = 0; i < 20 && !(pending() && queued.length >= wakes); i += 1) {
+        service.release()
+        hub.inputStaged(SESSION)
+        await new Promise((resolve) => setTimeout(resolve, 100))
+      }
+      for (let i = 0; i < 4; i += 1) {
+        service.release()
+        hub.inputStaged(SESSION)
+        await new Promise((resolve) => setTimeout(resolve, 100))
+      }
+      expect(queued).toEqual(Array(wakes).fill(SESSION))
+      // Either way the note waits for the session's next turn, and the session stays open.
+      expect(pending()).toBe(true)
+      expect(reportedEnd(service)).toBe(false)
+      child.socket.destroy()
+    } finally {
+      hub.requestExit('test')
+      service.release()
+      await done
+    }
   })
 
   it('refuses to hold the end of a session it does not attend, so the hook ends it itself', async () => {
