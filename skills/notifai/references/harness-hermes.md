@@ -17,9 +17,13 @@ worktree from the actual invocation cwd. Install the Notifai skill through
 the built-in Notifai skill installer; the Hermes plugin does not include a copy.
 On local classic CLI sessions the plugin supervises a Session Attendant for that exact session.
 After the first Notification Request, it reports Session Presence and hands
-Session Notes and post-consumption Answer Edits into the attached CLI;
-a Note may interrupt a working turn. The plugin checks the current session
-before each write, and the agent must acknowledge the message. An attended
+Session Notes and post-consumption Answer Edits into that session through
+Hermes's public plugin API; a Note may interrupt a working turn. Hermes
+accepting a write means the text was admitted as the session's next input,
+not that the agent read it, so the agent must acknowledge the message. The
+plugin holds writes while Hermes waits on an approval prompt or while a slash
+command such as `/new` or `/resume` may switch sessions, so a write never
+answers a prompt and never lands in a different session. An attended
 classic CLI session can route an `ask` answer into that same live session;
 keep Hermes running for the answer window. Registration schedules background submission;
 the plugin owns answer delivery. Closing the session ends its questions: if

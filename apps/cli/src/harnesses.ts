@@ -121,7 +121,7 @@ export const HERMES_CLASSIC_CLI_QUESTION_CAPABILITY: HarnessCapability = {
   stopContinuation: 'plugin-attendant',
   deliveryRoutes: ['session-queue'],
   deliveryContract:
-    'the live classic CLI plugin owns the complete answer window and injects the claimed answer into its exact attached session; closing the session ends its questions',
+    'the live classic CLI plugin owns the complete answer window and admits the claimed answer as the next input of that exact session through Hermes\'s public plugin API; closing the session ends its questions',
 }
 
 export const HERMES_QUESTION_ROUTING_UNAVAILABLE: HarnessCapability = {

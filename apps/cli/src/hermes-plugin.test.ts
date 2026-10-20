@@ -91,24 +91,108 @@ it.skipIf(process.platform === 'win32')('refuses a discovered foreign entry poin
   expect(() => installHermesPlugin('/unused/adapter', env)).toThrow(/foreign plugin/)
 })
 
-it.skipIf(process.platform === 'win32')('checks the claim deadline at the Hermes injection point', () => {
-  const root = mkdtempSync(path.join(os.tmpdir(), 'notifai-hermes-expired-write-'))
-  roots.push(root)
-  const plugin = path.join(root, 'plugin.py')
-  const child = path.join(root, 'child.py')
+const PLUGIN_HARNESS = String.raw`import importlib.util, json, sys, threading, time
+spec = importlib.util.spec_from_file_location('plugin', sys.argv[1])
+module = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(module)
+module.COMMAND = [sys.executable, sys.argv[2], sys.argv[3], sys.argv[4]]
+calls = []
+hooks = {}
+class Ctx:
+    # Only the public PluginContext surface: no manager or attached CLI.
+    def register_system_prompt_section(self, *args, **kwargs):
+        pass
+    def register_hook(self, name, callback):
+        hooks[name] = callback
+    def inject_message(self, text, role="user", **kwargs):
+        calls.append({"text": text, "role": role, **kwargs})
+        return True
+ctx = Ctx()
+module.register(ctx)
+scenario = sys.argv[4]
+module._observe_session("same")
+if scenario == "approval":
+    hooks["pre_approval_request"](command="rm -rf build", surface="cli")
+if scenario == "smart":
+    hooks["pre_approval_request"](command="rm -rf build", surface="smart")
+if scenario == "working":
+    hooks["pre_llm_call"](session_id="same", platform="cli", parent_session_id="")
+if scenario == "child":
+    hooks["pre_llm_call"](session_id="child", platform="cli", parent_session_id="same")
+if scenario == "resume":
+    hooks["pre_command"](surface="cli", command="resume", session_key="same")
+    threading.Timer(0.5, lambda: hooks["pre_llm_call"](session_id="other", platform="cli", parent_session_id="")).start()
+module._run_attendant(ctx, "same", sys.argv[5], threading.Event())
+print(json.dumps(calls))
+`
+
+const PLUGIN_CHILD = String.raw`import json, sys, time
+states = []
+for line in sys.stdin:
+    frame = json.loads(line)
+    if frame.get('type') == 'state':
+        states.append(frame['activity'])
+        if len(states) == 1:
+            deadline = 0 if sys.argv[2] == 'expired' else time.time_ns() // 1_000_000 + 3000
+            print(json.dumps({'type': 'write', 'id': 1, 'session_id': 'same', 'text': 'note', 'deadline_ms': deadline}), flush=True)
+    elif frame.get('type') == 'result':
+        with open(sys.argv[1], 'w') as out:
+            json.dump({**frame, 'states': states}, out)
+        if sys.argv[2] != 'resume':
+            break
+    elif frame.get('type') == 'end':
+        with open(sys.argv[1] + '.end', 'w') as out:
+            json.dump(frame, out)
+        break
+`
+
+function runPluginScenario(root: string, scenario: string): { result: Record<string, unknown>; calls: unknown[]; ended: boolean } {
+  const plugin = path.join(root, 'plugin.py'), child = path.join(root, 'child.py')
   writeFileSync(plugin, hermesPluginSource('/unused/adapter'))
-  writeFileSync(child, `import json, sys, time\nfor line in sys.stdin:\n    frame = json.loads(line)\n    if frame.get('type') == 'state':\n        deadline = 0 if sys.argv[2] == 'expired' else time.time_ns() // 1_000_000 + 3000\n        print(json.dumps({'type': 'write', 'id': 1, 'session_id': 'same', 'text': 'note', 'deadline_ms': deadline}), flush=True)\n    elif frame.get('type') == 'result':\n        with open(sys.argv[1], 'w') as out:\n            json.dump(frame, out)\n        break\n`)
-  const harness = `import importlib.util, json, sys, threading\nspec = importlib.util.spec_from_file_location('plugin', sys.argv[1])\nmodule = importlib.util.module_from_spec(spec)\nspec.loader.exec_module(module)\nmodule.COMMAND = [sys.executable, sys.argv[2], sys.argv[3], sys.argv[5]]\ncalls = []\nclass Cli:\n    session_id = 'same'\n    _agent_running = False\nclass Manager:\n    _cli_ref = Cli()\nclass Ctx:\n    _manager = Manager()\n    def inject_message(self, text):\n        calls.append(text)\n        return True\nmodule._run_attendant(Ctx(), 'same', sys.argv[4], threading.Event())\nprint(json.dumps(calls))\n`
-  for (const mode of ['expired', 'fresh']) {
-    const resultFile = path.join(root, `${mode}.json`)
-    const run = spawnSync('python3', ['-c', harness, plugin, child, resultFile, root, mode], {
-      encoding: 'utf8', timeout: 10_000,
-    })
-    expect(run.error).toBeUndefined()
-    expect(run.status).toBe(0)
-    expect(JSON.parse(readFileSync(resultFile, 'utf8'))).toMatchObject({
-      type: 'result', id: 1, accepted: mode === 'fresh',
-    })
-    expect(JSON.parse(run.stdout)).toEqual(mode === 'fresh' ? ['note'] : [])
+  writeFileSync(child, PLUGIN_CHILD)
+  const resultFile = path.join(root, `${scenario}.json`)
+  const run = spawnSync('python3', ['-c', PLUGIN_HARNESS, plugin, child, resultFile, scenario, root], {
+    encoding: 'utf8', timeout: 15_000,
+  })
+  expect(run.error).toBeUndefined()
+  expect(run.status).toBe(0)
+  return {
+    result: JSON.parse(readFileSync(resultFile, 'utf8')) as Record<string, unknown>,
+    calls: JSON.parse(run.stdout) as unknown[],
+    ended: existsSync(`${resultFile}.end`),
   }
+}
+
+it.skipIf(process.platform === 'win32')('writes through inject_message aimed at the exact session, inside the claim deadline', () => {
+  const root = mkdtempSync(path.join(os.tmpdir(), 'notifai-hermes-write-')); roots.push(root)
+  const fresh = runPluginScenario(root, 'fresh')
+  expect(fresh.result).toMatchObject({ type: 'result', id: 1, accepted: true, states: ['idle'] })
+  // An explicit target and never an origin, which could start a session.
+  expect(fresh.calls).toEqual([{ text: 'note', role: 'user', session_key: 'same' }])
+  const expired = runPluginScenario(root, 'expired')
+  expect(expired.result).toMatchObject({ accepted: false })
+  expect(expired.calls).toEqual([])
+})
+
+it.skipIf(process.platform === 'win32')('holds a write while Hermes waits on an approval, so it cannot answer the prompt', () => {
+  const root = mkdtempSync(path.join(os.tmpdir(), 'notifai-hermes-approval-')); roots.push(root)
+  const held = runPluginScenario(root, 'approval')
+  expect(held.result).toMatchObject({ accepted: false, reason: 'approval-pending' })
+  expect(held.calls).toEqual([])
+  // The guardian model's assessment is not a User prompt and may never report an outcome.
+  expect(runPluginScenario(root, 'smart').result).toMatchObject({ accepted: true })
+})
+
+it.skipIf(process.platform === 'win32')('reports the turn from public hooks and ignores delegated child turns', () => {
+  const root = mkdtempSync(path.join(os.tmpdir(), 'notifai-hermes-activity-')); roots.push(root)
+  expect(runPluginScenario(root, 'working').result).toMatchObject({ states: ['working'] })
+  expect(runPluginScenario(root, 'child').result).toMatchObject({ states: ['idle'] })
+})
+
+it.skipIf(process.platform === 'win32')('holds writes from a session-switching command and retires once another session is current', () => {
+  const root = mkdtempSync(path.join(os.tmpdir(), 'notifai-hermes-resume-')); roots.push(root)
+  const resumed = runPluginScenario(root, 'resume')
+  expect(resumed.result).toMatchObject({ accepted: false, reason: 'session-switching' })
+  expect(resumed.calls).toEqual([])
+  expect(resumed.ended).toBe(true)
 })
