@@ -16,7 +16,7 @@ import {
   questionsAwaitingAnswer,
   recordConfirmedNativeAnswerTarget,
 } from './native-answer-operation.js'
-import { markCodexOrdinaryPresentation, mayRetireFromPrompt, reserveCurrentCodexQuestion, type NativeQuestionAdmission } from './codex-question-bindings.js'
+import { markCodexOrdinaryPresentation, mayRetireFromPrompt, nativeFormMayAnswer, reserveCurrentCodexQuestion, type NativeQuestionAdmission } from './codex-question-bindings.js'
 import { isDeepStrictEqual } from 'node:util'
 import { currentCodexTurn } from './session-attendant-state.js'
 import { reserveClaudeQuestion } from './claude-question-bindings.js'
@@ -582,19 +582,28 @@ interface FinalizedPending {
 }
 
 /**
- * How an answer-collecting close names itself: `deliver` only when this
- * waiter will claim the fenced answer before writing it in place — a Claude
- * inbox write or a Codex thread-queue write while this session's attendant
- * holds a lease. Otherwise no disposition, exactly as released CLIs close.
+ * How an answer-collecting close names each question: `deliver` only when
+ * the answer's writer will claim the fenced answer before writing it in
+ * place — a Claude inbox write or a Codex thread-queue write while this
+ * session's attendant holds a lease, or a native form (picker or card) that
+ * may still return it. Otherwise no disposition, exactly as released CLIs
+ * close.
  */
 function answerCloseDisposition(
   ctx: HookContext,
   route: EscalationDeliveryRoute,
-): CloseDisposition | undefined {
+  sessionId: string,
+): (entry: PendingQuestion) => CloseDisposition | undefined {
   // An immediate reply can beat the attendant's first lease exchange. These
   // queues require a claim before writing, so preserve its selection at close.
-  if ((ctx.harness === 'openclaw' || ctx.harness === 'hermes' || ctx.harness === 'grok') && route.kind === 'session-queue') return 'deliver'
-  return claimableRoute(route) && ctx.answerClaims?.lease() != null ? 'deliver' : undefined
+  if ((ctx.harness === 'openclaw' || ctx.harness === 'hermes' || ctx.harness === 'grok') && route.kind === 'session-queue') return () => 'deliver'
+  const claims = ctx.answerClaims
+  if (!claimableRoute(route) || claims === undefined) return () => undefined
+  // A native form writes only a selected answer, and it may be answered
+  // before the attendant's first lease exchange: decided by the question's
+  // own registration, not by how far the lease has got.
+  return (entry) => claims.lease() != null || nativeFormMayAnswer(readSessionState(sessionId, ctx.env), entry.question_id)
+    ? 'deliver' : undefined
 }
 
 /** Routes that write into the running session itself, so a claim can cover the write. */
@@ -614,11 +623,11 @@ async function finalizePendings(
   ctx: HookContext,
   sessionId: string,
   pending: PendingQuestion[],
-  disposition?: CloseDisposition,
+  disposition?: (entry: PendingQuestion) => CloseDisposition | undefined,
 ): Promise<FinalizedPending[]> {
   return Promise.all(
     pending.map(async (entry) => {
-      const response = await finalizeReplies(ctx, entry.request_id!, disposition)
+      const response = await finalizeReplies(ctx, entry.request_id!, disposition?.(entry))
       if (response !== null && response.request_id === entry.request_id) {
         recordConfirmedNativeAnswerTarget(sessionId, ctx.env, entry)
       }
@@ -1821,7 +1830,7 @@ async function handleClaimedStop(
         ctx,
         sessionId,
         answered.map((entry) => entry.pending),
-        answerCloseDisposition(ctx, route),
+        answerCloseDisposition(ctx, route, sessionId),
       )
       const authoritative = answered.map((entry) => {
         const response = finalized.find((candidate) =>
@@ -2291,7 +2300,7 @@ async function escalate(
     (entry) =>
       entry.reply_deadline_at === undefined || entry.reply_deadline_at <= ctx.now() || anomalous.includes(entry),
   )
-  const finalizedStale = await finalizePendings(ctx, sessionId, staleLive, answerCloseDisposition(ctx, route))
+  const finalizedStale = await finalizePendings(ctx, sessionId, staleLive, answerCloseDisposition(ctx, route, sessionId))
   const staleAnswers = finalizedStale
     .map(finalizedAnswer)
     .filter((entry): entry is AnsweredPending => entry !== null)
@@ -2433,7 +2442,7 @@ async function escalate(
         waited.permanentFailures.has(entry.request_id!),
     )
     const stillAnswerable = activeWaiting.filter((entry) => !expired.includes(entry))
-    const finalized = await finalizePendings(ctx, sessionId, expired, answerCloseDisposition(ctx, route))
+    const finalized = await finalizePendings(ctx, sessionId, expired, answerCloseDisposition(ctx, route, sessionId))
     const finalAnswers = finalized
       .map(finalizedAnswer)
       .filter((entry): entry is AnsweredPending => entry !== null)
@@ -2484,7 +2493,7 @@ async function escalate(
   }
 
   const polledAnswered = activeWaiting.filter((entry) => waited.byRequest.has(entry.request_id!))
-  const finalizedAnswered = await finalizePendings(ctx, sessionId, polledAnswered, answerCloseDisposition(ctx, route))
+  const finalizedAnswered = await finalizePendings(ctx, sessionId, polledAnswered, answerCloseDisposition(ctx, route, sessionId))
   const answered: AnsweredPending[] = []
   for (const finalized of finalizedAnswered) {
     const entry = finalized.pending
