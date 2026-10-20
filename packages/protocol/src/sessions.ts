@@ -120,7 +120,8 @@ const attendanceIdentity = {
  *   `session_stopped_hold`) the session continues under that Agent Session
  *   instead: its open questions, held answers and pending Session Messages
  *   move there and nothing expires. The questions stay listed under the
- *   session that asked them.
+ *   session that asked them. With `session_continued_successor` a successor
+ *   the server has not seen yet is created, on the ending session's machine.
  * - `stopped` (holder only, server feature `session_stopped_hold`): the
  *   harness stopped without the User closing it and may be reopened in place.
  *   The lease stops; questions stay open for their own windows; Session Notes
@@ -300,7 +301,9 @@ export type AttendanceBatchRequestT = Static<typeof AttendanceBatchRequest>
  * One entry's outcome, in request order. `unknown_session` replaces the
  * per-session 404; `unknown_successor` refuses a `continued` end whose
  * successor is not another Agent Session of this Account or has already
- * ended, changing nothing. The per-session route answers it with a 404 whose
+ * ended, changing nothing. With `session_continued_successor` an unseen
+ * successor is created instead, and one that another machine owns or attends
+ * is refused. The per-session route answers it with a 404 whose
  * `details.reason` is `unknown_successor`.
  */
 export type AttendanceBatchResult = { session_id: string } & (

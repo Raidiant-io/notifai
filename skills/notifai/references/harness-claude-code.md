@@ -40,8 +40,8 @@ the conversation comes back (the app reopening it, `claude --resume`),
 possibly hours later: check that the work it answers still applies. Notes
 sent meanwhile wait and arrive the same way. A `/branch` of it continues it
 under a new id: its questions and their answers move to the branch when the
-branch has already sent a notification and the service supports it, and
-expire otherwise. A scripted `claude -p --resume` of it receives nothing.
+service supports it (an older service only once the branch has sent a
+notification), and expire otherwise. A scripted `claude -p --resume` of it receives nothing.
 
 The inbox is a socket on macOS and Linux from Claude Code 2.1.224, and a
 named pipe on Windows from 2.1.234. On an older Claude Code the answer is

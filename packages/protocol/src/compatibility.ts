@@ -22,6 +22,10 @@ import type { Platform } from './notification.js'
  *   the server lists it.
  * - `question_dismiss` (server only): the User can dismiss an open question
  *   from a Companion App. Listed as a Server Feature of the same name.
+ * - `session_continued_successor` (server only): a `continued` end may name
+ *   a successor the server has not seen yet, such as a fork that has not
+ *   notified; the server creates it for this machine. Without it, a CLI names
+ *   only a successor the server already knows.
  */
 export const CLIENT_CAPABILITIES = [
   'answer',
@@ -34,6 +38,7 @@ export const CLIENT_CAPABILITIES = [
   'harness_answers',
   'session_stopped_hold',
   'question_dismiss',
+  'session_continued_successor',
 ] as const
 export type ClientCapability = (typeof CLIENT_CAPABILITIES)[number]
 

@@ -472,9 +472,10 @@ rollout is found by its id in `sessions/` and `archived_sessions/`), or you
 quit the app it was stopped in, it closes as above; when its last window ends,
 it ends, and stops accepting notes. A fork that names the stopped
 conversation (Codex records `forked_from_id`, Claude Code's `/branch` records
-`forkedFrom`) means it continues there. Where the service supports it, and
-the fork has already sent a notification, its questions, their answers and
-its notes move to the fork and arrive there; otherwise its questions expire.
+`forkedFrom`) means it continues there. Where the service supports it (an
+older service only once the fork has sent a notification), its questions,
+their answers and its notes move to the fork and arrive there; otherwise its
+questions expire.
 Where the service supports it, you can also send a note to a stopped
 session: it waits up to a day and is delivered when the conversation comes
 back. An answer still waiting when its question's window ends is not
