@@ -139,6 +139,9 @@ const CHILD_WRITE_DEADLINE_MS = 8_000
  * still land; inside the service's 30 s claim window.
  */
 const CHILD_WRITE_TIMEOUT_MS = 20_000
+/** A Claude Code descriptor still being written is read again this often, this many times, at registration. */
+const DESCRIPTOR_SETTLE_MS = 100
+const DESCRIPTOR_SETTLE_TRIES = 10
 /** How long an accepted hook waits for the launcher to commit it to the hub. */
 const INGRESS_GO_WAIT_MS = 5_000
 /** How long a new hub waits for a replaced attendant to step aside. */
@@ -1561,10 +1564,19 @@ export class Hub {
     if (registration.harness === 'codex' && owner.comm !== 'codex') return 'harness-not-codex'
     const env = this.sessionEnv(registration)
     if (registration.harness === 'claude-code') {
-      let raw: unknown
-      try { raw = JSON.parse(readFileSync(path.join(claudeDescriptorDir(env), `${owner.pid}.json`), 'utf8')) } catch { return 'descriptor-missing' }
-      const descriptor = parseDescriptor(raw)
-      if (descriptor === null || descriptor.pid !== owner.pid || descriptor.sessionId !== registration.sessionId ||
+      // Claude Code publishes its descriptor before it has every field (a
+      // resumed session's first write has no status yet): a moment later it
+      // does. One still incomplete then is a passing refusal; the child comes back.
+      let descriptor: ReturnType<typeof parseDescriptor> = null
+      for (let attempt = 0; descriptor === null; attempt += 1) {
+        let raw: unknown
+        try { raw = JSON.parse(readFileSync(path.join(claudeDescriptorDir(env), `${owner.pid}.json`), 'utf8')) } catch { raw = undefined }
+        descriptor = raw === undefined ? null : parseDescriptor(raw)
+        if (descriptor !== null) break
+        if (attempt >= DESCRIPTOR_SETTLE_TRIES) return 'descriptor-missing'
+        await new Promise((resolve) => setTimeout(resolve, DESCRIPTOR_SETTLE_MS))
+      }
+      if (descriptor.pid !== owner.pid || descriptor.sessionId !== registration.sessionId ||
           !descriptorStartMatches(descriptor.procStart, owner, owner.ticks ?? registration.harnessTicks)) return 'descriptor-mismatch'
     }
     const existing = this.sessions.get(registration.sessionId)

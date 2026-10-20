@@ -508,6 +508,29 @@ describe('hub', () => {
     await done
   })
 
+  it('waits for a descriptor Claude Code is still writing (a resumed session has no status at first), and asks the child back while it stays incomplete', async () => {
+    const env = hubEnv()
+    const descriptor = path.join(claudeDescriptorDir(env), `${HARNESS.pid}.json`)
+    const partial = { pid: HARNESS.pid, sessionId: SESSION, cwd: '/tmp', startedAt: Date.now(), procStart: HARNESS.start, version: '2.1.304',
+      peerProtocol: 1, messagingSocketPath: '/tmp/b3hub-inbox.sock' }
+    writeFileSync(descriptor, JSON.stringify(partial))
+    const service = fakeService()
+    const peers = new Map<number, PeerCredentials>()
+    const { hub, done } = startHub(env, service, peers)
+    await hubListening(env)
+    const harness = { pid: HARNESS.pid, comm: 'claude', start: HARNESS.start }
+    setTimeout(() => writeFileSync(descriptor, JSON.stringify({ ...partial, status: 'idle' })), 300)
+    const child = await registered(env, SESSION, 900008, peerOf(900008, harness), peers)
+    expect(child.frames[0]).toEqual({ type: 'registered', session_id: SESSION })
+    child.socket.destroy()
+    writeFileSync(descriptor, JSON.stringify(partial))
+    const other = await registered(env, OTHER, 900009, peerOf(900009, harness), peers, { session_id: OTHER })
+    expect(other.frames[0]).toEqual({ type: 'refused', reason: 'descriptor-missing', retry: true })
+    hub.requestExit('test')
+    service.release()
+    await done
+  })
+
   it('keeps one hub per state directory when two start at once', async () => {
     const env = hubEnv()
     const service = fakeService()
