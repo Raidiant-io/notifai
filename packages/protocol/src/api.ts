@@ -707,6 +707,20 @@ export interface CloseRepliesResponse extends ListRepliesResponse {
   delivered_reply_seq: number | null
 }
 
+/**
+ * `POST /api/v1/notifications/:request_id/dismiss` (user auth, server feature
+ * `question_dismiss`; no body). Dismisses an open question: its reply window
+ * closes now, every device retires it silently as expired, and the agent sees
+ * an ordinary window expiry. Idempotent. An answered question, or one whose
+ * window already closed, is left exactly as it was: an answer recorded first
+ * always wins over a dismissal.
+ */
+export interface DismissQuestionResponse {
+  request_id: string
+  /** When the question was dismissed, by this call or an earlier one; null when nothing changed. */
+  dismissed_at: string | null
+}
+
 /** Agent-authored follow-up text is kept intentionally smaller than a user reply. */
 export const AGENT_ACKNOWLEDGEMENT_MAX_LENGTH = 200
 
