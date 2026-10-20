@@ -13,8 +13,9 @@
  *
  * - `reopen.automatic`: off, and every stopped conversation waits for the User;
  * - a place's policy: `reopen.terminal` (a new terminal window, see
- *   `reopen-terminal.ts`) and `reopen.codex_app` (the Codex app; no adapter in
- *   this version, so its conversations wait). Every other place waits.
+ *   `reopen-terminal.ts`) and `reopen.codex_app` (the Codex app runs the
+ *   thread's queued wake while it is running, see `reopen-codex-app.ts`).
+ *   Every other place waits.
  *
  * Rules that no setting changes:
  * - Notifai never moves a conversation: it reopens only in the place the
@@ -43,7 +44,17 @@ import { codexSubcommand, codexThreadHolders } from './codex-session-end.js'
 import { fnv64Hex, hubRunDir } from './hub-ipc.js'
 import type { Logger } from './logging.js'
 import { accountHome } from './platform.js'
-import { descriptorStartMatches, pidExists, processStartTime } from './process-identity.js'
+import { descriptorStartMatches, pidExists, processStartTime, type ProcessIdentity } from './process-identity.js'
+import {
+  claimWakeLink,
+  codexAppFaulted,
+  codexAppPlan,
+  recordCodexAppFault,
+  sendCodexAppUrl,
+  systemCodexAppHost,
+  type CodexAppHost,
+  type CodexAppWait,
+} from './reopen-codex-app.js'
 import {
   chooseTerminal,
   claudeKeptOptions,
@@ -210,6 +221,12 @@ export interface ReopenTarget {
   orcaPane: boolean
   launch: LaunchRecord | null
   hooks: HookLaunchFacts | null
+  /** The rollout a Codex thread was last seen in. */
+  transcriptPath: string | null
+  /** The app that hosted it (the Codex app, for `codex-app`). */
+  hostApp: ProcessIdentity | null
+  /** The harness process (the Codex app's app-server, for `codex-app`). */
+  harnessProcess: ProcessIdentity | null
   /** What waits for it: answers, notes and edits, by id. */
   items: readonly string[]
 }
@@ -217,8 +234,12 @@ export interface ReopenTarget {
 export type ReopenTrigger = 'answer' | 'note' | 'hub-start'
 
 /** Why a conversation was left waiting for the User. */
-export type ReopenWait = 'off' | 'place-waits' | 'adapter-unavailable' | 'orca-pane' | 'folder-missing' | 'live-elsewhere' | 'live-unknown' |
-  'attach-unknown' | 'harness-missing' | 'no-display' | 'terminal-unavailable' | 'launcher-missing' | 'attempts-used' | 'launch-failed'
+export type ReopenWait = 'off' | 'place-waits' | 'orca-pane' | 'folder-missing' | 'live-elsewhere' | 'live-unknown' |
+  'attach-unknown' | 'harness-missing' | 'no-display' | 'terminal-unavailable' | 'launcher-missing' | 'attempts-used' | 'launch-failed' |
+  CodexAppWait | 'app-started'
+
+/** What a Codex app attempt records in place of a terminal's name. */
+const CODEX_APP = 'codex-app'
 
 export type ReopenOutcome =
   | { outcome: 'launched'; token: string; terminal: string }
@@ -264,6 +285,8 @@ export interface ReopenHost {
   queueCodexWake(sessionId: string): Promise<void>
   /** Open the window: true, or why it did not open. */
   open(launch: TerminalLaunch, cwd: string): Promise<true | string>
+  /** The running Codex app, for its own conversations. */
+  codexApp: CodexAppHost
 }
 
 /** The real machine, for the hub. */
@@ -287,6 +310,7 @@ export function systemReopenHost(env: NodeJS.ProcessEnv, logger: Logger, launche
     resolveHarness: (name) => resolveInLoginShell(loginShell, name, env),
     queueCodexWake: async () => undefined,
     open: (launch, cwd) => openWindow(launch, cwd, env),
+    codexApp: systemCodexAppHost(launcher),
     ...overrides,
   }
 }
@@ -476,12 +500,14 @@ export class SessionReopen {
       const adapter = placeAdapter(target.place)
       if (adapter === null) return waiting('place-waits')
       if (!adapterAllowed(settings, adapter)) return waiting('off')
-      // The Codex app's adapter is not in this version.
-      if (adapter === 'codex-app') return waiting('adapter-unavailable')
       if (record.attempts >= REOPEN_ATTEMPTS) return waiting('attempts-used')
       if (this.recentLaunches(now) >= REOPEN_BURST) {
         this.host.logger.info('hub.reopen', { event: 'queued', session: target.sessionId, trigger, reason: 'burst' })
         return { outcome: 'skipped', reason: 'burst' }
+      }
+      if (adapter === 'codex-app') {
+        if (target.harness !== 'codex') return waiting('place-waits')
+        return await this.codexAppReopen(target, trigger, record, fresh, now, waiting)
       }
       const plan = await this.terminalPlan(target, settings)
       if ('wait' in plan) return waiting(plan.wait)
@@ -544,6 +570,11 @@ export class SessionReopen {
     const record = readSessionRecord(env, sessionId)
     const now = this.host.now()
     if (record?.last?.outcome !== 'launched' || now - record.last.at < REOPEN_CONFIRM_MS) return
+    // The Codex app took the link and did not load the conversation: it gets no more until its version changes.
+    if (record.last.terminal === CODEX_APP && record.last.token !== undefined) {
+      const version = attemptAppVersion(env, record.last.token)
+      if (version !== null) recordCodexAppFault(reopenDir(env), version, 'no-response', now)
+    }
     const ran = record.last.token === undefined ? false : guardPid(env, record.last.token) !== null
     removeAttempt(env, record.last.token)
     record.last = { ...record.last, outcome: 'no-response', reason: ran ? 'not-back' : 'window-did-not-run' }
@@ -576,6 +607,45 @@ export class SessionReopen {
     let count = 0
     for (const record of sessionRecords(this.host.env)) if (record.last !== null && record.last.token !== undefined && now - record.last.at < 60_000) count += 1
     return count
+  }
+
+  /**
+   * The Codex app adapter (`reopen-codex-app.ts`): Notifai's wake goes into
+   * the thread's queue first, then the running app is handed the link that
+   * runs it, once per wake. The app-server's pid stands in for the window's
+   * guard pid, so its conversation coming back confirms the attempt.
+   */
+  private async codexAppReopen(target: ReopenTarget, trigger: ReopenTrigger, record: SessionRecord, fresh: string[], now: number,
+    waiting: (reason: ReopenWait) => ReopenOutcome): Promise<ReopenOutcome> {
+    const { env } = this.host
+    const directory = reopenDir(env)
+    await this.host.queueCodexWake(target.sessionId)
+    const plan = codexAppPlan({ sessionId: target.sessionId, codexHome: target.codexHome, transcriptPath: target.transcriptPath,
+      hostApp: target.hostApp, appServer: target.harnessProcess, env }, this.host.codexApp, (version) => codexAppFaulted(directory, version))
+    if ('wait' in plan) return waiting(plan.wait)
+    if (!claimWakeLink(directory, plan.wakeToken)) return waiting('wake-linked')
+    const token = randomBytes(16).toString('hex')
+    const files = attemptFiles(env, token)
+    ensureReopenDir(env)
+    writeFileSync(files.record, `${JSON.stringify({ v: 1, app_version: plan.bundle.version })}\n`, { mode: 0o600 })
+    writeFileSync(files.pid, `${target.harnessProcess!.pid}\n`, { mode: 0o600 })
+    const before = { attempts: record.attempts, seen: record.seen, last: record.last }
+    record.attempts += 1
+    record.seen = [...record.seen, ...fresh].slice(-200)
+    record.last = { at: now, trigger, outcome: 'launched', token, terminal: CODEX_APP }
+    record.updated_at = now
+    this.save(record)
+    const sent = await sendCodexAppUrl(plan, this.host.codexApp)
+    if (!sent.sent) {
+      removeAttempt(env, token)
+      Object.assign(record, before)
+      if (sent.coldLaunch === true) recordCodexAppFault(directory, plan.bundle.version, 'app-started', now)
+      this.host.logger.info('hub.reopen', { event: 'launch-failed', session: target.sessionId, terminal: CODEX_APP, detail: sent.reason })
+      return waiting(sent.reason === 'app-not-running' ? 'app-not-running' : sent.reason === 'app-started' ? 'app-started' : 'launch-failed')
+    }
+    this.host.logger.info('hub.reopen', { event: 'launched', session: target.sessionId, trigger, harness: target.harness, terminal: CODEX_APP,
+      route: sent.route, attempt: record.attempts })
+    return { outcome: 'launched', token, terminal: CODEX_APP }
   }
 
   /** The terminal adapter's preflight and its launch, or why it waits. */
@@ -633,6 +703,16 @@ export class SessionReopen {
   }
 }
 
+/** The Codex app version an attempt handed its link to. */
+function attemptAppVersion(env: NodeJS.ProcessEnv, token: string): string | null {
+  try {
+    const record = JSON.parse(readFileSync(attemptFiles(env, token).record, 'utf8')) as { app_version?: unknown }
+    return typeof record.app_version === 'string' ? record.app_version : null
+  } catch {
+    return null
+  }
+}
+
 function sessionRecords(env: NodeJS.ProcessEnv): SessionRecord[] {
   let names: string[]
   try { names = readdirSync(reopenDir(env)).filter((name) => /^session-[0-9a-f]{16}\.json$/.test(name)) } catch { return [] }
@@ -672,7 +752,7 @@ export function reopenReport(env: NodeJS.ProcessEnv, platform: NodeJS.Platform =
     automatic: settings.automatic,
     terminal: settings.terminal,
     codex_app: settings.codexApp,
-    codex_app_available: false,
+    codex_app_available: platform === 'darwin',
     terminal_app: settings.terminalApp,
     focus: settings.focus,
     permission_mode: settings.permissionMode,
@@ -684,7 +764,11 @@ export function reopenReport(env: NodeJS.ProcessEnv, platform: NodeJS.Platform =
 /** Doctor's one line: what happens to a stopped conversation when its answer arrives. */
 export function reopenLine(report: ReturnType<typeof reopenReport>): string {
   if (!report.automatic) return 'Reopen: off; every stopped conversation waits for you'
-  if (report.terminal !== 'automatic') return 'Reopen: off for terminals; every stopped conversation waits for you'
   const where = report.terminal_app === 'auto' ? '' : ` (in ${TERMINAL_NAMES[report.terminal_app] ?? report.terminal_app})`
-  return `Reopen: terminals automatically${where}; other apps wait for you`
+  const places = [
+    ...(report.terminal === 'automatic' ? [`terminals automatically${where}`] : []),
+    ...(report.codex_app_available && report.codex_app !== 'off' ? ['the Codex app while it runs'] : []),
+  ]
+  if (places.length === 0) return 'Reopen: off; every stopped conversation waits for you'
+  return `Reopen: ${places.join('; ')}; other apps wait for you`
 }
