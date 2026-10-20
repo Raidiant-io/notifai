@@ -414,6 +414,7 @@ static int owned_path(const char *file, int directory) {
 
 #include "posix-file-users.h"
 #include "session-child.h"
+#include "hook-ingress.h"
 
 static int managed_runtime(char *executable) {
     char root[PATH_MAX];
@@ -507,9 +508,23 @@ int main(int argc, char **argv) {
     }
     /* The session child never starts the runtime; it is the resident itself. */
     const char *retrying = getenv("NOTIFAI_NATIVE_RETRY");
-    if (!detached && !(stable_entry && retrying && (!strcmp(retrying, "1") || !strcmp(retrying, "2"))) &&
-        session_child_requested(argc, argv))
+    int retried = stable_entry && retrying && (!strcmp(retrying, "1") || !strcmp(retrying, "2"));
+    if (!detached && !retried && session_child_requested(argc, argv))
         return session_child_main(argc, argv, launcher, executable);
+    /* A frequent hook of a quiet session is answered by the running hub; any
+     * other outcome starts the runtime below with the same input. */
+    if (!detached && !retried && stable_entry && ingress_requested(argc, argv)) {
+        ingress_input input;
+        int code = 0;
+        ingress_read_input(&input);
+        if (hook_ingress(argc, argv, executable, &input, &code) == INGRESS_SERVED) return code;
+        if (!ingress_replay_input(&input)) {
+            /* A hook never fails its harness. */
+            fprintf(stderr, "notifai: hook skipped: its input could not be handed to the runtime\n");
+            return 0;
+        }
+        free(input.data);
+    }
     for (size_t i = 0; environ[i];) {
         char *entry = environ[i];
         if (!strncmp(entry, "BUN_", 4) || !strncmp(entry, "JSC_", 4) ||

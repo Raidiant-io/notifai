@@ -198,6 +198,14 @@ export function stageSessionMessages(sessionId: string, env: NodeJS.ProcessEnv, 
   })
 }
 
+/** Every staged Session Message, whatever lease staged it; empty when none (or unreadable). */
+export function readSessionMessagesFile(sessionId: string, env: NodeJS.ProcessEnv): unknown[] {
+  try {
+    const data = JSON.parse(readFileSync(messagesPath(sessionId, env), 'utf8')) as { messages?: unknown }
+    return Array.isArray(data.messages) ? data.messages : []
+  } catch { return [] }
+}
+
 export function readSessionMessages(sessionId: string, env: NodeJS.ProcessEnv, lease: DeliveryLease): AttendanceMessage[] {
   return readSessionMessageCache(sessionId, env, lease) ?? []
 }

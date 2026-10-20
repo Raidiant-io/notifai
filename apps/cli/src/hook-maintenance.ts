@@ -22,6 +22,8 @@ export interface HookMaintenanceLaunch {
   harness?: HookInstallableHarness
   /** The launching hook's share of its harness timeout for the Windows hand-off. */
   detachTimeoutMs?: number
+  /** The launching hook's environment, when it is not this process's (a hook the hub runs). */
+  env?: NodeJS.ProcessEnv
 }
 
 /**
@@ -50,7 +52,7 @@ export function claimHookMaintenance(env: NodeJS.ProcessEnv, now: number = Date.
 export function spawnHookMaintenance(launch: HookMaintenanceLaunch): void {
   launchSelf(['hook', 'maintenance', '--owner', 'notifai', ...(launch.harness === undefined ? [] : ['--harness', launch.harness])], {
     cwd: launch.cwd,
-    env: process.env,
+    env: launch.env ?? process.env,
     ...(launch.detachTimeoutMs === undefined ? {} : { detachTimeoutMs: launch.detachTimeoutMs }),
     // Short-lived and bound to no Agent Session: nothing to retain.
     retain: () => undefined,
@@ -64,7 +66,7 @@ export function spawnHookMaintenance(launch: HookMaintenanceLaunch): void {
 export function spawnRetirement(launch: HookMaintenanceLaunch): void {
   launchSelf(['hook', 'retirement', '--owner', 'notifai', ...(launch.harness === undefined ? [] : ['--harness', launch.harness])], {
     cwd: launch.cwd,
-    env: process.env,
+    env: launch.env ?? process.env,
     ...(launch.detachTimeoutMs === undefined ? {} : { detachTimeoutMs: launch.detachTimeoutMs }),
     retain: () => undefined,
   })

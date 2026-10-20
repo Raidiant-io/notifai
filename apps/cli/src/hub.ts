@@ -85,9 +85,11 @@ import {
   hubStatusPath,
 } from './hub-ipc.js'
 import { SessionLease, type LeaseOutcome } from './hub-lease.js'
+import { ingressRefusal, parseIngressRequest, resultFrames, runIngressHook, type IngressHost, type IngressIdentity } from './hub-ingress.js'
 import { currentRuntimeBuild } from './launch-self.js'
 import { bootstrapLogger, type Logger } from './logging.js'
 import { nativeUninstallPending } from './native-uninstall-barrier.js'
+import { accountHome } from './platform.js'
 import { descriptorStartMatches, linuxStartTicks, normalizeProcessStart, pidExists, processIdentityLiveness, type ProcessIdentity } from './process-identity.js'
 import { packageVersion } from './release.js'
 import { retainSessionRuntime } from './runtime-build-retention.js'
@@ -131,6 +133,8 @@ const CHILD_WRITE_DEADLINE_MS = 8_000
  * still land; inside the service's 30 s claim window.
  */
 const CHILD_WRITE_TIMEOUT_MS = 20_000
+/** How long an accepted hook waits for the launcher to commit it to the hub. */
+const INGRESS_GO_WAIT_MS = 5_000
 /** How long a new hub waits for a replaced attendant to step aside. */
 const HANDOFF_WAIT_MS = 10_000
 /** First automatic-update pass after the hub starts, then the pass interval. The lookup itself is daily. */
@@ -176,6 +180,8 @@ export interface HubOptions {
   codexEndConfirmMs?: number
   /** Test seam: what kind of process hosts a Codex session; production asks `ps`. */
   codexHostKind?: typeof codexHostKind
+  /** Test seam: the build and installation this hub runs; production reads its own managed build once. */
+  ingressIdentity?: () => IngressIdentity | null
   /**
    * Automatic updates (design §11). Absent: off (tests and development).
    * `hubCommand` supplies the production updater for a managed installation.
@@ -640,6 +646,10 @@ export class Hub {
   private updating = false
   /** An automatic update activated a new build: start its hub after this one leaves. */
   private successor = false
+  /** Hook ingress: what this hub answered itself, what it handed back to the runtime and why. */
+  private readonly ingressCounts = { served: 0, declined: 0, reasons: {} as Record<string, number> }
+  private ingressInFlight = 0
+  private ingressIdentityValue: IngressIdentity | null | undefined
 
   constructor(readonly deps: CommandDeps, private readonly options: HubOptions) {
     this.clock = options.clock ?? { monotonic: () => performance.now(), wall: () => Date.now() }
@@ -967,6 +977,9 @@ export class Hub {
     let link: ChildLink | null = null
     let session: HubSession | null = null
     let busy: Promise<void> = Promise.resolve()
+    // Hook ingress: the launcher's `go` after the hub accepted, or its going away.
+    let ingressStarted = false
+    let ingressGo: ((go: boolean) => void) | null = null
     const helloTimer = setTimeout(() => { if (role === null) socket.destroy() }, 5_000)
     const refuse = (reason: string): void => {
       this.logger.info('hub.session', { event: 'refused', role, reason })
@@ -975,6 +988,8 @@ export class Hub {
     socket.on('error', () => undefined)
     socket.on('close', () => {
       clearTimeout(helloTimer)
+      ingressGo?.(false)
+      ingressGo = null
       if (link !== null) {
         this.children -= 1
         this.links.delete(link)
@@ -1003,6 +1018,14 @@ export class Hub {
               this.links.add(link)
               this.children += 1
             }
+            return
+          }
+          if (role === 'ingress') {
+            if (frame['type'] === 'go') { ingressGo?.(true); ingressGo = null; return }
+            if (frame['type'] !== 'hook' || ingressStarted) { socket.destroy(); return }
+            ingressStarted = true
+            // Not awaited: the launcher's `go` arrives on this same connection.
+            void this.ingress(socket, frame, () => new Promise<boolean>((resolve) => { ingressGo = resolve }))
             return
           }
           if (role === 'child' && link !== null) {
@@ -1091,6 +1114,76 @@ export class Hub {
         return
       default:
         reply({ type: 'refused', reason: 'unknown-request' })
+    }
+  }
+
+  // -- hook ingress ----------------------------------------------------------------
+
+  /**
+   * One hook offered by the native launcher (see `hub-ingress.ts`). Declined
+   * before anything is done unless this hub can answer it exactly as the
+   * runtime would; then run here, and the output handed back.
+   */
+  private async ingress(socket: Socket, frame: Record<string, unknown>, launcherGo: () => Promise<boolean>): Promise<void> {
+    const request = parseIngressRequest(frame)
+    const reason = typeof request === 'string' ? request
+      : this.exiting ? 'hub-exiting' : ingressRefusal(request, this.ingressIdentity())
+    if (reason !== null || typeof request === 'string') {
+      const why = reason ?? 'malformed'
+      this.ingressCounts.declined += 1
+      this.ingressCounts.reasons[why] = (this.ingressCounts.reasons[why] ?? 0) + 1
+      try { socket.end(encodeFrame({ type: 'fallback', reason: why })) } catch { socket.destroy() }
+      return
+    }
+    this.ingressInFlight += 1
+    this.touch()
+    try {
+      // Two steps: a launcher that already gave up and started the runtime
+      // never says `go`, so the hook never runs twice.
+      const go = launcherGo()
+      socket.write(encodeFrame({ type: 'accepted' }))
+      let timer: ReturnType<typeof setTimeout> | undefined
+      const committed = await Promise.race([go, new Promise<boolean>((resolve) => { timer = setTimeout(() => resolve(false), INGRESS_GO_WAIT_MS) })])
+      clearTimeout(timer)
+      if (!committed) {
+        this.ingressCounts.reasons['launcher-gone'] = (this.ingressCounts.reasons['launcher-gone'] ?? 0) + 1
+        socket.destroy()
+        return
+      }
+      const result = await runIngressHook(this.ingressHost(), request)
+      this.ingressCounts.served += 1
+      for (const reply of resultFrames(result)) socket.write(encodeFrame(reply))
+      socket.end()
+    } catch (err) {
+      this.logger.error('hub.ingress', { event: 'failed', hook: request.event, message: err instanceof Error ? err.message : String(err) })
+      socket.destroy()
+    } finally {
+      this.ingressInFlight -= 1
+      this.touch()
+    }
+  }
+
+  private ingressIdentity(): IngressIdentity | null {
+    if (this.options.ingressIdentity !== undefined) return this.options.ingressIdentity()
+    if (this.ingressIdentityValue === undefined) {
+      try {
+        const reference = currentRuntimeBuild(this.env)
+        this.ingressIdentityValue = reference === null ? null : { build: reference.build, root: path.join(accountHome(this.env), '.notifai') }
+      } catch {
+        this.ingressIdentityValue = null
+      }
+    }
+    return this.ingressIdentityValue
+  }
+
+  private ingressHost(): IngressHost {
+    return {
+      deps: this.deps,
+      cachedStore: this.cachedStore(),
+      clientFactory: (baseUrl, bearer, options) =>
+        (this.deps.clientFactory ?? createClient)(baseUrl, bearer, { ...options, signal: this.waiterSignal() }),
+      settle: (sessionId, harness, cwd, purpose) => this.settle(sessionId, harness, cwd, purpose),
+      inputStaged: (sessionId) => this.inputStaged(sessionId),
     }
   }
 
@@ -1707,7 +1800,7 @@ export class Hub {
 
   private busy(): boolean {
     // An update pass in progress (a download, a staged write) finishes first.
-    if (this.children > 0 || this.settlements.size > 0 || this.updating) return true
+    if (this.children > 0 || this.settlements.size > 0 || this.updating || this.ingressInFlight > 0) return true
     // A dormant conversation still owed something: watch its app, so a quit expires it at once.
     const now = this.clock.monotonic()
     for (const session of this.sessions.values()) {
@@ -1740,6 +1833,7 @@ export class Hub {
       credential: this.unauthorizedState ? 're-pair-needed' : this.credential === undefined ? 'unread' : this.credential === null ? 'absent' : 'present',
       recent_crashes: this.crashes,
       settlements: this.settlements.size,
+      ingress: { served: this.ingressCounts.served, declined: this.ingressCounts.declined, reasons: { ...this.ingressCounts.reasons } },
       sessions: [...this.sessions.values()].map((session) => ({
         session_id: session.id,
         harness: session.harness,

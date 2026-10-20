@@ -132,6 +132,8 @@ export const LOG_EVENTS = [
   'hub.lease',
   /** The hub's service traffic: which transport, failures, clock jumps. */
   'hub.exchange',
+  /** A hook the hub took from the native launcher failed inside the hub. */
+  'hub.ingress',
   /** The hub stopped, and why. */
   'hub.exit',
   /** The automatic updater looked for, staged, held back or activated a release. */
