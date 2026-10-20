@@ -129,6 +129,11 @@ export interface CommandDeps {
   claudeCodeVersion?: () => string | null
   /** Starts a detached retirement of closed sessions' queued questions. Absent, none starts. */
   spawnRetirement?: (launch: HookMaintenanceLaunch) => void
+  /**
+   * Starts the detached check that replaces an earlier build's hub with the
+   * active build's. Absent, none starts.
+   */
+  spawnHubHandover?: (launch: HookMaintenanceLaunch) => void
   /** Test seam and production adapter for the external native skills installer. */
   nativeSkills?: NativeSkills
   /** Test seam for Orca's exact-pane Agent Session title lookup. */

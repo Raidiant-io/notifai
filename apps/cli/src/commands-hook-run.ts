@@ -7,6 +7,7 @@ import { ApiCallError, NetworkError, type ApiClient } from './client.js'
 import { type MachineCredential } from './credentials.js'
 import { OWNER_STEP_BUDGETS, hookStepBudgets, hookWorkAllowanceMs } from './hook-budgets.js'
 import { claimHookMaintenance, runHookMaintenance } from './hook-maintenance.js'
+import { claimOlderHubHandover, handOverOlderHub } from './hub-handover.js'
 import { codexWakeRoute } from './codex-wake.js'
 import { deliverCodexToolMessage } from './codex-tool-messages.js'
 import {
@@ -100,7 +101,7 @@ const INTERNAL_HOOK_EVENTS = [
   'question-submission', 'question-settlement', 'openclaw-lifecycle', 'openclaw-generation',
   'openclaw-turn-start', 'openclaw-turn-end', 'openclaw-list-pending',
   'openclaw-attendance-ready', 'openclaw-settlement',
-  'openclaw-verify-prepared', 'maintenance', 'retirement',
+  'openclaw-verify-prepared', 'maintenance', 'retirement', 'hub-handover',
 ] as const
 
 /**
@@ -215,6 +216,13 @@ export async function hookRunCommand(
     } catch (err) {
       logger.error('hook.end', { hook: event, outcome: 'failed', ...failureData(err) })
     }
+    return EXIT.ok
+  }
+  // An earlier build's hub beside this active build, started detached by a hook.
+  if (event === 'hub-handover') {
+    logger.info('hook.start', { hook: event, harness: harness ?? 'unknown' })
+    const result = await handOverOlderHub(deps.env, { logger })
+    logger.info('hook.end', { hook: event, decided: false, ...result })
     return EXIT.ok
   }
   let started = false
@@ -489,6 +497,21 @@ export async function hookRunCommand(
       logger.error('hook.gate', { stage: 'maintenance', outcome: 'ignored', ...failureData(err) })
     }
   }
+  // A hub from an earlier build cannot hand itself over: this active build
+  // replaces it, in a detached check, once nothing waits. One file read when none runs.
+  const startDueHubHandover = (): void => {
+    if (deps.spawnHubHandover === undefined) return
+    try {
+      if (!claimOlderHubHandover(deps.env)) return
+      deps.spawnHubHandover({
+        cwd,
+        ...(budgets.detachedLaunchMs < OWNER_STEP_BUDGETS.detachedLaunchMs
+          ? { detachTimeoutMs: budgets.detachedLaunchMs } : {}),
+      })
+    } catch (err) {
+      logger.error('hook.gate', { stage: 'hub-handover', outcome: 'ignored', ...failureData(err) })
+    }
+  }
   if (harness === 'grok' && (event === 'post-tool-use' || event === 'post-compact')) {
     start({ cwd })
     let context: string | undefined
@@ -759,7 +782,10 @@ export async function hookRunCommand(
     catch (err) { logger.error('hook.gate', { stage: 'grok-attendant', outcome: 'ignored', ...failureData(err) }) }
   }
   if (event === 'user-prompt-submit' && harness === 'codex') recordCodexTurnStart(envelope, deps.env)
-  if (event === 'user-prompt-submit' || event === 'stop') observeIntegration()
+  if (event === 'user-prompt-submit' || event === 'stop') {
+    observeIntegration()
+    startDueHubHandover()
+  }
 
   // Cursor has a confirmed host bug in which sessionStart.additional_context
   // is accepted but never reaches the model. A native Stop follow-up is the

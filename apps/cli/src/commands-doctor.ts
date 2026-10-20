@@ -112,6 +112,7 @@ import { skillReadiness } from './commands-skill.js'
 import { projectBinding, projectEnabled } from './project-enablement.js'
 import { attendantSupport } from './session-attendant-probe.js'
 import { readHubReport } from './hub-client.js'
+import { describeHubHandover, hubHandoverReport } from './hub-handover.js'
 import { codexNativeActivityObserved, hermesQuestionRouteReady, listAttendantReports, type AttendantReport } from './session-attendant-state.js'
 import { CLI_UPDATE_AVAILABLE, SERVICE_UPDATE_IN_PROGRESS } from './cli-contract.js'
 import { claudeCommandRulesInstalled } from './claude-command-approval.js'
@@ -1959,12 +1960,15 @@ function sessionHubCheck(deps: CommandDeps): HookCheck | null {
   }
   // Process, transport and timing stay in the JSON detail; the line says what the User gets.
   const reachable = sessions.filter((session) => session['phase'] === 'attending').length
+  // A hub left on an earlier build after an update hands over once nothing waits.
+  const handover = hubHandoverReport(deps.env)
   return {
     name: 'session hub',
     ok: true,
     reportOnly: true,
-    detail: `running: ${sessions.length} Agent Session${sessions.length === 1 ? '' : 's'} attended, ${reachable} reachable now`,
-    technical: report,
+    detail: `running: ${sessions.length} Agent Session${sessions.length === 1 ? '' : 's'} attended, ${reachable} reachable now` +
+      (handover === null ? '' : `; ${describeHubHandover(handover)}`),
+    technical: { ...report, handover },
   }
 }
 

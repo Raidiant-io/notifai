@@ -23,6 +23,7 @@ import { pendingNpmRepairs } from './npm-repair-status.js'
 import { TRUST_SENSITIVE_HOOK_HARNESSES } from './activation-plan.js'
 import { claudeHookFormFor } from './claude-hook-form.js'
 import { recordClaudeFormDeferral } from './claude-form-readers.js'
+import { claimOlderHubHandover } from './hub-handover.js'
 
 /** Never replace package files while this exact owner still owes an answer. */
 export function updateWorkPending(deps: CommandDeps): string | null {
@@ -46,6 +47,11 @@ export async function updateResumeCommand(deps: CommandDeps, flags: { json?: boo
   const changed: string[] = []
   const diagnostics: string[] = []
   const report = (filesComplete: boolean): number => {
+    // A hub still on the previous build is replaced once nothing waits. (A hub
+    // from this build onward replaces itself; an automatic update's hub leaves anyway.)
+    if (flags.automatic !== true && deps.spawnHubHandover !== undefined) {
+      try { if (claimOlderHubHandover(deps.env)) deps.spawnHubHandover({ cwd: deps.cwd }) } catch { /* The next hook checks again. */ }
+    }
     const npmRepairs = pendingNpmRepairs(deps.env)
     if (npmRepairs.length) pending.push('A scoped npm repair remains pending; the responsible agent must resume its exact prepared operation after observing the approved pause.')
     const complete = filesComplete && pending.length === 0

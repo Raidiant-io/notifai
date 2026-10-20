@@ -54,7 +54,7 @@ const SHORT_HOOK_REQUEST_MS = 4_000
  * plugin's child-process ceiling.
  */
 const DETACHED_EVENTS: ReadonlySet<string> = new Set([
-  'question-submission', 'question-settlement', 'openclaw-settlement', 'maintenance', 'retirement',
+  'question-submission', 'question-settlement', 'openclaw-settlement', 'maintenance', 'retirement', 'hub-handover',
 ])
 
 /**

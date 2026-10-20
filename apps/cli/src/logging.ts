@@ -134,6 +134,8 @@ export const LOG_EVENTS = [
   'hub.exchange',
   /** A hook the hub took from the native launcher failed inside the hub. */
   'hub.ingress',
+  /** A hub on another build than the active one waited for its work, or handed over. */
+  'hub.handover',
   /** The hub stopped, and why. */
   'hub.exit',
   /** The automatic updater looked for, staged, held back or activated a release. */
