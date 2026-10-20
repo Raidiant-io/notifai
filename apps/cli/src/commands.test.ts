@@ -5243,8 +5243,11 @@ describe('config surfaces', () => {
     expect(loadConfig({ cwd: deps.cwd, env: deps.env })['reopen.automatic'].value).toBe(false)
     expect(await configSetCommand(deps, 'reopen.terminal', 'sometimes', { yes: true })).toBe(EXIT.usage)
     expect(io.errLines.at(-1)).toContain('automatic, off')
-    expect(await configSetCommand(deps, 'reopen.codex_app', 'launch', { yes: true })).toBe(EXIT.ok)
-    expect(loadConfig({ cwd: deps.cwd, env: deps.env })['reopen.codex_app'].value).toBe('launch')
+    expect(await configSetCommand(deps, 'reopen.codex_app', 'off', { yes: true })).toBe(EXIT.ok)
+    expect(loadConfig({ cwd: deps.cwd, env: deps.env })['reopen.codex_app'].value).toBe('off')
+    // The Codex app is never started: there is no value that would.
+    expect(await configSetCommand(deps, 'reopen.codex_app', 'launch', { yes: true })).toBe(EXIT.usage)
+    expect(io.errLines.at(-1)).toContain('when-running, off')
   })
 
   it('removes one machine setting, preserves its siblings, and restores default provenance', async () => {

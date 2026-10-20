@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "behavior_digest": "sha256:36f1514bac9dc84bd179481332a8066b18b96e8a06943ad6ac7a8810197b1bb9",
+  "behavior_digest": "sha256:ad341f124d3690f12d60cbfe411400cfaa8d65b0f5a16037cf8a5d6f2ef4854b",
   "outcome": "guidance-updated",
   "reason": "Reviewed lifecycle hooks, the shipped skill and harness references, harness setup, CLI readiness and domain terms for reopening stopped conversations in place: a terminal conversation the machine stopped reopens in a new terminal window, and a conversation the Codex app started and then unloaded continues inside the running app through its queued wake, never in another place, never when archived and never by starting the app. The Codex and diagnostics references now say so and name the off switches (reopen.codex_app, reopen.automatic), which agents change only when the User asks. A Codex card whose question the User dismissed on a device now closes through its own turn with the same plain dismissal note a Claude Code picker gives, so the agent carries on without an answer; no other agent-facing wording changed.",
   "surfaces_reviewed": [

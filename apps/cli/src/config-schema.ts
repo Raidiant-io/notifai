@@ -288,12 +288,11 @@ const INFO: Record<ConfigKey, Omit<ConfigKeyInfo, 'key'>> = {
     choices: REOPEN_CODEX_APP_POLICIES,
     choiceHints: {
       'when-running': 'continue it in the app while the app runs',
-      launch: 'the same as when-running in this version',
       off: 'wait for you to open it',
     },
     summary: 'What happens to a Codex app conversation the app stopped',
     detail:
-      '`when-running` (the default) continues a conversation the Codex app started inside the app while the app is running, on macOS, without opening it or bringing the app to the front. A conversation from a terminal or another app never opens in the Codex app, and an archived one waits. `off` waits for you to open it; the answer runs when you do.\n\n`launch` is the same as `when-running` in this version: Notifai never starts the Codex app.',
+      '`when-running` (the default) continues a conversation the Codex app started inside the app while the app is running, on macOS, without opening it or bringing the app to the front. A conversation from a terminal or another app never opens in the Codex app, and an archived one waits. Notifai never starts the Codex app. `off` waits for you to open it; the answer runs when you do.',
   },
   'reopen.terminal_app': {
     label: 'Terminal app',

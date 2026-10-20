@@ -28,8 +28,7 @@
  * LaunchServices instead (`open -g -b com.openai.codex`), checked before and
  * after: a Codex app process that was not there before means the call started
  * the app, which is recorded as a fault, and the app gets no more links until
- * its version changes. `launch` is treated as `when-running`: Notifai never
- * starts the Codex app.
+ * its version changes. Notifai never starts the Codex app.
  */
 import { execFile, execFileSync } from 'node:child_process'
 import { createHash } from 'node:crypto'

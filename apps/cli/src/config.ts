@@ -128,7 +128,7 @@ export interface CliConfig {
 
 export const REOPEN_TERMINAL_POLICIES = ['automatic', 'off'] as const
 export type ReopenTerminalPolicy = (typeof REOPEN_TERMINAL_POLICIES)[number]
-export const REOPEN_CODEX_APP_POLICIES = ['when-running', 'launch', 'off'] as const
+export const REOPEN_CODEX_APP_POLICIES = ['when-running', 'off'] as const
 export type ReopenCodexAppPolicy = (typeof REOPEN_CODEX_APP_POLICIES)[number]
 export const REOPEN_TERMINAL_APPS = ['auto', 'terminal', 'iterm2', 'ghostty', 'wezterm', 'kitty', 'alacritty', 'gnome-terminal', 'konsole', 'custom'] as const
 export type ReopenTerminalApp = (typeof REOPEN_TERMINAL_APPS)[number]
