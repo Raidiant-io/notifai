@@ -7,7 +7,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import * as atomicFile from './atomic-file.js'
 import { EXIT, type CommandDeps } from './commands-core.js'
 import { hooksInstallCommand, hooksUninstallCommand } from './commands-hook-install.js'
-import { buildHookConfig, codexHookIdentityHash, codexStopDefinitionFingerprint, codexTrustKey, codexTrustProblems, findInstallations, notifaiNativePluginEnablementKeys } from './install-hooks.js'
+import { buildHookConfig, codexHookIdentityHash, codexStopDefinitionFingerprint, codexTrustKey, codexTrustFindings, codexTrustProblems, findInstallations, notifaiNativePluginEnablementKeys } from './install-hooks.js'
 
 const roots: string[] = []
 afterEach(() => {
@@ -73,7 +73,7 @@ describe('Codex approval identity through actual hook repair', () => {
     expect(hooksInstallCommand(f.deps, f.flags)).toBe(EXIT.ok)
     const after = findInstallations(f.deps.env, f.deps.hookAdapterHome).filter(i => i.harness === 'codex')
     expect(codexStopDefinitionFingerprint(after)).toBe(fingerprint)
-    expect(codexTrustProblems(after, f.deps.env)).toEqual([expect.stringMatching(/PostToolUse.*not trusted/)])
+    expect(codexTrustFindings(after, f.deps.env)).toEqual([expect.objectContaining({ event: 'PostToolUse', state: 'new' })])
     expect(readFileSync(f.toml, 'utf8')).toBe(trust)
     const repaired = JSON.parse(readFileSync(f.hooks, 'utf8'))
     expect(repaired.hooks.Stop[0]).toEqual(document.hooks.Stop[0])

@@ -1,5 +1,5 @@
 import { automaticUpdateReport, automaticUpdatesRunHere } from './automatic-update.js'
-import { reopenLine, reopenReport, reopenStalledLine } from './session-reopen.js'
+import { processArguments, reopenLine, reopenReport, reopenStalledLine } from './session-reopen.js'
 import { CLAUDE_EXEC_FORM_MIN_VERSION, claudeHookFormFor, describeClaudeHookForm } from './claude-hook-form.js'
 import { claudeFormFaults } from './integration-health.js'
 import { buildIdentity } from './distribution.js'
@@ -14,7 +14,7 @@ import { hermesPluginListed, hermesVersionSupported } from './hermes-plugin.js'
 import { inspectClaudeInbox, systemClaudeWakeAdapters } from './claude-wake.js'
 import { ApiCallError, NetworkError, type ApiClient } from './client.js'
 import { codexHome as codexQueueHomeDirectory, inspectCodexQueue } from './codex-wake.js'
-import { stateDir, type CliConfig } from './config.js'
+import { projectLocation, stateDir, type CliConfig } from './config.js'
 import { pendingNpmRepairs } from './npm-repair-status.js'
 import {
   HARNESS_LABELS,
@@ -45,7 +45,8 @@ import {
   codexCoexistenceNotes,
   codexHomeNote,
   codexRepresentationProblems,
-  codexTrustProblems,
+  codexTrustFindings,
+  summarizeCodexTrustFindings,
   detectedHarnesses,
   findInstallations,
   findLegacyProjectInstallations,
@@ -53,7 +54,6 @@ import {
   handlerEvent,
   type Installation,
 } from './install-hooks.js'
-import { inferInvocationContext } from './invocation-context.js'
 import type { SkillScope } from './native-skills.js'
 import {
   appliesHere,
@@ -113,13 +113,20 @@ import {
   writeSetupProof,
 } from './commands-setup-proof.js'
 import { skillReadiness } from './commands-skill.js'
-import { projectBinding, projectEnabled } from './project-enablement.js'
+import { inferredProjectName, projectBinding, projectEnabled } from './project-enablement.js'
 import { attendantSupport } from './session-attendant-probe.js'
 import { readHubReport } from './hub-client.js'
 import { describeHubHandover, hubHandoverReport } from './hub-handover.js'
 import { codexNativeActivityObserved, hermesQuestionRouteReady, listAttendantReports, type AttendantReport } from './session-attendant-state.js'
 import { CLI_UPDATE_AVAILABLE, SERVICE_UPDATE_IN_PROGRESS } from './cli-contract.js'
-import { claudeCommandReadiness, claudeCommandRulesInstalled, readClaudePermissionMode } from './claude-command-approval.js'
+import {
+  claudeCommandReadiness,
+  claudeCommandRulesInstalled,
+  claudeLaunchMode,
+  claudeSessionPermissionMode,
+  claudeSettingsDefaultMode,
+  readClaudePermissionMode,
+} from './claude-command-approval.js'
 
 // ---------------------------------------------------------------------------
 // doctor
@@ -290,7 +297,7 @@ function projectReadiness(deps: CommandDeps, config: CliConfig): ReadinessState 
       detail: `"${configured}" (${config.project.source})`,
     }
   }
-  const inferred = inferInvocationContext(deps.cwd).project
+  const inferred = inferredProjectName(deps.cwd, deps.env)
   if (inferred !== null) {
     return {
       id: 'project',
@@ -1264,21 +1271,23 @@ function readinessRemedy(
 /**
  * Whether Claude Code may run the commands an away User depends on without a
  * terminal approval. Reported only once Claude Code is wired, never a blocker,
- * and offered only outside Claude Code or in a session in its default
- * permission mode; see claude-command-approval.ts.
+ * and offered unless this runs in a Claude Code session known to be outside
+ * its default permission mode; see claude-command-approval.ts.
  */
 function claudeCommandStates(deps: CommandDeps, installations: readonly { harness: string }[]): ReadinessState[] {
   if (!installations.some((installation) => installation.harness === 'claude-code')) return []
+  const installed = claudeCommandRulesInstalled(deps.env)
   const { active, contested } = resolveActiveHarness(deps.env, deps.cwd, (deps.now ?? Date.now)())
   const inClaude = active?.harness === 'claude-code' || contested.some((candidate) => candidate.harness === 'claude-code')
-  const context = !inClaude
-    ? null
-    : {
-        permissionMode: contested.length <= 1 && active?.sessionId !== undefined
-          ? readClaudePermissionMode(active.sessionId, deps.env)
-          : null,
-      }
-  return [claudeCommandReadiness(claudeCommandRulesInstalled(deps.env), context)]
+  if (!inClaude || installed) return [claudeCommandReadiness(installed, inClaude ? { permissionMode: null } : null)]
+  const exact = contested.length <= 1 && active?.sessionId !== undefined
+  const root = projectLocation(deps.cwd, deps.env)?.root
+  const known = claudeSessionPermissionMode({
+    reported: exact ? readClaudePermissionMode(active.sessionId!, deps.env) : null,
+    launch: exact ? claudeLaunchMode(processArguments(claudeSessionPid(deps.env))) : null,
+    settings: claudeSettingsDefaultMode(deps.env, root === undefined ? [deps.cwd] : [deps.cwd, root]),
+  })
+  return [claudeCommandReadiness(installed, { permissionMode: known?.mode ?? null, source: known?.source ?? null })]
 }
 
 interface HookCheck {
@@ -1574,20 +1583,24 @@ function hookChecks(deps: CommandDeps): HookCheck[] {
     })
   }
 
-  const trustProblems = codexTrustProblems(installations, deps.env)
+  const trustFindings = codexTrustFindings(installations, deps.env)
   checks.push({
     name: 'hooks (trust)',
     harnesses: ['codex'],
-    ok: trustProblems.length === 0,
+    ok: trustFindings.length === 0,
     detail:
-      trustProblems.length === 0
+      trustFindings.length === 0
         ? 'best-effort check matches current persisted Codex approvals; Notifai never writes the trust store, and `/hooks` is authoritative'
-        : `best-effort check only; Notifai never writes the trust store and \`/hooks\` is authoritative. ${trustProblems.join('; ')}`,
-    ...(trustProblems.length === 0
+        : summarizeCodexTrustFindings(trustFindings).join('; '),
+    ...(trustFindings.length === 0
       ? {}
       : {
+          technical: {
+            handlers: trustFindings,
+            note: 'best-effort reading of the Codex trust store; Notifai never writes it, and /hooks in Codex is authoritative',
+          },
           remedy: {
-            summary: 'open `/hooks` in Codex and approve the changed Notifai handlers',
+            summary: "open /hooks in Codex and approve Notifai's handlers",
             command: '/hooks',
             user_action: CODEX_HOOK_APPROVAL_USER_ACTION,
           },

@@ -102,13 +102,16 @@ commands, so an away User's first question can wait at a terminal approval
 nobody sees. Readiness reports this as `claude-commands` once Claude Code is
 wired; it never blocks setup.
 
-The offer depends on the session's permission mode, which Notifai reads from
-the session's own hooks. Only in `default` mode, or outside Claude Code, does
-`claude-commands` carry a remedy. In `auto`, `acceptEdits`, `plan`,
-`bypassPermissions` or any other mode, and before the session has reported a
-mode, it reads `not applicable` with no remedy: do not offer the rules, do not
-ask the User about them, and do not run the command. With the remedy present,
-on the User's yes:
+The offer depends on the session's permission mode. Notifai learns it from
+the session's own hooks, from the mode the session was started with, or from
+`permissions.defaultMode` in the Claude Code settings; when none of them names
+a mode, as in first-time setup before any hook has run, it is Claude Code's
+default. Outside Claude Code or in `default` mode, `claude-commands` carries a
+remedy. In `auto`, `acceptEdits`, `plan`, `bypassPermissions` or any other
+known mode it reads `not applicable` with no remedy: do not offer the rules, do
+not ask the User about them, and do not run the command. With the remedy
+present, or during first-time setup before Claude Code is wired, on the User's
+yes:
 
 ```bash
 notifai init --claude-commands --json
@@ -119,3 +122,5 @@ That adds allow rules to the User's Claude Code settings for `send`, `ask`,
 `session rename` only. Setup, configuration, guidance edits, logs and sign-out
 keep their prompt. `notifai hooks uninstall` removes the rules with the wiring.
 Never add them unasked, and never edit Claude Code's permission settings by hand.
+If setup reports that the rules were not added, it says why in one line: relay
+that to the User and do not retry.

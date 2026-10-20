@@ -72,7 +72,9 @@ import {
   codexHomeNote,
   codexRepresentationProblems,
   codexTrustKey,
+  codexTrustFindings,
   codexTrustProblems,
+  summarizeCodexTrustFindings,
   codexRoutingTrustProblems,
   handlerCommandLine,
   handlerEvent,
@@ -1069,32 +1071,31 @@ describe('finding what is installed', () => {
       `[hooks.state.${JSON.stringify(codexTrustKey(codex!, stop!))}]\ntrusted_hash = "sha256:obsolete"\n`,
     )
 
-    const stale = codexTrustProblems(installations, env)
+    expect(codexTrustProblems(installations, env)).toEqual([
+      `5 Notifai handlers in ${codex!.file} are new or changed since Codex last approved them; open /hooks in Codex and approve Notifai's handlers`,
+    ])
+    const stale = codexTrustFindings(installations, env)
     expect(stale).toHaveLength(5)
-    expect(stale).toEqual(expect.arrayContaining([expect.stringMatching(/Stop.*changed.*\/hooks/i)]))
+    expect(stale).toEqual(expect.arrayContaining([{ file: codex!.file, event: 'Stop', state: 'changed' }]))
 
     writeFileSync(
       trustFile,
       `[hooks.state.${JSON.stringify(codexTrustKey(codex!, stop!))}]\ntrusted_hash = "${codexHookIdentityHash(stop!)}"\n`,
     )
-    const untrusted = codexTrustProblems(installations, env)
-    expect(untrusted).toHaveLength(4)
-    expect(untrusted).toEqual(
-      expect.arrayContaining([
-        expect.stringMatching(/SessionStart.*not trusted.*\/hooks/i),
-        expect.stringMatching(/SubagentStart.*not trusted.*\/hooks/i),
-        expect.stringMatching(/UserPromptSubmit.*not trusted.*\/hooks/i),
-        expect.stringMatching(/SessionEnd.*not trusted.*\/hooks/i),
-      ]),
-    )
+    const untrusted = codexTrustFindings(installations, env)
+    expect(untrusted.map((finding) => [finding.event, finding.state]).sort()).toEqual([
+      ['SessionEnd', 'new'], ['SessionStart', 'new'], ['SubagentStart', 'new'], ['UserPromptSubmit', 'new'],
+    ])
+    expect(codexTrustProblems(installations, env)).toEqual([expect.stringMatching(/^4 Notifai handlers in .* are new or changed/)])
 
     writeFileSync(
       trustFile,
       `[hooks.state.${JSON.stringify(codexTrustKey(codex!, stop!))}]\ntrusted_hash = "${codexHookIdentityHash(stop!)}"\nenabled = false\n`,
     )
-    expect(codexTrustProblems(installations, env)).toEqual(
-      expect.arrayContaining([expect.stringMatching(/Stop.*disabled.*\/hooks/i)]),
+    expect(codexTrustFindings(installations, env)).toEqual(
+      expect.arrayContaining([{ file: codex!.file, event: 'Stop', state: 'disabled' }]),
     )
+    expect(codexTrustProblems(installations, env)).toEqual([expect.stringMatching(/and 1 is turned off; open \/hooks in Codex/)])
   })
 
   it('changes Codex trust identity when a hook matcher changes its coverage', () => {
@@ -2350,5 +2351,30 @@ describe('hook step budgets', () => {
     expect(buildCursorHookConfig({ adapterPath: ADAPTER })['stop']?.find((handler) =>
       handlerEvent(handler.command) === 'stop')?.timeout).toBe(15)
     expect(opencodePluginTarget(opencodePluginSource({ adapterPath: ADAPTER, timeoutSeconds: NON_ROUTING_BLOCKING_STOP_TIMEOUT_SECONDS }))?.timeoutSeconds).toBe(15)
+  })
+})
+
+describe('Codex hook trust summary', () => {
+  const file = '/home/u/.codex/hooks.json'
+  const finding = (event: string, state: 'new' | 'changed' | 'disabled') => ({ file, event, state })
+
+  it('says one plain line per hooks file however many handlers wait', () => {
+    const events = ['SessionStart', 'SessionStart', 'UserPromptSubmit', 'UserPromptSubmit', 'Stop', 'Stop', 'PreToolUse', 'PostToolUse', 'PermissionRequest', 'SessionEnd', 'Notification']
+    expect(summarizeCodexTrustFindings(events.map((event, index) => finding(event, index % 2 === 0 ? 'changed' : 'new')))).toEqual([
+      "11 Notifai handlers in /home/u/.codex/hooks.json are new or changed since Codex last approved them; open /hooks in Codex and approve Notifai's handlers",
+    ])
+    expect(summarizeCodexTrustFindings([finding('Stop', 'changed')])).toEqual([
+      "1 Notifai handler in /home/u/.codex/hooks.json is new or changed since Codex last approved it; open /hooks in Codex and approve Notifai's handlers",
+    ])
+  })
+
+  it('names handlers turned off in Codex with their own action', () => {
+    expect(summarizeCodexTrustFindings([finding('Stop', 'disabled')])).toEqual([
+      "1 Notifai handler in /home/u/.codex/hooks.json is turned off in Codex; open /hooks in Codex and turn Notifai's handlers on",
+    ])
+    expect(summarizeCodexTrustFindings([finding('Stop', 'new'), finding('SessionStart', 'changed'), finding('SessionEnd', 'disabled')])).toEqual([
+      "2 Notifai handlers in /home/u/.codex/hooks.json are new or changed since Codex last approved them and 1 is turned off; open /hooks in Codex, approve Notifai's handlers and turn them on",
+    ])
+    expect(summarizeCodexTrustFindings([])).toEqual([])
   })
 })

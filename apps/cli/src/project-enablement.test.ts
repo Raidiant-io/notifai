@@ -3,9 +3,11 @@ import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { describe, expect, it } from 'vitest'
+import { loadConfig, projectLocation, sharedProjectConfigPath } from './config.js'
 import {
   disableProject,
   enableProject,
+  inferredProjectName,
   projectBinding,
   projectEnabled,
 } from './project-enablement.js'
@@ -111,5 +113,54 @@ describe('Project enablement', () => {
     enableProject(projectBinding(origin, env)!, new Date('2026-09-02T00:00:00.000Z'))
 
     expect(projectEnabled(projectBinding(clone, env))).toBe(false)
+  })
+
+  function committedRepo(cwd: string): void {
+    mkdirSync(cwd, { recursive: true })
+    git(cwd, 'init')
+    git(cwd, 'config', 'user.email', 'test@example.invalid')
+    git(cwd, 'config', 'user.name', 'Test')
+    writeFileSync(path.join(cwd, 'file'), 'x')
+    git(cwd, 'add', 'file')
+    git(cwd, 'commit', '-m', 'fixture')
+  }
+
+  it('gives a submodule of a configured repository that repository\'s name, config and enablement', () => {
+    const root = mkdtempSync(path.join(os.tmpdir(), 'notifai-enablement-submodule-'))
+    const library = path.join(root, 'library')
+    const superproject = path.join(root, 'Super')
+    committedRepo(library)
+    committedRepo(superproject)
+    mkdirSync(path.join(superproject, '.notifai'))
+    writeFileSync(path.join(superproject, '.notifai', 'config.toml'), 'sound = "default"\n')
+    execFileSync('git', ['-C', superproject, '-c', 'protocol.file.allow=always', 'submodule', 'add', library, 'public/sub'], { stdio: 'ignore' })
+    const submodule = path.join(superproject, 'public', 'sub')
+    const env = { XDG_CONFIG_HOME: path.join(root, 'config') }
+
+    expect(inferredProjectName(submodule, env)).toBe('super')
+    expect(loadConfig({ cwd: submodule, env }).sound.source).toBe(`project:${projectLocation(superproject, env)!.configPath}`)
+    enableProject(projectBinding(superproject, env)!, new Date('2026-10-20T00:00:00.000Z'))
+    expect(projectBinding(submodule, env)).toEqual(projectBinding(superproject, env))
+    expect(projectEnabled(projectBinding(submodule, env))).toBe(true)
+  })
+
+  it('never makes the home folder, or a plain folder above a checkout, a Project', () => {
+    const root = mkdtempSync(path.join(os.tmpdir(), 'notifai-enablement-home-'))
+    const home = path.join(root, 'home')
+    const code = path.join(home, 'Code')
+    const repo = path.join(code, 'app')
+    committedRepo(repo)
+    for (const folder of [home, code]) {
+      mkdirSync(path.join(folder, '.notifai'), { recursive: true })
+      writeFileSync(path.join(folder, '.notifai', 'config.toml'), 'project = "swallowed"\n')
+    }
+    const env = { HOME: home, XDG_CONFIG_HOME: path.join(root, 'config') }
+
+    expect(projectLocation(home, env)).toBeNull()
+    expect(sharedProjectConfigPath(home, env)).toBeNull()
+    expect(projectBinding(home, env, 'explicit')).toBeNull()
+    expect(loadConfig({ cwd: repo, env }).project.value).toBeNull()
+    expect(projectBinding(repo, env)?.project).toBe('app')
+    expect(sharedProjectConfigPath(repo, env)).toBe(path.join(projectLocation(repo, env)!.root, '.notifai', 'config.toml'))
   })
 })

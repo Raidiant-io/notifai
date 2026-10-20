@@ -22,6 +22,7 @@ import {
   globalConfigPath,
   personalProjectConfigPath,
   sharedProjectConfigPath,
+  SHARED_PROJECT_CONFIG_REFUSAL,
   sessionConfigPath,
   type ConfigKey,
 } from './config.js'
@@ -330,8 +331,12 @@ async function configMutationTarget(
     : layer === 'local'
       ? personalProjectConfigPath(deps.cwd, deps.env)
       : layer === 'project'
-        ? sharedProjectConfigPath(deps.cwd)
+        ? sharedProjectConfigPath(deps.cwd, deps.env)
         : globalConfigPath(deps.env)
+  if (targetPath === null) {
+    deps.io.err(SHARED_PROJECT_CONFIG_REFUSAL)
+    return null
+  }
   return {
     path: targetPath,
     layer: flags.session ? 'session' : (layer as Exclude<ConfigMutationLayer, 'session'>),

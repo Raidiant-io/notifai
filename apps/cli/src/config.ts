@@ -8,7 +8,7 @@ import { existsSync, readFileSync } from 'node:fs'
 import path from 'node:path'
 import { canonicalPath } from './local-path.js'
 import { parse as parseToml } from 'smol-toml'
-import { configHome, stateHome } from './platform.js'
+import { accountHome, configHome, stateHome } from './platform.js'
 import { isCliSoundRef } from './sound-ref.js'
 import { normalizeOrigin } from './url-policy.js'
 
@@ -344,23 +344,7 @@ export function gitCommonDirectory(cwd: string): string | null {
   }
 }
 
-/** Walk up from cwd looking for .notifai/<name> (Project Override). */
-function findProjectFile(startDir: string, name: string): string | null {
-  let dir = path.resolve(startDir)
-  for (;;) {
-    const candidate = path.join(dir, '.notifai', name)
-    if (existsSync(candidate)) return candidate
-    const parent = path.dirname(dir)
-    if (parent === dir) return null
-    dir = parent
-  }
-}
-
-export function findProjectConfigPath(startDir: string): string | null {
-  return findProjectFile(startDir, 'config.toml')
-}
-
-/** Walk up from cwd looking for a `.git` file or directory (worktree or checkout). */
+/** Walk up from a directory to the nearest `.git` file or directory (a checkout, linked worktree or submodule). */
 function findGitRoot(startDir: string): string | null {
   let dir = path.resolve(startDir)
   for (;;) {
@@ -371,32 +355,108 @@ function findGitRoot(startDir: string): string | null {
   }
 }
 
-/** Explicit shared configuration is authored in this checkout and merged through Git. */
-export function sharedProjectConfigPath(cwd: string): string {
-  return findProjectConfigPath(cwd) ?? path.join(findGitRoot(cwd) ?? canonicalDir(cwd), '.notifai', 'config.toml')
+function canonicalHome(env: NodeJS.ProcessEnv): string | null {
+  try {
+    return canonicalDir(accountHome(env))
+  } catch {
+    return null
+  }
 }
 
 /**
- * The directory one Project is identified by, from anywhere inside it.
+ * Which Project a folder belongs to: the one answer Project identity,
+ * shared configuration, personal configuration and Project Enablement all use.
  *
- * Prefer the directory that owns the shared `.notifai/config.toml`, then the
- * git checkout root, then cwd. Subdirectories of one project therefore resolve
- * to one root, and nothing is written inside the repository.
+ * - The nearest `.notifai/config.toml` names the Project root, so a submodule,
+ *   nested clone or worktree submodule under a configured repository is part of
+ *   that repository's Project. Above the folder's own checkout a file counts
+ *   only in a directory that is itself a checkout (it has a `.git`), so a
+ *   loose file in a plain parent such as `~/Code` cannot swallow every
+ *   repository below it.
+ * - Otherwise the folder's Git checkout is the root, and outside Git the folder
+ *   itself is.
+ * - The home folder is never a Project root: `~/.notifai` is where Notifai
+ *   installs itself, and a Project there would contain every other folder.
  *
- * Everything keyed per Project — personal preferences, Project Enablement —
- * uses this one answer, so enabling a Project from its root and running a hook
- * from a nested directory cannot disagree about which Project they are in.
+ * `null` means the folder belongs to no Project.
  */
-export function projectIdentityRoot(cwd: string): string {
-  const projectConfig = findProjectConfigPath(cwd)
-  return canonicalDir(
-    projectConfig !== null ? path.dirname(path.dirname(projectConfig)) : (findGitRoot(cwd) ?? cwd),
-  )
+export interface ProjectLocation {
+  /** The directory the Project is identified and keyed by. */
+  root: string
+  /** The shared `.notifai/config.toml` that names this root, when there is one. */
+  configPath: string | null
+  /** Whether the root is inside a Git checkout, where a shared file can be committed. */
+  checkout: boolean
+}
+
+export function projectLocation(cwd: string, env: NodeJS.ProcessEnv = process.env): ProjectLocation | null {
+  let start: string
+  try {
+    start = canonicalDir(cwd)
+  } catch {
+    start = path.resolve(cwd)
+  }
+  const home = canonicalHome(env)
+  const checkoutRoot = findGitRoot(start)
+  const ownCheckout = checkoutRoot !== null && checkoutRoot !== home ? checkoutRoot : null
+  let dir = start
+  for (;;) {
+    if (dir === home) break
+    const candidate = path.join(dir, '.notifai', 'config.toml')
+    const aboveOwnCheckout = ownCheckout !== null && !isWithinDir(ownCheckout, dir)
+    if (existsSync(candidate) && (!aboveOwnCheckout || existsSync(path.join(dir, '.git')))) {
+      return { root: dir, configPath: candidate, checkout: checkoutRoot !== null }
+    }
+    const parent = path.dirname(dir)
+    if (parent === dir) break
+    dir = parent
+  }
+  if (checkoutRoot !== null) return ownCheckout === null ? null : { root: ownCheckout, configPath: null, checkout: true }
+  return start === home ? null : { root: start, configPath: null, checkout: false }
+}
+
+function isWithinDir(root: string, candidate: string): boolean {
+  const relative = path.relative(root, candidate)
+  return relative === '' || (!path.isAbsolute(relative) && relative !== '..' && !relative.startsWith(`..${path.sep}`))
+}
+
+/** The shared `.notifai/config.toml` that applies here, or null. */
+export function findProjectConfigPath(startDir: string, env: NodeJS.ProcessEnv = process.env): string | null {
+  return projectLocation(startDir, env)?.configPath ?? null
+}
+
+/**
+ * Where `--project` settings are written: the Project's existing shared file,
+ * or a new one at its checkout root. Null where no shared file can belong to a
+ * Project: outside a Git checkout, and in the home folder.
+ */
+export function sharedProjectConfigPath(cwd: string, env: NodeJS.ProcessEnv = process.env): string | null {
+  const location = projectLocation(cwd, env)
+  if (location === null) return null
+  if (location.configPath !== null) return location.configPath
+  return location.checkout ? path.join(location.root, '.notifai', 'config.toml') : null
+}
+
+/** What a `--project` write outside any checkout is told. */
+export const SHARED_PROJECT_CONFIG_REFUSAL =
+  'Shared Project settings live in a Git checkout, and this folder is not in one (your home folder never counts as a Project). Run this from inside the Project\'s repository, or use `--local` to keep it on this machine only.'
+
+/**
+ * The Git common directory a Project's personal records are keyed by, so
+ * linked worktrees share them; the root itself outside Git.
+ */
+export function projectRepositoryAnchor(location: ProjectLocation): string {
+  return (location.checkout ? gitCommonDirectory(location.root) : null) ?? location.root
 }
 
 /** Stable identity for personal project preferences. */
-export function personalProjectIdentity(cwd: string): string {
-  const anchor = gitCommonDirectory(cwd) ?? projectIdentityRoot(cwd)
+export function personalProjectIdentity(cwd: string, env: NodeJS.ProcessEnv = process.env): string {
+  const location = projectLocation(cwd, env)
+  let anchor: string
+  if (location !== null) anchor = projectRepositoryAnchor(location)
+  else {
+    try { anchor = canonicalDir(cwd) } catch { anchor = path.resolve(cwd) }
+  }
   return createHash('sha256').update(anchor).digest('hex').slice(0, 32)
 }
 
@@ -405,7 +465,7 @@ export function personalProjectConfigPath(
   cwd: string,
   env: NodeJS.ProcessEnv = process.env,
 ): string {
-  return path.join(globalConfigDir(env), 'projects', `${personalProjectIdentity(cwd)}.toml`)
+  return path.join(globalConfigDir(env), 'projects', `${personalProjectIdentity(cwd, env)}.toml`)
 }
 
 /** Existing personal project file, or null when this checkout has none. */
@@ -558,7 +618,7 @@ export function loadConfig(options: {
   const globalPath = globalConfigPath(env)
   const globalRaw = existsSync(globalPath) ? readTomlFile(globalPath) : {}
   const cwd = options.cwd ?? process.cwd()
-  const projectPath = findProjectConfigPath(cwd)
+  const projectPath = findProjectConfigPath(cwd, env)
   const projectRaw = projectPath ? readTomlFile(projectPath) : {}
   const projectLocalPath = findProjectLocalConfigPath(cwd, env)
   const projectLocalRaw = projectLocalPath ? readTomlFile(projectLocalPath) : {}

@@ -10,7 +10,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import path from 'node:path'
 import { parse as parseToml, stringify as stringifyToml } from 'smol-toml'
 import { ApiCallError, NetworkError, type ApiClient } from './client.js'
-import { sharedProjectConfigPath, type CliConfig } from './config.js'
+import { SHARED_PROJECT_CONFIG_REFUSAL, sharedProjectConfigPath, type CliConfig } from './config.js'
 import { projectSlugFrom as inferredProjectSlugFrom } from './invocation-context.js'
 import { type SkillScope } from './native-skills.js'
 import {
@@ -54,7 +54,12 @@ import { skillInventory } from './commands-skill.js'
 import { enableProject, projectBinding } from './project-enablement.js'
 import { inspectCliInstallations } from './cli-bin.js'
 import { hookAdapterTargetsArtifact, inspectHookAdapter, installHookAdapter } from './hook-adapter.js'
-import { installClaudeCommandRules } from './claude-command-approval.js'
+import {
+  CLAUDE_COMMANDS_STATE_ID,
+  claudeCommandRulesInstalled,
+  claudeCommandsNotWritten,
+  installClaudeCommandRules,
+} from './claude-command-approval.js'
 import { installCodexCommandRules } from './codex-command-rules.js'
 import { packageVersion } from './release.js'
 import { HARNESS_LABELS, SOURCE_CONTEXT_HARNESSES, type SourceContextHarness } from './harnesses.js'
@@ -788,7 +793,11 @@ export async function initCommand(deps: CommandDeps, flags: InitFlags): Promise<
   // deliberate shared repository override, authored in this checkout so Git
   // can review and merge it like every other tracked project policy change.
   if (resolved.projectId !== undefined) {
-    const configPath = sharedProjectConfigPath(workingDeps.cwd)
+    const configPath = sharedProjectConfigPath(workingDeps.cwd, workingDeps.env)
+    if (configPath === null) {
+      workingDeps.io.err(SHARED_PROJECT_CONFIG_REFUSAL)
+      return EXIT.usage
+    }
     const existing = existsSync(configPath)
       ? (parseToml(readFileSync(configPath, 'utf8')) as Record<string, unknown>)
       : {}
@@ -957,6 +966,17 @@ export async function initCommand(deps: CommandDeps, flags: InitFlags): Promise<
     }
 
     if (stop || !advanced) break
+  }
+
+  // An explicit yes is never dropped silently: when the rules could not be
+  // added, say why in plain words.
+  if (resolved.claudeCommands === true) {
+    const notWritten = claudeCommandsNotWritten(
+      readiness.states.find((state) => state.id === CLAUDE_COMMANDS_STATE_ID),
+      claudeCommandRulesInstalled(workingDeps.env),
+      attempted.has(CLAUDE_COMMANDS_STATE_ID),
+    )
+    if (notWritten !== null) workingDeps.io.out(notWritten)
   }
 
   const blocker = loginBlocker ?? firstRequiredBlocker(readiness)

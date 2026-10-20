@@ -339,11 +339,14 @@ In its default permission mode Claude Code asks before each Bash command it has
 no permission rule for. `notifai init --claude-commands` adds allow rules to
 `~/.claude/settings.json` for the `send`, `ask`, `receive`, `acknowledge`,
 `status`, `replies`, `close`, `guidance` and `session rename` commands, so a
-question can leave while nobody is at the terminal. It is offered once Claude
-Code is wired, at a terminal or in a session in default mode, and written only
-on a yes. In a session in any other mode (`auto`, `acceptEdits`, `plan`,
-`bypassPermissions`) `notifai doctor` reports it as not applicable and nothing
-is offered or written. Setup, configuration and sign-out commands keep their
+question can leave while nobody is at the terminal. It is offered at a
+terminal, or in a Claude Code session in default mode, and written only on a
+yes. The session's mode comes from its hooks, the mode it was started with, or
+`permissions.defaultMode` in the Claude Code settings, and is Claude Code's
+default when none of them names one. In a session in any other mode (`auto`,
+`acceptEdits`, `plan`, `bypassPermissions`) `notifai doctor` reports it as not
+applicable, nothing is offered, and `--claude-commands` says why it added
+nothing. Setup, configuration and sign-out commands keep their
 prompt, and `notifai hooks uninstall` removes the rules with the wiring.
 
 Codex's default sandbox has no network, and outside full-access mode Codex

@@ -90,6 +90,7 @@ import {
   codexHookIdentityHash,
   codexStopDefinitionFingerprint,
   codexTrustKey,
+  codexTrustFindings,
   codexTrustProblems,
   findInstallations,
   findLegacyProjectInstallations,
@@ -6602,7 +6603,7 @@ describe('init', () => {
     expect(JSON.parse(readFileSync(settings, 'utf8'))).toEqual({ model: 'kept', permissions: { deny: ['Read(.env)'] } })
   })
 
-  it('offers and grants Claude Code command approval only in a default-mode Claude Code session', async () => {
+  it('offers and grants Claude Code command approval unless the session is known to run outside default mode', async () => {
     const cwd = mkdtempSync(path.join(os.tmpdir(), 'init-claude-commands-mode-'))
     mkdirSync(path.join(cwd, '.claude'))
     const io = new CapturedIo()
@@ -6613,8 +6614,22 @@ describe('init', () => {
     const state = async () => (await assessReadiness(deps)).states.find((candidate) => candidate.id === 'claude-commands')
 
     await initCommand(deps, { hooks: true, skills: false })
-    // No hook has reported this session's mode yet: nothing is offered.
-    expect(await state()).toMatchObject({ status: 'ready', technical: { permission_mode: null, applicable: false } })
+    // First-time setup: no hook has reported a mode and nothing else names
+    // one, so the session is in Claude Code's default mode and it is offered.
+    expect(await state()).toMatchObject({ status: 'optional-gap', technical: { permission_mode: null, applicable: true } })
+
+    // The User's settings name another mode before any hook has run: an
+    // explicit yes writes nothing and says why.
+    const wired = JSON.parse(readFileSync(settings, 'utf8')) as Record<string, unknown>
+    writeFileSync(settings, JSON.stringify({ ...wired, permissions: { defaultMode: 'auto' } }))
+    expect(await state()).toMatchObject({
+      status: 'ready',
+      technical: { permission_mode: 'auto', permission_mode_source: 'settings', applicable: false },
+    })
+    io.errLines = []
+    await initCommand(deps, { hooks: true, skills: false, claudeCommands: true, json: true })
+    expect(allowed()).toBeUndefined()
+    expect(io.errLines.join('\n')).toContain("Claude Code command approval was not added: this session runs in Claude Code's `auto` permission mode")
 
     for (const mode of ['auto', 'acceptEdits', 'plan', 'bypassPermissions']) {
       recordClaudePermissionMode('claude-mode-session', deps.env, mode)
@@ -6626,10 +6641,11 @@ describe('init', () => {
       expect(allowed()).toBeUndefined()
     }
 
+    // What the session's own hooks report outranks the settings file.
     recordClaudePermissionMode('claude-mode-session', deps.env, 'default')
     expect(await state()).toMatchObject({
       status: 'optional-gap',
-      technical: { permission_mode: 'default', applicable: true },
+      technical: { permission_mode: 'default', permission_mode_source: 'hook', applicable: true },
       remedy: { by: 'cli', command: 'notifai init --claude-commands' },
     })
     await initCommand(deps, { hooks: true, skills: false, claudeCommands: true, json: true })
@@ -9681,13 +9697,21 @@ describe('asking before the hooks have ever run', () => {
     io.outLines = []
 
     expect(askCommand(deps, 'Ship it?', {})).toBe(EXIT.usage)
-    expect(io.errLines.join('\n')).toMatch(/Stop.*changed since it was trusted.*\/hooks/is)
+    const hooksFile = findInstallations(env).find((installation) => installation.harness === 'codex')!.file
+    const oneLine = `1 Notifai handler in ${hooksFile} is new or changed since Codex last approved it; open /hooks in Codex and approve Notifai's handlers`
+    expect(io.errLines.join('\n')).toContain(oneLine)
 
     io.outLines = []
     await doctorCommand(deps, {})
-    expect(io.outLines.join('\n')).toMatch(/FAIL\s+Codex hook trust.*Stop/is)
-    expect(io.outLines.join('\n')).toMatch(/best-effort.*never writes.*\/hooks/is)
+    // One plain line for the file, not one sentence per handler.
+    const trustLines = io.outLines.join('\n').split('\n').filter((line) => line.includes('Codex hook trust'))
+    expect(trustLines).toHaveLength(1)
+    expect(trustLines[0]).toContain(oneLine)
     const readiness = await assessReadiness(deps)
+    // The per-handler list stays in the technical detail.
+    expect(readiness.states.find((state) => state.id === 'hooks-trust')?.technical).toMatchObject({
+      handlers: [{ file: hooksFile, event: 'Stop', state: 'changed' }],
+    })
     expect(readiness.states.find((state) => state.id === 'hooks-trust')?.remedy).toMatchObject({
       command: '/hooks',
       user_action: {
@@ -9780,8 +9804,8 @@ describe('asking before the hooks have ever run', () => {
     let toml = readFileSync(configFile, 'utf8')
     for (const handler of attends) toml = toml.replace(codexHookIdentityHash(handler), 'sha256:not-yet-approved')
     writeFileSync(configFile, toml)
-    expect(codexTrustProblems(findInstallations(env), env)).toEqual(
-      attends.map((handler) => expect.stringMatching(new RegExp(`^${handler.event} .*changed since it was trusted.*/hooks`))),
+    expect(codexTrustFindings(findInstallations(env), env)).toEqual(
+      attends.map((handler) => ({ file: codex.file, event: handler.event, state: 'changed' })),
     )
     writeSessionState('codex-desktop-thread', env, {
       harness: 'codex',

@@ -6,6 +6,7 @@ import { ApiCallError, isRetryableReplyPollError, RequestCancelledError, type Ap
 import { fetchMediaUrl } from './url-policy.js'
 import { buildSourceContext, inferInvocationContext } from './invocation-context.js'
 import { readSessionState } from './hook-session-state.js'
+import { inferredProjectName } from './project-enablement.js'
 import { readHarnessSessionTitle } from './harness-session-title.js'
 import { type DraftInvocation, type SendFlags } from './send.js'
 import { EXIT, reportError, type CommandDeps } from './commands-core.js'
@@ -32,7 +33,8 @@ export function resolveDraftInvocation(
 ): { ok: true; invocation: DraftInvocation } | { ok: false; error: string } {
   const session = active?.sessionId === undefined ? undefined : readSessionState(active.sessionId, deps.env)
   const cwd = session?.harness === active?.harness ? session?.activation_cwd ?? deps.cwd : deps.cwd
-  const inferred = inferInvocationContext(cwd)
+  // Branch and worktree describe this folder; the Project is the one it belongs to.
+  const inferred = { ...inferInvocationContext(cwd), project: inferredProjectName(cwd, deps.env) }
   const sessionTitle = managedSessionTitle(deps, active)
   const source = buildSourceContext({
     env: deps.env,
