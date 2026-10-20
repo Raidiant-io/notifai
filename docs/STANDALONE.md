@@ -162,6 +162,29 @@ recovery command and never counts as complete. Signed channel discovery also
 backs native update checks, doctor recommendations and throttled agent notices.
 No native update uses npm dist-tags or an npm global prefix.
 
+### Automatic updates
+
+On macOS and Linux the shared hub is also the automatic updater
+(`automatic-update.ts`), on by default and turned off for the whole machine with
+`notifai config set updates.automatic off --yes`. The setting is read only from
+the machine configuration file. At most once a day the hub resolves the saved
+channel and stages a release only when it is newer than the active build, so a
+withdrawn build moves forward or stays put and the saved channel never changes.
+Activation of the staged build waits while any open Agent Session on the
+machine has a waiting question, an answer, Note or Answer Edit not yet handed to
+its agent, or an owed acknowledgement or end report. Before activating, the hub
+runs the staged build's hidden `activation-plan` command: activation is also
+refused while a connected session child speaks an IPC version outside the new
+hub's range, or while the new build would rewrite Codex or Claude Code hook
+definitions. The activation uses the ordinary journal, so an interrupted swap is
+recovered under the same gates. Integration then resumes with
+`update --resume --automatic`, which never rewrites those hooks. The old hub
+writes every lease, releases its lock and exits; the new build's hub takes the
+leases over at the same generation, and the children reconnect. State lives in
+`<state>/automatic-update.json`; `update --check --json` reports it. An install
+made through the npm launcher updates its native runtime this way and leaves the
+npm package alone. Windows has no hub yet, so agents keep offering updates there.
+
 `release-trust.ts` embeds the `notifai-release-2026-10` Ed25519 public key;
 the private key is held only by the protected release environment.
 Candidates fail closed; neither an environment override nor project configuration
@@ -546,7 +569,7 @@ Explicit `init` or `install` authenticates the exact signed native release bound
 to the adapter version/source, verifies the archive and admitted members, and
 invokes the native installer. Fresh beta adapters acquire their matching beta
 runtime; an existing installation retains its version and saved channel until
-explicit native update or rollback.
+explicit native update or rollback, or an automatic update on the saved channel.
 
 Node.js 20.12 or newer is required only for this optional launcher. Runtime,
 updates, retained generations, hooks and removal belong to the same native

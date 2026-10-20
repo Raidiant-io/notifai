@@ -40,7 +40,8 @@ On macOS and Linux one shared hub attends every Agent Session on the machine.
 `notifai doctor` shows whether it runs and what it attends; not running is
 normal when no session is open. `notifai logs --event hub.session` and
 `--event hub.exchange` show sessions registering, ending, and the hub's
-service traffic. A hub that crashed three times in ten minutes stops
+service traffic; `--event update.automatic` shows automatic updates being
+staged, held back and why, or activated. A hub that crashed three times in ten minutes stops
 restarting for the rest of that window and doctor says so. Doctor's
 `claude code hook form` check says whether Claude Code's hooks run in exec or
 shell form and why; a failure there is repaired by

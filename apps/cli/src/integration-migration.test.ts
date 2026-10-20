@@ -531,3 +531,21 @@ it('requires the loaded revision and accepts a same-scope replacement after the 
   expect(readSessionState('original', f.deps.env).acknowledgement_due?.[0]?.request_id).toBe('original-debt')
   expect(readSessionState('replacement', f.deps.env).acknowledgement_due).toBeUndefined()
 })
+
+it('never rewrites Codex hooks in an automatic resume, and the activation plan names them first', async () => {
+  const f = fixture()
+  const { activationPlan } = await import('./activation-plan.js')
+  expect(activationPlan(f.deps).hook_changes).toEqual([])
+  removeToolHook(f.installation.file)
+  const damaged = readFileSync(f.installation.file, 'utf8')
+  // The staged build reports the rewrite before it is ever activated.
+  expect(activationPlan(f.deps).hook_changes).toEqual([expect.objectContaining({ harness: 'codex', file: f.installation.file,
+    reasons: expect.arrayContaining([expect.stringContaining('post-tool-use')]) })])
+  expect(await updateResumeCommand(f.deps, { json: true, automatic: true })).toBe(1)
+  expect(readFileSync(f.installation.file, 'utf8')).toBe(damaged)
+  expect(JSON.parse(f.out.at(-1)!)).toMatchObject({ files_complete: false,
+    pending_actions: expect.arrayContaining([expect.stringContaining('automatic updates leave them unchanged')]) })
+  // The User's own resume repairs them as before.
+  expect(await updateResumeCommand(f.deps, { json: true })).toBe(0)
+  expect(readFileSync(f.installation.file, 'utf8')).not.toBe(damaged)
+})

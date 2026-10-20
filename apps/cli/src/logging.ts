@@ -134,6 +134,8 @@ export const LOG_EVENTS = [
   'hub.exchange',
   /** The hub stopped, and why. */
   'hub.exit',
+  /** The automatic updater looked for, staged, held back or activated a release. */
+  'update.automatic',
   /** A hand-off into an Agent Session was claimed, or refused and why. */
   'delivery.claimed',
   /** How a claimed hand-off ended, and whether its outcome reached the service. */

@@ -774,12 +774,23 @@ export class Installation {
    * already verified immutable build; never downloads on an ordinary hook. */
   async installRelease(input: { channel: ReleaseChannel; source: InstallSource; expectedGeneration: number;
     version?: string; allowStableDowngrade?: boolean }): Promise<ActivationResult & { version: string }> {
+    const staged = await this.stageRelease(input)
+    const result = this.activate({ ...input, build: staged.build })
+    return { ...result, version: staged.version }
+  }
+  /** Authenticated download into an immutable version directory, without
+   * activating it. The saved channel is the caller's; nothing here changes the
+   * active generation, the channel or any wiring. */
+  async stageRelease(input: { channel: ReleaseChannel; expectedGeneration: number; version?: string;
+    /** Download only a release this returns true for; otherwise report it unstaged. */
+    accept?: (version: string) => boolean }): Promise<{ build: string; version: string; staged: boolean }> {
     if (this.uninstallRecord()) throw new Error('Recover the pending uninstall before installing')
     const before = this.inspect()
     if (before.pending) throw new Error('Recover the pending installation transaction first')
     if ((before.active?.generation ?? 0) !== input.expectedGeneration) throw new Error('Installation changed; inspect before retrying')
     const release = await this.resolveRelease(input.channel, input.version)
     const build = this.identity(release.inventory, release.artifact)
+    if (input.accept !== undefined && !input.accept(release.inventory.version)) return { build, version: release.inventory.version, staged: false }
     if (!present(this.versionDirectory(build))) {
       const bytes = await this.options.distribution.downloadArtifact(release)
       const downloads = this.file('downloads')
@@ -794,8 +805,16 @@ export class Installation {
         if (this.stage({ directory, signedInventory: release.signedInventory }) !== build) throw new Error('Staged release identity changed')
       } finally { rmSync(temporary, { recursive: true, force: true }) }
     }
-    const result = this.activate({ ...input, build })
-    return { ...result, version: release.inventory.version }
+    return { build, version: release.inventory.version, staged: true }
+  }
+  /** An authenticated immutable build's version and launcher, active or not. */
+  versionRelease(build: string): { version: string; launcher: string } {
+    const version = this.verifyVersion(build)
+    return { version: version.inventory.version, launcher: path.join(version.directory, `notifai${this.extension}`) }
+  }
+  /** Whether a saved, authenticated channel record withdrew this version. */
+  withdrawn(version: string): boolean {
+    return (['stable', 'beta'] as const).some(channel => this.channelRecord(channel)?.record.withdrawn_versions.includes(version) === true)
   }
   /** First-install boundary for an authenticated portable candidate. Rerunning
    * any bootstrap reuses a healthy installation; runtime changes belong to the

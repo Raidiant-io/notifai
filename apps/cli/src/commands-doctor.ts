@@ -1,3 +1,4 @@
+import { automaticUpdateReport, automaticUpdatesRunHere } from './automatic-update.js'
 import { CLAUDE_EXEC_FORM_MIN_VERSION, claudeHookFormFor, describeClaudeHookForm } from './claude-hook-form.js'
 import { claudeFormFaults } from './integration-health.js'
 import { buildIdentity } from './distribution.js'
@@ -931,8 +932,9 @@ function setupProofEvidenceFailure(err: unknown): SetupProofEvidenceFailure {
 export async function doctorCommand(
   deps: CommandDeps,
   flags: { json?: boolean },
-  options: { readiness?: Readiness } = {},
+  options: { readiness?: Readiness; /** Test seam; production asks whether this machine has an updater. */ updatesRunHere?: boolean } = {},
 ): Promise<number> {
+  const updatesRunHere = options.updatesRunHere ?? automaticUpdatesRunHere(deps.hookPlatform ?? process.platform)
   const readiness =
     options.readiness ?? (await assessReadiness(deps, { readOnly: true, ...(flags.json === true ? { json: true } : {}) }))
   await applyRegistryRecommendation(deps, readiness.states)
@@ -946,6 +948,7 @@ export async function doctorCommand(
       JSON.stringify(
         { ...readinessJson(readiness), ok, exit_code: ok ? EXIT.ok : EXIT.failed,
           npm_repairs: pendingNpmRepairs(deps.env),
+          updates: automaticUpdateReport(deps.env, { runsHere: updatesRunHere }),
           invocation: { executable: process.execPath, cwd: deps.cwd,
             state_directory: stateDir(deps.env, deps.hookPlatform ?? process.platform) } },
         null,
@@ -993,6 +996,9 @@ export async function doctorCommand(
       deps.io.out(`${mark}  ${line(s)}`)
     }
   }
+  // One line where a machine has an automatic updater: whether Notifai keeps
+  // itself current. It names no version; working software says nothing more.
+  if (updatesRunHere) deps.io.out(automaticUpdateReport(deps.env, { runsHere: true }).automatic.enabled ? 'Updates: automatic' : 'Updates: off')
   const surfacedUpdate = readiness.states.some(
     (state) => state.id === 'contract' && (state.status === 'gap' || state.status === 'optional-gap'),
   )

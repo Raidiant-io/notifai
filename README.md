@@ -73,7 +73,8 @@ npx --yes @raidiant/notifai@latest init
 ```
 
 Requires Node.js 20.12 or newer for this launcher. Notifai installs its own native
-runtime. Use `notifai update` for runtime updates. npm updates/removes only the
+runtime and, on macOS and Linux, keeps it updated by itself (`notifai config set updates.automatic off --yes`
+turns that off); `notifai update` updates it on demand. npm updates/removes only the
 launcher; `notifai uninstall` removes the runtime after its safety checks.
 Existing native versions and channels survive launcher changes. `@version`
 selects launcher code, not a command to replace an existing runtime.

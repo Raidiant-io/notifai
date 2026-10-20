@@ -24,6 +24,7 @@ import { ExchangeDriver, type AttendedSession, type ExchangeHost } from './hub-e
 import { credentialGenerationPath, encodeFrame, ensurePrivateDirectory, FrameDecoder, fnv64Hex, hubLockPath, hubSocketPath, requestHub } from './hub-ipc.js'
 import { SessionLease, HUB_WRITE_MARGIN_MS } from './hub-lease.js'
 import { Hub, type HubOptions, type PeerCredentials } from './hub.js'
+import { spawn, type ChildProcess } from 'node:child_process'
 import { nullLogger } from './logging.js'
 import { pidExists, processStartTime } from './process-identity.js'
 import { readHubReport } from './hub-client.js'
@@ -408,7 +409,8 @@ function peerOf(pid: number, parent: { pid: number; comm: string; start: string 
 }
 
 function startHub(env: NodeJS.ProcessEnv, service: FakeService, peers: Map<number, PeerCredentials>, store = memoryStore(), safetyTickMs?: number,
-  codex: Partial<Pick<HubOptions, 'codexEndConfirmMs' | 'codexHostKind'>> & { wake?: CodexWakeAdapters } = {}): { hub: Hub; done: Promise<number> } {
+  codex: Partial<Pick<HubOptions, 'codexEndConfirmMs' | 'codexHostKind'>> & { wake?: CodexWakeAdapters } = {},
+  extra: Partial<HubOptions> = {}): { hub: Hub; done: Promise<number> } {
   const deps: CommandDeps = {
     io: { out: () => undefined, err: () => undefined, confirm: async () => false, openUrl: () => undefined },
     store, env, cwd: '/tmp', logger: nullLogger(), clientFactory: () => service.client,
@@ -420,7 +422,7 @@ function startHub(env: NodeJS.ProcessEnv, service: FakeService, peers: Map<numbe
     return peers.get(lastHelloPid) ?? null
   }, idleExitMs: 400, bootIdentity: () => 'test-boot', ...(safetyTickMs === undefined ? {} : { safetyTickMs }),
   ...(codex.codexEndConfirmMs === undefined ? {} : { codexEndConfirmMs: codex.codexEndConfirmMs }),
-  ...(codex.codexHostKind === undefined ? {} : { codexHostKind: codex.codexHostKind }) })
+  ...(codex.codexHostKind === undefined ? {} : { codexHostKind: codex.codexHostKind }), ...extra })
   const done = hub.run()
   return { hub, done }
 }
@@ -673,6 +675,105 @@ describe('hub', () => {
     await hubListening(env)
     hub.requestExit('test')
     expect(await done).toBe(0)
+  })
+
+  it('hands over to the new build on an automatic update with children connected, keeping every lease', async () => {
+    const env = hubEnv()
+    const service = fakeService()
+    const peers = new Map<number, PeerCredentials>()
+    // Three live Claude Code sessions, each hosted by a real process.
+    const harnesses: ChildProcess[] = []
+    const sessions = [SESSION, OTHER, '33333333-4444-5555-6666-777777777777']
+    const hosts: { pid: number; start: string }[] = []
+    try {
+      for (const sessionId of sessions) {
+        const harness = spawn('sleep', ['60'], { stdio: 'ignore' })
+        harnesses.push(harness)
+        await until(() => harness.pid !== undefined && processStartTime(harness.pid) !== null)
+        const start = processStartTime(harness.pid!)!
+        hosts.push({ pid: harness.pid!, start })
+        writeFileSync(path.join(claudeDescriptorDir(env), `${harness.pid}.json`), JSON.stringify({
+          pid: harness.pid, sessionId, cwd: '/tmp', startedAt: Date.now(), procStart: start, version: '2.1.304', peerProtocol: 1,
+          messagingSocketPath: '/tmp/b3hub-inbox.sock', status: 'idle' }))
+        recordSessionNotified(sessionId, env, Date.now())
+      }
+      let successor: { hub: Hub; done: Promise<number> } | null = null
+      const first = startHub(env, service, peers, memoryStore(), undefined, {}, { automaticUpdate: {
+        firstDelayMs: 3_600_000,
+        attempt: async (host) => {
+          // The gates the real updater reads: every child connected now, and nothing outstanding.
+          expect(host.childIpcVersions()).toEqual([1, 1, 1])
+          expect(host.blockers()).toEqual([])
+          return { outcome: 'activated', from: '1.0.0', to: '1.1.0' }
+        },
+        startSuccessor: () => { successor = startHub(env, service, peers) },
+      } })
+      await hubListening(env)
+      const register = async (index: number, overrides: Record<string, unknown> = {}) => {
+        const host = hosts[index]!
+        const peer = peerOf(910_000 + index, { pid: host.pid, comm: 'claude', start: host.start })
+        return registered(env, sessions[index]!, 910_000 + index, peer, peers, { harness_pid: host.pid, harness_start: host.start, ...overrides })
+      }
+      const children = [await register(0), await register(1), await register(2)]
+      expect(children.every((child) => child.frames[0]?.['type'] === 'registered')).toBe(true)
+      await until(() => sessions.every((id) => readAttendantEndingLease(id, env)?.generation === 1))
+
+      expect(await first.hub.runAutomaticUpdate()).toMatchObject({ outcome: 'activated' })
+      service.release()
+      expect(await first.done).toBe(0)
+      await until(() => children.every((child) => child.closed))
+      await until(() => successor !== null)
+      await hubListening(env)
+      const handedOver = service.batches.length
+      // The children reconnect to the new hub, as the native child does after a closed connection.
+      const again = [await register(0, { hook_event: 'UserPromptSubmit', source: undefined }),
+        await register(1, { hook_event: 'UserPromptSubmit', source: undefined }),
+        await register(2, { hook_event: 'UserPromptSubmit', source: undefined })]
+      expect(again.every((child) => child.frames[0]?.['type'] === 'registered')).toBe(true)
+      await until(() => sessions.every((id) => service.batches.slice(handedOver).some((batch) =>
+        batch.body.sessions.some((entry) => entry.session_id === id))))
+      const entries = service.batches.flatMap((batch) => batch.body.sessions)
+      // Every lease continued: nothing ended, nothing re-acquired without its generation.
+      expect(entries.some((entry) => entry.state !== 'running')).toBe(false)
+      for (const id of sessions) {
+        const after = service.batches.slice(handedOver).flatMap((batch) => batch.body.sessions).filter((entry) => entry.session_id === id)
+        expect(after.length, id).toBeGreaterThan(0)
+        expect(after.every((entry) => entry.state === 'running' && entry.generation === 1), id).toBe(true)
+        expect(readSessionEndMarker(id, env), id).toBeNull()
+      }
+      for (const child of again) child.socket.destroy()
+      service.release()
+      await (successor as { done: Promise<number> } | null)!.done
+    } finally {
+      for (const harness of harnesses) harness.kill('SIGKILL')
+    }
+  })
+
+  it('stays when the updater holds an update back, and passes it the IPC versions of its children', async () => {
+    const env = hubEnv()
+    writeDescriptor(env, SESSION)
+    recordSessionNotified(SESSION, env, Date.now())
+    const service = fakeService()
+    const peers = new Map<number, PeerCredentials>()
+    const seen: number[][] = []
+    let successors = 0
+    const { hub, done } = startHub(env, service, peers, memoryStore(), undefined, {}, { automaticUpdate: {
+      firstDelayMs: 3_600_000,
+      attempt: async (host) => { seen.push(host.childIpcVersions()); return { outcome: 'waiting', version: '1.1.0', waiting_for: ['session-child-incompatible'] } },
+      startSuccessor: () => { successors += 1 },
+    } })
+    await hubListening(env)
+    const child = await registered(env, SESSION, 900030, peerOf(900030, { pid: HARNESS.pid, comm: 'claude', start: HARNESS.start }), peers)
+    expect(child.frames[0]).toMatchObject({ type: 'registered' })
+    expect(await hub.runAutomaticUpdate()).toMatchObject({ outcome: 'waiting' })
+    expect(seen).toEqual([[1]])
+    await new Promise((resolve) => setTimeout(resolve, 100))
+    expect(child.closed).toBe(false)
+    expect(successors).toBe(0)
+    child.socket.destroy()
+    service.release()
+    expect(await done).toBe(0)
+    expect(successors).toBe(0)
   })
 
   it('names the child lock file the way the native child does', () => {

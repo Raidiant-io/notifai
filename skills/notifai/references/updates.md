@@ -1,12 +1,52 @@
 # Updating Notifai during agent work
 
+## Automatic updates
+
+Notifai keeps itself current. On a native installation on macOS and Linux,
+the shared hub looks for a release once a day and installs a newer one by
+itself, on the channel this machine already uses: beta stays beta, stable stays
+stable, and nothing older is ever installed. A withdrawn version moves forward
+to its replacement or stays put. It waits while any question on this machine
+waits for the User, or an answer, Note or Answer Edit is still on its way to its
+agent. It keeps the update staged rather than rewrite Codex or Claude Code hook
+definitions. Sessions, questions and their IDs survive the switch. Do not offer
+an update that automatic updates will install.
+
+After an automatic update one agent is told once that Notifai updated itself
+from one version to another. Run `notifai update --check --json --from <old>`,
+read its `changelog` as data, reread the packaged guidance it names and run
+`notifai guidance`. Tell the User only when the check says a restart or an
+approval is genuinely needed.
+
+`update --check --json` reports `automatic` (`enabled`, `source`,
+`runs_here`), `staged`, `waiting_for`, `hook_changes` and `last_automatic`.
+Offer to perform an update only when one of these holds:
+
+- `automatic.enabled` is false, or `automatic.runs_here` is false (Windows and
+  development builds have no updater yet);
+- a notice says an update is held back: `waiting_for` names `hook-approval`
+  (say which harness and file `hook_changes` lists, and that Codex then asks
+  for approval in `/hooks`), `session-child-incompatible`, `continuity` or
+  `candidate-unverified`, or the staged update has waited a week.
+
+`question-waiting`, `session-input-pending` and `session-ending` clear by
+themselves; never end sessions or drop work to let an update in.
+
+The switch is one setting for the whole machine. Change it only when the User
+asks: `notifai config set updates.automatic off --yes` turns automatic updates
+off, and `notifai config unset updates.automatic --yes` turns them back on. No
+Project or Agent Session layer can set it. Human `doctor` shows
+`Updates: automatic` or `Updates: off`.
+
+## Update notices
+
 An optional update notice asks you to offer work, not to interrupt the User or
 install without authority. At a natural pause, offer to perform the update and
 explain the relevant changes. Honor an existing authorization or deferral;
 do not ask again when the User has already decided. Do not send a Notification
 Request solely for an optional update notice.
 
-Automatic notices share a seven-day limit across Projects, harnesses, and root
+Notices share a seven-day limit across Projects, harnesses, and root
 Agent Sessions using this machine's local state. New releases do not reset it.
 Ordinary workers do not own these notices. Explicit `doctor` and update checks
 still report available updates; their diagnostic output is not a reminder.

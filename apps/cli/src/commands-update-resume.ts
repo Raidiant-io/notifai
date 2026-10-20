@@ -20,6 +20,7 @@ import { integrationPublication } from './native-installation.js'
 import { buildIdentity } from './distribution.js'
 import { pendingHookRepairs, withHookRepairIntent } from './integration-repair.js'
 import { pendingNpmRepairs } from './npm-repair-status.js'
+import { TRUST_SENSITIVE_HOOK_HARNESSES } from './activation-plan.js'
 
 /** Never replace package files while this exact owner still owes an answer. */
 export function updateWorkPending(deps: CommandDeps): string | null {
@@ -34,7 +35,7 @@ export function updateWorkPending(deps: CommandDeps): string | null {
     ? 'Finish outstanding questions, answers and Agent Acknowledgements first; preserve their IDs and waiters.' : null
 }
 
-export async function updateResumeCommand(deps: CommandDeps, flags: { json?: boolean; from?: string }): Promise<number> {
+export async function updateResumeCommand(deps: CommandDeps, flags: { json?: boolean; from?: string; automatic?: boolean }): Promise<number> {
   if (flags.from !== undefined && !isSemVer(flags.from)) {
     deps.io.err('--from must be a semantic version')
     return EXIT.usage
@@ -111,6 +112,13 @@ export async function updateResumeCommand(deps: CommandDeps, flags: { json?: boo
     for (const { installation, env } of assessment.installations) {
       if (setupPending(installation.file)) continue
       if (installationFaults(installation, deps.hookPlatform, { ...deps, env }).length === 0) continue
+      if (flags.automatic === true && TRUST_SENSITIVE_HOOK_HARNESSES.has(installation.harness)) {
+        // An automatic update never rewrites these: Codex would skip the changed
+        // hooks until the User trusts them again, and Claude Code would apply the
+        // change to its running sessions. The User's own update repairs them.
+        pending.push(`${installation.harness} hooks need repair by an explicit update or notifai hooks install --harness ${installation.harness}; automatic updates leave them unchanged.`)
+        continue
+      }
       const before = readFileSync(installation.file, 'utf8')
       if (hooksRefreshCommand({ ...repairDeps, env }, installation.harness, (action, scope) => publish(() =>
         withHookRepairIntent({ ...deps, env }, installation, env === deps.env ? owner : null, action), scope)) !== EXIT.ok) {

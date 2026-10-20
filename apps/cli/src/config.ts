@@ -106,6 +106,12 @@ export interface CliConfig {
    * whose dashboard lives on a different origin than the API. User-owned.
    */
   approve_origins: ResolvedValue<string[]>
+  /**
+   * Whether this machine installs Notifai updates by itself. Machine-wide:
+   * only this machine's own configuration file is read (see
+   * `MACHINE_ONLY_CONFIG_KEYS`), because the runtime belongs to the machine.
+   */
+  'updates.automatic': ResolvedValue<boolean>
 }
 
 export const CONFIG_KEYS = [
@@ -124,6 +130,7 @@ export const CONFIG_KEYS = [
   'log_max_files',
   'media_origins',
   'approve_origins',
+  'updates.automatic',
 ] as const
 export type ConfigKey = (typeof CONFIG_KEYS)[number]
 
@@ -136,11 +143,20 @@ export type ConfigKey = (typeof CONFIG_KEYS)[number]
  */
 export const USER_OWNED_CONFIG_KEYS: readonly ConfigKey[] = ['media_origins', 'approve_origins']
 
+/**
+ * Keys that belong to the machine rather than to any Project or Agent Session.
+ * Only the machine-global file is read for them, and `config set` refuses the
+ * Project, personal-project and session layers. The Notifai runtime is shared
+ * by every Project on the machine, so no repository and no single conversation
+ * may decide what runs on it.
+ */
+export const MACHINE_ONLY_CONFIG_KEYS: readonly ConfigKey[] = ['updates.automatic']
+
 /** Keys whose TOML value must be a list of normalized http(s) origins. */
 export const ORIGIN_LIST_CONFIG_KEYS: readonly ConfigKey[] = ['media_origins', 'approve_origins']
 
 /** Keys whose TOML value must parse as a boolean; used by `config set`. */
-export const BOOLEAN_CONFIG_KEYS: readonly ConfigKey[] = ['ask_notifications']
+export const BOOLEAN_CONFIG_KEYS: readonly ConfigKey[] = ['ask_notifications', 'updates.automatic']
 
 /** Keys whose TOML value must parse as an integer within its configured bounds. */
 export const NUMERIC_CONFIG_KEYS: readonly ConfigKey[] = [
@@ -196,6 +212,9 @@ const DEFAULTS = {
   // here are the User widening that, never a repository.
   media_origins: [],
   approve_origins: [],
+  // On by default ("Fully automatic, toggleable", 2026-10-19). The
+  // hub installs a newer build on the saved channel only while nothing waits.
+  'updates.automatic': true,
 } satisfies Record<ConfigKey, unknown>
 
 /** The shipped value beneath every user-controlled configuration layer. */
@@ -406,6 +425,37 @@ export function configBounds(key: ConfigKey): { min: number; max: number } | und
   return NUMERIC_BOUNDS[key]
 }
 
+/**
+ * A key's raw value in one parsed file. Dotted keys are read both as written by
+ * `config set` (a quoted `"updates.automatic"` key) and as a person would write
+ * them by hand (an `[updates]` table holding `automatic`).
+ */
+function rawLayerValue(raw: Record<string, unknown>, key: ConfigKey): unknown {
+  if (Object.prototype.hasOwnProperty.call(raw, key)) return raw[key]
+  const dot = key.indexOf('.')
+  if (dot === -1) return undefined
+  const table = raw[key.slice(0, dot)]
+  return typeof table === 'object' && table !== null && !Array.isArray(table)
+    ? (table as Record<string, unknown>)[key.slice(dot + 1)]
+    : undefined
+}
+
+/**
+ * The automatic-update switch, from this machine's own configuration only.
+ * No working directory is involved: a Project can never change it.
+ */
+export function automaticUpdatesSetting(env: NodeJS.ProcessEnv = process.env): { enabled: boolean; source: 'default' | 'user' } {
+  const file = globalConfigPath(env)
+  try {
+    if (!existsSync(file)) return { enabled: true, source: 'default' }
+    const value = coerce('updates.automatic', rawLayerValue(readTomlFile(file), 'updates.automatic'))
+    return typeof value === 'boolean' ? { enabled: value, source: 'user' } : { enabled: true, source: 'default' }
+  } catch {
+    // An unreadable machine file decides nothing new: the shipped default stands.
+    return { enabled: true, source: 'default' }
+  }
+}
+
 function readTomlFile(filePath: string): Record<string, unknown> {
   try {
     return parseToml(readFileSync(filePath, 'utf8')) as Record<string, unknown>
@@ -467,12 +517,14 @@ export function loadConfig(options: {
     // The shared project file arrives with a clone, so keys that widen
     // network trust never read from it — whatever a repository writes there.
     const repositoryLayerReadable = !USER_OWNED_CONFIG_KEYS.includes(key)
+    // Machine-only keys read nothing but this machine's own file.
+    const scopedLayersReadable = !MACHINE_ONLY_CONFIG_KEYS.includes(key)
     const layers: [unknown, ConfigSource][] = [
-      [(flags as Record<string, unknown>)[key], 'flag'],
-      [sessionPath ? sessionRaw[key] : undefined, `session:${sessionPath ?? ''}`],
-      [projectLocalPath ? projectLocalRaw[key] : undefined, `project-local:${projectLocalPath ?? ''}`],
-      [projectPath && repositoryLayerReadable ? projectRaw[key] : undefined, `project:${projectPath ?? ''}`],
-      [globalRaw[key], `global:${globalPath}`],
+      [scopedLayersReadable ? (flags as Record<string, unknown>)[key] : undefined, 'flag'],
+      [sessionPath && scopedLayersReadable ? rawLayerValue(sessionRaw, key) : undefined, `session:${sessionPath ?? ''}`],
+      [projectLocalPath && scopedLayersReadable ? rawLayerValue(projectLocalRaw, key) : undefined, `project-local:${projectLocalPath ?? ''}`],
+      [projectPath && repositoryLayerReadable && scopedLayersReadable ? rawLayerValue(projectRaw, key) : undefined, `project:${projectPath ?? ''}`],
+      [rawLayerValue(globalRaw, key), `global:${globalPath}`],
     ]
     for (const [raw, source] of layers) {
       if (raw === undefined) continue
@@ -500,5 +552,6 @@ export function loadConfig(options: {
     log_max_files: resolve('log_max_files'),
     media_origins: resolve('media_origins'),
     approve_origins: resolve('approve_origins'),
+    'updates.automatic': resolve('updates.automatic'),
   }
 }

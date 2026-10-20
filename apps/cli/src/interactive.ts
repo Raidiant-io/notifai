@@ -545,7 +545,8 @@ async function settingDetailScreen(
   const value = await promptForValue(deps, key)
   if (value === null) return 'unchanged'
 
-  const layer = await chooseLayer()
+  // A machine-wide key has one home; there is no layer to choose.
+  const layer = info.machineOnly === true ? 'global' : await chooseLayer()
   if (layer === null) return 'unchanged'
 
   const code = await configSetCommand(deps, key, value, {
