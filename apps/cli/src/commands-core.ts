@@ -123,6 +123,8 @@ export interface CommandDeps {
    * hooks start none; the production entry point supplies the real launcher.
    */
   spawnHookMaintenance?: (launch: HookMaintenanceLaunch) => void
+  /** Test seam: the installed Claude Code's version; production runs `claude --version`. */
+  claudeCodeVersion?: () => string | null
   /** Starts a detached retirement of closed sessions' queued questions. Absent, none starts. */
   spawnRetirement?: (launch: HookMaintenanceLaunch) => void
   /** Test seam and production adapter for the external native skills installer. */

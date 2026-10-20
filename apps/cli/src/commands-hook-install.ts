@@ -1,4 +1,5 @@
 import { buildIdentity } from './distribution.js'
+import { claudeHookFormFor } from './claude-hook-form.js'
 import { hookAdapterPath, resolveHookAdapterHome } from './hook-adapter.js'
 /** Hook installation and uninstallation across supported harnesses. */
 import { existsSync, lstatSync, readFileSync, readdirSync, rmSync, rmdirSync } from 'node:fs'
@@ -35,6 +36,7 @@ import {
   findObsoleteNotifaiPluginWiring,
   handlerEvent,
   isTomlSettingsPath,
+  documentHasExecForm,
   handlerCommandLine,
   loadCursorSettings,
   loadSettings,
@@ -306,6 +308,8 @@ function installDocumentHooks(deps: CommandDeps, flags: HooksInstallFlags, harne
     previous?: string | null,
   ): { file: string; foreignStopCount: number; apply: () => void } => {
     const foreignStopCount = foreignStopHandlers(document).length
+    // Exec form only for a Claude Code known to support it.
+    const claudeForm = harness === 'claude-code' ? claudeHookFormFor(deps, documentHasExecForm(document)).form : undefined
     const result = mergeHooks(
       document,
       buildHookConfig({
@@ -314,6 +318,7 @@ function installDocumentHooks(deps: CommandDeps, flags: HooksInstallFlags, harne
         harness,
         platform: hookPlatform,
         ...(nodePath === undefined ? {} : { nodePath }),
+        ...(claudeForm === undefined ? {} : { claudeForm }),
       }),
       scriptPath,
       { preserveIdentities: harness === 'codex' },

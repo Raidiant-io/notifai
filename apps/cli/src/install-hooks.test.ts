@@ -137,7 +137,7 @@ describe('hook config', () => {
   })
 
   it('matches both Claude Code picker handlers to the question tool, on POSIX only', () => {
-    const config = buildHookConfig({ adapterPath: ADAPTER, harness: 'claude-code', platform: 'darwin' })
+    const config = buildHookConfig({ adapterPath: ADAPTER, harness: 'claude-code', platform: 'darwin', claudeForm: 'exec' })
     expect(config['PermissionRequest']).toEqual([{
       matcher: 'AskUserQuestion',
       hooks: [{ type: 'command', command: ADAPTER, args: expect.arrayContaining(['hook', 'permission-request']), timeout: QUESTION_STOP_TIMEOUT_SECONDS }],
@@ -238,8 +238,23 @@ describe('hook config', () => {
     expect(QUESTION_STOP_TIMEOUT_SECONDS).toBeGreaterThan(REPLY_MAX_WINDOW_SECONDS)
   })
 
+  it('writes Claude Code hooks in shell form unless its version is known to support exec form', () => {
+    for (const claudeForm of [undefined, 'shell'] as const) {
+      const claude = buildHookConfig({ adapterPath: ADAPTER, harness: 'claude-code', platform: 'linux', ...(claudeForm === undefined ? {} : { claudeForm }) })
+      for (const groups of Object.values(claude)) {
+        for (const handler of groups.flatMap((group) => group.hooks)) {
+          expect(handler).not.toHaveProperty('args')
+          expect(handler.command).toMatch(/hook-adapter' hook [a-z-]+ --owner notifai --harness claude-code --integration-revision [a-f0-9]{64}$/)
+        }
+      }
+    }
+    // Codex never takes exec form, whatever Claude Code supports.
+    const codex = buildHookConfig({ adapterPath: ADAPTER, harness: 'codex', platform: 'linux', claudeForm: 'exec' })
+    expect(Object.values(codex).flatMap((groups) => groups.flatMap((group) => group.hooks)).some((handler) => 'args' in handler)).toBe(false)
+  })
+
   it('gives Claude Code an asynchronous exec-form Stop on POSIX that keeps the complete answer window', () => {
-    const claude = buildHookConfig({ adapterPath: ADAPTER, harness: 'claude-code', platform: 'darwin' })
+    const claude = buildHookConfig({ adapterPath: ADAPTER, harness: 'claude-code', platform: 'darwin', claudeForm: 'exec' })
 
     // `async: true` frees the turn. When the hub attends the session the Stop
     // hands the window to it and ends early; when it does not (no session
@@ -360,7 +375,7 @@ describe('hook config', () => {
   })
 
   it('installs the session child handler as a second async handler for Claude Code everywhere and Codex on POSIX only', () => {
-    const hooks = buildHookConfig({ adapterPath: ADAPTER, harness: 'claude-code', platform: 'darwin' })
+    const hooks = buildHookConfig({ adapterPath: ADAPTER, harness: 'claude-code', platform: 'darwin', claudeForm: 'exec' })
     for (const event of ['SessionStart', 'UserPromptSubmit', 'Stop']) {
       const handlers = hooks[event]?.flatMap((group) => group.hooks) ?? []
       expect(handlers.map((handler) => handlerEvent(handlerCommandLine(handler)))).toEqual([

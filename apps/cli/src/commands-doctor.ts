@@ -1,3 +1,5 @@
+import { CLAUDE_EXEC_FORM_MIN_VERSION, claudeHookFormFor, describeClaudeHookForm } from './claude-hook-form.js'
+import { claudeFormFaults } from './integration-health.js'
 import { buildIdentity } from './distribution.js'
 import {
   NOTIFICATION_CONTRACT_FINGERPRINT,
@@ -1485,6 +1487,26 @@ function hookChecks(deps: CommandDeps): HookCheck[] {
         ? 'every installed handler names an event this build serves, and every required lifecycle handler is present'
         : `${[...stale, ...missing].join('; ')} — rerun \`notifai hooks install\` to refresh the complete lifecycle set`,
   })
+
+  // Which form Claude Code's hooks take, and why (exec form needs a known,
+  // supporting Claude Code version).
+  for (const installation of installations.filter((entry) => entry.harness === 'claude-code')) {
+    if ((deps.hookPlatform ?? process.platform) === 'win32') break
+    const exec = installation.handlers.some((handler) => handler.execForm === true)
+    const decision = claudeHookFormFor(deps, exec)
+    const mismatch = claudeFormFaults(installation, deps.hookPlatform, deps)
+    checks.push({
+      name: 'claude code hook form',
+      harnesses: ['claude-code'],
+      ok: mismatch.length === 0,
+      detail: mismatch.length === 0
+        ? describeClaudeHookForm(decision)
+        : `${mismatch.join('; ')} — run \`notifai hooks install --harness claude-code\``,
+      ...(mismatch.length === 0 ? {} : { remedy: { summary: 'rewrite the Claude Code hooks in the form this version supports', command: 'notifai hooks install --harness claude-code' } }),
+      technical: { file: installation.file, installed_form: exec ? 'exec' : 'shell', claude_code_version: decision.version,
+        exec_form_min_version: CLAUDE_EXEC_FORM_MIN_VERSION, decision: decision.form, reason: decision.reason },
+    })
+  }
 
   const adapterProblems = installations.flatMap((installation) =>
     (installation.problems ?? []).map((problem) => `${installation.file}: ${problem}`),

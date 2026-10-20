@@ -415,8 +415,11 @@ service right away, so the questions expire on your devices at once.
 
 **Session child and hub** (`attend`, Claude Code and Codex on macOS and Linux).
 The `attend` handler is a second, asynchronous handler on SessionStart,
-UserPromptSubmit, and Stop (Claude Code runs every Notifai handler in exec form,
-with no shell in between). It runs the native launcher as a tiny **session
+UserPromptSubmit, and Stop. Claude Code runs every Notifai handler in exec form,
+with no shell in between, when its version is known to support that (2.1.139 or
+later, read from `claude --version` at install); otherwise in shell form, which
+works the same way. `notifai doctor` shows the form and why, and `notifai update`
+moves the hooks to exec form after Claude Code is upgraded. It runs the native launcher as a tiny **session
 child**: one per Agent Session, staying the harness's own child for the life of
 the session. It learns from the kernel when the harness exits, so it never polls
 and has no timer, and it is the only process that writes into Claude Code's

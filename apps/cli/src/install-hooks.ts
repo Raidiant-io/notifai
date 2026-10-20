@@ -1,4 +1,5 @@
 import { encodeWindowsCodexCommand, decodeWindowsCodexCommand } from './windows-codex-command.js'
+import type { ClaudeHookFormName } from './claude-hook-form.js'
 import { stampHookDefinition } from './integration-revision.js'
 import {
   existsSync,
@@ -108,6 +109,12 @@ export interface HookCommandOptions {
   platform?: NodeJS.Platform | HookHostPlatform
   /** Source/development script interpreter on Windows; native commands omit it. */
   nodePath?: string
+  /**
+   * Claude Code on macOS and Linux: exec form only where the installed Claude
+   * Code is known to support it (`claude-hook-form.ts`). Shell form otherwise,
+   * and when unspecified.
+   */
+  claudeForm?: ClaudeHookFormName
 }
 
 /**
@@ -134,17 +141,19 @@ export function hookCommand(
 }
 
 /**
- * Claude Code on macOS and Linux runs Notifai's handlers in exec form: no
- * `sh -c` between Claude and the hook, so the session child is Claude's own
- * child (Ubuntu's dash does not exec its last command). Codex keeps its shell
- * command byte for byte: changed bytes make Codex skip the hook until the User
- * re-trusts it. Windows keeps its form until it is verified there.
+ * Claude Code on macOS and Linux runs Notifai's handlers in exec form when its
+ * version supports it: no `sh -c` between Claude and the hook, so the session
+ * child is Claude's own child (Ubuntu's dash does not exec its last command).
+ * Codex keeps its shell command byte for byte: changed bytes make Codex skip
+ * the hook until the User re-trusts it. Windows keeps its form until it is
+ * verified there.
  */
 export function usesExecForm(
   harness: HookInstallableHarness | undefined,
   platform?: NodeJS.Platform | HookHostPlatform,
+  claudeForm?: ClaudeHookFormName,
 ): boolean {
-  return harness === 'claude-code' && hookHostPlatform(platform) === 'posix'
+  return harness === 'claude-code' && hookHostPlatform(platform) === 'posix' && claudeForm === 'exec'
 }
 
 /** The `command` (and, in exec form, `args`) fields of one generated handler. */
@@ -156,7 +165,7 @@ export function hookCommandFields(
 ): Pick<HookHandler, 'command' | 'args'> {
   // On POSIX the adapter is directly executable (a native launcher, or a script
   // with its own interpreter line), so exec form never needs the Node path.
-  if (usesExecForm(harness, options.platform)) {
+  if (usesExecForm(harness, options.platform, options.claudeForm)) {
     return { command: adapterPath, args: ['hook', event, ...OWNER_MARKER.split(' '), '--harness', harness!] }
   }
   return { command: hookCommand(adapterPath, event, harness, options) }
@@ -167,6 +176,15 @@ export function hookCommandFields(
  * the exec-form executable and arguments written the way the shell form would
  * write them. Ownership, event and drift checks all read this.
  */
+/** Whether a settings document already holds Notifai handlers in exec form. */
+export function documentHasExecForm(document: { hooks?: Record<string, unknown> }): boolean {
+  return Object.values(document.hooks ?? {}).some((groups) => Array.isArray(groups) && groups.some((group) =>
+    Array.isArray((group as { hooks?: unknown }).hooks) && ((group as { hooks: unknown[] }).hooks).some((handler) => {
+      const h = handler as { command?: unknown; args?: unknown }
+      return typeof h.command === 'string' && Array.isArray(h.args) && handlerEvent(handlerCommandLine({ command: h.command, args: h.args })) !== null
+    })))
+}
+
 export function handlerCommandLine(handler: { command: string; args?: unknown }): string {
   if (!Array.isArray(handler.args)) return handler.command
   return [quote(handler.command), ...handler.args.map((arg) => String(arg))].join(' ')
@@ -251,6 +269,8 @@ export interface BuildOptions {
   platform?: NodeJS.Platform | HookHostPlatform
   /** Source/development Windows interpreter; omitted for native commands. */
   nodePath?: string
+  /** Claude Code on macOS and Linux: see `HookCommandOptions.claudeForm`. */
+  claudeForm?: ClaudeHookFormName
 }
 
 /**
@@ -318,6 +338,7 @@ function commandOptionsFrom(options: BuildOptions): HookCommandOptions {
   return {
     ...(options.platform === undefined ? {} : { platform: options.platform }),
     ...(options.nodePath === undefined ? {} : { nodePath: options.nodePath }),
+    ...(options.claudeForm === undefined ? {} : { claudeForm: options.claudeForm }),
   }
 }
 
@@ -1446,6 +1467,8 @@ export interface InstalledHandler {
   /** Index of the handler within its group. */
   handlerIndex: number
   command: string
+  /** Written in exec form (`command` plus `args`). */
+  execForm?: boolean
   /** Declared process lifetime, used to detect config/install drift. */
   timeout?: number
   async?: boolean
@@ -1998,6 +2021,7 @@ function locateAllHandlers(document: SettingsDocument): InstalledHandler[] {
           groupIndex,
           handlerIndex,
           command: handlerCommandLine(handler),
+          ...(Array.isArray(handler.args) ? { execForm: true } : {}),
           ...(handler.timeout === undefined ? {} : { timeout: handler.timeout }),
           ...(handler.async === undefined ? {} : { async: handler.async }),
           ...(handler.asyncRewake === undefined ? {} : { asyncRewake: handler.asyncRewake }),

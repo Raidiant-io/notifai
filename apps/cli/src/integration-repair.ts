@@ -1,3 +1,4 @@
+import { claudeHookFormFor } from './claude-hook-form.js'
 import { loadedIntegrationObserved, sourceIntegrationRevision } from './integration-revision.js'
 /** Narrow write-ahead requirements for owned hook repairs. Runtime selection
  * remains the Installation transaction's responsibility. */
@@ -54,7 +55,11 @@ function desiredRevision(deps: CommandDeps, installation: Installation): string 
     : installation.harness === 'opencode' ? opencodePluginSource({ ...options, timeoutSeconds: NON_ROUTING_BLOCKING_STOP_TIMEOUT_SECONDS })
     : installation.harness === 'openclaw' ? openclawPluginSource({ ...options, timeoutSeconds: NON_ROUTING_BLOCKING_STOP_TIMEOUT_SECONDS })
     : JSON.stringify(installation.harness === 'cursor' ? buildCursorHookConfig(options)
-      : buildHookConfig({ ...options, harness: installation.harness }))
+      : buildHookConfig({ ...options, harness: installation.harness,
+        // The same decision the install makes from the same definition.
+        ...(installation.harness === 'claude-code'
+          ? { claudeForm: claudeHookFormFor(deps, installation.handlers.some((handler) => handler.execForm === true)).form }
+          : {}) }))
   const revision = sourceIntegrationRevision(source)
   if (!revision) throw new Error('Owned hook definition has no verifiable revision')
   return revision
@@ -101,7 +106,7 @@ export function pendingHookRepairs(deps: CommandDeps,
         continue
       }
       const { installation, env } = selected
-      const faults = installationFaults(installation, deps.hookPlatform)
+      const faults = installationFaults(installation, deps.hookPlatform, { ...deps, env })
       if (faults.length > 0) {
         remaining.push(requirement)
         pending.push(`The owned ${requirement.harness} hook repair remains incomplete.`)
