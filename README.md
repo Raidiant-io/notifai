@@ -435,6 +435,30 @@ kill, `/clear` or `/resume` of another conversation in its place, quitting
 the app, archiving or deleting it. Without a hub (Windows), SessionEnd closes
 at once.
 
+Two stops of a Claude Code conversation are not closes. The Claude desktop app
+pauses or evicts a conversation it still lists (an idle pause, its process
+limit, memory pressure), and its own log names the pause; without that line,
+the stop counts as a close (the Stop button looks the same). And the machine
+shuts down, restarts, crashes or loses power: on macOS and Linux the hub
+learns that a shutdown or restart has begun before the apps quit (from
+loginwindow on macOS, from systemd-logind on Linux), holds every end until the
+machine goes down, and the next hub, in a different boot, keeps those
+conversations. A conversation that was attended when the power went keeps its
+questions too. Such a stopped session shows as out of reach on your devices.
+Its questions stay open for their own windows (a day by default), and an answer
+you give meanwhile waits on this machine; the hub stays running while
+something waits. It is handed to the agent when the conversation comes back
+where it was or wherever you resume it (the desktop app reopening it,
+`claude --resume <id>` in a terminal): a wake-up as usual, or at its next
+prompt. A scripted run (`claude -p --resume`, an SDK script) receives nothing.
+If the conversation is deleted or archived while stopped, or you quit the
+desktop app it was paused in, it closes as above; when its last window ends, it
+ends. A note cannot be sent to a stopped session yet; one the service accepted
+just before the stop is delivered if the session comes back within the hour.
+Codex conversations other than the app's unloads (below) still close when the
+machine restarts, as before. `notifai doctor` shows stopped sessions and
+whether shutdowns are seen.
+
 The Codex app and the Codex IDE extension are the exception. Codex also runs
 SessionEnd, and stops the session child, when it unloads a conversation nobody
 has had open for a while, though the app still lists it. There the hub, after
@@ -471,8 +495,9 @@ through its queue. It makes no network call for a session until that session
 has sent a Notification Request, so sessions that never notified are never
 reported. When the harness exits or is killed, the hub reports the session
 ended after the end confirmation, unless it continues elsewhere at once, so its
-questions expire on your devices; when its machine restarts, or the hub was not
-running, it is reported at the next Notifai activity. A hub crash is not a
+questions expire on your devices; when the hub was not running, it is reported
+at the next Notifai activity. A Claude Code conversation the machine took down
+stays open instead (see SessionEnd above). A hub crash is not a
 close: children restart it and register again, and nothing expires. Only an
 opaque id leaves the machine: never process ids, paths, or session files.
 `notifai doctor` shows the hub and the sessions it attends.

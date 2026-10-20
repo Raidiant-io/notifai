@@ -415,6 +415,7 @@ static int owned_path(const char *file, int directory) {
 #include "posix-file-users.h"
 #include "session-child.h"
 #include "hook-ingress.h"
+#include "power-watch.h"
 
 static int managed_runtime(char *executable) {
     char root[PATH_MAX];
@@ -470,6 +471,7 @@ int main(int argc, char **argv) {
     if (argc == 2 && !strcmp(argv[1], "--internal-account-home")) return account_home();
     if (argc == 2 && !strcmp(argv[1], "--internal-peer-credentials")) return peer_credentials();
     if (argc == 2 && !strcmp(argv[1], "--internal-boot-identity")) return print_boot_identity();
+    if (argc == 2 && !strcmp(argv[1], "--internal-power-watch")) return power_watch();
     if (argc >= 3 && !strcmp(argv[1], "--internal-file-users"))
         return file_users(argc - 2, argv + 2);
     if (argc == 2 && !strcmp(argv[1], "--internal-launcher-version")) { puts("1"); return 0; }

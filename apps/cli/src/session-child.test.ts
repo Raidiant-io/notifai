@@ -177,6 +177,21 @@ describe.skipIf(!supported)('native session child', () => {
     expect(await done).toBe(0)
   }, 30_000)
 
+  it('reports where the conversation runs and the process that started it, so only the desktop app can pause one', async () => {
+    const { root, env } = scratch()
+    env['CLAUDE_CODE_ENTRYPOINT'] = 'claude-desktop'
+    recordSessionNotified(SESSION, env, Date.now())
+    const fake = service()
+    const { hub, done } = startHubWith(env, fake)
+    const harness = await startHarness(root, env, 'direct')
+    await until(() => hub.sessions.get(SESSION)?.registration.place === 'claude-desktop')
+    // The harness's parent: here this test process, in the app its main process.
+    expect(hub.sessions.get(SESSION)?.registration.hostApp?.pid).toBe(process.pid)
+    harness.process.kill('SIGKILL')
+    await until(() => fake.batches.some((batch) => batch.sessions.some((entry) => entry.state === 'ended')))
+    expect(await done).toBe(0)
+  }, 30_000)
+
   it('adopts the harness through a shell that does not exec, and a second attend only hints', async () => {
     const { root, env } = scratch()
     recordSessionNotified(SESSION, env, Date.now())

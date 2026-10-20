@@ -14,8 +14,12 @@ import {
   hubStatusPath,
   hubHistoryPath,
   hubSupported,
+  readShutdownMarker,
   requestHub,
+  SHUTDOWN_MARKER_FRESH_MS,
+  writeShutdownMarker,
 } from './hub-ipc.js'
+import { systemdStopping } from './power-watch.js'
 import { launchSelf } from './launch-self.js'
 import { pidExists } from './process-identity.js'
 import { attendantClaimPath } from './session-attendant-state.js'
@@ -65,6 +69,24 @@ export async function handToHub(
  * Claude's inbox itself, and without a child the Stop hook (Claude's own child)
  * keeps the wait.
  */
+/**
+ * The hub noted that the machine is shutting down (and has not seen it
+ * cancelled). A SessionEnd that cannot reach a hub then cleans up nothing:
+ * the hub may already have been terminated, and the next one decides (the
+ * machine went down, or the conversation closed: late, never early).
+ */
+export function shutdownUnderway(env: NodeJS.ProcessEnv, now: number = Date.now()): boolean {
+  const marker = readShutdownMarker(env)
+  if (marker !== null && now - marker.since >= 0 && now - marker.since < SHUTDOWN_MARKER_FRESH_MS) return true
+  // Linux, a shutdown logind did not announce (`systemctl start reboot.target`): systemd still says so. Noted
+  // for the next boot, like the hub's.
+  if (!systemdStopping()) return false
+  let boot: string | null = null
+  try { boot = `linux:${readFileSync('/proc/sys/kernel/random/boot_id', 'utf8').trim()}` } catch { /* unknown */ }
+  writeShutdownMarker(env, { boot, since: now, name: 'systemd-stopping' })
+  return true
+}
+
 export function hubAttendsSession(sessionId: string, env: NodeJS.ProcessEnv): boolean {
   const holder = readClaimFile(attendantClaimPath(sessionId, env))
   return holder?.['role'] === 'hub' && typeof holder['pid'] === 'number' && pidExists(holder['pid'])

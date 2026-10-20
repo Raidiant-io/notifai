@@ -420,6 +420,15 @@ static int child_register(child_state *child) {
     jb_field(&reg, "inbox_token", child->token[0] ? "present" : "absent");
     const char *claude = getenv("CLAUDE_CONFIG_DIR"), *codex = getenv("CODEX_HOME");
     if (claude && claude[0] == '/') jb_field(&reg, "claude_config_dir", claude);
+    if (!strcmp(child->harness, "claude-code")) {
+        /* Where the conversation runs (a terminal, the desktop app, a scripted
+         * run): always sent, empty when Claude Code did not say. */
+        const char *entrypoint = getenv("CLAUDE_CODE_ENTRYPOINT"), *kind = getenv("CLAUDE_CODE_SESSION_KIND");
+        const char *orca = getenv("ORCA_STRUCTURED_SESSION");
+        jb_field(&reg, "entrypoint", entrypoint && strlen(entrypoint) < 64 ? entrypoint : "");
+        if (kind && kind[0] && strlen(kind) < 32) jb_field(&reg, "session_kind", kind);
+        if (orca && !strcmp(orca, "1")) jb_field(&reg, "orca_structured", "1");
+    }
     if (codex && codex[0] == '/') jb_field(&reg, "codex_home", codex);
     jb_field(&reg, "launcher", child->self);
     jb_text(&reg, "}");
