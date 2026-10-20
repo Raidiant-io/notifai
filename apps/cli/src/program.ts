@@ -845,6 +845,11 @@ export function buildProgram(deps: CommandDeps, options: BuildProgramOptions = {
         exit(await hermesAttendCommand(deps, process.stdin, process.stdout))
         return
       }
+      if (event === 'opencode-question' && opts.harness === 'opencode') {
+        const { opencodeQuestionCommand } = await import('./opencode-question.js')
+        exit(await opencodeQuestionCommand(deps, process.stdin, process.stdout))
+        return
+      }
       const harness = HOOK_INSTALLABLE_HARNESSES.find((candidate) => candidate === opts.harness)
       const inputKey = event === 'attend' && harness === 'grok' ? GROK_ATTEND_INPUT_ENV : QUESTION_SETTLEMENT_INPUT_ENV
       const detached = event === 'question-settlement' || event === 'question-submission' || (event === 'attend' && harness === 'grok')

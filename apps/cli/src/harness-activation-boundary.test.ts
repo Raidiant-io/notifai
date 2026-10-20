@@ -10,7 +10,7 @@ import { openclawPluginSource } from './openclaw-plugin.js'
 import { enableProject, projectBinding } from './project-enablement.js'
 
 describe('generated activation through the real isolated CLI', () => {
-  it('keeps disabled OpenCode Projects silent and activates after enablement in the same Agent Session', async () => {
+  it('keeps disabled OpenCode Projects silent and activates from the next User prompt in the same Agent Session', async () => {
     const root = mkdtempSync(path.join(os.tmpdir(), 'notifai-activation-boundary-'))
     const cwd = path.join(root, 'project')
     mkdirSync(cwd)
@@ -25,6 +25,7 @@ describe('generated activation through the real isolated CLI', () => {
     const generated = await import(modulePath) as {
       NotifAIPlugin(input: object): Promise<{
         'experimental.chat.system.transform'(input: object, output: { system: string[] }): Promise<void>
+        'chat.message'(input: object): Promise<void>
       }>
     }
     const plugin = await generated.NotifAIPlugin({
@@ -39,6 +40,11 @@ describe('generated activation through the real isolated CLI', () => {
     const binding = projectBinding(cwd, process.env)
     if (binding === null) throw new Error('test Project binding unavailable')
     enableProject(binding)
+    // Activation is resolved once per User prompt; the rest of this turn keeps it.
+    const sameTurn = { system: ['existing harness instructions'] }
+    await plugin['experimental.chat.system.transform'](input, sameTurn)
+    expect(sameTurn.system).toEqual(['existing harness instructions'])
+    await plugin['chat.message'](input)
     const enabled = { system: ['existing harness instructions'] }
     await plugin['experimental.chat.system.transform'](input, enabled)
     expect(enabled.system.join('\n')).toMatch(/Notifai.*enabled.*Project/i)

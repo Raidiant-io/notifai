@@ -91,7 +91,7 @@ const OPENCODE_CAPABILITY: HarnessCapability = {
   stopContinuation: 'unsupported',
   deliveryRoutes: ['unsupported'],
   deliveryContract:
-    'no proven answer continuation after session.idle; use a blocking reply command',
+    "OpenCode's own question form reaches the User's devices while its turn waits and settles from either side; there is no proven answer continuation after session.idle, so use the question form or a blocking reply command; closing the session ends its questions",
 }
 
 const OPENCLAW_CAPABILITY: HarnessCapability = {

@@ -1055,6 +1055,12 @@ export async function hookRunCommand(
         if (owed !== null) outcome.stdout = appendIntegrationContext(outcome.stdout, owed, harness, 'UserPromptSubmit')
       }
     } else {
+      // An OpenCode question form whose command died with OpenCode left its
+      // device question open; the turn end of any later session withdraws it.
+      if (event === 'stop' && harness === 'opencode') {
+        const { sweepAbandonedOpencodeForms } = await import('./opencode-question.js')
+        await sweepAbandonedOpencodeForms(deps, { timeoutMs: budgets.serviceRequestMs, limit: 2 })
+      }
       outcome = await handleStop(
         ctx,
         envelope,
