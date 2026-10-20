@@ -45,7 +45,7 @@ export const OPENCLAW_PLUGIN_FILENAME = 'index.js'
 export const OPENCLAW_PLUGIN_MANIFEST = 'openclaw.plugin.json'
 export const OPENCLAW_PLUGIN_PACKAGE = 'package.json'
 
-const OPENCLAW_ADAPTER_VERSION = 7
+const OPENCLAW_ADAPTER_VERSION = 8
 
 export function openclawStateDir(
   env: NodeJS.ProcessEnv = process.env,
@@ -283,6 +283,37 @@ function writeReadiness(target) {
 
 function clearReadiness() {
   try { unlinkSync(readinessPath()) } catch { /* Already absent. */ }
+}
+
+// This module instance is one plugin generation. Its Gateway service marks
+// itself loaded while it runs, so an attendant stepping aside can tell a
+// reload (the next generation loads and marks itself) from a disable or an
+// uninstall (nothing loads, and the sessions it reached can no longer be).
+const PLUGIN_GENERATION_ID = randomUUID()
+
+function generationMarkerPath() {
+  return JOURNAL_DIR === null ? null : path.join(path.dirname(JOURNAL_DIR), "plugin-generation.json")
+}
+
+function writeGenerationMarker() {
+  const file = generationMarkerPath()
+  if (file === null) return
+  try {
+    privateHostDirectory(path.dirname(file))
+    const temp = file + "." + randomUUID() + ".tmp"
+    writeFileSync(temp, JSON.stringify({ pid: process.pid, boot_id: GATEWAY_BOOT_ID,
+      generation: PLUGIN_GENERATION_ID }) + "\\n", { mode: 0o600, flag: "wx" })
+    ownHostFile(temp)
+    renameSync(temp, file)
+  } catch { /* Without a marker a stepped-aside attendant ends its session. */ }
+}
+
+function clearGenerationMarker() {
+  const file = generationMarkerPath()
+  if (file === null) return
+  try {
+    if (JSON.parse(readFileSync(file, "utf8"))?.generation === PLUGIN_GENERATION_ID) unlinkSync(file)
+  } catch { /* Absent, or another generation's. */ }
 }
 
 function journalPath(deliveryId) {
@@ -638,7 +669,9 @@ function spawnOwnedHook(event, envelope, extraFds = false) {
     "--owner", "notifai", "--harness", "openclaw"], {
     cwd: envelope.cwd,
     env: { ...process.env, NOTIFAI_HOOK_SOURCE_PID: String(process.pid),
-      ...(event === "attend" && extraFds ? { NOTIFAI_OPENCLAW_MESSAGE_BRIDGE: "1" } : {}) },
+      ...(event === "attend" && extraFds ? { NOTIFAI_OPENCLAW_MESSAGE_BRIDGE: "1" } : {}),
+      ...(event === "attend" && generationMarkerPath() !== null
+        ? { NOTIFAI_OPENCLAW_GENERATION_MARKER: generationMarkerPath() } : {}) },
     shell: false, windowsHide: true,
     stdio: extraFds ? ["pipe", "ignore", "ignore", "pipe", "pipe"] : ["pipe", "ignore", "ignore"],
   })
@@ -942,8 +975,8 @@ function makeContinuationService(config, logger, api) {
 
   async function tick() {
     if (retired() || scanning) return
-    // Native children observe the same barrier and report withdrawn through
-    // their gates. Never turn uninstall into an ended signal to the harness.
+    // Native children observe the same barrier through their gates and end
+    // their sessions: once Notifai is gone nothing can deliver into them.
     if (uninstallPending()) {
       ready = false
       clearReadiness()
@@ -1254,10 +1287,12 @@ function register(api) {
       if (typeof ctx.stateDir !== "string" || !path.isAbsolute(ctx.stateDir)) return
       JOURNAL_DIR = path.join(ctx.stateDir, "notifai", "continuation-journal")
       MESSAGE_JOURNAL_DIR = path.join(ctx.stateDir, "notifai", "message-journal")
+      writeGenerationMarker()
       continuationService = makeContinuationService(ctx.config, ctx.logger, api)
       continuationService.start()
     },
     async stop() {
+      clearGenerationMarker()
       const service = continuationService
       continuationService = null
       await service?.stop()

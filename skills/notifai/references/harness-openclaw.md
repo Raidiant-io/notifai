@@ -35,6 +35,9 @@ pointer in the CLI call. The matching prompt receives the full context once,
 only within its original native generation and Gateway instance. Journal
 text is discarded after that prompt claims it, a generation change, or a
 Gateway restart; a plugin reload hands it to the new plugin generation.
+Stopping the Gateway, or disabling or uninstalling the Notifai plugin while it
+runs, ends the Gateway's sessions for Notifai: their questions expire and a
+later answer is dropped. A plugin reload keeps them open.
 The agent acknowledges each `sm_` message after reading it.
 If a Gateway crash interrupts a turn, OpenClaw may replay its pointer after
 the staged context was consumed. The pointer instructs the agent to say the

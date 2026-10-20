@@ -290,6 +290,25 @@ describe('Session Attendant', () => {
     expect(await h.result).toEqual({ reason: 'superseded', reported: 'withdrawn' })
   })
 
+  it('ends a handed-over session when the host says nothing can reach it any more', async () => {
+    let handOver!: () => void
+    const handedOver = new Promise<void>((resolve) => { handOver = resolve })
+    const asked: string[] = []
+    const h = startAttendant({ handedOver, finalState: async (reason) => { asked.push(reason); return 'ended' } })
+    await h.clock.advance(1)
+    h.service.last().respond(h.service.attending(4))
+    await h.clock.advance(1)
+    handOver()
+    await h.clock.advance(1)
+    const final = h.service.last()
+    // Still the lease holder when it decides, so the end is recorded and the
+    // session's questions expire.
+    expect(final.body).toEqual({ incarnation: 'inc_aaaaaaaaaaaa', generation: 4, state: 'ended' })
+    final.respond({ status: 'withdrawn' })
+    expect(await h.result).toEqual({ reason: 'superseded', reported: 'ended' })
+    expect(asked).toEqual(['superseded'])
+  })
+
   it('gives up the final report after its bound when the service does not answer', async () => {
     const h = startAttendant()
     await h.clock.advance(1)

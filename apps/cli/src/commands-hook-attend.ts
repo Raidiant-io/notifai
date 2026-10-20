@@ -48,6 +48,7 @@ import {
   runSessionAttendant,
   systemAttendantClock,
   type AttendantClock,
+  type AttendantExitReason,
   type AttendantHandle,
   type AttendantResult,
   type GateResult,
@@ -80,6 +81,7 @@ import { claudeSourceDescriptor, deliverIntoClaudeSession, deliverIntoCodexThrea
 import { handOffSessionMessages, type MessageHandOffResult } from './session-message-handoff.js'
 import { compareVersions } from './version.js'
 import { readOpenclawGeneration } from './openclaw-generation.js'
+import { awaitOpenclawGeneration, openclawGenerationMarker } from './openclaw-generation-marker.js'
 import { integrationFaultNotice } from './integration-health.js'
 import { openclawBridgeActivity, openclawMessageBridge, openclawMessageBridgeAvailable } from './openclaw-message-bridge.js'
 import { readNativeTurnSnapshot } from './codex-native-turn.js'
@@ -110,6 +112,8 @@ export interface AttendantSeams {
   signalled?: Promise<void>
   /** Resolves to simulate the OpenClaw plugin's generation handover (SIGUSR2). */
   handedOver?: Promise<void>
+  /** How long a stepped-aside OpenClaw attendant waits for a next plugin generation. */
+  openclawSuccessorGraceMs?: number
   probeIntervalMs?: number
   waitSeconds?: number
   /** How long a new start waits for a superseded attendant to step aside. */
@@ -409,6 +413,10 @@ export async function attendHook(
   let wakeCleanup: Promise<void> | null = null
   const signals = seams.signalled === undefined ? terminationSignal() : null
   const handover = harness === 'openclaw' && seams.handedOver === undefined ? openclawHandoverSignal() : null
+  const handedOver = harness !== 'openclaw' ? undefined : seams.handedOver ?? handover!.promise
+  let steppedAside = false
+  void handedOver?.then(() => { steppedAside = true })
+  const generationMarker = harness === 'openclaw' ? openclawGenerationMarker(deps.env) : null
   try {
     const result = await runSessionAttendant({
       sessionId,
@@ -478,7 +486,14 @@ export async function attendHook(
         ])
       },
       signalled: seams.signalled ?? signals!.promise,
-      ...(harness !== 'openclaw' ? {} : { handedOver: seams.handedOver ?? handover!.promise }),
+      ...(handedOver === undefined ? {} : {
+        handedOver,
+        finalState: (reason) => openclawFinalState(reason, {
+          steppedAside, marker: generationMarker, gatewayPid: pid,
+          clock: { monotonic: () => clock.monotonic(), sleep: (ms) => clock.sleep(ms, new AbortController().signal) },
+          ...(seams.openclawSuccessorGraceMs === undefined ? {} : { graceMs: seams.openclawSuccessorGraceMs }),
+        }),
+      }),
       ...(seams.probeIntervalMs === undefined ? {} : { probeIntervalMs: seams.probeIntervalMs }),
       ...(seams.waitSeconds === undefined ? {} : { waitSeconds: seams.waitSeconds }),
     })
@@ -778,6 +793,33 @@ function terminationSignal(): { promise: Promise<void>; dispose(): void } {
       for (const signal of signals) process.off(signal, onSignal)
     },
   }
+}
+
+/**
+ * What an OpenClaw attendant reports when it stops inside a Gateway that keeps
+ * running. Notifai being uninstalled ends the session. A plugin generation
+ * stepping aside (SIGUSR2), or its installation disappearing, hands over only
+ * if a Notifai generation is loaded in that Gateway within the grace period:
+ * a reload loads the next one, while a disable or an uninstall loads none, and
+ * then nothing can ever deliver into the session again, so it ends and its
+ * questions expire. The attendant still holds the lease while it waits.
+ */
+export async function openclawFinalState(
+  reason: AttendantExitReason,
+  context: {
+    steppedAside: boolean
+    marker: string | null
+    gatewayPid: number
+    clock: { monotonic(): number; sleep(ms: number): Promise<void> }
+    graceMs?: number
+  },
+): Promise<'ended' | 'withdrawn' | undefined> {
+  if (reason === 'gate:uninstall-in-progress') return 'ended'
+  const handedOver = (reason === 'superseded' && context.steppedAside) || reason === 'gate:attend-handler-removed'
+  // A plugin that names no marker predates this check: keep stepping aside.
+  if (!handedOver || context.marker === null) return undefined
+  const loaded = await awaitOpenclawGeneration(context.marker, context.gatewayPid, context.clock, context.graceMs)
+  return loaded ? 'withdrawn' : 'ended'
 }
 
 /**

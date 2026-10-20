@@ -146,9 +146,17 @@ export interface SessionAttendantOptions {
   /**
    * Resolves when the host hands this session to a newer attendant while the
    * session stays open (an OpenClaw plugin generation replaced in the running
-   * Gateway). The attendant steps aside as superseded: withdrawn, never ended.
+   * Gateway). The attendant steps aside as superseded.
    */
   handedOver?: Promise<void>
+  /**
+   * The host's say on the final report, asked once the loop has stopped and
+   * while this attendant still holds the lease. `ended` when Notifai can no
+   * longer deliver into the session at all (its integration was removed from a
+   * host that keeps running), so its questions expire; `withdrawn` when another
+   * attendant can still reach it. Undefined keeps the default for the reason.
+   */
+  finalState?: (reason: AttendantExitReason) => Promise<'ended' | 'withdrawn' | undefined>
   probeIntervalMs?: number
   waitSeconds?: number
 }
@@ -597,7 +605,13 @@ export async function runSessionAttendant(options: SessionAttendantOptions): Pro
   await probeLoop
   const reason = exit ?? 'signal'
   let reported: AttendantResult['reported'] = null
-  const final = finalReport(reason)
+  let decided: 'ended' | 'withdrawn' | undefined
+  try {
+    decided = await options.finalState?.(reason)
+  } catch {
+    decided = undefined
+  }
+  const final = decided ?? finalReport(reason)
   if (networkStarted && final !== null && (final === 'ended' || generation !== null)) {
     const client = leaseClient ?? safeClient(options)
     if (client !== null) {
