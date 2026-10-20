@@ -473,6 +473,8 @@ export interface EscalationWaiterOptions {
   processDeadlineAt?: number
   /** Stop owns diagnostics; a pre-Stop recovery owner must not impersonate it. */
   recordStop?: boolean
+  /** Claude Code with the hub: hand the answer window to the hub after admission. */
+  hubHandoff?: boolean
 }
 
 export interface HookContext {

@@ -1,3 +1,4 @@
+import { claudeHookFormFor } from './claude-hook-form.js'
 import { buildIdentity } from './distribution.js'
 /** Local integration diagnostics. No service, registry, installer or repair. */
 import { createHash } from 'node:crypto'
@@ -21,9 +22,11 @@ import { accountHome } from './platform.js'
 import { packageVersion } from './release.js'
 import { type SkillInspectionBudget } from './skill-integrity.js'
 
-export function installationFaults(installation: Installation, platform?: NodeJS.Platform): string[] {
+export function installationFaults(installation: Installation, platform?: NodeJS.Platform,
+  claude?: { env: NodeJS.ProcessEnv; claudeCodeVersion?: () => string | null }): string[] {
   const events = installation.handlers.map(handler => handlerEvent(handler.command))
   return [
+    ...(claude === undefined ? [] : claudeFormFaults(installation, platform, claude)),
     ...(installation.problems ?? []),
     ...requiredHookEvents(installation.harness, platform).filter(event => !events.includes(event))
       .map(event => `missing ${event}`),
@@ -31,6 +34,22 @@ export function installationFaults(installation: Installation, platform?: NodeJS
       .map(event => `unsupported ${event}`),
     ...stopShapeProblems(installation),
   ]
+}
+
+/**
+ * Claude Code's hook form against what its installed version supports: shell
+ * form after an upgrade past the exec-form floor, or exec form on a version
+ * known to predate it. Either is repaired by reinstalling the hooks, which
+ * `notifai update` does for any installation with a fault.
+ */
+export function claudeFormFaults(installation: Installation, platform: NodeJS.Platform | undefined,
+  deps: { env: NodeJS.ProcessEnv; claudeCodeVersion?: () => string | null }): string[] {
+  if (installation.harness !== 'claude-code' || (platform ?? process.platform) === 'win32') return []
+  const exec = installation.handlers.some((handler) => handler.execForm === true)
+  const decision = claudeHookFormFor(deps, exec)
+  if (decision.form === 'exec' && !exec) return [`shell-form hooks, but Claude Code ${decision.version} runs exec-form hooks`]
+  if (decision.form === 'shell' && exec) return [`exec-form hooks, but Claude Code ${decision.version} predates them`]
+  return []
 }
 
 /** The selected home and Codex's source home; never enumerate other accounts. */
@@ -94,7 +113,7 @@ function assessIntegration(deps: CommandDeps, cli: ReturnType<typeof integration
     }
   }
   for (const { installation, env } of installations.filter(entry => harness === undefined || entry.installation.harness === harness)) {
-    const problems = installationFaults(installation, deps.hookPlatform)
+    const problems = installationFaults(installation, deps.hookPlatform, deps)
     if (problems.length > 0) faults.push({ code: 'hooks-drift', file: installation.file, detail: `${installation.file}: ${problems.join('; ')}`,
       remedy: `notifai hooks install --harness ${installation.harness}` })
     if (installation.harness === 'codex' && codexTrustProblems([installation], env).length > 0) {

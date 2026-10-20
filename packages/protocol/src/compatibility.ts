@@ -6,6 +6,9 @@ import type { Platform } from './notification.js'
  *
  * - `session_attendance` (CLI): runs a Session Attendant that holds an Agent
  *   Session's presence lease and hands Session Messages into it.
+ * - `session_attendance_batch` (server only): one exchange may attend many
+ *   Agent Sessions at once (`POST /api/v1/agent-sessions/attendance`). A CLI
+ *   uses the batch only when the server lists it.
  * - `session_notes` / `answer_edits` (Companion App): writes Session Notes and
  *   Answer Edits and reads their state. An app advertises these only after
  *   `GET /api/v1/features` lists the matching Server Feature, because a server
@@ -18,6 +21,7 @@ export const CLIENT_CAPABILITIES = [
   'answer',
   'agent_acknowledgement',
   'session_attendance',
+  'session_attendance_batch',
   'session_notes',
   'machine_approval',
   'answer_edits',

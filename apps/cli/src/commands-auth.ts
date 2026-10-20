@@ -1,3 +1,5 @@
+import { notifyCredentialChanged } from './hub-client.js'
+import { finishBeforeExit } from './exit-work.js'
 import { type AccountAccessResponse } from '@raidiant/notifai-protocol'
 import { sha256Hex } from '@raidiant/notifai-protocol/node'
 import { randomBytes } from 'node:crypto'
@@ -331,6 +333,8 @@ export async function loginCommand(
     if (poll.status === 'approved' && poll.machine_id) {
       deps.store.save({ machineId: poll.machine_id, secret: active.secret, baseUrl, machineName: active.machine_name })
       clearPendingPairing(deps.env)
+      // A running hub drops the previous credential before this returns.
+      await notifyCredentialChanged(deps.env)
       if (interactive) {
         progress.spinner?.stop(`Machine "${active.machine_name}" approved`)
         await deps.io.outro?.(`Credential stored in ${deps.store.describe()}`)
@@ -422,6 +426,9 @@ export async function logoutCommand(deps: CommandDeps, flags: { revoke?: boolean
   }
   deps.store.clear()
   clearPendingPairing(deps.env)
+  // The hub acknowledges that it dropped the credential, or is terminated:
+  // nothing is sent with it after sign-out.
+  await notifyCredentialChanged(deps.env)
   if (flags.revoke && credential) {
     deps.io.out('This computer was signed out and its machine credential revoked.')
   } else if (flags.revoke) {
@@ -542,6 +549,7 @@ export function authAdoptCommand(
     } catch (err) {
       return fail(EXIT.failed, 'store_failed', `Credential not adopted: ${err instanceof Error ? err.message : String(err)}.`)
     }
+    finishBeforeExit(notifyCredentialChanged(deps.env))
   }
   clearPendingPairing(deps.env)
   if (flags.json) {

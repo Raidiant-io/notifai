@@ -1,3 +1,5 @@
+import { CLAUDE_EXEC_FORM_MIN_VERSION, claudeHookFormFor, describeClaudeHookForm } from './claude-hook-form.js'
+import { claudeFormFaults } from './integration-health.js'
 import { buildIdentity } from './distribution.js'
 import {
   NOTIFICATION_CONTRACT_FINGERPRINT,
@@ -108,6 +110,7 @@ import {
 import { skillReadiness } from './commands-skill.js'
 import { projectBinding, projectEnabled } from './project-enablement.js'
 import { attendantSupport } from './session-attendant-probe.js'
+import { readHubReport } from './hub-client.js'
 import { codexNativeActivityObserved, hermesQuestionRouteReady, listAttendantReports, type AttendantReport } from './session-attendant-state.js'
 import { CLI_UPDATE_AVAILABLE, SERVICE_UPDATE_IN_PROGRESS } from './cli-contract.js'
 import { claudeCommandRulesInstalled } from './claude-command-approval.js'
@@ -1446,6 +1449,8 @@ function hookChecks(deps: CommandDeps): HookCheck[] {
 
   const attendants = sessionAttendantCheck(deps, active)
   if (attendants !== null) checks.push(attendants)
+  const hub = sessionHubCheck(deps)
+  if (hub !== null) checks.push(hub)
 
   // A handler naming an event this build dropped exits 2 every time the harness
   // fires it, which the harness reports as a hook failure.
@@ -1482,6 +1487,26 @@ function hookChecks(deps: CommandDeps): HookCheck[] {
         ? 'every installed handler names an event this build serves, and every required lifecycle handler is present'
         : `${[...stale, ...missing].join('; ')} — rerun \`notifai hooks install\` to refresh the complete lifecycle set`,
   })
+
+  // Which form Claude Code's hooks take, and why (exec form needs a known,
+  // supporting Claude Code version).
+  for (const installation of installations.filter((entry) => entry.harness === 'claude-code')) {
+    if ((deps.hookPlatform ?? process.platform) === 'win32') break
+    const exec = installation.handlers.some((handler) => handler.execForm === true)
+    const decision = claudeHookFormFor(deps, exec)
+    const mismatch = claudeFormFaults(installation, deps.hookPlatform, deps)
+    checks.push({
+      name: 'claude code hook form',
+      harnesses: ['claude-code'],
+      ok: mismatch.length === 0,
+      detail: mismatch.length === 0
+        ? describeClaudeHookForm(decision)
+        : `${mismatch.join('; ')} — run \`notifai hooks install --harness claude-code\``,
+      ...(mismatch.length === 0 ? {} : { remedy: { summary: 'rewrite the Claude Code hooks in the form this version supports', command: 'notifai hooks install --harness claude-code' } }),
+      technical: { file: installation.file, installed_form: exec ? 'exec' : 'shell', claude_code_version: decision.version,
+        exec_form_min_version: CLAUDE_EXEC_FORM_MIN_VERSION, decision: decision.form, reason: decision.reason },
+    })
+  }
 
   const adapterProblems = installations.flatMap((installation) =>
     (installation.problems ?? []).map((problem) => `${installation.file}: ${problem}`),
@@ -1893,6 +1918,48 @@ function wakeRouteCheck(
     }
   }
   return null
+}
+
+/**
+ * The shared hub: running or not, what it attends, and whether it stopped
+ * itself. Not running is normal: it starts with the next Agent Session and
+ * leaves 30 seconds after the last one.
+ */
+function sessionHubCheck(deps: CommandDeps): HookCheck | null {
+  const report = readHubReport(deps.env)
+  if (!report.supported) return null
+  const status = report.status
+  const sessions = Array.isArray(status?.['sessions']) ? (status['sessions'] as Record<string, unknown>[]) : []
+  if (report.fault !== null) {
+    return {
+      name: 'session hub',
+      ok: false,
+      detail: `the hub stopped restarting after ${report.recent_crashes} crashes in 10 minutes; Agent Sessions show as out of reach until it starts again`,
+      technical: report,
+      remedy: { summary: 'check `notifai logs --event hub.start`; the hub starts again with the next Agent Session after the window', command: 'notifai logs --event hub.start' },
+    }
+  }
+  if (report.running && status?.['credential'] === 're-pair-needed') {
+    return {
+      name: 'session hub',
+      ok: false,
+      detail: 'the service refused this machine\'s credential; the hub stopped sending',
+      technical: report,
+      remedy: { summary: 'pair this machine again', command: 'notifai login' },
+    }
+  }
+  if (!report.running) {
+    return { name: 'session hub', ok: true, reportOnly: true, detail: 'not running; it starts with the next Agent Session', technical: report }
+  }
+  // Process, transport and timing stay in the JSON detail; the line says what the User gets.
+  const reachable = sessions.filter((session) => session['phase'] === 'attending').length
+  return {
+    name: 'session hub',
+    ok: true,
+    reportOnly: true,
+    detail: `running: ${sessions.length} Agent Session${sessions.length === 1 ? '' : 's'} attended, ${reachable} reachable now`,
+    technical: report,
+  }
 }
 
 /**

@@ -15,6 +15,12 @@ export function stampHookDefinition<T extends object>(definition: T, scope = '')
   const revision = hash(`${scope}\n${JSON.stringify(definition)}`)
   const visit = (value: unknown): void => {
     if (!value || typeof value !== 'object') return
+    const args = (value as Record<string, unknown>)['args']
+    if (Array.isArray(args) && typeof (value as Record<string, unknown>)['command'] === 'string') {
+      // Exec form: the revision is one more argument, never part of the executable.
+      args.push('--integration-revision', revision)
+      return
+    }
     for (const [key, item] of Object.entries(value)) {
       if (key === 'command' && typeof item === 'string') {
         const decoded = decodeWindowsCodexCommand(item)
@@ -29,7 +35,9 @@ export function stampHookDefinition<T extends object>(definition: T, scope = '')
 }
 export function sourceIntegrationRevision(source: string): string | null {
   source += `\n${windowsCodexCommandsInSource(source).join("\n")}`
-  const revisions = new Set([...source.matchAll(/(?:--integration-revision\s+|NOTIFAI_INTEGRATION_REVISION = ")([a-f0-9]{64})/g)].map(match => match[1]!))
+  // Shell form names the revision after a space; exec form keeps it as the
+  // next element of the JSON `args` array.
+  const revisions = new Set([...source.matchAll(/(?:--integration-revision(?:\s+|"\s*,\s*")|NOTIFAI_INTEGRATION_REVISION = ")([a-f0-9]{64})/g)].map(match => match[1]!))
   return revisions.size === 1 ? [...revisions][0]! : null
 }
 export function observeLoadedIntegration(sessionId: string, harness: HookHarness,

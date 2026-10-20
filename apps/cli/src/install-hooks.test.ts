@@ -74,6 +74,7 @@ import {
   codexTrustKey,
   codexTrustProblems,
   codexRoutingTrustProblems,
+  handlerCommandLine,
   handlerEvent,
   harnessAccountHome,
   hookCommand,
@@ -136,14 +137,14 @@ describe('hook config', () => {
   })
 
   it('matches both Claude Code picker handlers to the question tool, on POSIX only', () => {
-    const config = buildHookConfig({ adapterPath: ADAPTER, harness: 'claude-code', platform: 'darwin' })
+    const config = buildHookConfig({ adapterPath: ADAPTER, harness: 'claude-code', platform: 'darwin', claudeForm: 'exec' })
     expect(config['PermissionRequest']).toEqual([{
       matcher: 'AskUserQuestion',
-      hooks: [{ type: 'command', command: expect.stringContaining('hook permission-request'), timeout: QUESTION_STOP_TIMEOUT_SECONDS }],
+      hooks: [{ type: 'command', command: ADAPTER, args: expect.arrayContaining(['hook', 'permission-request']), timeout: QUESTION_STOP_TIMEOUT_SECONDS }],
     }])
     expect(config['PostToolUse']).toEqual([{
       matcher: 'AskUserQuestion',
-      hooks: [{ type: 'command', command: expect.stringContaining('hook post-tool-use'), timeout: 10 }],
+      hooks: [{ type: 'command', command: ADAPTER, args: expect.arrayContaining(['hook', 'post-tool-use']), timeout: 10 }],
     }])
     const windows = buildHookConfig({ adapterPath: ADAPTER, harness: 'claude-code', platform: 'win32' })
     expect(windows['PermissionRequest']).toBeUndefined()
@@ -156,9 +157,9 @@ describe('hook config', () => {
     const codex = buildHookConfig({ adapterPath: ADAPTER, harness: 'codex' })
     const cursor = buildCursorHookConfig({ adapterPath: ADAPTER, harness: 'cursor' })
 
-    expect(claude['SessionStart']?.[0]?.hooks[0]).toMatchObject({
-      command: expect.stringContaining(hookCommand(ADAPTER, 'session-start', 'claude-code') + " --integration-revision "),
-    })
+    // Claude Code runs exec form on POSIX: the same command line, with no shell.
+    expect(handlerCommandLine(claude['SessionStart']![0]!.hooks[0]!))
+      .toContain(hookCommand(ADAPTER, 'session-start', 'claude-code') + " --integration-revision ")
     expect(codex['SessionStart']?.[0]?.hooks[0]).toMatchObject({
       command: expect.stringContaining(hookCommand(ADAPTER, 'session-start', 'codex') + " --integration-revision "),
       timeout: 5,
@@ -168,9 +169,8 @@ describe('hook config', () => {
     expect(cursor['sessionStart']?.[0]).toMatchObject({
       command: expect.stringContaining(hookCommand(ADAPTER, 'session-start', 'cursor') + " --integration-revision "),
     })
-    expect(claude['SubagentStart']?.[0]?.hooks[0]).toMatchObject({
-      command: expect.stringContaining(hookCommand(ADAPTER, 'subagent-start', 'claude-code') + " --integration-revision "),
-    })
+    expect(handlerCommandLine(claude['SubagentStart']![0]!.hooks[0]!))
+      .toContain(hookCommand(ADAPTER, 'subagent-start', 'claude-code') + " --integration-revision ")
     expect(codex['SubagentStart']?.[0]?.hooks[0]).toMatchObject({
       command: expect.stringContaining(hookCommand(ADAPTER, 'subagent-start', 'codex') + " --integration-revision "),
     })
@@ -225,7 +225,7 @@ describe('hook config', () => {
       Object.values(config)
         .flatMap((groups) => groups)
         .flatMap((group) => group.hooks)
-        .every((handler) => handler.command.includes('--harness claude-code')),
+        .every((handler) => handlerCommandLine(handler).includes('--harness claude-code')),
     ).toBe(true)
   })
 
@@ -238,16 +238,32 @@ describe('hook config', () => {
     expect(QUESTION_STOP_TIMEOUT_SECONDS).toBeGreaterThan(REPLY_MAX_WINDOW_SECONDS)
   })
 
-  it('gives Claude Code an asynchronous Stop with an explicit waiter budget on POSIX', () => {
-    const claude = buildHookConfig({ adapterPath: ADAPTER, harness: 'claude-code' })
+  it('writes Claude Code hooks in shell form unless its version is known to support exec form', () => {
+    for (const claudeForm of [undefined, 'shell'] as const) {
+      const claude = buildHookConfig({ adapterPath: ADAPTER, harness: 'claude-code', platform: 'linux', ...(claudeForm === undefined ? {} : { claudeForm }) })
+      for (const groups of Object.values(claude)) {
+        for (const handler of groups.flatMap((group) => group.hooks)) {
+          expect(handler).not.toHaveProperty('args')
+          expect(handler.command).toMatch(/hook-adapter' hook [a-z-]+ --owner notifai --harness claude-code --integration-revision [a-f0-9]{64}$/)
+        }
+      }
+    }
+    // Codex never takes exec form, whatever Claude Code supports.
+    const codex = buildHookConfig({ adapterPath: ADAPTER, harness: 'codex', platform: 'linux', claudeForm: 'exec' })
+    expect(Object.values(codex).flatMap((groups) => groups.flatMap((group) => group.hooks)).some((handler) => 'args' in handler)).toBe(false)
+  })
 
-    // `async: true` is what frees the turn: the handler returns at once and the
-    // same process lives on as the waiter. The explicit timeout is what keeps
-    // that process alive — Claude kills a background hook at its own 600s
-    // default and reports nothing, so a wait near that boundary loses answers.
+  it('gives Claude Code an asynchronous exec-form Stop on POSIX that keeps the complete answer window', () => {
+    const claude = buildHookConfig({ adapterPath: ADAPTER, harness: 'claude-code', platform: 'darwin', claudeForm: 'exec' })
+
+    // `async: true` frees the turn. When the hub attends the session the Stop
+    // hands the window to it and ends early; when it does not (no session
+    // child, a refused child, a faulted hub) the Stop itself keeps the whole
+    // window, so the declared budget never shrinks.
     expect(claude['Stop']?.[0]?.hooks[0]).toEqual({
       type: 'command',
-      command: expect.stringContaining(hookCommand(ADAPTER, 'stop', 'claude-code') + " --integration-revision "),
+      command: ADAPTER,
+      args: ['hook', 'stop', '--owner', 'notifai', '--harness', 'claude-code', '--integration-revision', expect.stringMatching(/^[a-f0-9]{64}$/)],
       timeout: QUESTION_STOP_TIMEOUT_SECONDS,
       async: true,
     })
@@ -255,7 +271,7 @@ describe('hook config', () => {
     expect(claude['SessionEnd']?.[0]?.hooks[0]?.async).toBeUndefined()
   })
 
-  it('gives Claude Code the same detached Stop on Windows', () => {
+  it('keeps the shell-form Claude Code Stop on Windows until the hub is verified there', () => {
     const options = {
       adapterPath: 'C:\\Users\\Ada\\.notifai\\bin\\hook-adapter',
       harness: 'claude-code' as const,
@@ -268,9 +284,8 @@ describe('hook config', () => {
     expect(stop?.command).toContain(hookCommand(options.adapterPath, 'stop', 'claude-code', options) + ' --integration-revision ')
     expect(stop?.async).toBe(true)
     expect(stop).not.toHaveProperty('statusMessage')
-    expect(stop?.timeout).toBe(
-      buildHookConfig({ adapterPath: ADAPTER, harness: 'claude-code' })['Stop']?.[0]?.hooks[0]?.timeout,
-    )
+    expect(stop?.timeout).toBe(QUESTION_STOP_TIMEOUT_SECONDS)
+    expect(stop).not.toHaveProperty('args')
   })
 
   it('sets no status message on a Stop handler: none of them holds a turn that needs explaining', () => {
@@ -359,19 +374,21 @@ describe('hook config', () => {
     ])
   })
 
-  it('installs the Session Attendant as a second async handler for Claude Code everywhere and Codex on POSIX only', () => {
-    const hooks = buildHookConfig({ adapterPath: ADAPTER, harness: 'claude-code', platform: 'darwin' })
+  it('installs the session child handler as a second async handler for Claude Code everywhere and Codex on POSIX only', () => {
+    const hooks = buildHookConfig({ adapterPath: ADAPTER, harness: 'claude-code', platform: 'darwin', claudeForm: 'exec' })
     for (const event of ['SessionStart', 'UserPromptSubmit', 'Stop']) {
       const handlers = hooks[event]?.flatMap((group) => group.hooks) ?? []
-      expect(handlers.map((handler) => handlerEvent(handler.command))).toEqual([
+      expect(handlers.map((handler) => handlerEvent(handlerCommandLine(handler)))).toEqual([
         event === 'SessionStart' ? 'session-start' : event === 'Stop' ? 'stop' : 'user-prompt-submit',
         'attend',
       ])
-      // No timeout: a backgrounded async hook is never timed out, and the
-      // attendant ends itself with its session.
+      // Exec form, no timeout: the native launcher becomes Claude's own child
+      // (or exits at once when a child already serves the session), and a
+      // backgrounded async hook is never timed out.
       expect(handlers[1]).toEqual({
         type: 'command',
-        command: expect.stringContaining(hookCommand(ADAPTER, 'attend', 'claude-code') + " --integration-revision "),
+        command: ADAPTER,
+        args: ['hook', 'attend', '--owner', 'notifai', '--harness', 'claude-code', '--integration-revision', expect.stringMatching(/^[a-f0-9]{64}$/)],
         async: true,
       })
     }
@@ -384,11 +401,24 @@ describe('hook config', () => {
     const attends = (document: ReturnType<typeof buildHookConfig>): string[] =>
       Object.entries(document).flatMap(([event, groups]) =>
         groups.flatMap((group) => group.hooks)
-          .filter((handler) => handlerEvent(handler.command) === 'attend').map(() => event))
+          .filter((handler) => handlerEvent(handlerCommandLine(handler)) === 'attend').map(() => event))
     const windowsOptions = { adapterPath: ADAPTER, platform: 'win32' as const, nodePath: EXEC }
     expect(attends(buildHookConfig({ ...windowsOptions, harness: 'claude-code' })))
       .toEqual(['SessionStart', 'UserPromptSubmit', 'Stop'])
     expect(attends(buildHookConfig({ ...windowsOptions, harness: 'codex' }))).toEqual([])
+  })
+
+  it('keeps every Codex hook definition byte-identical to the shipped build, so Codex asks for no new review', () => {
+    // Captured from the build before the hub; Codex trusts hooks by hash and
+    // skips changed ones until the User reviews them again.
+    const golden = JSON.parse(readFileSync(new URL('./fixtures/codex-hooks-golden-b3.json', import.meta.url), 'utf8')) as Record<string, string>
+    for (const platform of ['darwin', 'linux', 'win32'] as const) {
+      const adapterPath = platform === 'win32' ? 'C:\\Users\\Example User\\.notifai\\bin\\notifai.exe' : '/home/example user/.notifai/bin/notifai'
+      for (const scope of ['', 'codex:/home/example user/.codex']) {
+        expect(JSON.stringify(buildHookConfig({ adapterPath, harness: 'codex', platform, integrationScope: scope }), null, 2), `${platform} ${scope}`)
+          .toBe(golden[`${platform}|${scope}`])
+      }
+    }
   })
 
   it('declares the complete answer window on the Codex attendant, because Codex enforces async timeouts', () => {
@@ -423,7 +453,7 @@ describe('hook config', () => {
     const first = mergeHooks({}, buildHookConfig({ adapterPath: ADAPTER, harness: 'claude-code', platform: 'darwin' }), SCRIPT)
     const again = mergeHooks(first.document, buildHookConfig({ adapterPath: ADAPTER, harness: 'claude-code', platform: 'darwin' }), SCRIPT)
     const attends = Object.values(again.document.hooks ?? {}).flatMap((groups) =>
-      groups.flatMap((group) => group.hooks.filter((handler) => handlerEvent(handler.command) === 'attend')),
+      groups.flatMap((group) => group.hooks.filter((handler) => handlerEvent(handlerCommandLine(handler)) === 'attend')),
     )
     expect(attends).toHaveLength(3)
     const removed = removeHooks(again.document, SCRIPT)
@@ -2237,7 +2267,7 @@ describe('obsolete native plugin enablement', () => {
 })
 
 describe('hook step budgets', () => {
-  interface GeneratedHook { harness: (typeof HOOK_INSTALLABLE_HARNESSES)[number]; event: string; document: string; timeout: number | undefined }
+  interface GeneratedHook { harness: (typeof HOOK_INSTALLABLE_HARNESSES)[number]; event: string; document: string; timeout: number | undefined; platform: NodeJS.Platform }
 
   /** Every hook this build generates, with the timeout its definition declares. */
   function generatedHooks(): GeneratedHook[] {
@@ -2247,13 +2277,13 @@ describe('hook step budgets', () => {
         const config = buildHookConfig({ adapterPath: ADAPTER, harness, platform })
         for (const [document, groups] of Object.entries(config)) {
           for (const handler of groups.flatMap((group) => group.hooks)) {
-            hooks.push({ harness, event: handlerEvent(handler.command)!, document, timeout: handler.timeout })
+            hooks.push({ harness, event: handlerEvent(handlerCommandLine(handler))!, document, timeout: handler.timeout, platform })
           }
         }
       }
       for (const [document, handlers] of Object.entries(buildCursorHookConfig({ adapterPath: ADAPTER, harness: 'cursor', platform }))) {
         for (const handler of handlers) {
-          hooks.push({ harness: 'cursor', event: handlerEvent(handler.command)!, document, timeout: handler.timeout })
+          hooks.push({ harness: 'cursor', event: handlerEvent(handler.command)!, document, timeout: handler.timeout, platform })
         }
       }
       // The installer and repair write both plugins with this child timeout.
@@ -2267,7 +2297,7 @@ describe('hook step budgets', () => {
         const events = new Set([...source.matchAll(/runHook\(([^,]*?),/g)]
           .flatMap((call) => [...call[1]!.matchAll(/"([a-z-]+)"/g)].map((name) => name[1]!)))
         expect(events.size).toBeGreaterThan(2)
-        for (const event of events) hooks.push({ harness, event, document: event, timeout })
+        for (const event of events) hooks.push({ harness, event, document: event, timeout, platform })
       }
     }
     return hooks
@@ -2279,14 +2309,14 @@ describe('hook step budgets', () => {
     for (const hook of hooks) {
       const declared = hook.timeout === undefined || hook.timeout <= 0 ? null : hook.timeout
       // The runtime reads the same timeout the definition declares.
-      expect(hookTimeoutSeconds(hook.event, hook.harness, hook.document), `${hook.harness} ${hook.document}`).toBe(declared)
+      expect(hookTimeoutSeconds(hook.event, hook.harness, hook.document, hook.platform), `${hook.harness} ${hook.document} ${hook.platform}`).toBe(declared)
       if (declared === null) continue
       // What the process actually uses: it knows its event and harness, not the document.
-      const budgets = hookStepBudgets(hook.event, hook.harness)
+      const budgets = hookStepBudgets(hook.event, hook.harness, hook.platform)
       for (const step of hookSteps(hook.event, hook.document)) {
         expect(budgets[step], `${hook.harness} ${hook.document} ${step}`).toBeLessThanOrEqual(declared * 1000)
       }
-      const allowance = hookWorkAllowanceMs(hook.event, hook.harness)
+      const allowance = hookWorkAllowanceMs(hook.event, hook.harness, hook.platform)
       if (allowance !== null) expect(allowance).toBeLessThan(declared * 1000)
     }
   })

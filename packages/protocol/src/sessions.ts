@@ -171,6 +171,72 @@ export type AttendanceResponse =
     }
 
 // ---------------------------------------------------------------------------
+// Batched Session Attendance (one process attending many Agent Sessions)
+// ---------------------------------------------------------------------------
+
+/** Most Agent Sessions one batched exchange may carry. */
+export const ATTENDANCE_BATCH_MAX_SESSIONS = 100
+
+const batchSessionId = { session_id: Type.String({ minLength: 1, maxLength: 128 }) } as const
+
+/**
+ * `POST /api/v1/agent-sessions/attendance?wait_seconds=N` (machine auth, CLI
+ * capability `session_attendance`; offered when the server lists
+ * `session_attendance_batch`).
+ *
+ * Each entry is exactly one per-session exchange, applied in order and with
+ * the same lease and generation rules. One cursor covers the whole batch: the
+ * server holds the exchange only while every entry is attending, none was
+ * acquired by this exchange, and no attending session has a claimable Session
+ * Message newer than the cursor.
+ */
+export const AttendanceBatchEntry = Type.Union([
+  Type.Object(
+    {
+      ...batchSessionId,
+      ...attendanceIdentity,
+      state: Type.Literal('running'),
+      activity: SessionActivitySchema,
+      accepts_messages: Type.Boolean(),
+    },
+    { additionalProperties: false },
+  ),
+  Type.Object(
+    { ...batchSessionId, ...attendanceIdentity, state: Type.Literal('ended') },
+    { additionalProperties: false },
+  ),
+  Type.Object(
+    { ...batchSessionId, ...attendanceIdentity, state: Type.Literal('withdrawn') },
+    { additionalProperties: false },
+  ),
+])
+export type AttendanceBatchEntryT = Static<typeof AttendanceBatchEntry>
+
+export const AttendanceBatchRequest = Type.Object(
+  {
+    /** The previous batch's cursor; absent means answer at once with every claimable message. */
+    message_cursor: Type.Optional(
+      Type.String({ minLength: 1, maxLength: 512, pattern: '^[A-Za-z0-9_-]+$' }),
+    ),
+    sessions: Type.Array(AttendanceBatchEntry, { minItems: 1, maxItems: ATTENDANCE_BATCH_MAX_SESSIONS }),
+  },
+  { additionalProperties: false },
+)
+export type AttendanceBatchRequestT = Static<typeof AttendanceBatchRequest>
+
+/** One entry's outcome, in request order. `unknown_session` replaces the per-session 404. */
+export type AttendanceBatchResult = { session_id: string } & (
+  | AttendanceResponse
+  | { status: 'unknown_session' }
+)
+
+export interface AttendanceBatchResponse {
+  /** The Account position the final snapshot observed; send it with the next batch. */
+  message_cursor: string
+  sessions: AttendanceBatchResult[]
+}
+
+// ---------------------------------------------------------------------------
 // Delivery Attempts (one claim protocol for every harness hand-off)
 // ---------------------------------------------------------------------------
 

@@ -151,9 +151,10 @@ export function stageSessionAnswers(sessionId: string, env: NodeJS.ProcessEnv, a
 }
 
 /** The existing route wakes the exact owner, but no longer owns answer text. */
-export function sessionInputRoute(sessionId: string, env: NodeJS.ProcessEnv, route: EscalationDeliveryRoute, log?: Logger, wakeOwner: 'producer' | 'attendant' = 'producer', wake: WakeOptions = {}): EscalationDeliveryRoute {
+export function sessionInputRoute(sessionId: string, env: NodeJS.ProcessEnv, route: EscalationDeliveryRoute, log?: Logger, wakeOwner: 'producer' | 'attendant' = 'producer', wake: WakeOptions = {}, staged?: (sessionId: string) => void): EscalationDeliveryRoute {
   return { ...route, defer: async (accepted) => {
     stageSessionAnswers(sessionId, env, accepted)
+    staged?.(sessionId)
     // A live resident owns scheduling; its completion probe also covers the
     // case where no more tool callbacks occur. Preserve return when absent.
     if (wakeOwner === 'attendant') {
@@ -177,6 +178,11 @@ function messagesPath(sessionId: string, env: NodeJS.ProcessEnv): string {
 
 /** Cache only: the service remains authoritative and claims fence stale copies. */
 export function stageSessionMessages(sessionId: string, env: NodeJS.ProcessEnv, lease: DeliveryLease, messages: readonly AttendanceMessage[]): void {
+  // Nothing changed since the last exchange (the usual idle case): no locked,
+  // fsynced rewrite of the state and message files every exchange.
+  const cached = readSessionMessageCache(sessionId, env, lease)
+  if (cached !== null && JSON.stringify(cached) === JSON.stringify(messages) &&
+      readSessionState(sessionId, env).input_delivery_fenced === undefined) return
   updateSessionState(sessionId, env, state => {
     atomicWriteFileSync(messagesPath(sessionId, env), JSON.stringify({ session_id: sessionId, ...lease, messages }))
     // The resident stages only after a fresh authenticated attendance exchange.

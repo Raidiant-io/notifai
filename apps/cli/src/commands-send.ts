@@ -341,7 +341,7 @@ export async function sendCommand(
   }
   const notifiedSession = submissionDraft.source?.session_id
   if (notifiedSession !== undefined) {
-    // Wakes this session's dormant Session Attendant.
+    // Starts attendance: the hub (or, off macOS and Linux, the dormant attendant) begins watching for answers.
     recordSessionNotified(notifiedSession, deps.env, (deps.now ?? Date.now)())
   }
   const receiptExit = receiptExitCode(receipt)

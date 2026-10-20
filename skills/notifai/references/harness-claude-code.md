@@ -16,14 +16,15 @@ skill and guidance as the new Notification Request owner.
 
 ## How the answer gets back
 
-**Claude Code:** a detached observer starts after submission and
-waits out of band for the complete answer window. The resident Session
-Attendant sends wakes as the sender Claude Code accepts: its own child on
-macOS and Linux, and the holder of the session's inbox token on Windows. Stop
+**Claude Code:** after submission Notifai waits out of band for the complete
+answer window: on macOS and Linux the shared hub waits, and a small session
+child that stays the session's own child writes the wake-up, opening the inbox
+with the session's token. On Windows a per-session resident does both. Stop
 can recover answer ownership without holding the turn. When the
 answer arrives it is stored with the session's pending inputs. Its own inbox
 socket receives a wake-up: an idle Agent Session starts a new turn, and a busy
-one receives it between tool calls or when its current turn ends. The prompt hook or the named
+one receives it between tool calls or when its current turn ends. The wake-up
+carries no answer; Claude Code shows it as a message from another session. The prompt hook or the named
 `notifai receive` command drains the current notes and answers together.
 Closing the Agent Session ends its questions; Notifai never resumes it.
 

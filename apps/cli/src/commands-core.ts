@@ -114,10 +114,19 @@ export interface CommandDeps {
   /** Test seam for detached immediate submission and native answer ownership. */
   spawnQuestionSettlement?: (launch: QuestionSettlementLaunch) => void
   /**
+   * The hub's in-process question waiters: told the moment an accepted answer
+   * is staged for a session, so the hub hands it in without waiting for a tick.
+   */
+  onSessionInputStaged?: (sessionId: string) => void
+  /**
    * Starts the detached daily hook maintenance (prune, update lookup). Absent,
    * hooks start none; the production entry point supplies the real launcher.
    */
   spawnHookMaintenance?: (launch: HookMaintenanceLaunch) => void
+  /** Test seam: the installed Claude Code's version; production runs `claude --version`. */
+  claudeCodeVersion?: () => string | null
+  /** Starts a detached retirement of closed sessions' queued questions. Absent, none starts. */
+  spawnRetirement?: (launch: HookMaintenanceLaunch) => void
   /** Test seam and production adapter for the external native skills installer. */
   nativeSkills?: NativeSkills
   /** Test seam for Orca's exact-pane Agent Session title lookup. */

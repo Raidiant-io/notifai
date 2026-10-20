@@ -36,6 +36,16 @@ There is no limit on successive answered questions. A `delivery-limit` gate
 bounds repeated delivery attempts for the same answer, not the number of
 decisions the User can make in a conversation.
 
+On macOS and Linux one shared hub attends every Agent Session on the machine.
+`notifai doctor` shows whether it runs and what it attends; not running is
+normal when no session is open. `notifai logs --event hub.session` and
+`--event hub.exchange` show sessions registering, ending, and the hub's
+service traffic. A hub that crashed three times in ten minutes stops
+restarting for the rest of that window and doctor says so. Doctor's
+`claude code hook form` check says whether Claude Code's hooks run in exec or
+shell form and why; a failure there is repaired by
+`notifai hooks install --harness claude-code`.
+
 When sign-in looks fine but nothing sends, `notifai auth status --json` and
 `notifai auth access --json` separate a pairing problem from an account without
 an active plan — report which one it is instead of calling it a delivery

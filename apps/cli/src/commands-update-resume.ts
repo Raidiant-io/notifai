@@ -110,7 +110,7 @@ export async function updateResumeCommand(deps: CommandDeps, flags: { json?: boo
     }
     for (const { installation, env } of assessment.installations) {
       if (setupPending(installation.file)) continue
-      if (installationFaults(installation, deps.hookPlatform).length === 0) continue
+      if (installationFaults(installation, deps.hookPlatform, { ...deps, env }).length === 0) continue
       const before = readFileSync(installation.file, 'utf8')
       if (hooksRefreshCommand({ ...repairDeps, env }, installation.harness, (action, scope) => publish(() =>
         withHookRepairIntent({ ...deps, env }, installation, env === deps.env ? owner : null, action), scope)) !== EXIT.ok) {

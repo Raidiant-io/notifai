@@ -267,7 +267,7 @@ function submitQuestion(
         )
       }
       recordConfirmedNativeAnswerTarget(sessionId, ctx.env, { ...entry, request_id: receipt.request_id })
-      // Wakes this session's dormant Session Attendant.
+      // Starts attendance: the hub (or, off macOS and Linux, the dormant attendant) begins watching for answers.
       recordSessionNotified(sessionId, ctx.env, ctx.now())
       return receipt
     }, ctx.service_identity)
@@ -1028,6 +1028,7 @@ export async function handleStop(
   processDeadlineAt = ctx.now() + QUESTION_WAITER_CEILING_SECONDS * 1000,
   route: EscalationDeliveryRoute = hookContinuationRoute(),
   recordStop = true,
+  hubHandoff = false,
 ): Promise<HookOutcome> {
   const sessionId = envelope.session_id
   if (!sessionId) {
@@ -1040,6 +1041,7 @@ export async function handleStop(
     route,
     processDeadlineAt,
     recordStop,
+    hubHandoff,
   })
 }
 
@@ -1228,7 +1230,11 @@ export async function runEscalationWaiter(
       notes,
       hardDeadlineAt,
       options.route,
-      options.recordStop !== false && ctx.harness === 'codex' && options.route.kind === 'session-queue',
+      // After admission the Stop hook hands the answer window to a successor:
+      // Codex's detached owner, or for Claude Code the hub, whose session
+      // child writes the inbox as the harness's own child.
+      options.recordStop !== false && ((ctx.harness === 'codex' && options.route.kind === 'session-queue') ||
+        (ctx.harness === 'claude-code' && options.hubHandoff === true)),
     )
   } finally {
     releaseQuestionPush(sessionId, ctx.env)
@@ -1591,6 +1597,17 @@ function unclaimedSelectedAnswers(
 }
 
 /** The machine-wide journal sweep, from a hook that already holds a client. */
+/**
+ * Retire what closed sessions queued, at once: the hub runs this when it learns
+ * of a close, so a question on the User's devices does not wait for some later
+ * hook in another session.
+ */
+export async function drainClosedSessionRetirements(ctx: HookContext): Promise<string[]> {
+  const retired = await drainOrphanRetirements(ctx, ctx.env, ctx.now())
+  await sweepDeliveryJournalsFor(ctx)
+  return retired
+}
+
 async function sweepDeliveryJournalsFor(ctx: HookContext): Promise<void> {
   const writer = ctx.answerClaims?.writer ?? currentProcessIdentity()
   if (writer === null) return
@@ -2487,7 +2504,7 @@ export function handleSessionEnd(
   if (orphans.length > 0) {
     orphanRetirements(env, orphans, now)
     notes.push(
-      `queued ${orphans.length} question${orphans.length > 1 ? 's' : ''} for retirement on the next hook`,
+      `queued ${orphans.length} question${orphans.length > 1 ? 's' : ''} for retirement`,
     )
   }
   return withFileLock(`${sessionStatePath(sessionId, env)}.lock`, () => {

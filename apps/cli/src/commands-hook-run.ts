@@ -21,6 +21,8 @@ import {
 } from './commands-core.js'
 import { claudeHookSourcePid, claudeSessionPid } from './commands-harness-context.js'
 import { attendHook, recordCodexTurnStart, reportCodexSessionEnded } from './commands-hook-attend.js'
+import { hubSupported } from './hub-ipc.js'
+import { hubAttendsSession, notifyHubSessionEnded } from './hub-client.js'
 import { waitForReply } from './commands-send-support.js'
 import { loadConfig, type CliConfig } from './config.js'
 import { withFileLock } from './file-lock.js'
@@ -28,6 +30,7 @@ import { questionRoutingCapability, type HookInstallableHarness } from './harnes
 import { HOOK_EVENTS } from './hook-events.js'
 import { claimGrokActivation, grokQuestionRoute, grokHookEnvelope, resetGrokActivation } from './grok-hooks.js'
 import {
+  drainClosedSessionRetirements,
   handleSessionEnd,
   handleStop,
   handleUserPromptSubmit,
@@ -88,7 +91,7 @@ const INTERNAL_HOOK_EVENTS = [
   'question-submission', 'question-settlement', 'openclaw-lifecycle', 'openclaw-generation',
   'openclaw-turn-start', 'openclaw-turn-end', 'openclaw-list-pending',
   'openclaw-attendance-ready', 'openclaw-settlement',
-  'openclaw-verify-prepared', 'maintenance',
+  'openclaw-verify-prepared', 'maintenance', 'retirement',
 ] as const
 
 /**
@@ -411,6 +414,10 @@ export async function hookRunCommand(
     start({ cwd, event: envelope.hook_event_name ?? null, source: envelope.source ?? null })
     try {
       if (harness === 'grok') return await grokAttendHook(deps, envelope, cwd, logger)
+      // On macOS and Linux the native launcher runs Claude Code's and Codex's
+      // attend handler as the session child and never starts the runtime.
+      // The runtime attendant remains for Windows (until verified there),
+      // OpenClaw, and source checkouts that have no native launcher.
       return await attendHook(deps, { envelope, harness, cwd, invokedAt, logger })
     } catch (err) {
       // A resident process that throws must still hand the harness exit 0.
@@ -918,6 +925,19 @@ export async function hookRunCommand(
         const reported = await reportCodexSessionEnded(deps, envelope.session_id, codexEndingLease)
         logger.info('attendant.lease', { event: 'ended-by-session-end', outcome: reported })
       }
+      if ((harness === 'codex' || harness === 'claude-code') && envelope.session_id !== undefined) {
+        // The hub reports the end and retires what it queued at once. With no
+        // hub running, a detached process retires the queue now instead.
+        const handed = await notifyHubSessionEnded(deps.env, envelope.session_id)
+        const queued = (outcome.log as { queued_retirements?: unknown }).queued_retirements
+        if (!handed && typeof queued === 'number' && queued > 0) {
+          try {
+            deps.spawnRetirement?.({ cwd, harness, ...(workAllowanceMs === null ? {} : { detachTimeoutMs: Math.min(5_000, workAllowanceMs) }) })
+          } catch (err) {
+            logger.error('hook.retirement', { stage: 'spawn', ...failureData(err) })
+          }
+        }
+      }
       return EXIT.ok
     }
 
@@ -984,6 +1004,13 @@ export async function hookRunCommand(
       ...answerClaimsFor(deps, harness, envelope.session_id, event),
     }
 
+    if (event === 'retirement') {
+      // The hub learned of a close: retire what it queued now, not at a later hook.
+      const retired = await drainClosedSessionRetirements(ctx)
+      logger.info('hook.end', { hook: event, outcome: 'drained', decided: false, retired: retired.length })
+      return EXIT.ok
+    }
+
     if (event === 'question-submission') {
       const notes: string[] = []
       const sessionId = envelope.session_id
@@ -1039,6 +1066,10 @@ export async function hookRunCommand(
         // agent_end records Stop; a background poll must not spend the three
         // acknowledgement reminders or abandon a Session Message debt.
         event === 'stop',
+        // When the hub attends this session, Claude Code's Stop hook submits
+        // and hands the answer window to the hub instead of waiting through it.
+        event === 'stop' && harness === 'claude-code' && envelope.session_id !== undefined &&
+          hubSupported(deps.hookPlatform ?? process.platform) && hubAttendsSession(envelope.session_id, deps.env),
       )
     }
     if (
@@ -1140,11 +1171,12 @@ async function stopWakeRoute(
       ...(deps.claudeWake === undefined ? {} : { adapters: deps.claudeWake }),
       ...(deps.hookPlatform === undefined ? {} : { platform: deps.hookPlatform }),
     }), log(deps), 'producer', { unique: true })
-    // A detached subprocess can be reparented after ask exits. Only the
-    // resident Session Attendant retains Claude's required own-child ancestry.
-    // Its ordinary attendance exchange wakes staged inputs, even with no notes.
+    // A detached or hub-owned waiter is not Claude's child. Only the session's
+    // own resident (the session child, through the hub) has the own-child
+    // standing the inbox requires; its attendance wakes staged inputs.
     return background ? { ...route, defer: async (accepted) => {
       stageSessionAnswers(sessionId, deps.env, accepted)
+      deps.onSessionInputStaged?.(sessionId)
     } } : route
   }
   if (harness === 'codex') {
@@ -1153,7 +1185,7 @@ async function stopWakeRoute(
       cwd,
       env: deps.env,
       ...(deps.codexWake === undefined ? {} : { adapters: deps.codexWake }),
-    }), log(deps), 'attendant')
+    }), log(deps), 'attendant', {}, deps.onSessionInputStaged)
   }
   return undefined
 }

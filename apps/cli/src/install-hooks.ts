@@ -1,4 +1,5 @@
 import { encodeWindowsCodexCommand, decodeWindowsCodexCommand } from './windows-codex-command.js'
+import type { ClaudeHookFormName } from './claude-hook-form.js'
 import { stampHookDefinition } from './integration-revision.js'
 import {
   existsSync,
@@ -79,7 +80,13 @@ import {
 
 export interface HookHandler {
   type: 'command'
+  /** Shell form: the whole command line. Exec form (with `args`): the executable. */
   command: string
+  /**
+   * Exec form: Claude Code spawns `command` directly with these arguments and
+   * no shell, so the hook process is Claude's own child on every platform.
+   */
+  args?: string[]
   timeout?: number
   async?: boolean
   asyncRewake?: boolean
@@ -102,6 +109,12 @@ export interface HookCommandOptions {
   platform?: NodeJS.Platform | HookHostPlatform
   /** Source/development script interpreter on Windows; native commands omit it. */
   nodePath?: string
+  /**
+   * Claude Code on macOS and Linux: exec form only where the installed Claude
+   * Code is known to support it (`claude-hook-form.ts`). Shell form otherwise,
+   * and when unspecified.
+   */
+  claudeForm?: ClaudeHookFormName
 }
 
 /**
@@ -125,6 +138,56 @@ export function hookCommand(
     return encodeWindowsCodexCommand(command)
   }
   return command
+}
+
+/**
+ * Claude Code on macOS and Linux runs Notifai's handlers in exec form when its
+ * version supports it: no `sh -c` between Claude and the hook, so the session
+ * child is Claude's own child (Ubuntu's dash does not exec its last command).
+ * Codex keeps its shell command byte for byte: changed bytes make Codex skip
+ * the hook until the User re-trusts it. Windows keeps its form until it is
+ * verified there.
+ */
+export function usesExecForm(
+  harness: HookInstallableHarness | undefined,
+  platform?: NodeJS.Platform | HookHostPlatform,
+  claudeForm?: ClaudeHookFormName,
+): boolean {
+  return harness === 'claude-code' && hookHostPlatform(platform) === 'posix' && claudeForm === 'exec'
+}
+
+/** The `command` (and, in exec form, `args`) fields of one generated handler. */
+export function hookCommandFields(
+  adapterPath: string,
+  event: string,
+  harness?: HookInstallableHarness,
+  options: HookCommandOptions = {},
+): Pick<HookHandler, 'command' | 'args'> {
+  // On POSIX the adapter is directly executable (a native launcher, or a script
+  // with its own interpreter line), so exec form never needs the Node path.
+  if (usesExecForm(harness, options.platform, options.claudeForm)) {
+    return { command: adapterPath, args: ['hook', event, ...OWNER_MARKER.split(' '), '--harness', harness!] }
+  }
+  return { command: hookCommand(adapterPath, event, harness, options) }
+}
+
+/**
+ * The command line one handler runs, as one string: the shell-form command, or
+ * the exec-form executable and arguments written the way the shell form would
+ * write them. Ownership, event and drift checks all read this.
+ */
+/** Whether a settings document already holds Notifai handlers in exec form. */
+export function documentHasExecForm(document: { hooks?: Record<string, unknown> }): boolean {
+  return Object.values(document.hooks ?? {}).some((groups) => Array.isArray(groups) && groups.some((group) =>
+    Array.isArray((group as { hooks?: unknown }).hooks) && ((group as { hooks: unknown[] }).hooks).some((handler) => {
+      const h = handler as { command?: unknown; args?: unknown }
+      return typeof h.command === 'string' && Array.isArray(h.args) && handlerEvent(handlerCommandLine({ command: h.command, args: h.args })) !== null
+    })))
+}
+
+export function handlerCommandLine(handler: { command: string; args?: unknown }): string {
+  if (!Array.isArray(handler.args)) return handler.command
+  return [quote(handler.command), ...handler.args.map((arg) => String(arg))].join(' ')
 }
 
 /** The leading argv that every Notifai handler must start with. */
@@ -206,6 +269,8 @@ export interface BuildOptions {
   platform?: NodeJS.Platform | HookHostPlatform
   /** Source/development Windows interpreter; omitted for native commands. */
   nodePath?: string
+  /** Claude Code on macOS and Linux: see `HookCommandOptions.claudeForm`. */
+  claudeForm?: ClaudeHookFormName
 }
 
 /**
@@ -259,20 +324,21 @@ function stopHandler(
   harness: HookInstallableHarness | undefined,
   options: HookCommandOptions,
 ): HookHandler {
-  const command = hookCommand(adapterPath, 'stop', harness, options)
+  const command = hookCommandFields(adapterPath, 'stop', harness, options)
   if (stopHandlerIsDetached(harness)) {
-    return { type: 'command', command, timeout: QUESTION_STOP_TIMEOUT_SECONDS, async: true }
+    return { type: 'command', ...command, timeout: QUESTION_STOP_TIMEOUT_SECONDS, async: true }
   }
   if (harness === 'grok') {
-    return { type: 'command', command, timeout: QUESTION_STOP_TIMEOUT_SECONDS }
+    return { type: 'command', ...command, timeout: QUESTION_STOP_TIMEOUT_SECONDS }
   }
-  return { type: 'command', command, timeout: NON_ROUTING_BLOCKING_STOP_TIMEOUT_SECONDS }
+  return { type: 'command', ...command, timeout: NON_ROUTING_BLOCKING_STOP_TIMEOUT_SECONDS }
 }
 
 function commandOptionsFrom(options: BuildOptions): HookCommandOptions {
   return {
     ...(options.platform === undefined ? {} : { platform: options.platform }),
     ...(options.nodePath === undefined ? {} : { nodePath: options.nodePath }),
+    ...(options.claudeForm === undefined ? {} : { claudeForm: options.claudeForm }),
   }
 }
 
@@ -285,7 +351,7 @@ export function buildHookConfig(options: BuildOptions): HookConfig {
     if (row.notifai === 'pre-tool-use') {
       if (options.harness !== 'codex' || !installsSessionAttendant(options.harness, options.platform)) continue
       hooks[row.document] = [{ matcher: 'request_user_input_async', hooks: [{
-        type: 'command', command: hookCommand(adapterPath, row.notifai, options.harness, commandOptions), timeout: row.timeoutSeconds,
+        type: 'command', ...hookCommandFields(adapterPath, row.notifai, options.harness, commandOptions), timeout: row.timeoutSeconds,
       }] }]
       continue
     }
@@ -301,7 +367,7 @@ export function buildHookConfig(options: BuildOptions): HookConfig {
         matcher: CLAUDE_PICKER_MATCHER,
         hooks: [{
           type: 'command',
-          command: hookCommand(adapterPath, row.notifai, options.harness, commandOptions),
+          ...hookCommandFields(adapterPath, row.notifai, options.harness, commandOptions),
           timeout: row.notifai === 'permission-request' ? QUESTION_STOP_TIMEOUT_SECONDS : row.timeoutSeconds,
         }],
       }]
@@ -318,7 +384,7 @@ export function buildHookConfig(options: BuildOptions): HookConfig {
         hooks: [
           {
             type: 'command',
-            command: hookCommand(adapterPath, row.notifai, options.harness, commandOptions),
+            ...hookCommandFields(adapterPath, row.notifai, options.harness, commandOptions),
             timeout: row.timeoutSeconds,
           },
         ],
@@ -342,7 +408,7 @@ export function buildHookConfig(options: BuildOptions): HookConfig {
     for (const event of attendDocumentEvents(options.harness)) {
       const attend: HookHandler = {
         type: 'command',
-        command: hookCommand(adapterPath, 'attend', options.harness, commandOptions),
+        ...hookCommandFields(adapterPath, 'attend', options.harness, commandOptions),
         async: true,
         ...(options.harness !== 'codex'
           ? {}
@@ -1024,7 +1090,7 @@ function readSettings(file: string): SettingsDocument {
  * beside ours inside the same matcher group.
  */
 function isOurHandler(handler: HookHandler, scriptPath: string): boolean {
-  return isOurCommand(handler.command, scriptPath)
+  return isOurCommand(handlerCommandLine(handler), scriptPath)
 }
 
 /** Drops only our handlers, keeping the group and anyone else's handlers. */
@@ -1090,9 +1156,9 @@ export function mergeHooks(
         }
         hadOurs = true
         const replacementGroup = desired.find(candidate => candidate.hooks.some(replacement =>
-          handlerEvent(replacement.command) === handlerEvent(handler.command)))
+          handlerEvent(handlerCommandLine(replacement)) === handlerEvent(handlerCommandLine(handler))))
         const index = replacementGroup?.hooks.findIndex(replacement =>
-          handlerEvent(replacement.command) === handlerEvent(handler.command)) ?? -1
+          handlerEvent(handlerCommandLine(replacement)) === handlerEvent(handlerCommandLine(handler))) ?? -1
         if (replacementGroup !== undefined && index >= 0) {
           next.push(replacementGroup.hooks.splice(index, 1)[0]!)
         } else if (options.preserveIdentities === true) {
@@ -1401,6 +1467,8 @@ export interface InstalledHandler {
   /** Index of the handler within its group. */
   handlerIndex: number
   command: string
+  /** Written in exec form (`command` plus `args`). */
+  execForm?: boolean
   /** Declared process lifetime, used to detect config/install drift. */
   timeout?: number
   async?: boolean
@@ -1952,7 +2020,8 @@ function locateAllHandlers(document: SettingsDocument): InstalledHandler[] {
           ...(group.matcher === undefined ? {} : { matcher: group.matcher }),
           groupIndex,
           handlerIndex,
-          command: handler.command,
+          command: handlerCommandLine(handler),
+          ...(Array.isArray(handler.args) ? { execForm: true } : {}),
           ...(handler.timeout === undefined ? {} : { timeout: handler.timeout }),
           ...(handler.async === undefined ? {} : { async: handler.async }),
           ...(handler.asyncRewake === undefined ? {} : { asyncRewake: handler.asyncRewake }),

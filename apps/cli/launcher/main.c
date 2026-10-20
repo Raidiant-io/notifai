@@ -57,6 +57,9 @@ static int active_build(const char *record, char *build) {
 #include "windows-user-path.h"
 #include "windows-file-users.h"
 #include "windows-npm-process.h"
+#ifdef NOTIFAI_WINDOWS_SESSION_CHILD
+#include "windows-session-child.h"
+#endif
 
 static int failure(const char *message) {
     fprintf(stderr, "notifai: %s (Windows error %lu)\n", message, GetLastError());
@@ -270,6 +273,11 @@ int wmain(int argc, wchar_t **argv) {
         return 1;
     }
 
+#ifdef NOTIFAI_WINDOWS_SESSION_CHILD
+    /* UNVERIFIED on Windows; not built into releases until W1-Win. */
+    if (argc >= 3 && !wcscmp(argv[1], L"hook") && !wcscmp(argv[2], L"attend"))
+        return win_session_child_main(argc, argv, module_path);
+#endif
     LPWCH environment = GetEnvironmentStringsW();
     if (!environment) return failure("cannot inspect runtime controls");
     for (wchar_t *entry = environment; *entry; entry += wcslen(entry) + 1) {
@@ -405,6 +413,7 @@ static int owned_path(const char *file, int directory) {
 }
 
 #include "posix-file-users.h"
+#include "session-child.h"
 
 static int managed_runtime(char *executable) {
     char root[PATH_MAX];
@@ -458,6 +467,8 @@ static int uninstall_pending(const char *executable) {
 
 int main(int argc, char **argv) {
     if (argc == 2 && !strcmp(argv[1], "--internal-account-home")) return account_home();
+    if (argc == 2 && !strcmp(argv[1], "--internal-peer-credentials")) return peer_credentials();
+    if (argc == 2 && !strcmp(argv[1], "--internal-boot-identity")) return print_boot_identity();
     if (argc >= 3 && !strcmp(argv[1], "--internal-file-users"))
         return file_users(argc - 2, argv + 2);
     if (argc == 2 && !strcmp(argv[1], "--internal-launcher-version")) { puts("1"); return 0; }
@@ -477,6 +488,8 @@ int main(int argc, char **argv) {
     if (n < 0 || n >= (ssize_t)sizeof(executable) - 1) { perror("notifai: locate launcher"); return 1; }
     executable[n] = 0;
 #endif
+    char launcher[PATH_MAX];
+    strcpy(launcher, executable);
     char *separator = strrchr(executable, '/');
     if (!separator || (size_t)(separator - executable) + 18 >= sizeof(executable)) return 1;
     *separator = 0;
@@ -492,6 +505,11 @@ int main(int argc, char **argv) {
         fprintf(stderr, "notifai: uninstall is in progress; finish or recover it before starting more work\n");
         return 1;
     }
+    /* The session child never starts the runtime; it is the resident itself. */
+    const char *retrying = getenv("NOTIFAI_NATIVE_RETRY");
+    if (!detached && !(stable_entry && retrying && (!strcmp(retrying, "1") || !strcmp(retrying, "2"))) &&
+        session_child_requested(argc, argv))
+        return session_child_main(argc, argv, launcher, executable);
     for (size_t i = 0; environ[i];) {
         char *entry = environ[i];
         if (!strncmp(entry, "BUN_", 4) || !strncmp(entry, "JSC_", 4) ||

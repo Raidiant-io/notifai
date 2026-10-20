@@ -57,6 +57,19 @@ export function spawnHookMaintenance(launch: HookMaintenanceLaunch): void {
   })
 }
 
+/**
+ * Retire a closed session's queued questions now, in a detached process, when
+ * no hub took the end: otherwise they would wait for the next hook.
+ */
+export function spawnRetirement(launch: HookMaintenanceLaunch): void {
+  launchSelf(['hook', 'retirement', '--owner', 'notifai', ...(launch.harness === undefined ? [] : ['--harness', launch.harness])], {
+    cwd: launch.cwd,
+    env: process.env,
+    ...(launch.detachTimeoutMs === undefined ? {} : { detachTimeoutMs: launch.detachTimeoutMs }),
+    retain: () => undefined,
+  })
+}
+
 /** The work itself, run by the detached process. Each part keeps its own throttle. */
 export async function runHookMaintenance(options: {
   env: NodeJS.ProcessEnv

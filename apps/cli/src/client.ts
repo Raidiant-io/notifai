@@ -1,5 +1,7 @@
 import type {
   ApiErrorBody,
+  AttendanceBatchRequestT,
+  AttendanceBatchResponse,
   AttendanceRequestT,
   AttendanceResponse,
   AlphaAccessRequestResponse,
@@ -58,6 +60,9 @@ export class ApiCallError extends Error {
 }
 
 export class NetworkError extends Error {}
+
+/** The caller cancelled the request itself (a cut long-poll, a credential change); not a fault. */
+export class RequestCancelledError extends NetworkError {}
 
 /**
  * Whether a replies-poll failure is temporary while the durable request stays
@@ -150,6 +155,14 @@ export interface ApiClient {
     body: AttendanceRequestT,
     options: { waitSeconds: number; signal?: AbortSignal },
   ): Promise<AttendanceResponse>
+  /**
+   * One batched exchange for many Agent Sessions (the hub). Offered when the
+   * service lists `session_attendance_batch`.
+   */
+  attendBatch(
+    body: AttendanceBatchRequestT,
+    options: { waitSeconds: number; signal?: AbortSignal },
+  ): Promise<AttendanceBatchResponse>
   /** Claim one hand-off into an Agent Session under the lease generation held. */
   claimDeliveryAttempt(
     sessionId: string,
@@ -194,6 +207,12 @@ export interface ClientOptions {
   capabilities?: readonly ClientCapability[]
   /** Complete Notification Request schema this authenticated client will submit. */
   notificationContractFingerprint?: string | null
+  /**
+   * Ends every request of this client, in flight or later, once aborted: the
+   * hub aborts it when the credential changes, so nothing it started with the
+   * old credential is sent afterwards.
+   */
+  signal?: AbortSignal
 }
 
 /** Generous enough for a slow link, short enough that nothing hangs for ever. */
@@ -239,6 +258,10 @@ export function createClient(
       })
       return result
     } catch (err) {
+      if (err instanceof RequestCancelledError) {
+        logger?.debug('http.call', { method, path: apiPath, ok: false, cancelled: true, duration_ms: Date.now() - startedAt })
+        throw err
+      }
       logger?.error('http.call', {
         method,
         path: apiPath,
@@ -270,7 +293,8 @@ export function createClient(
         : Math.max(1, options.deadlineAt - now())
     const limitMs = Math.max(1, Math.min(requestBudgetMs, remainingMs))
     const timeout = AbortSignal.timeout(limitMs)
-    const signal = abort === undefined ? timeout : AbortSignal.any([timeout, abort])
+    const signals = [timeout, ...(abort === undefined ? [] : [abort]), ...(options.signal === undefined ? [] : [options.signal])]
+    const signal = signals.length === 1 ? timeout : AbortSignal.any(signals)
     let response: Response
     try {
       response = await fetch(`${root}${apiPath}`, {
@@ -285,6 +309,10 @@ export function createClient(
         ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
       })
     } catch (err) {
+      // Cancelled by the caller, not timed out: say so, and log it as such.
+      if ((abort?.aborted === true || options.signal?.aborted === true) && !timeout.aborted) {
+        throw new RequestCancelledError(`${method} ${apiPath} was cancelled by the caller`)
+      }
       throw networkFailure(err, root, limitMs)
     }
     if (!response.ok) {
@@ -417,6 +445,14 @@ export function createClient(
       call<AttendanceResponse>(
         'POST',
         `/api/v1/agent-sessions/${encodeURIComponent(sessionId)}/attendance?wait_seconds=${waitSeconds}`,
+        body,
+        waitSeconds,
+        signal,
+      ),
+    attendBatch: (body, { waitSeconds, signal }) =>
+      call<AttendanceBatchResponse>(
+        'POST',
+        `/api/v1/agent-sessions/attendance?wait_seconds=${waitSeconds}`,
         body,
         waitSeconds,
         signal,

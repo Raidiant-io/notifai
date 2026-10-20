@@ -12,7 +12,7 @@ import { buildProgram } from './program.js'
 import { writeProjectSession } from './hook-project-sessions.js'
 import type { AcceptedAnswerDelivery } from './hook-types.js'
 import type { AttendanceMessage, ClaimDeliveryAttemptRequestT, QuestionT, ReplyAnswerT } from '@raidiant/notifai-protocol'
-import { appendFileSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs'
+import { appendFileSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -1191,4 +1191,18 @@ it.each([1, 2])('rearms a refused wake after fresh attendance at generation %i',
   expect(await drain(recovered)).toBe(true)
   expect(h.output).toHaveLength(1)
   expect(hasSessionInputs(SESSION, h.env, recovered)).toBe(false)
+})
+
+it('does not rewrite the staged messages when an exchange brings nothing new', () => {
+  const h = setup()
+  const sessions = path.join(h.env.XDG_STATE_HOME!, 'notifai', 'sessions')
+  stageSessionMessages(SESSION, h.env, h.lease, [])
+  const file = path.join(sessions, readdirSync(sessions).find((name) => name.endsWith('.inputs.json'))!)
+  const before = statSync(file).ino
+  stageSessionMessages(SESSION, h.env, h.lease, [])
+  // An atomic rewrite would have replaced the file (a new inode).
+  expect(statSync(file).ino).toBe(before)
+  stageSessionMessages(SESSION, h.env, h.lease, [note('sm_new')])
+  expect(statSync(file).ino).not.toBe(before)
+  expect(readSessionMessages(SESSION, h.env, h.lease).map((m) => m.message_id)).toEqual(['sm_new'])
 })
