@@ -796,6 +796,38 @@ describe('hub and Codex SessionEnd', () => {
     await done
   })
 
+  it('stays for a dormant conversation while its question waits, then leaves once nothing is owed, without ending it', async () => {
+    const env = hubEnv()
+    recordSessionNotified(SESSION, env, Date.now())
+    const transcript = codexRollout(env, 'Codex Desktop')
+    const service = fakeService()
+    const peers = new Map<number, PeerCredentials>()
+    const { done } = startHub(env, service, peers, memoryStore(), 100, { codexEndConfirmMs: 50, codexHostKind: () => 'app-server', wake: noWake })
+    let exited = false
+    void done.then(() => { exited = true })
+    await hubListening(env)
+    const child = await codexSession(env, service, peers, 900077, transcript)
+    updateSessionState(SESSION, env, (state) => ({ ...state, pending: [{ question: 'Deploy?', summary: 'Deploy?', request_id: 'req_dormant' } as never] }))
+    expect(await requestHub(env, { type: 'session-end-candidate', session_id: SESSION, transcript_path: transcript })).toEqual({ type: 'ok', held: true })
+    child.socket.destroy()
+    await until(() => status(env)['reason'] === 'dormant-open')
+    // No child is connected, but the question still waits: the hub outlives its idle limit to watch the app.
+    for (let i = 0; i < 4; i += 1) {
+      service.release()
+      await new Promise((resolve) => setTimeout(resolve, 250))
+    }
+    expect(exited).toBe(false)
+    // Nothing is owed any more: the hub leaves idle, and the conversation is not reported ended.
+    updateSessionState(SESSION, env, (state) => ({ ...state, pending: [] }))
+    while (!exited) {
+      service.release()
+      await new Promise((resolve) => setTimeout(resolve, 50))
+    }
+    expect(await done).toBe(0)
+    expect(reportedEnd(service)).toBe(false)
+    expect(readSessionEndMarker(SESSION, env)).toBeNull()
+  })
+
   it('cancels the end when the conversation starts again inside the delay', async () => {
     const env = hubEnv()
     recordSessionNotified(SESSION, env, Date.now())
