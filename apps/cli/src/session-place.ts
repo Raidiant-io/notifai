@@ -47,13 +47,22 @@ export function claudePlaceOf(signals: ClaudePlaceSignals): ClaudePlace {
   return 'unknown'
 }
 
-/** Where a Codex thread runs. A terminal includes the shared background server a terminal attaches to. */
+/** Where a Codex thread runs. A terminal includes the shared background server plain `codex` terminals join. */
 export type CodexPlace = 'terminal' | 'codex-app' | 'codex-ide' | 't3' | 'orca-chat' | 'headless' | 'unknown'
 
 export type SessionPlace = ClaudePlace | CodexPlace
 
-/** What kind of process hosts a Codex thread (see `codexHostKind`). */
-export type CodexHostKind = 'app-server' | 'exec' | 'other' | 'unknown'
+/**
+ * What kind of process hosts a Codex thread (see `codexHostKind`):
+ * - `app-server`: a server a client started for itself (the Codex app's, an
+ *   IDE extension's, T3 Code's, an Orca chat's);
+ * - `shared-server`: Codex's shared background server, which plain `codex`
+ *   terminals join and which keeps a closed terminal's thread loaded;
+ * - `exec`: a scripted `codex exec` run;
+ * - `other`: anything else, such as a terminal hosting its own thread
+ *   (`codex --no-daemon`).
+ */
+export type CodexHostKind = 'app-server' | 'shared-server' | 'exec' | 'other' | 'unknown'
 
 export interface CodexPlaceSignals {
   hostKind: CodexHostKind
@@ -75,7 +84,7 @@ export function codexPlaceOf(signals: CodexPlaceSignals): CodexPlace {
   switch (signals.hostKind) {
     case 'exec': return 'headless'
     case 'app-server': return signals.originator === 'codex_vscode' ? 'codex-ide' : 'codex-app'
-    case 'other': return 'terminal'
+    case 'other': case 'shared-server': return 'terminal'
     default: return 'unknown'
   }
 }

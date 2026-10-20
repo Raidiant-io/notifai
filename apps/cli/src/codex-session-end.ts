@@ -148,9 +148,9 @@ export function codexSubcommand(words: readonly string[]): string | null {
 
 /**
  * What hosts a thread: an app-server a client started for itself (the Codex
- * app's, an IDE extension's, T3 Code's, an Orca chat's), a scripted
- * `codex exec` run, or anything else (a terminal, or the shared background
- * server a closed terminal leaves behind).
+ * app's, an IDE extension's, T3 Code's, an Orca chat's), Codex's shared
+ * background server that plain terminals join, a scripted `codex exec` run,
+ * or anything else (a terminal hosting its own thread).
  */
 export function codexHostKind(pid: number): CodexHostKind {
   if (process.platform === 'win32') return 'unknown'
@@ -160,13 +160,23 @@ export function codexHostKind(pid: number): CodexHostKind {
   } catch {
     return 'unknown'
   }
+  return codexHostKindOf(args)
+}
+
+/**
+ * The host kind from a process's command line. Codex 0.163.0 runs the shared
+ * server as `codex app-server --listen unix:// … --managed-daemon`; the Codex
+ * app runs its own as `codex … app-server …` on stdio, with no listener.
+ */
+export function codexHostKindOf(args: string): CodexHostKind {
   if (args === '') return 'unknown'
   const words = args.split(/\s+/)
   const subcommand = codexSubcommand(words)
   if (subcommand === 'exec' || subcommand === 'e') return 'exec'
-  const serving = words.includes('app-server')
-  const shared = words.includes('daemon') || words.includes('--listen') || words.includes('remote-control')
-  return serving && !shared ? 'app-server' : 'other'
+  if (!words.includes('app-server')) return 'other'
+  const shared = words.some((word) => word === 'daemon' || word === '--managed-daemon' || word === 'remote-control' ||
+    word === '--listen' || word.startsWith('--listen='))
+  return shared ? 'shared-server' : 'app-server'
 }
 
 /** Codex's per-thread writer lock: held open by the process that has the thread loaded. */

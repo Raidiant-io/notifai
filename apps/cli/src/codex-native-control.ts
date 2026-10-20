@@ -7,10 +7,14 @@ import { canonicalSocketPath } from './local-path.js'
 import { connectUnixWebSocket, type UnixWebSocket } from './unix-websocket.js'
 
 const execute = promisify(execFile)
-export type CodexControlMethod = 'thread/queue/list' | 'thread/queue/add' | 'thread/queue/delete' | 'thread/turns/list' | 'turn/steer'
+export type CodexControlMethod = 'thread/queue/list' | 'thread/queue/add' | 'thread/queue/delete' | 'thread/turns/list' | 'turn/steer' |
+  // Whether a terminal still shows a thread (`codex-attach-signal.ts`).
+  'thread/loaded/list' | 'thread/read' | 'mcpServerStatus/list' | 'thread/resume' | 'thread/unsubscribe'
 export interface CodexControl {
   namespace: string
   threadId: string
+  /** The thread is loaded in the server; always true unless the caller allowed otherwise. */
+  loaded: boolean
   /** The running app-server's own version report, when it printed one. */
   serverVersion?: string
   call(method: CodexControlMethod, params: unknown): Promise<unknown>
@@ -38,17 +42,22 @@ export class CodexControlNotSent extends Error {}
 /** Discovery proves a running endpoint, its namespace and an already loaded
  * thread. It never loads, resumes or takes ownership of a thread. Every Notifai
  * connection to a Codex app-server is opened here, so it always initializes
- * with `CODEX_CONTROL_CLIENT_INFO`. */
+ * with `CODEX_CONTROL_CLIENT_INFO`. With `allowUnloaded`, a thread the server
+ * has not loaded is reported (`loaded: false`) instead of refused.
+ * `executable` names the `codex` that discovers the server (default: the one
+ * on PATH), and `acceptSocket` can refuse a server by its control socket
+ * (as reported, and resolved) before anything connects to it. */
 export async function connectCodexControl(
   sessionId: string, env: NodeJS.ProcessEnv, deadlineAt: number,
   now: () => number = () => performance.now(),
   unavailable?: (stage: string) => void,
+  options: { allowUnloaded?: boolean; executable?: string; acceptSocket?: (reported: string, resolved: string) => boolean } = {},
 ): Promise<CodexControl | null> {
   let socket: UnixWebSocket | undefined
   let stage = 'discovery'
   try {
     const remaining = () => Math.max(1, Math.ceil(deadlineAt - now()))
-    const { stdout } = await execute('codex', ['app-server', 'daemon', 'version'], {
+    const { stdout } = await execute(options.executable ?? 'codex', ['app-server', 'daemon', 'version'], {
       env, timeout: remaining(), maxBuffer: 16_384,
     })
     const version = JSON.parse(stdout) as { status?: string; socketPath?: string; appServerVersion?: unknown; managedCodexVersion?: unknown }
@@ -56,6 +65,7 @@ export async function connectCodexControl(
     const reported = [version.appServerVersion, version.managedCodexVersion].find(value => typeof value === 'string') as string | undefined
     stage = 'endpoint'
     const socketPath = canonicalSocketPath(version.socketPath)
+    if (options.acceptSocket !== undefined && !options.acceptSocket(version.socketPath, socketPath)) throw new Error('Control socket refused')
     const endpoint = lstatSync(socketPath)
     if (!endpoint.isSocket() || (process.getuid !== undefined && endpoint.uid !== process.getuid())) throw new Error('Endpoint ownership unavailable')
     stage = 'connection'
@@ -109,8 +119,8 @@ export async function connectCodexControl(
       if (result.nextCursor === loadedCursor) throw new Error('Unrecognized loaded-thread cursor')
       loadedCursor = result.nextCursor
     }
-    if (!loaded) throw new Error('Exact owner thread is not loaded; refuse to load it')
-    return { namespace: home, threadId: sessionId, ...(reported === undefined ? {} : { serverVersion: reported }), call, close: () => connected.terminate() }
+    if (!loaded && options.allowUnloaded !== true) throw new Error('Exact owner thread is not loaded; refuse to load it')
+    return { namespace: home, threadId: sessionId, loaded, ...(reported === undefined ? {} : { serverVersion: reported }), call, close: () => connected.terminate() }
   } catch {
     socket?.terminate()
     unavailable?.(stage)

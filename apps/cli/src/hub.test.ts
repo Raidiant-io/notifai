@@ -19,7 +19,7 @@ import { beginSessionIncarnation, lifecycleStamp, markSessionEnded, readSessionE
 import { claimQuestionPush, questionPushHeld, releaseQuestionPush } from './hook-question-lock.js'
 import { hookRunCommand } from './commands-hook-run.js'
 import type { CodexWakeAdapters } from './codex-wake.js'
-import { sessionInputWake, stageSessionMessages } from './session-inputs.js'
+import { hasSessionInputs, sessionInputWake, stageSessionMessages } from './session-inputs.js'
 import { attendantStatusPath, recordTurnEnd, recordTurnStart } from './session-attendant-state.js'
 import { ExchangeDriver, type AttendedSession, type ExchangeHost } from './hub-exchange.js'
 import { credentialGenerationPath, encodeFrame, ensurePrivateDirectory, FrameDecoder, fnv64Hex, hubLockPath, hubSocketPath, requestHub } from './hub-ipc.js'
@@ -29,7 +29,7 @@ import { spawn, type ChildProcess } from 'node:child_process'
 import { nullLogger } from './logging.js'
 import { pidExists, processStartTime } from './process-identity.js'
 import { readHubReport } from './hub-client.js'
-import { readAttendantEndingLease } from './session-attendant-state.js'
+import { readAttendantEndingLease, readAttendantLease } from './session-attendant-state.js'
 
 const SESSION = '11111111-2222-3333-4444-555555555555'
 const OTHER = '22222222-3333-4444-5555-666666666666'
@@ -1828,6 +1828,161 @@ describe('hub and Codex SessionEnd', () => {
     hub.requestExit('test')
     await done
   })
+
+  describe('on Codex\'s shared server, where a closed terminal reports nothing', () => {
+    type Attach = Awaited<ReturnType<NonNullable<NonNullable<HubOptions['codexAttach']>['state']>>>
+    type AttachInput = Parameters<NonNullable<NonNullable<HubOptions['codexAttach']>['state']>>[0]
+
+    /** A note for an idle CLI thread on the shared server; `state` answers the checks. */
+    async function sharedServer(options: {
+      verified?: boolean
+      state?: (input: AttachInput) => Promise<Attach> | Attach
+      watchMs?: number
+    }) {
+      const env = hubEnv()
+      recordSessionNotified(SESSION, env, Date.now())
+      const transcript = codexRollout(env, 'codex-tui')
+      const queued: string[] = []
+      const asked: AttachInput[] = []
+      const builds: number[] = []
+      const wake: CodexWakeAdapters = { available: () => true, queue: async (threadId) => { queued.push(threadId) } }
+      let note = false
+      const service = fakeService({ batch: (body) => ({
+        message_cursor: 'c1',
+        sessions: body.sessions.map((entry) => entry.state === 'running'
+          ? { session_id: entry.session_id, status: 'attending' as const, generation: entry.generation ?? 1, lease_remaining_ms: 120_000, message_cursor: 'c1',
+              messages: note ? [{ message_id: 'sm_idle', kind: 'note' as const, body: 'Later', created_at: '2026-10-20T00:00:00.000Z', agent_acknowledgement_text_required: true }] : [] }
+          : { session_id: entry.session_id, status: 'withdrawn' as const }),
+      }) })
+      const peers = new Map<number, PeerCredentials>()
+      const { hub, done } = startHub(env, service, peers, memoryStore(), 100, { codexHostKind: () => 'shared-server', wake }, {
+        codexAttach: {
+          verified: () => options.verified ?? true,
+          state: async (input) => { asked.push(input); return await (options.state?.(input) ?? { state: 'unknown', confirmed: false, reason: 'test' }) },
+          checkBuild: async (host) => { builds.push(host.pid); return null },
+          watchMs: options.watchMs ?? 60_000,
+        },
+      })
+      await hubListening(env)
+      const child = await codexSession(env, service, peers, 900120, transcript)
+      for (const type of ['task_started', 'task_complete']) {
+        writeFileSync(transcript, `${JSON.stringify({ type: 'event_msg', payload: { type, turn_id: 'turn-1' } })}\n`, { flag: 'a' })
+      }
+      const pending = (): boolean => {
+        const lease = readAttendantLease(SESSION, env)
+        return lease !== null && hasSessionInputs(SESSION, env, lease)
+      }
+      const deliverNote = async (rounds = 12): Promise<void> => {
+        note = true
+        for (let i = 0; i < rounds; i += 1) {
+          service.release()
+          hub.inputStaged(SESSION)
+          await new Promise((resolve) => setTimeout(resolve, 100))
+        }
+      }
+      const stop = async (): Promise<void> => {
+        child.socket.destroy()
+        hub.requestExit('test')
+        // An exchange may still wait on the service: answer until the hub has gone.
+        let gone = false
+        void done.then(() => { gone = true })
+        while (!gone) {
+          service.release()
+          await new Promise((resolve) => setTimeout(resolve, 50))
+        }
+      }
+      return { env, hub, service, queued, asked, builds, pending, deliverNote, stop }
+    }
+
+    it.each([
+      ['a terminal shows it', { state: 'attached', confirmed: true, reason: 'terminal-live+joined' } as Attach, 1, false],
+      ['only a terminal that joined it shows it', { state: 'attached', confirmed: true, reason: 'terminal-gone+joined' } as Attach, 1, false],
+      ['no terminal shows it', { state: 'closed', confirmed: true, reason: 'terminal-live+reloaded' } as Attach, 0, true],
+      ['Notifai cannot tell', { state: 'unknown', confirmed: false, reason: 'check-failed' } as Attach, 0, false],
+      ['the conversation is busy', { state: 'unknown', confirmed: false, reason: 'thread-busy' } as Attach, 0, false],
+    ])('when a note arrives and %s, wakes it only if the confirmation says a terminal shows it', async (_name, verdict, wakes, ends) => {
+      const run = await sharedServer({ state: () => verdict })
+      try {
+        await run.deliverNote()
+        if (ends) await until(() => reportedEnd(run.service))
+        expect(run.queued).toEqual(Array(wakes).fill(SESSION))
+        // Before a wake both checks run, on the thread's own server.
+        expect(run.asked.length).toBeGreaterThan(0)
+        expect(run.asked[0]).toMatchObject({ threadId: SESSION, confirm: 'always', host: HARNESS })
+        // Closed by the User: its questions expire. Otherwise the note still waits or was handed in.
+        expect(reportedEnd(run.service)).toBe(ends)
+        if (!ends && wakes === 0) expect(run.pending()).toBe(true)
+      } finally {
+        await run.stop()
+      }
+    })
+
+    it('never asks, and never wakes, before Codex\'s behaviour was checked for the server\'s binary; it starts that check', async () => {
+      const run = await sharedServer({ verified: false, state: () => ({ state: 'attached', confirmed: true, reason: 'x' }) })
+      try {
+        await run.deliverNote()
+        expect(run.asked).toEqual([])
+        expect(run.queued).toEqual([])
+        expect(run.builds).toContain(HARNESS.pid)
+        expect(run.pending()).toBe(true)
+        expect(reportedEnd(run.service)).toBe(false)
+      } finally {
+        await run.stop()
+      }
+    })
+
+    it('watches an open question\'s conversation and expires its questions once no terminal shows it, ignoring the SessionEnd its own request causes', async () => {
+      let ownEnd: unknown = null
+      let candidateAfter: unknown = 'unset'
+      let hubRef: Hub | null = null
+      const run = await sharedServer({
+        watchMs: 50,
+        state: async (input) => {
+          if (input.confirm !== 'closed') return { state: 'unknown', confirmed: false, reason: 'test' }
+          // The confirming request reloads the thread: Codex runs SessionEnd from the shared server.
+          input.beforeConfirm?.()
+          ownEnd = await requestHub(input.env, { type: 'session-end-candidate', session_id: SESSION, harness_pid: HARNESS.pid })
+          candidateAfter = hubRef?.sessions.get(SESSION)?.endCandidate ?? null
+          return { state: 'closed', confirmed: true, reason: 'terminal-gone+reloaded' }
+        },
+      })
+      hubRef = run.hub
+      try {
+        question(run.env)
+        await until(() => reportedEnd(run.service))
+        expect(ownEnd).toEqual({ type: 'ok', held: true })
+        // Not an end candidate: the hub decided from its own request.
+        expect(candidateAfter).toBeNull()
+        expect(run.queued).toEqual([])
+      } finally {
+        await run.stop()
+      }
+    })
+
+    it('keeps the questions while a terminal that joined the conversation still shows it, and stops asking until the next turn', async () => {
+      const run = await sharedServer({ watchMs: 50, state: () => ({ state: 'attached', confirmed: true, reason: 'terminal-gone+joined' }) })
+      try {
+        question(run.env)
+        const turn = async (): Promise<number> => {
+          const before = run.asked.length
+          await requestHub(run.env, { type: 'hint', session_id: SESSION }, { role: 'hint' })
+          await until(() => run.asked.length > before)
+          // One look: a terminal shows it, so nothing more is asked until the next turn.
+          await new Promise((resolve) => setTimeout(resolve, 400))
+          return run.asked.length - before
+        }
+        expect(await turn()).toBe(1)
+        expect(run.asked.every((input) => input.confirm === 'closed')).toBe(true)
+        expect(reportedEnd(run.service)).toBe(false)
+        // The next turn: it looks again, once.
+        expect(await turn()).toBe(1)
+        expect(reportedEnd(run.service)).toBe(false)
+      } finally {
+        await run.stop()
+      }
+    })
+  })
+
 })
 
 describe('SessionEnd hook', () => {

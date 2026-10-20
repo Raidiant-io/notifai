@@ -8,6 +8,7 @@ import {
   codexHomeOfRollout,
   codexHostHoldsThread,
   codexHostKind,
+  codexHostKindOf,
   codexSubcommand,
   codexThreadHeld,
   codexThreadWriterLockPath,
@@ -99,6 +100,19 @@ describe('Codex thread records', () => {
 
   it('does not take an ordinary process for an app-server', () => {
     expect(codexHostKind(process.pid)).toBe(process.platform === 'win32' ? 'unknown' : 'other')
+  })
+
+  // Command lines as `ps -o args=` printed them on macOS with Codex 0.163.0.
+  it.each([
+    ['the shared server', '/Users/u/.codex/packages/app-server-daemon/releases/0.163.0-aarch64-apple-darwin/bin/codex app-server --listen unix:// --analytics-default-enabled --managed-daemon', 'shared-server'],
+    ['a server listening on a socket', 'codex app-server --listen=ws://127.0.0.1:4500', 'shared-server'],
+    ['the Codex app\'s own server', '/Applications/ChatGPT.app/Contents/Resources/codex-cli/CodexCLI.app/Contents/MacOS/codex -c features.code_mode_host=true app-server --analytics-default-enabled', 'app-server'],
+    ['a terminal hosting its own thread', '/opt/homebrew/bin/codex --no-daemon', 'other'],
+    ['a plain terminal', 'codex', 'other'],
+    ['a scripted run', 'codex exec --json say', 'exec'],
+    ['nothing', '', 'unknown'],
+  ] as const)('classifies %s', (_name, args, kind) => {
+    expect(codexHostKindOf(args)).toBe(kind)
   })
 })
 

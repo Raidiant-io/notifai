@@ -7,7 +7,7 @@ import { beginSessionIncarnation, lifecycleStamp } from './hook-session-state.js
 import { currentCodexTurn, readTurnActivity, reconcileNativeTurn, recordTurnEnd, recordTurnStart } from './session-attendant-state.js'
 import { acquireClaimFile, readClaimFile, releaseClaimFile, requestClaimHandoff } from './hook-question-lock.js'
 import { currentProcessIdentity } from './process-identity.js'
-import { codexInputObserver, refreshCodexInputActivity } from './codex-input-lifecycle.js'
+import { codexInputObserver, hostKindIdleWake, refreshCodexInputActivity } from './codex-input-lifecycle.js'
 import { sanitizeSessionId, stateDir } from './config.js'
 
 vi.mock('node:fs', async importOriginal => {
@@ -495,4 +495,37 @@ it('grants fallback only for a continuous read gap, resetting even on an empty-i
   expect(observer.mayWake()).toBe(true)
   f.event('task_started', 'new-prompt')
   expect(observer.mayWake()).toBe(false)
+})
+
+it('without a way to tell whether a terminal shows it, never wakes an idle thread on the shared Codex server', () => {
+  const kinds = ['shared-server', 'other', 'app-server', 'unknown'] as const
+  const asked: number[] = []
+  const wakes = Object.fromEntries(kinds.map(kind => {
+    const f = fixture(true)
+    recordTurnStart('root', f.env, f.key, 'done')
+    f.event('task_started', 'done')
+    f.event('task_complete', 'done')
+    const observer = codexInputObserver('root', f.env, f.key, () => 0, f.file, undefined, hostKindIdleWake(pid => { asked.push(pid); return kind }))
+    expect(observer.observe()).toBe('idle')
+    return [kind, [observer.mayWake(), observer.mayWake()]]
+  }))
+  // A closed terminal leaves its thread loaded and idle on the shared server,
+  // and nothing says it closed: the input waits for the User's next prompt.
+  expect(wakes).toEqual({ 'shared-server': [false, false], other: [true, true], 'app-server': [true, true], unknown: [true, true] })
+  // One host question per process; an unknown answer is asked again.
+  expect(asked).toEqual(Array(5).fill(process.pid))
+})
+
+it('asks its idle-wake rule about the thread\'s current host', () => {
+  const f = fixture(true)
+  recordTurnStart('root', f.env, f.key, 'done')
+  f.event('task_started', 'done')
+  f.event('task_complete', 'done')
+  let allowed = false
+  const owners: number[] = []
+  const observer = codexInputObserver('root', f.env, f.key, () => 0, f.file, undefined, owner => { owners.push(owner.pid); return allowed })
+  expect(observer.mayWake()).toBe(false)
+  allowed = true
+  expect(observer.mayWake()).toBe(true)
+  expect(owners).toEqual([process.pid, process.pid])
 })

@@ -33,6 +33,9 @@ import {
 } from './hook-project-sessions.js'
 import { readSessionIncarnation, readSessionState } from './hook-session-state.js'
 import { codexSharedServerState } from './codex-shared-server-health.js'
+import { codexAttachResultFor, hostBinaryIdentity, type CodexAttachCanaryResult } from './codex-attach-signal.js'
+import { CODEX_ATTACH_CHECKS } from './codex-attach-canary.js'
+import { codexHostKind } from './codex-session-end.js'
 import { assessCodexCommandRules } from './codex-command-rules.js'
 import { openclawGatewayReady } from './openclaw-gateway-readiness.js'
 import {
@@ -1898,6 +1901,11 @@ function wakeRouteCheck(
   }
   if (active.harness === 'codex') {
     const readiness = inspectCodexQueue(active.sessionId, deps.env)
+    const host = readiness.state === 'ready' ? readSessionIncarnation(readiness.threadId, deps.env)?.harness_process : undefined
+    if (host !== undefined && (deps.codexHostKind ?? codexHostKind)(host.pid) === 'shared-server') {
+      const binary = hostBinaryIdentity(host)
+      return sharedServerWakeRoute(binary === null ? null : codexAttachResultFor(deps.env, binary))
+    }
     return {
       name: 'hooks (wake route)',
       ok: readiness.state === 'ready',
@@ -1919,6 +1927,32 @@ function wakeRouteCheck(
     }
   }
   return null
+}
+
+/**
+ * The wake route of a Codex session on Codex's shared server, which says
+ * nothing when a terminal closes: Notifai wakes it only while a terminal is
+ * seen to show the conversation, and only on a Codex build it has checked
+ * behaves the way that needs.
+ */
+export function sharedServerWakeRoute(result: CodexAttachCanaryResult | null): HookCheck {
+  // The check's step and its name stay in JSON and the logs; the line stays short.
+  const step = result?.outcome === 'failed' ? result.step ?? 0 : null
+  const technical = {
+    direct_wake_optional: true,
+    codex_host: 'shared-server',
+    shared_server_check: result === null ? { outcome: 'pending' } : {
+      outcome: result.outcome, step, step_name: step === null ? null : CODEX_ATTACH_CHECKS[step] ?? 'the check could not run',
+      codex_version: result.codexVersion, checked_at: new Date(result.checkedAt).toISOString(),
+    },
+  }
+  // Nothing for the User to do in any of these: each reads as ready.
+  const detail = result?.outcome === 'passed'
+    ? 'Codex\'s shared server: an answer starts a turn while a terminal shows this conversation. Closing the terminal ends its questions'
+    : result === null
+      ? 'Codex\'s shared server: answers arrive at this session\'s next turn. Notifai is still checking this Codex version'
+      : 'Codex\'s shared server: answers arrive at this session\'s next turn, because this Codex version didn\'t pass Notifai\'s check. Notifai checks again within a day'
+  return { name: 'hooks (wake route)', ok: true, reportOnly: true, technical, detail }
 }
 
 /**

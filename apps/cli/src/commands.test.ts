@@ -105,6 +105,7 @@ import { writeProjectSession } from './hook-project-sessions.js'
 import { inspectQuestionState } from './hook-question-state.js'
 import { beginSessionIncarnation, lifecycleStamp, markSessionEnded, readSessionState, writeSessionState } from './hook-session-state.js'
 import { currentProcessIdentity } from './process-identity.js'
+import { hostBinaryIdentity, recordCodexAttachResult } from './codex-attach-signal.js'
 import { recordTurnStart } from './session-attendant-state.js'
 import { readDeliveryJournal } from './session-delivery.js'
 import {
@@ -10415,6 +10416,54 @@ describe('asking before the hooks have ever run', () => {
     expect(out).toMatch(/ok\s+Direct wake route/)
     expect(out).toContain("queued into this thread's own inbox")
     expect(out).not.toContain('thread-writer-lock')
+  })
+
+  it.each([
+    ['not yet checked', null, 'answers arrive at this session\'s next turn. Notifai is still checking this Codex version', { outcome: 'pending' }],
+    ['checked and passed', 'passed' as const, 'an answer starts a turn while a terminal shows this conversation. Closing the terminal ends its questions',
+      { outcome: 'passed', step: null }],
+    ['checked and failed', 'failed' as const, 'because this Codex version didn\'t pass Notifai\'s check. Notifai checks again within a day',
+      { outcome: 'failed', step: 2, step_name: 'finding the terminal that opened a conversation', codex_version: '0.163.0' }],
+  ])('reports the wake route of an idle Codex session on the shared server, calmly: %s', async (_name, outcome, says, technical) => {
+    const cwd = mkdtempSync(path.join(os.tmpdir(), 'notifai-doctor-codex-shared-'))
+    const io = new PlainInteractiveIo()
+    const sessionId = '9f1c2b3a-4d5e-6f70-8192-a3b4c5d6e7f9'
+    const env = { ...isolatedEnv(cwd), CODEX_THREAD_ID: sessionId }
+    const asked: number[] = []
+    const deps = {
+      ...makeDeps(io, {} as ApiClient),
+      cwd,
+      env,
+      hookPlatform: 'darwin' as NodeJS.Platform,
+      codexHostKind: (pid: number) => { asked.push(pid); return 'shared-server' as const },
+    }
+    expect(hooksInstallCommand(deps, { harness: 'codex', execPath, scriptPath })).toBe(EXIT.ok)
+    writeSessionState(sessionId, env, { harness: 'codex', last_prompt_at: 42 })
+    writeProjectSession(cwd, env, sessionId, 42, 'codex')
+    const host = currentProcessIdentity()!
+    beginSessionIncarnation(sessionId, env, { stamp: lifecycleStamp(), harnessProcess: host })
+    // The host here is this test's own process: its binary stands in for the server's.
+    if (outcome !== null) {
+      recordCodexAttachResult(env, { binary: hostBinaryIdentity(host)!, codexVersion: '0.163.0', outcome, checkedAt: Date.now(),
+        ...(outcome === 'failed' ? { step: 2 } : {}) })
+    }
+
+    io.outLines = []
+    await doctorCommand(deps, {})
+    const out = io.outLines.join('\n')
+    expect(asked).toEqual([host.pid])
+    // No action for the User in any state: it reads as ready, and the check's internals stay out of the line.
+    expect(out).toMatch(/ok\s+Direct wake route/)
+    const line = out.slice(out.indexOf('Direct wake route')).split('\n')[0]!
+    expect(line).toContain('Codex\'s shared server: ')
+    expect(line).toContain(says)
+    for (const word of ['canary', 'oracle', 'attach', 'step', 'of 8']) expect(line.toLowerCase()).not.toContain(word)
+
+    const jsonIo = new CapturedIo()
+    await doctorCommand({ ...deps, io: jsonIo }, { json: true })
+    const report = JSON.stringify(JSON.parse(jsonIo.outLines.join('')))
+    expect(report).toContain('"codex_host":"shared-server"')
+    for (const [key, value] of Object.entries(technical)) expect(report).toContain(`"${key}":${JSON.stringify(value)}`)
   })
 
   it('documents the failing exit contract in doctor JSON', async () => {
