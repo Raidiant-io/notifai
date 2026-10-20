@@ -1321,7 +1321,7 @@ function answerClaimsFor(
 
 /** What a Codex User sees under "Blocked by hook" when an empty wake is skipped. */
 export const CODEX_EMPTY_WAKE_REASON = 'Notifai: nothing is waiting for this session, so this wake started no turn.'
-export const CODEX_ELSEWHERE_WAKE_REASON = 'Notifai: answers for this conversation wait for it where it was open, not in this run, so this wake started no turn.'
+export const CODEX_ELSEWHERE_WAKE_REASON = "Notifai: this conversation's answers are waiting where it was last open, so this run won't pick them up."
 
 /**
  * Whether anything this Codex session can still be handed waits locally: it

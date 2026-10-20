@@ -1,4 +1,4 @@
-import { execFileSync } from 'node:child_process'
+import { execFileSync, spawn } from 'node:child_process'
 import { codexAnswerPresentation } from './codex-answer-presentation.js'
 import { observeCodexQuestions } from './codex-question-bindings.js'
 import { refreshCodexInputActivity } from './codex-input-lifecycle.js'
@@ -1310,6 +1310,24 @@ describe('Codex empty wakes', () => {
       expect(h.output).toHaveLength(1)
       expect(JSON.parse(h.output[0]!)).toEqual({ decision: 'block', reason: expect.stringContaining('nothing is waiting') })
       expect(h.claims).toEqual([])
+    }
+  })
+
+  it('blocks a wake that reaches a `codex exec` run of a thread hosted elsewhere, and hands that run nothing', async () => {
+    const h = setup()
+    h.stage([note('sm_elsewhere')])
+    // A scripted run (`codex exec resume <id>`) opened the thread whose host was another process.
+    const run = spawn('/bin/sleep', ['60'], { argv0: 'codex exec', stdio: 'ignore' })
+    try {
+      await new Promise((resolve) => setTimeout(resolve, 100))
+      h.env['NOTIFAI_HOOK_SOURCE_PID'] = String(run.pid)
+      await prompt(h, sessionInputWake())
+      expect(h.claims).toEqual([])
+      expect(h.output).toHaveLength(1)
+      expect(JSON.parse(h.output[0]!)).toEqual({ decision: 'block',
+        reason: "Notifai: this conversation's answers are waiting where it was last open, so this run won't pick them up." })
+    } finally {
+      run.kill('SIGKILL')
     }
   })
 
