@@ -5954,6 +5954,47 @@ describe('two hooks racing one question', () => {
     expect([recovered, contender].filter(Boolean)).toHaveLength(1)
   })
 
+  it('recovers at once a claim guard left by a process that died inside it', () => {
+    const h = harness()
+    const guard = path.join(stateDir(h.env), 'sessions', `${sanitizeSessionId('guard-dead')}.claim.guard`)
+    mkdirSync(path.dirname(guard), { recursive: true })
+    writeFileSync(guard, `${JSON.stringify({ pid: 999_999_999, start: 'gone' })}\n`)
+    expect(claimQuestionPush('guard-dead', h.env, REAL)).toBe(true)
+    expect(existsSync(guard)).toBe(false)
+  })
+
+  it('never takes a claim guard from a holder that is still running', () => {
+    const h = harness()
+    const guard = path.join(stateDir(h.env), 'sessions', `${sanitizeSessionId('guard-live')}.claim.guard`)
+    mkdirSync(path.dirname(guard), { recursive: true })
+    const held = `${JSON.stringify({ pid: process.pid, start: processStartTime(process.pid) })}\n`
+    writeFileSync(guard, held)
+    utimesSync(guard, new Date(0), new Date(Date.now() - 5_000))
+    expect(claimQuestionPush('guard-live', h.env, REAL)).toBe(false)
+    expect(readFileSync(guard, 'utf8')).toBe(held)
+  })
+
+  it('settles a stopped session once a guard nobody can name ages out, not never', async () => {
+    const h = harness([reply({ text: 'Continue' })])
+    writeSessionState('guard-unnamed', h.env, { last_prompt_at: AWAY })
+    registerQuestion('guard-unnamed', h.env, { question: 'Ship it?' })
+    // An older build's guard holds no holder; a crash inside it leaves only its age.
+    const guard = path.join(stateDir(h.env), 'sessions', `${sanitizeSessionId('guard-unnamed')}.claim.guard`)
+    writeFileSync(guard, '')
+    let waited = 0
+    h.deps.sleep = async (milliseconds: number) => {
+      h.advanceClock(milliseconds)
+      waited += milliseconds
+      if (waited >= 3_000 && existsSync(guard)) utimesSync(guard, new Date(0), new Date(Date.now() - 31_000))
+    }
+
+    await hookRunCommand(h.deps, 'stop', stdin({ session_id: 'guard-unnamed' }))
+
+    expect(waited).toBeGreaterThanOrEqual(3_000)
+    expect(h.recorder.submitted.filter((entry) => isQuestionSubmit(entry))).toHaveLength(1)
+    expect(h.io.errLines.join(' ')).not.toContain('claimed-elsewhere')
+  })
+
   it('does not let two sessions block each other', () => {
     const h = harness()
     expect(claimQuestionPush('race4a', h.env, REAL)).toBe(true)

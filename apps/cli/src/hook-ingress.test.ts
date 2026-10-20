@@ -23,6 +23,7 @@ import { sessionActivationOutput } from './session-activation.js'
 
 const supported = (process.platform === 'darwin' || process.platform === 'linux') && spawnSync('cc', ['--version']).status === 0
 const SESSION = '44444444-5555-6666-7777-888888888888'
+const CODEX_SESSION = '55555555-6666-7777-8888-999999999999'
 const BUILD = 'b'.repeat(64)
 
 let compiled = ''
@@ -143,7 +144,10 @@ describe('hook ingress requests', () => {
   it('calls a session quiet only when nothing is asked, answered, staged or unknown', () => {
     expect(stateQuiet({})).toBe(true)
     expect(stateQuiet({ harness: 'codex', last_prompt_at: 1, pending: [], question_history: [{} as never] })).toBe(true)
+    // Observations an ordinary turn records, and the pacing a wake that found nothing leaves behind.
+    expect(stateQuiet({ harness: 'claude-code', claude_permission_mode: 'acceptEdits', input_wake_unanswered: { count: 1, presented_at: 1 } })).toBe(true)
     for (const busy of [{ pending: [{}] }, { accepted: {} }, { waiting_answers: [{}] }, { claude_picker: {} }, { input_wake: {} },
+      { claude_picker_closed: {} }, { claude_picker_presented: {} },
       { acknowledgement_due: [{}] }, { message_acknowledgement_due: [{}] }, { acknowledgement_blocks: 2 }, { retiring: [{}] },
       { codex_question_bindings: [{}] }, { some_future_field: true }] as unknown as SessionState[]) {
       expect(stateQuiet(busy)).toBe(false)
@@ -184,6 +188,35 @@ describe.skipIf(!supported)('hook ingress through the launcher', () => {
     expect(context(changed)).toContain('B11 OVERRIDE: changed house rule.')
     expect(context(first)).not.toContain('B11 OVERRIDE')
     expect(runtimeRuns(at)).toEqual([])
+  })
+
+  it('keeps ordinary Claude Code and Codex turns on the hub, whatever their hooks record', async () => {
+    const at = lab()
+    enableProject(projectBinding(at.project, at.env)!)
+    const hub = startHub(at)
+    await hubListening(at)
+    const turns: [string, 'claude-code' | 'codex', string][] = [
+      ['session-start', 'claude-code', envelope('SessionStart', { source: 'startup', permission_mode: 'default' }, at)],
+      ['user-prompt-submit', 'claude-code', envelope('UserPromptSubmit', { prompt: 'hello', permission_mode: 'acceptEdits' }, at)],
+      ['stop', 'claude-code', envelope('Stop', { stop_hook_active: false, permission_mode: 'acceptEdits' }, at)],
+      ['user-prompt-submit', 'claude-code', envelope('UserPromptSubmit', { prompt: 'again', permission_mode: 'plan' }, at)],
+      ['stop', 'claude-code', envelope('Stop', { stop_hook_active: false, permission_mode: 'plan' }, at)],
+    ]
+    const codex = (event: string, extra: Record<string, unknown>): string =>
+      JSON.stringify({ ...JSON.parse(envelope(event, { model: 'gpt-5', turn_id: 't1', ...extra }, at)), session_id: CODEX_SESSION })
+    turns.push(
+      ['session-start', 'codex', codex('SessionStart', { source: 'startup' })],
+      ['user-prompt-submit', 'codex', codex('UserPromptSubmit', { prompt: 'hello' })],
+      ['post-tool-use', 'codex', codex('PostToolUse', { tool_name: 'shell', tool_use_id: 'u1' })],
+      ['stop', 'codex', codex('Stop', { stop_hook_active: false })],
+      ['user-prompt-submit', 'codex', codex('UserPromptSubmit', { prompt: 'again', turn_id: 't2' })],
+    )
+    for (const [event, harness, input] of turns) {
+      expect((await runHook(at, event, harness, input)).code).toBe(0)
+    }
+    expect(readSessionState(SESSION, at.env).claude_permission_mode).toBe('plan')
+    expect(runtimeRuns(at)).toEqual([])
+    expect(hub.status()['ingress']).toMatchObject({ served: turns.length, declined: 0 })
   })
 
   it('hands a busy session\'s hook to the runtime with the exact input, and only that hook', async () => {
