@@ -1001,7 +1001,9 @@ export class Hub {
         link.close()
         if (session !== null && session.child === link) this.childGone(session)
       }
-      this.touch()
+      // A hook connection settles its own idle bookkeeping (see `ingress`): the
+      // frequent hooks must not each rewrite the hub's status file.
+      if (role !== 'ingress') this.touch()
     })
     socket.on('data', (chunk: Buffer) => {
       let frames: Record<string, unknown>[]
@@ -1141,7 +1143,6 @@ export class Hub {
       return
     }
     this.ingressInFlight += 1
-    this.touch()
     try {
       // Two steps: a launcher that already gave up and started the runtime
       // never says `go`, so the hook never runs twice.
@@ -1164,7 +1165,8 @@ export class Hub {
       socket.destroy()
     } finally {
       this.ingressInFlight -= 1
-      this.touch()
+      // Children keep the hub; without any, a hook is activity like any other.
+      if (this.children === 0) this.touch()
     }
   }
 

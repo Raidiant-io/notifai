@@ -5,29 +5,17 @@
  * questions several times (each configuration load infers the Project
  * again). In a runtime that is one short-lived process per hook, and each
  * question is a `git` process. When the hub runs a hook (see `hub-ingress.ts`)
- * it runs it inside a hook scope, which gives these queries:
+ * it runs it inside a hook scope (`hook-scope.ts`), which gives these queries:
  * - the hook's own environment, as a runtime started for that hook would have;
  * - one answer per question for the whole hook, as if Git were asked once;
  * - the hub's earlier answer to a repository-identity question, but only
  *   while every `.git` entry Git's discovery would look at is unchanged.
  * Outside a hook scope nothing changes: the question goes to Git.
  */
-import { AsyncLocalStorage } from 'node:async_hooks'
 import { execFileSync } from 'node:child_process'
 import { lstatSync } from 'node:fs'
 import path from 'node:path'
-
-interface HookScope {
-  env: NodeJS.ProcessEnv
-  answers: Map<string, string | null>
-}
-
-const scopes = new AsyncLocalStorage<HookScope>()
-
-/** Run one hook's work with its own environment for Git and one answer per question. */
-export function inHookScope<T>(env: NodeJS.ProcessEnv, work: () => Promise<T>): Promise<T> {
-  return scopes.run({ env, answers: new Map() }, work)
-}
+import { hookScopeEnv, oncePerHook } from './hook-scope.js'
 
 /** Questions whose answer depends only on where the repository is, never on what is checked out. */
 const IDENTITY_QUESTIONS: ReadonlySet<string> = new Set(['--git-common-dir', '--git-dir', '--show-toplevel'])
@@ -44,20 +32,23 @@ export function shareGitIdentityAnswers(): void {
 
 /** `git -C <cwd> <args>`, trimmed; null when Git fails or is missing. */
 export function gitQuery(cwd: string, args: readonly string[]): string | null {
-  const scope = scopes.getStore()
-  if (scope === undefined) return runGit(cwd, args, undefined)
+  const env = hookScopeEnv()
+  if (env === undefined) return runGit(cwd, args, undefined)
   const key = `${cwd}\0${args.join('\0')}`
-  if (scope.answers.has(key)) return scope.answers.get(key)!
+  return oncePerHook(`git\0${key}`, () => sharedOrAsked(cwd, args, key, env))
+}
+
+function sharedOrAsked(cwd: string, args: readonly string[], key: string, env: NodeJS.ProcessEnv): string | null {
   const shareable = sharedIdentity !== null && args.length === 2 && args[0] === 'rev-parse' && IDENTITY_QUESTIONS.has(args[1]!)
   let answer: string | null
   if (shareable) {
-    const sharedKey = `${key}\0${gitEnvironmentKey(scope.env)}`
+    const sharedKey = `${key}\0${gitEnvironmentKey(env)}`
     const evidence = discoveryEvidence(cwd)
     const known = sharedIdentity!.get(sharedKey)
     if (known !== undefined && evidence !== null && known.evidence === evidence && Date.now() - known.at < SHARED_IDENTITY_MS) {
       answer = known.answer
     } else {
-      answer = runGit(cwd, args, scope.env)
+      answer = runGit(cwd, args, env)
       sharedIdentity!.delete(sharedKey)
       if (evidence !== null) {
         if (sharedIdentity!.size >= SHARED_IDENTITY_LIMIT) sharedIdentity!.clear()
@@ -65,9 +56,8 @@ export function gitQuery(cwd: string, args: readonly string[]): string | null {
       }
     }
   } else {
-    answer = runGit(cwd, args, scope.env)
+    answer = runGit(cwd, args, env)
   }
-  scope.answers.set(key, answer)
   return answer
 }
 

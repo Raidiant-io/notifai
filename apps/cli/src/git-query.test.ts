@@ -2,7 +2,8 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync, existsSync
 import os from 'node:os'
 import path from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
-import { gitQuery, inHookScope, shareGitIdentityAnswers } from './git-query.js'
+import { gitQuery, shareGitIdentityAnswers } from './git-query.js'
+import { inHookScope } from './hook-scope.js'
 
 const roots: string[] = []
 afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }) })

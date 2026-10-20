@@ -24,7 +24,7 @@
 import { realpathSync } from 'node:fs'
 import path from 'node:path'
 import type { CommandDeps } from './commands-core.js'
-import { inHookScope } from './git-query.js'
+import { inHookScope } from './hook-scope.js'
 import { HOOK_INSTALLABLE_HARNESSES, type HookInstallableHarness } from './harnesses.js'
 import { readSessionState, sessionHasEnded } from './hook-session-state.js'
 import type { HookEnvelope, SessionState } from './hook-types.js'
