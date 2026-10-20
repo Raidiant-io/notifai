@@ -24,12 +24,12 @@ afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: 
 function setup(options: { transport?: boolean; enabled?: boolean; signedIn?: boolean; routing?: boolean } = {}) {
   const root = mkdtempSync(path.join(os.tmpdir(), 'notifai-codex-card-'))
   roots.push(root)
-  const env = { HOME: root, XDG_CONFIG_HOME: path.join(root, 'config'), XDG_STATE_HOME: path.join(root, 'state'),
+  const env = { HOME: path.join(root, 'home'), XDG_CONFIG_HOME: path.join(root, 'config'), XDG_STATE_HOME: path.join(root, 'state'),
     CODEX_HOME: path.join(root, 'codex'), NOTIFAI_HOOK_SOURCE_PID: String(process.pid) }
-  installHookAdapter({ execPath: process.execPath, scriptPath: fileURLToPath(new URL('../dist/main.js', import.meta.url)) }, root)
+  installHookAdapter({ execPath: process.execPath, scriptPath: fileURLToPath(new URL('../dist/main.js', import.meta.url)) }, env.HOME)
   mkdirSync(env.CODEX_HOME, { recursive: true })
-  writeFileSync(path.join(env.CODEX_HOME, 'hooks.json'), JSON.stringify({ hooks: buildHookConfig({ adapterPath: hookAdapterPath(root), harness: 'codex' }) }))
-  const installed = findInstallations(env, root).find(installation => installation.harness === 'codex')!
+  writeFileSync(path.join(env.CODEX_HOME, 'hooks.json'), JSON.stringify({ hooks: buildHookConfig({ adapterPath: hookAdapterPath(env.HOME), harness: 'codex' }) }))
+  const installed = findInstallations(env, env.HOME).find(installation => installation.harness === 'codex')!
   writeFileSync(path.join(env.CODEX_HOME, 'config.toml'), installed.handlers.map(handler =>
     `[hooks.state.${JSON.stringify(codexTrustKey(installed, handler))}]\ntrusted_hash = "${codexHookIdentityHash(handler)}"\n`).join('\n'))
   execFileSync('git', ['init', '-q'], { cwd: root })
@@ -49,7 +49,7 @@ function setup(options: { transport?: boolean; enabled?: boolean; signedIn?: boo
   const output: string[] = []
   const launch = vi.fn()
   const deps: CommandDeps = {
-    cwd: root, env, hookAdapterHome: root,
+    cwd: root, env, hookAdapterHome: env.HOME,
     io: { out: line => { output.push(line) }, err: () => {}, confirm: async () => false, openUrl: () => {} },
     store: { load: () => options.signedIn === false ? null : ({ machineId: 'mac_test', secret: 'test-secret', baseUrl: 'https://test.notifai.invalid', machineName: 'test' }),
       save: () => {}, clear: () => {} } as unknown as CommandDeps['store'],
@@ -92,10 +92,10 @@ it.each(['disabled', 'signed-out', 'routing-off', 'unsupported', 'subagent', 'wr
     if (mode === 'wrong-process') h.env.NOTIFAI_HOOK_SOURCE_PID = '1'
     if (mode === 'untrusted') writeFileSync(path.join(h.env.CODEX_HOME, 'config.toml'), '')
     if (mode === 'narrowed-post-hook') {
-      const hooks = buildHookConfig({ adapterPath: hookAdapterPath(h.root), harness: 'codex' })
+      const hooks = buildHookConfig({ adapterPath: hookAdapterPath(h.env.HOME), harness: 'codex' })
       hooks.PostToolUse![0]!.matcher = 'request_user_input_async'
       writeFileSync(path.join(h.env.CODEX_HOME, 'hooks.json'), JSON.stringify({ hooks }))
-      const installed = findInstallations(h.env, h.root).find(installation => installation.harness === 'codex')!
+      const installed = findInstallations(h.env, h.env.HOME).find(installation => installation.harness === 'codex')!
       writeFileSync(path.join(h.env.CODEX_HOME, 'config.toml'), installed.handlers.map(handler =>
         `[hooks.state.${JSON.stringify(codexTrustKey(installed, handler))}]\ntrusted_hash = "${codexHookIdentityHash(handler)}"\n`).join('\n'))
     }

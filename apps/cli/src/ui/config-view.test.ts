@@ -57,10 +57,13 @@ describe('renderConfigList', () => {
 
   it('fits the terminal, so no row wraps into the next', () => {
     const columns = process.stdout.columns
-    Object.defineProperty(process.stdout, 'columns', { value: 80, configurable: true })
     try {
-      for (const line of renderConfigList(config, { showAdvanced: true })) {
-        expect(width(line), line).toBeLessThanOrEqual(80)
+      for (const terminal of [80, 60]) {
+        Object.defineProperty(process.stdout, 'columns', { value: terminal, configurable: true })
+        const lines = renderConfigList(config, { showAdvanced: true })
+        for (const line of lines) expect(width(line), line).toBeLessThanOrEqual(terminal)
+        // A long value continues under itself instead of being cut short.
+        expect(lines.join(' ').replace(/\x1b\[[0-9;]*m/g, '').replace(/\s+/g, ' ')).toContain('not specified; each destination uses its normal behavior')
       }
     } finally {
       Object.defineProperty(process.stdout, 'columns', { value: columns, configurable: true })

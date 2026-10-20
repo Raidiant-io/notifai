@@ -219,15 +219,13 @@ export async function configSetCommand(
   }
 
   if (machineOnlyRefused(deps, configKey, flags)) return EXIT.usage
+  // A trust key is refused for the shared layer before that layer's file is
+  // looked for, so the User hears why wherever they run it.
+  const explicitlyShared = flags.project === true && flags.local !== true && !flags.session
+  if (explicitlyShared && userOwnedKeyRefused(deps, configKey)) return EXIT.usage
   const target = await configMutationTarget(deps, flags, configKey)
   if (target === null) return EXIT.usage
-  if (target.layer === 'project' && USER_OWNED_CONFIG_KEYS.includes(configKey)) {
-    deps.io.err(
-      `${key} widens which origins this machine trusts, so it is never read from the repository's shared config — a cloned repository must not be able to set it.`,
-    )
-    deps.io.err('Store it on this machine (no flag) or for this project personally (--local).')
-    return EXIT.usage
-  }
+  if (target.layer === 'project' && userOwnedKeyRefused(deps, configKey)) return EXIT.usage
   if (target.layer === 'global' && Object.is(value, configDefaultValue(configKey))) {
     deps.io.err(`${key} is already the shipped default (${JSON.stringify(value)}).`)
     deps.io.err(
@@ -254,6 +252,16 @@ export async function configSetCommand(
   writeFileSync(target.path, `${stringifyToml(existing)}\n`)
   deps.io.out(`Wrote ${key} to ${target.path}`)
   return EXIT.ok
+}
+
+/** Refuse a key that widens this machine's trust for the repository's shared config. */
+function userOwnedKeyRefused(deps: CommandDeps, key: ConfigKey): boolean {
+  if (!USER_OWNED_CONFIG_KEYS.includes(key)) return false
+  deps.io.err(
+    `${key} widens which origins this machine trusts, so it is never read from the repository's shared config — a cloned repository must not be able to set it.`,
+  )
+  deps.io.err('Store it on this machine (no flag) or for this project personally (--local).')
+  return true
 }
 
 function configMutationKey(deps: CommandDeps, key: string): ConfigKey | null {
