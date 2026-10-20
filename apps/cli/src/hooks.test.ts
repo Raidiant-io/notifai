@@ -27,6 +27,7 @@ import {
 } from '@raidiant/notifai-protocol'
 import { describe, expect, it, vi } from 'vitest'
 import { ApiCallError, NetworkError, RequestCancelledError, type ApiClient } from './client.js'
+import { CLAUDE_PICKER_TURN } from './claude-question-bindings.js'
 import { CLAUDE_POST_SEND_LIVENESS_MS, type ClaudeWakeAdapters } from './claude-wake.js'
 import type { CodexWakeAdapters } from './codex-wake.js'
 import { readStdinWithTimeout } from './hook-input.js'
@@ -7226,6 +7227,38 @@ describe('Claude Code Stop wake route', () => {
     expect(service.claims).toEqual([])
     expect(wake.sent).toHaveLength(1)
     expect(readSessionState('claude-route', h.env).accepted?.answers[0]?.delivery_claim).toBeUndefined()
+  })
+
+  it('selects a picker answer for its picker even when it lands before the attendant holds a lease', async () => {
+    // A device answer within seconds of the picker can be collected before the
+    // attendant's first lease exchange. The picker writes only a selected
+    // answer, so its close must not depend on how far the lease has got.
+    const h = harness([reply({ text: 'Production', seq: 1, answers: [{ question_id: 'target', choice_ids: ['production'], text: null }] })])
+    writeGlobalConfig(h, 'ask_grace_seconds = 0\n')
+    writeSessionState('claude-route', h.env, { harness: 'claude-code', last_prompt_at: AWAY })
+    const service_identity = { base_url: 'https://test.notifai.invalid', machine_id: 'mac_test' }
+    const questions = [{ id: 'target', text: 'Which environment?', choices: [{ id: 'staging', label: 'Staging' }, { id: 'production', label: 'Production' }] }]
+    const questionId = persistQuestion('claude-route', h.env, { question: 'Which environment?', summary: 'Which environment?', service_identity, questions }, NOW, {
+      owner_key: 'key_picker', turn_id: CLAUDE_PICKER_TURN, service: service_identity,
+      picker: [{ title: 'Which environment?', labels: { staging: 'Staging', production: 'Production' } }],
+    })
+    const service = claimingClient(h)
+    const ordinary = persistQuestion('claude-route', h.env, { question: 'Anything else?', summary: 'Anything else?', service_identity }, NOW)
+
+    await hookRunCommand(h.deps, 'question-settlement', stdin({ session_id: 'claude-route', cwd: '/tmp/claude-route' }), 'claude-code')
+
+    const state = readSessionState('claude-route', h.env)
+    const staged = state.waiting_answers ?? []
+    const requestOf = (id: string) => staged.find((answer) => answer.pending.question_id === id)!.pending.request_id
+    expect(service.closes).toEqual(expect.arrayContaining([
+      { requestId: requestOf(questionId), disposition: 'deliver' },
+      // A question no native form may answer keeps the lease rule.
+      { requestId: requestOf(ordinary), disposition: null },
+    ]))
+    expect(service.claims).toEqual([])
+    expect(staged.find((answer) => answer.pending.question_id === questionId)?.delivery_claim).toBe(true)
+    expect(staged.find((answer) => answer.pending.question_id === ordinary)?.delivery_claim).toBeUndefined()
+    expect(state.codex_question_bindings?.find((item) => item.question_id === questionId)?.confirmed_request_id).toBe(requestOf(questionId))
   })
 
   it('keeps the answer pending instead of claiming or writing its text during the wake', async () => {

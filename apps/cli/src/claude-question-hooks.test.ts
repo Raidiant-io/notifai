@@ -64,7 +64,7 @@ const FORM = picker([
 const roots: string[] = []
 afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }) })
 
-function setup(options: { signedIn?: boolean; enabled?: boolean } = {}) {
+function setup(options: { signedIn?: boolean; enabled?: boolean; leased?: boolean } = {}) {
   const root = mkdtempSync(path.join(os.tmpdir(), 'notifai-claude-picker-'))
   roots.push(root)
   const owner = currentProcessIdentity()!
@@ -75,8 +75,12 @@ function setup(options: { signedIn?: boolean; enabled?: boolean } = {}) {
   execFileSync('git', ['init', '-q'], { cwd: root })
   if (options.enabled !== false) enableProject(projectBinding(root, env)!)
   const lease = { incarnation: incarnation.incarnation, generation: 1 }
-  acquireClaimFile(attendantClaimPath(SESSION, env), { incarnation: lease.incarnation }, Date.now())
-  writeAttendantStatus(SESSION, env, { ...lease, phase: 'attending', activity: 'working', reason: null, accepts_messages: true, updated_at: Date.now() })
+  /** The attendant's lease exchange completes: until then nothing may be claimed. */
+  const attend = () => {
+    acquireClaimFile(attendantClaimPath(SESSION, env), { incarnation: lease.incarnation }, Date.now())
+    writeAttendantStatus(SESSION, env, { ...lease, phase: 'attending', activity: 'working', reason: null, accepts_messages: true, updated_at: Date.now() })
+  }
+  if (options.leased !== false) attend()
   const output: string[] = []
   const claims: string[] = []
   const reports: string[] = []
@@ -156,7 +160,7 @@ function setup(options: { signedIn?: boolean; enabled?: boolean } = {}) {
   }
   const context = (index = 0) =>
     (JSON.parse(output[index]!) as { hookSpecificOutput: { additionalContext: string } }).hookSpecificOutput.additionalContext
-  return { root, env, deps, output, claims, reports, reported, client, launches, gates, incarnation, logger, state, envelope, held,
+  return { root, env, deps, output, claims, reports, reported, client, launches, gates, incarnation, logger, attend, state, envelope, held,
     registration, pendingOf, confirm, stage, decision, context }
 }
 
@@ -476,6 +480,30 @@ describe('Claude Code picker hooks', () => {
     expect(owed).toContain('"Staging"')
     expect(owed).toContain('notifai acknowledge req_')
     expect(takeOwedClaudePickerAnswer(SESSION, unconfirmed.env)).toBeNull()
+  })
+
+  it('waits for the attendant lease when the device answers before the first lease exchange', async () => {
+    // A quick device answer can be collected and staged before the session's
+    // attendant holds a lease. The picker stays the answer's writer: it waits
+    // for the lease and claims the answer, instead of leaving it to a terminal
+    // picker nobody is watching.
+    const h = setup({ leased: false })
+    let slept = 0
+    const outcome = await claudePermissionRequest(h.deps, h.envelope(), h.logger, {
+      sleep: async () => {
+        slept++
+        if (slept === 1) {
+          h.confirm()
+          h.stage([{ question_id: h.registration().questions[0]!.question.id, choice_ids: ['production'] }])
+        }
+        if (slept === 3) h.attend()
+      },
+    })
+    expect(outcome).toBe('answered')
+    expect(slept).toBe(3)
+    expect(h.decision().hookSpecificOutput.decision.updatedInput.answers).toEqual({ [REWORDED]: 'Production' })
+    expect(h.claims).toEqual([`req_${h.held()}`])
+    expect(h.gates.map(gate => gate['stage'])).toEqual(['picker-waiting', 'picker-answered'])
   })
 
   it('holds the wake only while a live handler has the sole pending answer', async () => {

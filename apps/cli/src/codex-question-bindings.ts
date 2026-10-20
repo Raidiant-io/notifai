@@ -187,6 +187,18 @@ export function markCodexOrdinaryPresentation(state: SessionState, questionIds: 
     questionIds.has(item.question_id) ? { ...item, ordinary_only: true } : item) }
 }
 
+/**
+ * Whether a native form (a Claude Code picker or a Codex card) may still
+ * return this question's answer. That form writes only an answer its close
+ * selected for claimed delivery, so the close must select it whatever the
+ * attendant's lease is doing at that instant. The registration is written in
+ * the same transaction as the question, so no answer can arrive before it.
+ */
+export function nativeFormMayAnswer(state: SessionState, questionId: string | undefined): boolean {
+  return questionId !== undefined && state.codex_question_bindings?.some(item =>
+    item.question_id === questionId && item.ordinary_only !== true && item.terminated !== true) === true
+}
+
 /** Explicit cancellation only, in the transaction selecting the questions. */
 export function terminateCodexQuestions(state: SessionState, ids: ReadonlySet<string>): SessionState {
   if (state.codex_question_bindings === undefined) return state
