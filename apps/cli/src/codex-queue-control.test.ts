@@ -1,6 +1,6 @@
 import type * as ChildProcess from 'node:child_process'
 import { createServer } from 'node:http'
-import { mkdtempSync, mkdirSync, rmSync, symlinkSync } from 'node:fs'
+import { mkdtempSync, mkdirSync, readdirSync, readFileSync, rmSync, symlinkSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { afterEach, expect, it, vi } from 'vitest'
@@ -14,7 +14,7 @@ vi.mock('node:child_process', async importOriginal => {
   })
   return { ...original, execFile }
 })
-import { connectCodexControl, CodexControlNotSent } from './codex-native-control.js'
+import { CODEX_CONTROL_CLIENT_INFO, connectCodexControl, CodexControlNotSent } from './codex-native-control.js'
 import { connectCodexQueue } from './codex-queue-control.js'
 import { connectCodexAnswerControl } from './codex-answer-control.js'
 
@@ -80,6 +80,37 @@ async function fixture(options: { loaded?: string[]; homeMismatch?: boolean; fai
     connectThread: () => connectCodexControl('owned-thread', { ...process.env, CODEX_HOME: home }, performance.now() + 2000),
     connect: () => connectCodexQueue('owned-thread', { ...process.env, CODEX_HOME: home }, performance.now() + 2000) }
 }
+
+// Codex lets the first ordinarily named client on an app-server become the
+// originator of every thread that server creates, and lets each one rewrite the
+// shared user agent. These are the only names Codex exempts (0.163.0,
+// app-server initialize_processor.rs NON_ORIGINATING_CLIENT_NAMES).
+const CODEX_NON_ORIGINATING_CLIENT_NAMES = ['codex_app_server_daemon', 'codex-backend']
+
+unixIt('initializes every Codex connection with a client name that cannot claim a User thread\'s originator', async () => {
+  const f = await fixture()
+  for (const open of [f.connectThread, f.connectAnswer, f.connect]) (await open())!.close()
+  const initializes = f.calls.filter(call => call.method === 'initialize')
+  expect(initializes).toHaveLength(3)
+  for (const call of initializes) {
+    expect(call.params.clientInfo).toEqual(CODEX_CONTROL_CLIENT_INFO)
+    expect(CODEX_NON_ORIGINATING_CLIENT_NAMES).toContain((call.params.clientInfo as { name: string }).name)
+  }
+  // The identity is claimed even when the connection then refuses the thread.
+  const refused = await fixture({ loaded: [] })
+  expect(await refused.connect()).toBeNull()
+  expect(refused.calls.find(call => call.method === 'initialize')?.params.clientInfo).toEqual(CODEX_CONTROL_CLIENT_INFO)
+})
+
+it('opens Codex app-server connections only through the non-originating control connection', () => {
+  const sources = readdirSync(import.meta.dirname, { recursive: true, encoding: 'utf8' })
+    .filter(file => file.endsWith('.ts') && !file.endsWith('.test.ts'))
+  const opening = sources.filter(file => {
+    const text = readFileSync(path.join(import.meta.dirname, file), 'utf8')
+    return /from '\.\/unix-websocket\.js'|clientInfo/.test(text)
+  })
+  expect(opening).toEqual(['codex-native-control.ts'])
+})
 
 unixIt('reads an already-loaded thread without requiring queue capability or resuming it', async () => {
   const f = await fixture({ failList: true })
