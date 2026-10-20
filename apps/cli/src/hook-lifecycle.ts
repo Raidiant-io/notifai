@@ -80,6 +80,8 @@ import {
   clearSessionStateUnlocked,
   endsIncarnation,
   markSessionEnded,
+  concludeEndCandidate,
+  type LifecycleStamp,
   pendingList,
   readSessionState,
   readSessionIncarnation,
@@ -2567,13 +2569,16 @@ export function handleSessionEnd(
   env: NodeJS.ProcessEnv,
   envelope: HookEnvelope,
   now: number = Date.now(),
+  /** The waiting end this concludes after its end confirmation, if any. */
+  candidate?: LifecycleStamp,
 ): HookOutcome {
   const notes: string[] = []
   const sessionId = envelope.session_id
   if (!sessionId) return { notes, log: { outcome: 'ignored', reason: 'missing-session-id' } }
   // Publish cancellation before reading or clearing anything. In-flight Stop
   // writers use the same session lock, so none can recreate state after this.
-  const ending = markSessionEnded(sessionId, env, now)
+  const ending = candidate === undefined ? markSessionEnded(sessionId, env, now) : concludeEndCandidate(sessionId, env, candidate, now)
+  if (ending === null) return { notes, log: { outcome: 'preserved', reason: 'end-superseded' } }
   if (envelope.cwd !== undefined) clearMatchingProjectSession(envelope.cwd, env, sessionId)
 
   const state = readSessionState(sessionId, env)
@@ -2665,6 +2670,14 @@ export function handleSessionEnd(
       writeSessionStateUnlocked(sessionStatePath(sessionId, env), sessionId, { question_history: history! })
     }
     return { notes, log: { outcome: 'cleaned', ...log } }
+  })
+}
+
+/** Whether closing this session now would expire or drop anything. */
+export function closeDiscardsWork(state: SessionState): boolean {
+  return CLOSED_SESSION_DROPS.some((field) => {
+    const value = state[field]
+    return value !== undefined && (!Array.isArray(value) || value.length > 0)
   })
 }
 

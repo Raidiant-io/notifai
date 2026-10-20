@@ -130,6 +130,11 @@ export interface CommandDeps {
   /** Starts a detached retirement of closed sessions' queued questions. Absent, none starts. */
   spawnRetirement?: (launch: HookMaintenanceLaunch) => void
   /**
+   * Starts the detached end confirmation for a SessionEnd no hub decides.
+   * Absent, such a SessionEnd ends the session at once.
+   */
+  spawnEndConfirmation?: (launch: HookMaintenanceLaunch) => void
+  /**
    * Starts the detached check that replaces an earlier build's hub with the
    * active build's. Absent, none starts.
    */

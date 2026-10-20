@@ -437,8 +437,16 @@ conversation can be open in two places at once; each has its own session
 child, only the most recently opened receives answers and notes, and closing
 one leaves the other. Anything else closed: exiting, closing the terminal, a
 kill, `/clear` or `/resume` of another conversation in its place, quitting
-the app, archiving or deleting it. Without a hub (Windows), SessionEnd closes
-at once.
+the app, archiving or deleting it.
+
+Without a hub to decide (on Windows, or for a session the hub never attended),
+a SessionEnd that would expire questions or drop answers starts a short
+background process instead, which waits the same ten seconds. The session
+stays open if it started again in that time, another Claude Code process still
+has the conversation open, or a Codex process holds the thread again;
+otherwise it closes. A sign Notifai cannot read counts as no sign: on Windows
+it cannot see which process holds a Codex thread, so only a restart keeps a
+Codex session open there. A SessionEnd with nothing to lose closes at once.
 
 Some stops are not closes. The Claude desktop app pauses or evicts a
 conversation it still lists (an idle pause, its process limit, memory

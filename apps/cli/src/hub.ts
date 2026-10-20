@@ -2998,6 +2998,7 @@ export class Hub {
     }
     delete deps.spawnHookMaintenance
     delete deps.spawnRetirement
+    delete deps.spawnEndConfirmation
     delete deps.spawnHubHandover
     return hookRunCommand(deps, event, async () => envelope === null ? '' : JSON.stringify(envelope), harness)
   }

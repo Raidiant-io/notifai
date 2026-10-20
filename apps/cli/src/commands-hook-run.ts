@@ -26,6 +26,7 @@ import { codexHostKind } from './codex-session-end.js'
 import { attendHook, recordCodexTurnStart, reportCodexSessionEnded } from './commands-hook-attend.js'
 import { hubSupported } from './hub-ipc.js'
 import { holdSessionEnd, hubAttendsSession, notifyHubSessionEnded, shutdownUnderway } from './hub-client.js'
+import { awaitEndConfirmation, confirmSessionEnds } from './session-end-confirmation.js'
 import { waitForReply } from './commands-send-support.js'
 import { loadConfig, type CliConfig } from './config.js'
 import { withFileLock } from './file-lock.js'
@@ -104,6 +105,7 @@ const INTERNAL_HOOK_EVENTS = [
   'openclaw-turn-start', 'openclaw-turn-end', 'openclaw-list-pending',
   'openclaw-attendance-ready', 'openclaw-settlement',
   'openclaw-verify-prepared', 'maintenance', 'retirement', 'hub-handover',
+  'end-confirmation',
 ] as const
 
 /**
@@ -214,7 +216,20 @@ export async function hookRunCommand(
     try {
       const result = await runHookMaintenance({ env: deps.env, now: now(),
         ...(deps.fetchImpl === undefined ? {} : { fetchImpl: deps.fetchImpl }) })
-      logger.info('hook.end', { hook: event, outcome: 'maintained', decided: false, ...result })
+      // An end whose confirmation process died is decided here at the latest.
+      const ends = await confirmSessionEnds(deps, { wait: false, logger })
+      logger.info('hook.end', { hook: event, outcome: 'maintained', decided: false, ...result, end_confirmations: ends })
+    } catch (err) {
+      logger.error('hook.end', { hook: event, outcome: 'failed', ...failureData(err) })
+    }
+    return EXIT.ok
+  }
+  // SessionEnds no hub decides, waiting out their end confirmation detached.
+  if (event === 'end-confirmation') {
+    logger.info('hook.start', { hook: event, harness: harness ?? 'unknown' })
+    try {
+      const result = await confirmSessionEnds(deps, { wait: true, logger })
+      logger.info('hook.end', { hook: event, outcome: 'confirmed', decided: false, ...result })
     } catch (err) {
       logger.error('hook.end', { hook: event, outcome: 'failed', ...failureData(err) })
     }
@@ -949,6 +964,26 @@ export async function hookRunCommand(
       start({ cwd, stop_hook_active: envelope.stop_hook_active ?? null })
       logger.info('hook.end', { hook: event, decided: false, outcome: 'held-for-shutdown' })
       return EXIT.ok
+    }
+    if (sessionEnd && (harness === 'claude-code' || harness === 'codex') && envelope.session_id !== undefined &&
+        deps.spawnEndConfirmation !== undefined) {
+      const spawnEndConfirmation = deps.spawnEndConfirmation
+      const sessionHarness = harness
+      if (awaitEndConfirmation(deps.env, {
+        sessionId: envelope.session_id,
+        harness: sessionHarness,
+        harnessPid: sessionHarness === 'claude-code' ? claudeHookSourcePid(deps.env, deps.hookPlatform ?? process.platform) : declaredHookSourcePid(deps),
+        cwd: envelope.cwd,
+        endingLease: codexEndingLease,
+      }, now(), () => spawnEndConfirmation({ cwd, harness: sessionHarness,
+        ...(workAllowanceMs === null ? {} : { detachTimeoutMs: Math.min(5_000, workAllowanceMs) }) }))) {
+        // No hub decides this end, and closing now would expire questions or
+        // drop answers: a detached process waits out the end confirmation and
+        // ends the session only if the same conversation has not come back.
+        start({ cwd, stop_hook_active: envelope.stop_hook_active ?? null })
+        logger.info('hook.end', { hook: event, decided: false, outcome: 'awaiting-end-confirmation' })
+        return EXIT.ok
+      }
     }
     if (sessionEnd) {
       // Codex gives SessionEnd one second total. Do every durable cleanup write
