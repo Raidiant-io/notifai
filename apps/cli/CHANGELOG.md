@@ -8,6 +8,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 This project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 and [Conventional Commits](https://www.conventionalcommits.org/en/v1.0.0/).
 
+## [13.1.0-beta.5](https://github.com/Raidiant-io/notifai/compare/v13.0.0...v13.1.0-beta.5) (2026-10-20)
+
+### Features
+
+* OpenCode's own question form now reaches the User's devices, and whichever answer comes first, from a device or in OpenCode, settles it. OpenClaw applies a changed plugin to a running Gateway and hands sessions over cleanly on reload, Hermes uses only the public plugin interface and holds writes while an approval prompt or session command is open, and Grok's question route is requalified.
+* Install CLI updates automatically on macOS and Linux through the shared hub, at most once a day, on the saved channel and never to an older build. An update never activates while a question, answer, note or acknowledgement is pending. Turn it off for the whole machine with `notifai config set updates.automatic off --yes`.
+* Answer the frequent Claude Code and Codex hooks from the running hub through the native launcher on macOS and Linux instead of starting the runtime each time, making warm hooks several times faster.
+* Block empty Codex wake-ups that no longer have anything to deliver, so they start no turn; a human prompt is never blocked. Codex app and IDE conversations that Codex unloads after 30 minutes idle stay open and answerable.
+* Each Claude Code and Codex session on macOS and Linux is now kept by a small native session helper, with one shared hub per user that talks to the service for all of them. At 25 sessions memory drops from about 600 MB to about 55 MB, the per-session process launches and credential reads every few seconds are gone, and a closed session's questions expire within one to two seconds. Windows keeps the existing session attendant.
+* Claude Code hooks run in exec form on Claude Code 2.1.139 and newer, and stay in shell form on older versions; `notifai doctor` reports the hook form and the shared hub.
+* Closing an Agent Session ends its questions: they expire on every device at once, and an answer the agent had not read yet is dropped instead of being delivered later. The session's end record names any dropped answers.
+* Let Codex run Notifai commands outside its sandbox on the User's yes: `notifai init --codex-commands` writes a Codex rule that allows only the everyday Notifai commands, `notifai doctor` reports `codex-commands` readiness, and `notifai hooks uninstall --harness codex` removes the rule.
+* Codex question cards link to devices only with Codex app-server 0.163.0 or newer; older Codex falls back to an ordinary question, and a daily canary checks that card linking still works.
+
+### Bug Fixes
+
+* Hand the shared session hub over to the active build after any update, including `notifai update`, npm and installer updates, rollbacks, and hubs started by earlier builds, as soon as nothing is waiting. Until then `notifai doctor` and `notifai update --check` name the build the hub runs and what it is waiting for.
+* Hand a session's questions to one current answer owner, so an answer process started by an older version no longer holds them after an update.
+* Keep idle Claude Code sessions started on an older version attended after an update: the switch to exec-form hooks waits until those sessions hand over.
+* Lay out interactive screens on a terminal that reports zero width.
+* Never revive a closed session. Claude Code cold resume (`claude -p --resume`) is removed; idle but open sessions still receive their answers, and the delivery contracts shown by `doctor` say so.
+* Keep every hook inside its own timeout: credential reads happen only when a hook actually calls the service, nested steps get a budget derived from the hook's declared timeout, and session pruning and update checks run in a detached daily maintenance process instead of on the prompt path.
+* Register Codex questions from the native question card itself, so an answered card no longer leaves a separately copied question pending.
+* Report integration health only for the active native build, so a retained older runtime can no longer surface stale CLI or skill faults in current hooks.
+* Beta updates always choose the newer of the beta and stable releases.
+
 ## [13.0.0](https://github.com/Raidiant-io/notifai/compare/v12.1.1...v13.0.0) (2026-10-18)
 
 
