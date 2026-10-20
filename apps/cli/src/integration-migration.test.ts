@@ -22,6 +22,9 @@ import { sourceIntegrationRevision } from './integration-revision.js'
 import { hookRunCommand } from './commands-hook-run.js'
 import { enableProject, projectBinding } from './project-enablement.js'
 import { hermesPluginDir, hermesPluginSource } from './hermes-plugin.js'
+import { readClaudeFormDeferral } from './claude-form-readers.js'
+import { attendantClaimPath } from './session-attendant-state.js'
+import { acquireClaimFile, releaseClaimFile } from './hook-question-lock.js'
 
 const roots: string[] = []
 afterEach(() => { vi.restoreAllMocks(); for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }) })
@@ -548,4 +551,26 @@ it('never rewrites Codex hooks in an automatic resume, and the activation plan n
   // The User's own resume repairs them as before.
   expect(await updateResumeCommand(f.deps, { json: true })).toBe(0)
   expect(readFileSync(f.installation.file, 'utf8')).not.toBe(damaged)
+})
+
+it('keeps Claude Code hooks in shell form through an update while an older attendant runs, and records the switch for the hub', async () => {
+  const f = fixture()
+  expect(hooksInstallCommand(f.deps, { harness: 'claude-code', narrate: false })).toBe(0)
+  const claude = findInstallations(f.deps.env, f.home, 'darwin').find(entry => entry.harness === 'claude-code')!
+  const before = readFileSync(claude.file, 'utf8')
+  expect(before).not.toContain('"args"')
+  f.deps.claudeCodeVersion = () => '2.1.304'
+  writeSessionState('older-claude', f.deps.env, { harness: 'claude-code' })
+  const claim = attendantClaimPath('older-claude', f.deps.env)
+  const token = acquireClaimFile(claim, { incarnation: 'inc_olderattendant', runtime_version: '13.1.0-beta.2', runtime_revision: 7 })!
+  try {
+    expect(await updateResumeCommand(f.deps, { json: true })).toBe(0)
+    expect(readFileSync(claude.file, 'utf8')).toBe(before)
+    expect(readClaudeFormDeferral(f.deps.env)).toMatchObject({ file: claude.file })
+    expect(JSON.parse(f.out.at(-1)!).diagnostics).toEqual(expect.arrayContaining([expect.stringContaining('stay in shell form')]))
+  } finally { releaseClaimFile(claim, token) }
+  // With no older attendant left, the User's update writes exec form.
+  expect(await updateResumeCommand(f.deps, { json: true })).toBe(0)
+  expect(readFileSync(claude.file, 'utf8')).toContain('"args"')
+  expect(readClaudeFormDeferral(f.deps.env)).toBeNull()
 })

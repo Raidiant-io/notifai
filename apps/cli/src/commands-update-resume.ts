@@ -21,6 +21,8 @@ import { buildIdentity } from './distribution.js'
 import { pendingHookRepairs, withHookRepairIntent } from './integration-repair.js'
 import { pendingNpmRepairs } from './npm-repair-status.js'
 import { TRUST_SENSITIVE_HOOK_HARNESSES } from './activation-plan.js'
+import { claudeHookFormFor } from './claude-hook-form.js'
+import { recordClaudeFormDeferral } from './claude-form-readers.js'
 
 /** Never replace package files while this exact owner still owes an answer. */
 export function updateWorkPending(deps: CommandDeps): string | null {
@@ -111,6 +113,13 @@ export async function updateResumeCommand(deps: CommandDeps, flags: { json?: boo
     }
     for (const { installation, env } of assessment.installations) {
       if (setupPending(installation.file)) continue
+      if (installation.harness === 'claude-code' &&
+          claudeHookFormFor({ ...deps, env }, installation.handlers.some(handler => handler.execForm === true)).reason === 'older-attendants-running') {
+        // This update wants exec form, held back while an older attendant runs;
+        // the hub applies it once none does.
+        recordClaudeFormDeferral(env, installation.file)
+        diagnostics.push('claude-code hooks stay in shell form while an older Notifai attends a Claude Code session; the hub switches them to exec form once it hands that session over.')
+      }
       if (installationFaults(installation, deps.hookPlatform, { ...deps, env }).length === 0) continue
       if (flags.automatic === true && TRUST_SENSITIVE_HOOK_HARNESSES.has(installation.harness) &&
           installationFaults(installation, deps.hookPlatform).length > 0) {
