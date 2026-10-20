@@ -329,7 +329,8 @@ function installDocumentHooks(deps: CommandDeps, flags: HooksInstallFlags, harne
     const claudeForm = claudeDecision?.form
     // Exec form held back for an older attendant: the hub applies it once that attendant is gone.
     if (claudeDecision?.reason === 'older-attendants-running') recordClaudeFormDeferral(deps.env, file)
-    else if (claudeDecision !== undefined) clearClaudeFormDeferral(deps.env)
+    // Only a definite answer settles it; an unreadable Claude Code version keeps the record.
+    else if (claudeDecision !== undefined && claudeDecision.reason !== 'version-unknown') clearClaudeFormDeferral(deps.env)
     const result = mergeHooks(
       document,
       buildHookConfig({

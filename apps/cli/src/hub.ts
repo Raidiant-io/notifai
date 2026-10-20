@@ -1666,7 +1666,8 @@ export class Hub {
    * User's install or update already asked for. Never while one still runs.
    */
   applyDeferredClaudeForm(now: number): void {
-    if (now - this.claudeFormTriedAt < 60_000) return
+    // At most every five minutes: a Claude Code version this hub cannot read keeps the record.
+    if (now - this.claudeFormTriedAt < 5 * 60_000) return
     const deferral = readClaudeFormDeferral(this.env)
     if (deferral === null || olderClaudeAttendantsAlive(this.env) > 0) return
     this.claudeFormTriedAt = now
