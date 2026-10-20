@@ -52,10 +52,19 @@ export function cancelledDelivery(): DeliveryOutcome {
 export class WriteDeadlineError extends Error {}
 
 /**
- * Run one harness command to completion. With `onSpawn` it runs in its own
- * process group (reported as soon as it exists). With `signal`, an abort
- * SIGKILLs that whole group — or the child, without one — and rejects with
- * `WriteDeadlineError` at once: nothing the command started keeps running.
+ * How long a finished harness command's output may keep arriving. `exit` can
+ * fire before stdout and stderr are drained, so the result waits for them to
+ * end; a process the command left behind can hold them open, so the wait stops
+ * here and keeps the output read by then.
+ */
+export const WAKE_OUTPUT_DRAIN_MS = 2_000
+
+/**
+ * Run one harness command to completion: it has exited and its output has
+ * ended. With `onSpawn` it runs in its own process group (reported as soon as
+ * it exists). With `signal`, an abort SIGKILLs that whole group — or the
+ * child, without one — and rejects with `WriteDeadlineError` at once: nothing
+ * the command started keeps running.
  */
 export function runWakeCommand(
   command: string,
@@ -83,9 +92,11 @@ export function runWakeCommand(
       windowsHide: true,
     })
     let settled = false
+    let drain: NodeJS.Timeout | undefined
     const settle = (finish: () => void): void => {
       if (settled) return
       settled = true
+      clearTimeout(drain)
       signal?.removeEventListener('abort', onAbort)
       finish()
     }
@@ -106,7 +117,7 @@ export function runWakeCommand(
     child.stdout?.on('data', (chunk: Buffer | string) => stdout.push(Buffer.from(chunk)))
     child.stderr?.on('data', (chunk: Buffer | string) => stderr.push(Buffer.from(chunk)))
     child.once('error', (err) => settle(() => reject(err)))
-    child.once('exit', (code, exitSignal) => {
+    const finish = (code: number | null, exitSignal: NodeJS.Signals | null): void => {
       settle(() => {
         if (code === 0) {
           resolve(Buffer.concat(stdout).toString())
@@ -118,6 +129,20 @@ export function runWakeCommand(
           ),
         )
       })
+    }
+    // 'close' follows 'exit' once stdout and stderr have ended.
+    child.once('close', finish)
+    child.once('exit', (code, exitSignal) => {
+      if (settled) return
+      drain = setTimeout(() => {
+        // Let one more poll read what is already buffered before giving up on
+        // the streams a leftover process still holds.
+        setImmediate(() => {
+          finish(code, exitSignal)
+          child.stdout?.destroy()
+          child.stderr?.destroy()
+        })
+      }, WAKE_OUTPUT_DRAIN_MS)
     })
   })
 }
