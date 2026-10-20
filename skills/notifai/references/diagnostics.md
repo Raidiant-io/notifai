@@ -45,7 +45,9 @@ staged, held back and why, or activated. A hub that crashed three times in ten m
 restarting for the rest of that window and doctor says so. Doctor's
 `claude code hook form` check says whether Claude Code's hooks run in exec or
 shell form and why; a failure there is repaired by
-`notifai hooks install --harness claude-code`.
+`notifai hooks install --harness claude-code`. Shell form kept "while an older
+Notifai still attends a Claude Code session" is expected and needs nothing: the
+hub switches to exec form once that session's next hook hands it over.
 
 When sign-in looks fine but nothing sends, `notifai auth status --json` and
 `notifai auth access --json` separate a pairing problem from an account without
