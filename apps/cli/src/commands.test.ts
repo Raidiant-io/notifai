@@ -8389,7 +8389,7 @@ describe('asking before the hooks have ever run', () => {
     )
   })
 
-  it.each(['card-hook', 'supported', 'no-transport', 'old-codex', 'missing', 'malformed', 'unavailable', 'changed-turn', 'lost-machine', 'changed-machine', 'changed-service', 'machine-lost-in-lock', 'ended', 'ended-unavailable', 'replaced-owner'] as const)('gates native registration on service support and answer transport: %s', async mode => {
+  it.each(['card-hook', 'card-hook-unproven', 'card-hook-other-model', 'supported', 'no-transport', 'old-codex', 'missing', 'malformed', 'unavailable', 'changed-turn', 'lost-machine', 'changed-machine', 'changed-service', 'machine-lost-in-lock', 'ended', 'ended-unavailable', 'replaced-owner'] as const)('gates native registration on service support and answer transport: %s', async mode => {
     const cwd = scratchDir('notifai-native-ask-output-')
     const sessionId = '019ff69d-a07f-7161-ab6e-bd06b3b93c8e'
     const env = { HOME: cwd, XDG_CONFIG_HOME: cwd, XDG_STATE_HOME: cwd, CODEX_HOME: path.join(cwd, 'codex'), CODEX_THREAD_ID: sessionId }
@@ -8427,7 +8427,8 @@ describe('asking before the hooks have ever run', () => {
     mkdirSync(path.join(cwd, '.notifai'))
     writeFileSync(path.join(cwd, '.notifai', 'config.toml'), 'project = "native-ask-test"\n')
     expect(hooksInstallCommand(deps, { harness: 'codex', execPath, scriptPath })).toBe(EXIT.ok)
-    if (mode !== 'card-hook') {
+    const cardHooks = mode.startsWith('card-hook')
+    if (!cardHooks) {
       // The marker route remains the fallback for a host without the card hook.
       const hookFile = path.join(env.CODEX_HOME, 'hooks.json')
       const document = JSON.parse(readFileSync(hookFile, 'utf8'))
@@ -8440,6 +8441,7 @@ describe('asking before the hooks have ever run', () => {
     mkdirSync(path.dirname(file), { recursive: true })
     writeFileSync(file, [
       { type: 'session_meta', payload: { id: sessionId, source: 'cli' } },
+      { type: 'turn_context', payload: { turn_id: 'turn-1', model: mode === 'card-hook-other-model' ? 'gpt-5.5' : 'gpt-6-sol' } },
       { type: 'event_msg', payload: { type: 'task_started', turn_id: 'turn-1' } },
     ].map(item => JSON.stringify(item) + '\n').join(''))
     recordTurnStart(sessionId, env, owner.key, 'turn-1')
@@ -8447,6 +8449,8 @@ describe('asking before the hooks have ever run', () => {
       last_prompt_at: 42,
       codex_native_turn: { key: owner.key, turn_id: 'turn-1', transcript_path: file },
       codex_tool_hook: { incarnation: owner.incarnation, fingerprint: 'controlled', root_observed: { turn_id: 'turn-1', at: 42 } },
+      // This owner's card callback ran, so its Codex offers the card under gpt-6-sol.
+      ...(mode === 'card-hook-unproven' ? {} : { codex_card_tool: { key: owner.key, model: 'gpt-6-sol', transcript_path: file } }),
     })
     io.outLines = []
     const machineChanged = ['lost-machine', 'changed-machine', 'changed-service', 'machine-lost-in-lock'].includes(mode)
@@ -8458,6 +8462,19 @@ describe('asking before the hooks have ever run', () => {
       expect(output.request_user_input_async).toEqual({ questions: [{ title: 'Where?', options: ['Staging', 'Production'] }] })
       expect(readSessionState(sessionId, env).pending).toBeUndefined()
       expect(spawn).not.toHaveBeenCalled()
+      expect(compatibility).not.toHaveBeenCalled()
+      return
+    }
+    if (cardHooks) {
+      // Without proof that this session can call the card, as in a terminal
+      // whose model has no card, the question is an ordinary one. The card
+      // hooks would register any card itself, so nothing points at the card.
+      expect(output.registered).toBe(true)
+      expect(output.native_question).toBeUndefined()
+      expect(output.native_question_unavailable).toBeUndefined()
+      expect(JSON.stringify(output)).not.toContain('request_user_input')
+      expect(readSessionState(sessionId, env).pending).toHaveLength(1)
+      expect(spawn).toHaveBeenCalledTimes(1)
       expect(compatibility).not.toHaveBeenCalled()
       return
     }

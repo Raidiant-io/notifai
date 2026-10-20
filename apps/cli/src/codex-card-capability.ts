@@ -1,5 +1,7 @@
 /** Installed capability for card-sourced registration and foreground delivery. */
 import type { CommandDeps } from './commands-core.js'
+import { readNativeTurnModel } from './codex-native-turn.js'
+import type { SessionState } from './hook-types.js'
 import { codexTrustProblems, findInstallations, handlerEvent } from './install-hooks.js'
 
 /**
@@ -54,4 +56,20 @@ export function codexCardHooksReady(deps: Pick<CommandDeps, 'env' | 'hookAdapter
       (handler.matcher === undefined || handler.matcher === '*' ||
         (event === 'PreToolUse' && handler.matcher === 'request_user_input_async'))))) return false
   return codexTrustProblems(hooks, deps.env).length === 0
+}
+
+/**
+ * Whether this session's Codex can call request_user_input_async in the
+ * current turn. Codex offers that tool only to a root agent whose model's
+ * catalog entry lists it, in the terminal and in apps alike. Hook files on
+ * disk say nothing about that. The proof is this owner's own card callback,
+ * because Codex runs no hook for a tool it did not offer, and it holds only
+ * while the current turn runs the model the callback ran under.
+ */
+export function codexCardToolOffered(
+  state: Pick<SessionState, 'codex_card_tool'>, ownerKey: string, sessionId: string, env: NodeJS.ProcessEnv,
+): boolean {
+  const proof = state.codex_card_tool
+  return proof !== undefined && proof.key === ownerKey &&
+    readNativeTurnModel(proof.transcript_path, sessionId, env) === proof.model
 }

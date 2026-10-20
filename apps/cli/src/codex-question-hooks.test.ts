@@ -58,7 +58,7 @@ function setup(options: { transport?: boolean; enabled?: boolean; signedIn?: boo
       currentTurn: async () => true, steer: async () => {}, close: () => {} } : null,
     spawnQuestionSettlement: launch,
   }
-  const envelope = { session_id: SESSION, turn_id: TURN, cwd: root, transcript_path: transcript,
+  const envelope = { session_id: SESSION, turn_id: TURN, cwd: root, transcript_path: transcript, model: 'gpt-6-sol',
     hook_event_name: 'PreToolUse', tool_name: 'request_user_input_async', tool_use_id: 'call_card', tool_input: CARD }
   return { deps, env, root, envelope, output, launch }
 }
@@ -105,6 +105,21 @@ it.each(['disabled', 'signed-out', 'routing-off', 'unsupported', 'subagent', 'wr
     expect(h.launch).not.toHaveBeenCalled()
   },
 )
+
+it('records that this owner can call the card, under the model its callback ran with', async () => {
+  const h = setup({ enabled: false })
+  await hookRunCommand(h.deps, 'pre-tool-use', async () => JSON.stringify(h.envelope), 'codex')
+  expect(readSessionState(SESSION, h.env).codex_card_tool).toEqual({
+    key: readSessionIncarnation(SESSION, h.env)!.key, model: 'gpt-6-sol', transcript_path: h.envelope.transcript_path })
+})
+
+it.each(['subagent', 'wrong-process', 'no-model'] as const)('does not take a card callback as proof: %s', async mode => {
+  const h = setup()
+  const envelope = mode === 'subagent' ? { ...h.envelope, agent_id: 'child' } : mode === 'no-model' ? { ...h.envelope, model: undefined } : h.envelope
+  if (mode === 'wrong-process') h.env.NOTIFAI_HOOK_SOURCE_PID = '1'
+  await hookRunCommand(h.deps, 'pre-tool-use', async () => JSON.stringify(envelope), 'codex')
+  expect(readSessionState(SESSION, h.env).codex_card_tool).toBeUndefined()
+})
 
 it('retains the registered ordinary question and prevents its card when background startup fails', async () => {
   const h = setup()

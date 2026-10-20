@@ -35,12 +35,18 @@ an older Notifai is removed once the Machine copy is proven current.
 
 ## How the answer gets back
 
-Native cards use their own structured questions: call `request_user_input_async`
-and follow its tool context. The card hook registers them after Codex accepts
-the call; a separate `ask` would duplicate them. When the native route cannot
-settle a card, the tool context gives a registered plain-conversation question
-instead. Native answers and that fallback use the distinct flows in
-[native questions](native-questions.md).
+When your tools include `request_user_input_async`, ask with that card: call
+it with the User's questions and follow its tool context. Codex offers it only
+with some models, in the terminal and the apps alike. The card hook registers
+the questions after Codex accepts the call; a separate `ask` would duplicate
+them. When the native route cannot settle a card, the tool context gives a
+registered plain-conversation question instead. Native answers and that
+fallback use the distinct flows in [native questions](native-questions.md).
+
+Without that tool, use `notifai ask`: it registers an ordinary question.
+`request_user_input` (no `_async`) is not linked to Notifai: where Codex
+accepts it, it waits in the terminal, where an away User never sees it. Use
+`ask` for those questions too.
 
 **Codex:** after submission Notifai waits in the background for the complete
 answer window (the shared hub on macOS and Linux); Stop provides recovery. While a
