@@ -102,6 +102,11 @@ export async function wakeSessionInputs(
   }
 }
 
+/** Whether a prompt is exactly a Notifai wake, with or without its own token. */
+export function isSessionInputWake(prompt: string | undefined): boolean {
+  return prompt !== undefined && (prompt === sessionInputWake() || inputWakeToken(prompt) !== null)
+}
+
 /** The token of a wake that carries one, when the prompt is exactly that wake. */
 export function inputWakeToken(prompt: string | undefined): string | null {
   if (prompt === undefined) return null

@@ -22,7 +22,8 @@ import {
 import { claudeHookSourcePid, claudeSessionPid } from './commands-harness-context.js'
 import { attendHook, recordCodexTurnStart, reportCodexSessionEnded } from './commands-hook-attend.js'
 import { hubSupported } from './hub-ipc.js'
-import { hubAttendsSession, notifyHubSessionEnded } from './hub-client.js'
+import { holdCodexSessionEnd, hubAttendsSession, notifyHubSessionEnded } from './hub-client.js'
+import { codexDormantSurface, readCodexThreadOriginator } from './codex-session-end.js'
 import { waitForReply } from './commands-send-support.js'
 import { loadConfig, type CliConfig } from './config.js'
 import { withFileLock } from './file-lock.js'
@@ -77,7 +78,15 @@ import { readAttendantEndingLease, readAttendantLease } from './session-attendan
 import { openclawContinuationRoute } from './openclaw-continuation-bridge.js'
 import { listPendingOpenclawSessions } from './openclaw-pending.js'
 import { readDeliveryJournal } from './session-delivery.js'
-import { inputWakeToken, sessionInputRoute, stageSessionAnswers, observeSessionInputWake, sessionInputWake } from './session-inputs.js'
+import {
+  hasSessionInputs,
+  inputWakeToken,
+  isSessionInputWake,
+  observeSessionInputWake,
+  sessionInputRoute,
+  sessionInputWake,
+  stageSessionAnswers,
+} from './session-inputs.js'
 import { receiveSessionInputs } from './commands-receive.js'
 import { recordClaudeSessionTitle } from './harness-session-title.js'
 import {
@@ -879,6 +888,16 @@ export async function hookRunCommand(
   // client construction and hook handling can all throw, and a hook that exits
   // non-zero makes the harness report a failure — strictly worse than skipping.
   try {
+    if (sessionEnd && harness === 'codex' && envelope.session_id !== undefined &&
+        codexDormantSurface(readCodexThreadOriginator(envelope.transcript_path)) !== null &&
+        await holdCodexSessionEnd(deps.env, envelope.session_id, envelope.transcript_path)) {
+      // A conversation of the Codex app or IDE extension: Codex also ends a
+      // session it only unloaded, which stays open while the app lists it.
+      // The hub that attends it decides, and cleans up only for a close.
+      start({ cwd, stop_hook_active: envelope.stop_hook_active ?? null })
+      logger.info('hook.end', { hook: event, decided: false, outcome: 'held-for-classification' })
+      return EXIT.ok
+    }
     if (sessionEnd) {
       // Codex gives SessionEnd one second total. Do every durable cleanup write
       // before lifecycle diagnostics: a busy log must never preserve
@@ -1038,6 +1057,8 @@ export async function hookRunCommand(
     if (event === 'user-prompt-submit') startDueMaintenance()
 
     let outcome: HookOutcome
+    // What this turn hands the agent itself, before any diagnostic notice.
+    let handedStdout: string | undefined
     if (event === 'user-prompt-submit') {
       if (envelope.session_id !== undefined) observeSessionInputWake(envelope.session_id, deps.env, envelope.prompt)
       const notice = lifecycleEnabled() && harness !== undefined && harness !== 'grok'
@@ -1047,6 +1068,7 @@ export async function hookRunCommand(
           (harness === 'claude-code' && inputWakeToken(envelope.prompt) !== null))
         ? { notes: [], log: { stage: 'input-wake-observed' } }
         : await handleUserPromptSubmit(ctx, envelope)
+      handedStdout = outcome.stdout
       if (notice !== undefined) outcome.stdout = appendIntegrationContext(outcome.stdout, notice, harness, 'UserPromptSubmit')
       // A device answer returned through a picker that Claude Code never took
       // is still owed to the agent; this prompt carries it.
@@ -1107,6 +1129,16 @@ export async function hookRunCommand(
         deps.io.out(appendIntegrationContext(outcome.stdout, text, harness, 'UserPromptSubmit'))
       })
       if (inputWritten) await outcome.afterOutput?.()
+    }
+    if (event === 'user-prompt-submit' && harness === 'codex' && envelope.session_id !== undefined && !inputWritten &&
+        handedStdout === undefined && isSessionInputWake(envelope.prompt) &&
+        !codexWakeHasInput(deps, envelope.session_id)) {
+      // A Notifai wake with nothing behind it: the session closed since it was
+      // queued (a stale wake in a reopened conversation), or what it was for
+      // was already handed in. Blocking it means no turn and no model request.
+      deps.io.out(JSON.stringify({ decision: 'block', reason: CODEX_EMPTY_WAKE_REASON }))
+      logger.info('hook.gate', { stage: 'codex-wake', outcome: 'blocked', reason: 'nothing-waiting' })
+      return EXIT.ok
     }
     if (!inputWritten && outcome.stdout !== undefined) {
       // No work, await, or diagnostic may sit between this cross-process
@@ -1219,6 +1251,22 @@ function answerClaimsFor(
       monotonic: () => performance.now(),
     },
   }
+}
+
+/** What a Codex User sees under "Blocked by hook" when an empty wake is skipped. */
+export const CODEX_EMPTY_WAKE_REASON = 'Notifai: nothing is waiting for this session, so this wake started no turn.'
+
+/**
+ * Whether anything this Codex session can still be handed waits locally: it
+ * is open, this hook runs in the process that hosts it, and an answer or a
+ * Session Message is staged for it.
+ */
+function codexWakeHasInput(deps: CommandDeps, sessionId: string): boolean {
+  if (sessionHasEnded(sessionId, deps.env)) return false
+  const owner = readSessionIncarnation(sessionId, deps.env)?.harness_process
+  if (owner === undefined || owner.pid !== declaredHookSourcePid(deps)) return false
+  const lease = readAttendantLease(sessionId, deps.env) ?? readAttendantEndingLease(sessionId, deps.env)
+  return hasSessionInputs(sessionId, deps.env, lease)
 }
 
 /** Stable harness parent propagated by the managed adapter across child tools. */

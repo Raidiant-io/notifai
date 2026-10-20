@@ -76,6 +76,21 @@ export async function notifyHubSessionEnded(env: NodeJS.ProcessEnv, sessionId: s
   return (await requestHub(env, { type: 'session-end', session_id: sessionId }, { timeoutMs })) !== null
 }
 
+/**
+ * A Codex SessionEnd for a conversation of the Codex app or IDE extension:
+ * ask the hub that attends it to decide whether it closed or was only
+ * unloaded. True only when the hub holds the decision; otherwise the caller
+ * ends the session as before. Never starts a hub: a hub that is not running
+ * attends nothing it could keep open.
+ */
+export async function holdCodexSessionEnd(env: NodeJS.ProcessEnv, sessionId: string, transcriptPath: string | undefined,
+  timeoutMs = 800): Promise<boolean> {
+  if (!hubSupported()) return false
+  const reply = await requestHub(env, { type: 'session-end-candidate', session_id: sessionId,
+    ...(transcriptPath === undefined ? {} : { transcript_path: transcriptPath }) }, { timeoutMs })
+  return reply?.['type'] === 'ok' && reply['held'] === true
+}
+
 /** Best effort: a session sent its first Notification Request; the hub starts attending it. */
 export async function notifyHubSessionNotified(env: NodeJS.ProcessEnv, sessionId: string): Promise<void> {
   if (!hubSupported()) return
