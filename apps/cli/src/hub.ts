@@ -14,6 +14,7 @@
  * agent, systemd unit or startup task.
  */
 import { execFileSync, spawn } from 'node:child_process'
+import os from 'node:os'
 import { existsSync, readdirSync, readFileSync, rmSync, chmodSync } from 'node:fs'
 import { createServer, type Server, type Socket } from 'node:net'
 import path from 'node:path'
@@ -55,6 +56,19 @@ import {
   type SessionIncarnation,
 } from './hook-session-state.js'
 import { ExchangeDriver, type AttendedSession, type HubClock } from './hub-exchange.js'
+import {
+  attemptAutomaticUpdate,
+  candidatePlan,
+  candidateResume,
+  waitingSessionWork,
+  type AttemptOutcome,
+  type AutomaticUpdateHost,
+  type WaitingReason,
+} from './automatic-update.js'
+import { hubEnvironment } from './hub-client.js'
+import { osAccountHome } from './os-account-home.js'
+import { olderClaudeAttendantsAlive, readClaudeFormDeferral } from './claude-form-readers.js'
+import type { managedInstallation as ManagedInstallation } from './native-installation.js'
 import {
   childLockPath,
   credentialGenerationPath,
@@ -119,6 +133,9 @@ const CHILD_WRITE_DEADLINE_MS = 8_000
 const CHILD_WRITE_TIMEOUT_MS = 20_000
 /** How long a new hub waits for a replaced attendant to step aside. */
 const HANDOFF_WAIT_MS = 10_000
+/** First automatic-update pass after the hub starts, then the pass interval. The lookup itself is daily. */
+const AUTOMATIC_UPDATE_FIRST_MS = 60_000
+const AUTOMATIC_UPDATE_INTERVAL_MS = 10 * 60_000
 const SHELLS: ReadonlySet<string> = new Set(['sh', 'dash', 'bash', 'zsh', 'ksh', 'mksh', 'fish'])
 /**
  * How long the hub waits after a Codex SessionEnd before deciding what it
@@ -159,6 +176,21 @@ export interface HubOptions {
   codexEndConfirmMs?: number
   /** Test seam: what kind of process hosts a Codex session; production asks `ps`. */
   codexHostKind?: typeof codexHostKind
+  /**
+   * Automatic updates (design §11). Absent: off (tests and development).
+   * `hubCommand` supplies the production updater for a managed installation.
+   */
+  automaticUpdate?: AutomaticUpdateOptions
+}
+
+export interface AutomaticUpdateOptions {
+  attempt?: (host: AutomaticUpdateHost) => Promise<AttemptOutcome>
+  /** Overrides for parts of the host (tests). */
+  host?: Partial<AutomaticUpdateHost>
+  firstDelayMs?: number
+  intervalMs?: number
+  /** Start the next hub after this one hands over; production runs the stable launcher. */
+  startSuccessor?: (env: NodeJS.ProcessEnv) => void
 }
 
 type ChildReply = { result: 'ok' } | { result: 'failed'; stage: 'before-write' | 'during-write'; error: string }
@@ -170,7 +202,7 @@ class ChildLink {
   private nextId = 1
   private readonly pending = new Map<string, (reply: ChildReply) => void>()
 
-  constructor(readonly socket: Socket, readonly pid: number) {}
+  constructor(readonly socket: Socket, readonly pid: number, readonly ipcVersion: number) {}
 
   send(message: Record<string, unknown>): void {
     if (this.closed) return
@@ -602,6 +634,12 @@ export class Hub {
   private readonly startedAt: number
   private crashes = 0
   private readonly codexAdapterCache = new Map<string, CodexWakeAdapters>()
+  /** Every connected session child, registered or not yet. */
+  private readonly links = new Set<ChildLink>()
+  private updateTimer: ReturnType<typeof setTimeout> | null = null
+  private updating = false
+  /** An automatic update activated a new build: start its hub after this one leaves. */
+  private successor = false
 
   constructor(readonly deps: CommandDeps, private readonly options: HubOptions) {
     this.clock = options.clock ?? { monotonic: () => performance.now(), wall: () => Date.now() }
@@ -667,11 +705,105 @@ export class Hub {
     this.sweep()
     this.safetyTimer = setInterval(() => this.safetyTick(), this.options.safetyTickMs ?? SAFETY_TICK_MS)
     this.safetyTimer.unref?.()
+    this.scheduleAutomaticUpdate(this.options.automaticUpdate?.firstDelayMs ?? AUTOMATIC_UPDATE_FIRST_MS)
     // An exit asked for during startup (a signal, `stop`) must not be lost.
     if (!this.exiting) await new Promise<void>((resolve) => { this.exitResolve = resolve })
     signals?.()
     await this.shutdown(exchange)
+    if (this.successor) {
+      // The handover (design §4.8): this hub has kept every lease on disk and
+      // released the lock; the new build's hub takes them over. Children also
+      // reconnect and would start it themselves.
+      try {
+        (this.options.automaticUpdate?.startSuccessor ?? startSuccessorHub)(this.env)
+        this.logger.info('hub.exit', { reason: 'automatic-update', successor: 'started' })
+      } catch (err) {
+        this.logger.error('hub.exit', { reason: 'automatic-update', successor: 'failed', message: err instanceof Error ? err.message : String(err) })
+      }
+    }
     return EXIT.ok
+  }
+
+  // -- automatic updates (design §11) -------------------------------------------
+
+  private scheduleAutomaticUpdate(delayMs: number): void {
+    if (this.options.automaticUpdate === undefined || this.exiting) return
+    this.updateTimer = setTimeout(() => { this.updateTimer = null; void this.runAutomaticUpdate() }, delayMs)
+    this.updateTimer.unref?.()
+  }
+
+  /** One pass of the updater; a successful activation hands this hub over. */
+  async runAutomaticUpdate(): Promise<AttemptOutcome | null> {
+    const options = this.options.automaticUpdate
+    if (options === undefined || this.updating || this.exiting) return null
+    if (!this.busy()) {
+      // Nothing attended: this hub is on its way out, and a pass must not
+      // hold it here (it would reset the idle clock). The next hub checks.
+      this.scheduleAutomaticUpdate(options.intervalMs ?? AUTOMATIC_UPDATE_INTERVAL_MS)
+      return null
+    }
+    this.updating = true
+    try {
+      const outcome = await (options.attempt ?? attemptAutomaticUpdate)({ ...this.automaticUpdateHost(), ...options.host })
+      if (outcome.outcome === 'activated' && !this.exiting) {
+        this.successor = true
+        this.requestExit('automatic-update')
+      }
+      return outcome
+    } catch (err) {
+      this.logger.error('update.automatic', { event: 'failed', message: err instanceof Error ? err.message : String(err) })
+      return null
+    } finally {
+      this.updating = false
+      this.scheduleAutomaticUpdate(options.intervalMs ?? AUTOMATIC_UPDATE_INTERVAL_MS)
+      this.touch()
+    }
+  }
+
+  private automaticUpdateHost(): AutomaticUpdateHost {
+    const cwd = os.homedir()
+    return {
+      env: this.env,
+      now: () => this.clock.wall(),
+      installation: () => {
+        if (nativeInstallationModule === null) throw new Error('No managed native installation')
+        return nativeInstallationModule.managedInstallation({ env: this.env, ...(this.deps.fetchImpl === undefined ? {} : { fetchImpl: this.deps.fetchImpl }) })
+      },
+      running: () => {
+        const reference = currentRuntimeBuild(this.env)
+        const version = packageVersion()
+        return reference === null || version === null ? null : { build: reference.build, version }
+      },
+      blockers: () => this.updateBlockers(),
+      childIpcVersions: () => [...this.links].filter((link) => !link.closed).map((link) => link.ipcVersion),
+      plan: (launcher) => candidatePlan(launcher, hubEnvironment(this.env), cwd),
+      resume: (launcher, from) => candidateResume(launcher, from, hubEnvironment(this.env), cwd),
+      logger: this.logger,
+    }
+  }
+
+  /**
+   * Work that holds an activation back, seen from here: every Agent Session's
+   * outstanding questions and answers on this machine, the question waiters
+   * this hub runs, Notes and Answer Edits it staged but has not handed in, and
+   * end reports it still owes.
+   */
+  updateBlockers(): WaitingReason[] {
+    const reasons = new Set<WaitingReason>(waitingSessionWork(this.env, this.clock.wall()))
+    if (this.settlements.size > 0) reasons.add('question-waiting')
+    for (const session of this.sessions.values()) {
+      if (session.lease.final !== null) reasons.add('session-ending')
+      // A dormant-open Codex conversation, or one whose end is still being
+      // classified, lives only in this hub's memory: a handover now could lose
+      // it, so wait until it reopens, ends or stops owing anything.
+      if (session.dormantSince !== null || session.endCandidate !== null) reasons.add('session-dormant')
+      const generation = session.lease.generation
+      if (generation !== null && hasSessionInputs(session.id, session.env, { incarnation: session.lease.incarnation, generation })) {
+        reasons.add('session-input-pending')
+      }
+    }
+    if (this.ended.size > 0) reasons.add('session-ending')
+    return [...reasons]
   }
 
   /** Ask the hub to leave (idle, stop request, signal, logout timeout). */
@@ -684,6 +816,7 @@ export class Hub {
 
   private async shutdown(exchange: Promise<void>): Promise<void> {
     if (this.safetyTimer !== null) clearInterval(this.safetyTimer)
+    if (this.updateTimer !== null) clearTimeout(this.updateTimer)
     this.driver.stop()
     await exchange
     for (const session of this.sessions.values()) {
@@ -844,6 +977,7 @@ export class Hub {
       clearTimeout(helloTimer)
       if (link !== null) {
         this.children -= 1
+        this.links.delete(link)
         link.close()
         if (session !== null && session.child === link) this.childGone(session)
       }
@@ -865,7 +999,8 @@ export class Hub {
             if (role === 'child') {
               const pid = frame['pid']
               if (typeof pid !== 'number' || !Number.isSafeInteger(pid) || pid <= 0) { refuse('malformed-hello'); return }
-              link = new ChildLink(socket, pid)
+              link = new ChildLink(socket, pid, version)
+              this.links.add(link)
               this.children += 1
             }
             return
@@ -1478,6 +1613,7 @@ export class Hub {
       return
     }
     const now = this.clock.wall()
+    this.applyDeferredClaudeForm(now)
     for (const session of this.sessions.values()) {
       // An archived or deleted Codex conversation is closed (E5); Codex runs no SessionEnd for it.
       if (session.transcriptGone()) { this.endSession(session, 'session-archived'); continue }
@@ -1521,6 +1657,33 @@ export class Hub {
     this.touch()
   }
 
+  private claudeFormTriedAt = 0
+
+  /**
+   * An install or update held Claude Code's exec-form hooks back while an
+   * older attendant ran (it reads only shell form). Once none runs (each gone,
+   * or handed its session to this hub at its next hook), apply the change the
+   * User's install or update already asked for. Never while one still runs.
+   */
+  applyDeferredClaudeForm(now: number): void {
+    // At most every five minutes: a Claude Code version this hub cannot read keeps the record.
+    if (now - this.claudeFormTriedAt < 5 * 60_000) return
+    const deferral = readClaudeFormDeferral(this.env)
+    if (deferral === null || olderClaudeAttendantsAlive(this.env) > 0) return
+    this.claudeFormTriedAt = now
+    const env = { ...this.env }
+    if (deferral.claude_config_dir === null) delete env['CLAUDE_CONFIG_DIR']
+    else env['CLAUDE_CONFIG_DIR'] = deferral.claude_config_dir
+    void import('./commands-hook-install.js').then(({ hooksRefreshCommand }) => {
+      const code = hooksRefreshCommand({ ...this.deps, env, io: { out: () => undefined, err: (line) => this.logger.debug('hub.session', { note: line }),
+        confirm: async () => false, openUrl: () => undefined } }, 'claude-code')
+      this.logger.info('hub.session', { event: 'claude-hook-form-applied', outcome: code === EXIT.ok ? 'ok' : 'failed',
+        deferred: readClaudeFormDeferral(this.env) !== null })
+    }).catch((err: unknown) => {
+      this.logger.error('hub.session', { event: 'claude-hook-form-applied', outcome: 'failed', message: err instanceof Error ? err.message : String(err) })
+    })
+  }
+
   /** Something happened; re-evaluate idle exit. */
   touch(): void {
     if (this.busy()) {
@@ -1543,7 +1706,8 @@ export class Hub {
   private disconnectedTicks = 0
 
   private busy(): boolean {
-    if (this.children > 0 || this.settlements.size > 0) return true
+    // An update pass in progress (a download, a staged write) finishes first.
+    if (this.children > 0 || this.settlements.size > 0 || this.updating) return true
     // A dormant conversation still owed something: watch its app, so a quit expires it at once.
     const now = this.clock.monotonic()
     for (const session of this.sessions.values()) {
@@ -1649,8 +1813,22 @@ export function currentBootIdentity(): string | null {
   return cachedBoot
 }
 
+/** Loaded only for a managed native installation (the updater's installation authority). */
+let nativeInstallationModule: { managedInstallation: typeof ManagedInstallation } | null = null
+
+/** The next hub, from the stable launcher, so it runs whatever build is active now. */
+export function startSuccessorHub(env: NodeJS.ProcessEnv): void {
+  const home = osAccountHome()
+  const launcher = path.join(home, '.notifai', 'bin', process.platform === 'win32' ? 'notifai.exe' : 'notifai')
+  const child = spawn(launcher, ['hub', '--owner', 'notifai'], { cwd: home, env: hubEnvironment(env), detached: true, stdio: 'ignore' })
+  child.once('error', () => undefined)
+  child.unref()
+}
+
 /** `notifai hub`: run the hub in this process until it is idle or told to stop. */
 export async function hubCommand(deps: CommandDeps): Promise<number> {
-  const hub = new Hub(deps, { deps, handleSignals: true })
+  // Automatic updates run only in a managed native installation.
+  if (buildIdentity() !== null) nativeInstallationModule = await import('./native-installation.js')
+  const hub = new Hub(deps, { deps, handleSignals: true, ...(buildIdentity() !== null ? { automaticUpdate: {} } : {}) })
   return hub.run()
 }

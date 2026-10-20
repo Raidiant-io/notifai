@@ -1,5 +1,5 @@
 import { readFileSync } from 'node:fs'
-import { Command } from 'commander'
+import { Command, Option } from 'commander'
 import { currentProcessIdentity, processIdentityLiveness } from './process-identity.js'
 import {
   acknowledgeCommand,
@@ -407,7 +407,14 @@ export function buildProgram(deps: CommandDeps, options: BuildProgramOptions = {
     .option('--abandon', 'abandon only an uncommitted native activation, preserving runtimes and data')
     .option('--cleanup', 'remove only verified retired builds from a previous OS boot; preserve resident work')
     .option('--from <version>', 'show installed changelog entries after this version (requires --check or --resume)')
-    .action(async (opts: { json?: boolean; check?: boolean; resume?: boolean; from?: string; refreshSkill?: boolean; channel?: string; allowDowngrade?: boolean; rollback?: boolean; repair?: boolean; abandon?: boolean; cleanup?: boolean }) => {
+    // The automatic updater's resume: never rewrites hooks a harness trusts by content.
+    .addOption(new Option('--automatic', 'internal: resume after an automatic update').hideHelp())
+    .action(async (opts: { json?: boolean; check?: boolean; resume?: boolean; from?: string; refreshSkill?: boolean; channel?: string; allowDowngrade?: boolean; rollback?: boolean; repair?: boolean; abandon?: boolean; cleanup?: boolean; automatic?: boolean }) => {
+      if (opts.automatic && opts.resume !== true) {
+        deps.io.err('--automatic is only used with --resume')
+        exit(2)
+        return
+      }
       if ([opts.rollback, opts.repair, opts.abandon, opts.cleanup].filter(Boolean).length > 1 ||
           ((opts.rollback || opts.repair || opts.abandon || opts.cleanup) && (opts.check || opts.resume || opts.refreshSkill || opts.channel !== undefined || opts.from !== undefined || opts.allowDowngrade)) ||
           (opts.allowDowngrade && (opts.channel !== 'stable' || opts.check || opts.resume || opts.refreshSkill || opts.from !== undefined))) {
@@ -436,6 +443,16 @@ export function buildProgram(deps: CommandDeps, options: BuildProgramOptions = {
         return
       }
       exit(opts.resume ? await runners.updateResume(deps, opts) : opts.refreshSkill ? await runners.updateSkill(deps, opts) : opts.check ? await runners.updateCheck(deps, opts) : await runners.update(deps, opts))
+    })
+
+  // Asked of a staged, not yet active build by the automatic updater: what
+  // activating it would change. Read-only.
+  program.command('activation-plan', { hidden: true })
+    .option('--json', 'machine-readable plan (always JSON)')
+    .action(async () => {
+      const { activationPlan } = await import('./activation-plan.js')
+      deps.io.out(JSON.stringify(activationPlan(deps)))
+      exit(0)
     })
 
   // Owned updater subprocess; never an agent-facing lifecycle or session-creation API.

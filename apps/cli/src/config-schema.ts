@@ -25,7 +25,7 @@ export type ConfigKind = 'string' | 'url' | 'integer' | 'boolean' | 'enum' | 'li
  * Which surface a key belongs to. Grouping is the difference between a flat
  * list of keys and a few short ones a reader can hold in their head.
  */
-export type ConfigGroup = 'questions' | 'delivery' | 'project' | 'trust' | 'diagnostics'
+export type ConfigGroup = 'questions' | 'delivery' | 'project' | 'trust' | 'updates' | 'diagnostics'
 
 export const CONFIG_GROUPS: { id: ConfigGroup; title: string; blurb: string }[] = [
   {
@@ -47,6 +47,11 @@ export const CONFIG_GROUPS: { id: ConfigGroup; title: string; blurb: string }[] 
     id: 'trust',
     title: 'Network trust',
     blurb: 'Origins this machine may fetch from or open beyond the safe defaults. Only you can widen these — a repository cannot.',
+  },
+  {
+    id: 'updates',
+    title: 'Updates',
+    blurb: 'Whether this machine keeps Notifai current by itself. It is one setting for the whole machine; no project can change it.',
   },
   {
     id: 'diagnostics',
@@ -81,6 +86,11 @@ export interface ConfigKeyInfo {
    * that is in force would be worse than showing one nobody needs.
    */
   advanced?: boolean
+  /**
+   * The key belongs to the machine: it is read only from the machine file, and
+   * neither a Project nor an Agent Session layer may set it.
+   */
+  machineOnly?: boolean
 }
 
 const INFO: Record<ConfigKey, Omit<ConfigKeyInfo, 'key'>> = {
@@ -221,6 +231,16 @@ const INFO: Record<ConfigKey, Omit<ConfigKeyInfo, 'key'>> = {
     example: 'https://dash.selfhost.example',
     advanced: true,
   },
+  'updates.automatic': {
+    label: 'Automatic updates',
+    group: 'updates',
+    kind: 'boolean',
+    machineOnly: true,
+    summary: 'Whether Notifai installs its own updates on this machine',
+    detail:
+      'On (the default), Notifai checks for a newer release once a day and installs it by itself, on the channel this machine already uses: beta stays beta and stable stays stable, and it never installs an older version. It waits while any question is waiting for you or an answer is still on its way to its agent, and it keeps an update waiting rather than change hook definitions that Codex would make you approve again. After an update, agents are told once what changed.\n\nOff, nothing installs by itself: agents offer an available update about once a week and you decide.\n\nThis is one setting for the whole machine. It is read only from this machine\'s configuration file, never from a project\'s or a session\'s, because every project here runs the same Notifai. `on` and `off` are accepted as well as `true` and `false`.',
+    example: 'false',
+  },
   log_level: {
     label: 'Log level',
     group: 'diagnostics',
@@ -285,6 +305,7 @@ export function acceptedValues(key: ConfigKey): string {
   if (key === 'sound') {
     return `${CLI_SOUNDS.join(', ')}, a custom sound id, or a custom sound name`
   }
+  if (key === 'updates.automatic') return 'on or off (or true or false)'
   switch (info.kind) {
     case 'boolean':
       return 'true or false'
@@ -308,7 +329,7 @@ export function formatValue(key: ConfigKey, value: unknown): string {
   const info = INFO[key]
   if (value === null || value === undefined) return info.unsetMeans ?? 'not set'
   if (Array.isArray(value)) return value.length === 0 ? (info.unsetMeans ?? 'not set') : value.join(', ')
-  if (typeof value === 'boolean') return value ? 'yes' : 'no'
+  if (typeof value === 'boolean') return key === 'updates.automatic' ? (value ? 'on' : 'off') : value ? 'yes' : 'no'
   if (typeof value === 'number' && info.unit !== undefined) return formatDuration(value, info.unit)
   return String(value)
 }

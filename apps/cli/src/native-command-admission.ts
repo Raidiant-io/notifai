@@ -48,6 +48,9 @@ function ownsRetainedWork(command: Command, env: NodeJS.ProcessEnv, reference: R
 export function admitNativeCommand(command: Command, env: NodeJS.ProcessEnv): NativeAdmission {
   if (buildIdentity() === null) return 'development'
   if (command.name() === 'self-check') return 'diagnostic'
+  // The automatic updater asks a staged, not yet active build what activating
+  // it would change. Read-only, like self-check.
+  if (command.name() === 'activation-plan') return 'diagnostic'
   // A supported mutating entry always passed through C, which execs the
   // canonical payload name. Consume this local protocol marker so unrelated
   // child programs cannot accidentally inherit admission. This is a launch

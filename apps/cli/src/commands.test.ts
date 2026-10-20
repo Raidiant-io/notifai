@@ -114,6 +114,7 @@ import {
 } from './native-skills.js'
 import {
   CONFIG_KEYS,
+  automaticUpdatesSetting,
   loadConfig,
   personalProjectConfigPath,
   sessionConfigPath,
@@ -5064,7 +5065,7 @@ describe('config surfaces', () => {
     expect(configShowCommand(configDeps(io), {})).toBe(EXIT.ok)
     expect(io.outLines).toHaveLength(CONFIG_KEYS.length)
     expect(io.outLines[0]).toMatch(/^wait_seconds = /)
-    for (const line of io.outLines) expect(line).toMatch(/^[a-z_]+ = /)
+    for (const line of io.outLines) expect(line).toMatch(/^[a-z_.]+ = /)
   })
 
   it('gives agents the current value, source, and one-line meaning', () => {
@@ -5136,6 +5137,28 @@ describe('config surfaces', () => {
     expect(await configSetCommand(configDeps(io), 'sound', 'Kitchen timer', { yes: true })).toBe(
       EXIT.ok,
     )
+  })
+
+  it('keeps automatic updates a machine-wide switch that no project or session can set', async () => {
+    const io = new CapturedIo()
+    const deps = configDeps(io)
+    const configFile = path.join(deps.env['XDG_CONFIG_HOME']!, 'notifai', 'config.toml')
+    for (const flags of [{ project: true }, { local: true }, { session: 'sess' }]) {
+      expect(await configSetCommand(deps, 'updates.automatic', 'off', { yes: true, ...flags })).toBe(EXIT.usage)
+      expect(await configUnsetCommand(deps, 'updates.automatic', { yes: true, ...flags })).toBe(EXIT.usage)
+    }
+    expect(io.errLines.join('\n')).toContain('applies to this whole machine')
+    expect(existsSync(path.join(deps.cwd, '.notifai', 'config.toml'))).toBe(false)
+    expect(await configSetCommand(deps, 'updates.automatic', 'maybe', { yes: true })).toBe(EXIT.usage)
+    expect(await configSetCommand(deps, 'updates.automatic', 'off', { yes: true })).toBe(EXIT.ok)
+    expect(loadConfig({ cwd: deps.cwd, env: deps.env })['updates.automatic']).toEqual({ value: false, source: `global:${configFile}` })
+    expect(automaticUpdatesSetting(deps.env)).toEqual({ enabled: false, source: 'user' })
+    // A hand-written table is the same key; set and unset never leave two values behind.
+    writeFileSync(configFile, '[updates]\nautomatic = false\n')
+    expect(automaticUpdatesSetting(deps.env)).toEqual({ enabled: false, source: 'user' })
+    expect(await configUnsetCommand(deps, 'updates.automatic', { yes: true })).toBe(EXIT.ok)
+    expect(existsSync(configFile)).toBe(false)
+    expect(automaticUpdatesSetting(deps.env)).toEqual({ enabled: true, source: 'default' })
   })
 
   it('removes one machine setting, preserves its siblings, and restores default provenance', async () => {
@@ -5805,6 +5828,27 @@ describe('compatibility-first update guidance', () => {
       })
     },
   )
+
+  it('says in one line whether this machine updates itself, and only where it has an updater', async () => {
+    const cwd = mkdtempSync(path.join(os.tmpdir(), 'notifai-updates-line-'))
+    const env = isolatedEnv(cwd)
+    const run = async (updatesRunHere: boolean) => {
+      const io = new InteractiveIo()
+      const deps = { ...makeDeps(io, {} as ApiClient), cwd, env }
+      await doctorCommand(deps, {}, { readiness: { states: [] }, updatesRunHere })
+      return io.outLines
+    }
+    expect(await run(true)).toEqual(['Updates: automatic'])
+    expect(await run(false)).toEqual([])
+    const file = path.join(env['XDG_CONFIG_HOME']!, 'notifai', 'config.toml')
+    mkdirSync(path.dirname(file), { recursive: true })
+    writeFileSync(file, '"updates.automatic" = false\n')
+    expect(await run(true)).toEqual(['Updates: off'])
+    const jsonIo = new CapturedIo()
+    await doctorCommand({ ...makeDeps(jsonIo, {} as ApiClient), cwd, env }, { json: true }, { readiness: { states: [] }, updatesRunHere: true })
+    expect(JSON.parse(jsonIo.outLines.join('\n')).updates).toMatchObject({ automatic: { enabled: false, source: 'user', runs_here: true },
+      staged: null, waiting_for: [], last_automatic: null })
+  })
 
   it('reports a missing named CLI capability without blocking ordinary sends', async () => {
     const requestedPlatforms: Platform[] = []

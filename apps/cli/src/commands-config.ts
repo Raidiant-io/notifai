@@ -12,6 +12,7 @@ import { acceptedValues, configInfo } from './config-schema.js'
 import {
   BOOLEAN_CONFIG_KEYS,
   CONFIG_KEYS,
+  MACHINE_ONLY_CONFIG_KEYS,
   NUMERIC_CONFIG_KEYS,
   ORIGIN_LIST_CONFIG_KEYS,
   USER_OWNED_CONFIG_KEYS,
@@ -181,11 +182,13 @@ export async function configSetCommand(
     value = numeric
   }
   if (BOOLEAN_CONFIG_KEYS.includes(configKey)) {
-    if (rawValue !== 'true' && rawValue !== 'false') {
-      deps.io.err(`${key} is a toggle — pass "true" or "false", not "${rawValue}".`)
+    // The machine-wide update switch also reads naturally as on/off.
+    const words = configKey === 'updates.automatic' ? { true: ['true', 'on'], false: ['false', 'off'] } : { true: ['true'], false: ['false'] }
+    if (!words.true.includes(rawValue) && !words.false.includes(rawValue)) {
+      deps.io.err(`${key} is a toggle — pass ${configKey === 'updates.automatic' ? '"on" or "off"' : '"true" or "false"'}, not "${rawValue}".`)
       return EXIT.usage
     }
-    value = rawValue === 'true'
+    value = words.true.includes(rawValue)
   }
   // Sound is listed as an enum of shipped names so the interactive picker has
   // choices, but it also accepts an Account custom name or id. Other enum keys
@@ -212,7 +215,8 @@ export async function configSetCommand(
     value = origins
   }
 
-  const target = await configMutationTarget(deps, flags)
+  if (machineOnlyRefused(deps, configKey, flags)) return EXIT.usage
+  const target = await configMutationTarget(deps, flags, configKey)
   if (target === null) return EXIT.usage
   if (target.layer === 'project' && USER_OWNED_CONFIG_KEYS.includes(configKey)) {
     deps.io.err(
@@ -240,6 +244,7 @@ export async function configSetCommand(
   const existing = existsSync(target.path)
     ? (parseToml(readFileSync(target.path, 'utf8')) as Record<string, unknown>)
     : {}
+  forgetNestedSpelling(existing, configKey)
   existing[key] = value
   if (target.layer === 'project') mkdirSync(path.dirname(target.path), { recursive: true })
   else ensurePrivateDirectory(path.dirname(target.path))
@@ -261,14 +266,44 @@ function configMutationKey(deps: CommandDeps, key: string): ConfigKey | null {
 }
 
 type ConfigMutationFlags = { project?: boolean; local?: boolean; session?: string; yes?: boolean }
+
+/**
+ * A dotted key can also be written by hand as a table (`[updates]` holding
+ * `automatic`). Remove that spelling so one file never holds two values for
+ * one key. True when it was present.
+ */
+function forgetNestedSpelling(document: Record<string, unknown>, key: ConfigKey): boolean {
+  const dot = key.indexOf('.')
+  if (dot === -1) return false
+  const table = document[key.slice(0, dot)]
+  if (typeof table !== 'object' || table === null || Array.isArray(table)) return false
+  const nested = table as Record<string, unknown>
+  if (!Object.prototype.hasOwnProperty.call(nested, key.slice(dot + 1))) return false
+  // Copy before deleting: callers may pass a shallow copy of the document.
+  const remaining = { ...nested }
+  delete remaining[key.slice(dot + 1)]
+  if (Object.keys(remaining).length === 0) delete document[key.slice(0, dot)]
+  else document[key.slice(0, dot)] = remaining
+  return true
+}
+
+/** A machine-wide key has exactly one home; refuse every narrower layer up front. */
+function machineOnlyRefused(deps: CommandDeps, key: ConfigKey, flags: ConfigMutationFlags): boolean {
+  if (!MACHINE_ONLY_CONFIG_KEYS.includes(key) || (flags.project !== true && flags.local !== true && flags.session === undefined)) return false
+  deps.io.err(`${key} applies to this whole machine, so it is never read from a project or a session — every project here runs the same Notifai.`)
+  deps.io.err(`Set it for this machine instead: notifai config set ${key} <value> --yes`)
+  return true
+}
 type ConfigMutationLayer = 'global' | 'project' | 'local' | 'session'
 
 async function configMutationTarget(
   deps: CommandDeps,
   flags: ConfigMutationFlags,
+  key: ConfigKey,
 ): Promise<{ path: string; layer: ConfigMutationLayer } | null> {
   let layer = flags.local ? 'local' : flags.project ? 'project' : 'global'
   if (
+    !MACHINE_ONLY_CONFIG_KEYS.includes(key) &&
     flags.session === undefined &&
     flags.local !== true &&
     flags.project !== true &&
@@ -308,12 +343,13 @@ export async function configUnsetCommand(
 ): Promise<number> {
   const configKey = configMutationKey(deps, key)
   if (configKey === null) return EXIT.usage
-  const target = await configMutationTarget(deps, flags)
+  if (machineOnlyRefused(deps, configKey, flags)) return EXIT.usage
+  const target = await configMutationTarget(deps, flags, configKey)
   if (target === null) return EXIT.usage
   const existing = existsSync(target.path)
     ? (parseToml(readFileSync(target.path, 'utf8')) as Record<string, unknown>)
     : {}
-  if (!Object.prototype.hasOwnProperty.call(existing, configKey)) {
+  if (!Object.prototype.hasOwnProperty.call(existing, configKey) && !forgetNestedSpelling({ ...existing }, configKey)) {
     deps.io.out(`${configKey} is not set in ${target.path}`)
     return EXIT.ok
   }
@@ -326,6 +362,7 @@ export async function configUnsetCommand(
   }
 
   delete existing[configKey]
+  forgetNestedSpelling(existing, configKey)
   if (Object.keys(existing).length === 0) {
     rmSync(target.path, { force: true })
   } else {

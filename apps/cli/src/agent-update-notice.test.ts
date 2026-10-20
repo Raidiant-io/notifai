@@ -1,5 +1,5 @@
 import { execFile } from 'node:child_process'
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { promisify } from 'node:util'
@@ -97,5 +97,23 @@ describe('update notice on the prompt path', () => {
     await refreshAgentUpdateState({ env: f.env, now: NOW + DAY, fetchImpl: f.fetchImpl })
     expect(f.fetchImpl).toHaveBeenCalledTimes(2)
     expect(cachedAgentUpdateNotice({ env: f.env, now: NOW + DAY, updateCommand: 'notifai update' })).toContain('notifai update')
+  })
+})
+
+describe('update notice with automatic updates', () => {
+  it('makes the weekly offer only when automatic updates are off on a machine that has an updater', async () => {
+    const f = fixture()
+    const env = { ...f.env, XDG_CONFIG_HOME: path.join(f.env.XDG_STATE_HOME, 'config') }
+    await refreshAgentUpdateState({ env, now: NOW, fetchImpl: f.fetchImpl })
+    const read = (now: number, automaticRunsHere = true) =>
+      cachedAgentUpdateNotice({ env, now, updateCommand: 'notifai update', automaticRunsHere })
+    expect(read(NOW)).toBeUndefined()
+    expect(read(NOW + 30 * DAY)).toBeUndefined()
+    mkdirSync(path.join(env.XDG_CONFIG_HOME, 'notifai'), { recursive: true })
+    writeFileSync(path.join(env.XDG_CONFIG_HOME, 'notifai', 'config.toml'), '"updates.automatic" = false\n')
+    expect(read(NOW + 30 * DAY)).toContain('offer to perform the update')
+    // A machine without an updater (Windows today, development builds) keeps offering with the setting on.
+    writeFileSync(path.join(env.XDG_CONFIG_HOME, 'notifai', 'config.toml'), '"updates.automatic" = true\n')
+    expect(read(NOW + 40 * DAY, false)).toContain('offer to perform the update')
   })
 })

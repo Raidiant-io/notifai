@@ -61,6 +61,21 @@ function setup(options: {
   return { env, cwd: project }
 }
 
+describe('automatic updates setting', () => {
+  it('is on by default and read only from the machine file, never a project, personal-project or session layer', () => {
+    const off = 'updates.automatic = false\n'
+    expect(loadConfig({ ...setup({}), sessionId: 'sess' })['updates.automatic']).toEqual({ value: true, source: 'default' })
+    const scoped = setup({ projectToml: '[updates]\nautomatic = false\n', projectLocalToml: '"updates.automatic" = false\n', sessionToml: 'updates.automatic = false\n' })
+    expect(loadConfig({ ...scoped, sessionId: 'sess' })['updates.automatic']).toEqual({ value: true, source: 'default' })
+    const machine = setup({ globalToml: off, projectToml: '"updates.automatic" = true\n' })
+    const resolved = loadConfig(machine)['updates.automatic']
+    expect(resolved.value).toBe(false)
+    expect(resolved.source).toMatch(/^global:/)
+    // An unusable value never turns updates off.
+    expect(loadConfig(setup({ globalToml: '"updates.automatic" = "nope"\n' }))['updates.automatic']).toEqual({ value: true, source: 'default' })
+  })
+})
+
 describe('harness config layers', () => {
   it('uses one personal Project Override across linked worktrees', () => {
     const root = path.join(tmp, `linked-${Math.random().toString(36).slice(2)}`)
