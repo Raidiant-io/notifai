@@ -90,6 +90,7 @@ import {
 } from './session-inputs.js'
 import { receiveSessionInputs } from './commands-receive.js'
 import { recordClaudeSessionTitle } from './harness-session-title.js'
+import { recordClaudePermissionMode } from './claude-command-approval.js'
 import {
   claudePermissionRequest,
   claudePostToolUse,
@@ -339,6 +340,17 @@ export async function hookRunCommand(
       recordClaudeSessionTitle(envelope.session_id, deps.env, envelope.session_title)
     } catch {
       // A title is an enrichment; failing to keep one never fails the hook.
+    }
+  }
+  // The User can switch Claude Code's permission mode mid-session, so every
+  // main-session callback that carries it keeps the latest. Readiness offers
+  // command approval only in default mode.
+  if (harness === 'claude-code' && envelope.permission_mode !== undefined &&
+      envelope.session_id !== undefined && envelope.agent_id === undefined) {
+    try {
+      recordClaudePermissionMode(envelope.session_id, deps.env, envelope.permission_mode)
+    } catch {
+      // Only the command-approval offer reads this; it never fails the hook.
     }
   }
   // The turn moved on, so no picker of this session is still on screen: a

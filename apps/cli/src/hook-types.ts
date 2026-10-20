@@ -73,6 +73,8 @@ export interface HookEnvelope {
   prompt?: string
   /** Claude Code's custom session title, on SessionStart and UserPromptSubmit when one is set. */
   session_title?: string
+  /** Claude Code's permission mode (`default`, `auto`, `acceptEdits`, `plan`, ...), on the events that carry it. */
+  permission_mode?: string
   /** Tool events: the tool, its input, and after it ran its response. */
   tool_name?: string
   tool_input?: unknown
@@ -161,6 +163,8 @@ export interface SessionState {
   waiting_answers?: AnsweredPending[]
   /** The title the User gave this session in the harness itself, as its hooks last reported it. */
   harness_session_title?: string
+  /** Claude Code's permission mode, as this session's own hooks last reported it. */
+  claude_permission_mode?: string
   /**
    * The Claude Code picker now on screen: the device question it registered,
    * the digest of the questions it shows, and the hook process waiting on its

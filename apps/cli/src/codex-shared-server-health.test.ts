@@ -19,19 +19,29 @@ describe('codexSharedServerState', () => {
     expect(await codexSharedServerState({ CODEX_HOME: home() }, 'darwin', async () => null)).toBeNull()
   })
 
-  it('reports a missing server as a legitimate choice and names daemon_auto_start when set', async () => {
+  it('reports a home that turns the server off as ready, an expected limit, and says how to get cards', async () => {
     const codex = home()
     writeFileSync(path.join(codex, 'config.toml'), '[features]\ndaemon_auto_start = false # set elsewhere\n')
     const state = await codexSharedServerState({ CODEX_HOME: codex }, 'darwin', async () => 'not-running')
-    expect(state).toMatchObject({ id: CODEX_SHARED_SERVER_STATE_ID, status: 'optional-gap' })
+    expect(state).toMatchObject({ id: CODEX_SHARED_SERVER_STATE_ID, status: 'ready',
+      technical: { shared_server_running: false, daemon_auto_start_disabled: true } })
+    expect(state!.detail).toMatch(/^questions work\. /)
+    expect(state!.detail).toContain('plain question instead of a card your phone can close')
+    expect(state!.detail).toContain('Nothing to fix')
     expect(state!.detail).toContain('`daemon_auto_start = false`')
+    expect(state!.detail).toContain('remove that line and start a new Codex session')
     expect(state!.remedy).toBeUndefined()
   })
 
   it('does not blame configuration it did not find', async () => {
     const state = await codexSharedServerState({ CODEX_HOME: home() }, 'darwin', async () => 'not-running')
+    expect(state).toMatchObject({ status: 'ready' })
+    expect(state!.remedy).toBeUndefined()
+    expect(state!.detail).toMatch(/^questions work\. /)
+    expect(state!.detail).toContain('Nothing to fix')
     expect(state!.detail).toContain('--no-daemon')
     expect(state!.detail).not.toContain('daemon_auto_start')
+    expect(state!.technical).toEqual({ shared_server_running: false, daemon_auto_start_disabled: false })
   })
 
   it('is ready when the running server matches the CLI', async () => {

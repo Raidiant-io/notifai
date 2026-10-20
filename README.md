@@ -332,14 +332,16 @@ question answers to that exact session. Other Hermes surfaces require a
 blocking `send --reply` question. Other harnesses have their own documented
 answer path, or require a blocking `send --reply` question.
 
-Claude Code asks before each Bash command it has no permission rule for, unless
-the session skips permission prompts. `notifai init --claude-commands` adds
-allow rules to `~/.claude/settings.json` for the `send`, `ask`, `receive`,
-`acknowledge`, `status`, `replies`, `close`, `guidance` and `session rename`
-commands, so a question can leave while nobody is at the terminal. It is
-offered once Claude Code is wired and written only on a yes; setup,
-configuration and sign-out commands keep their prompt, and
-`notifai hooks uninstall` removes the rules with the wiring.
+In its default permission mode Claude Code asks before each Bash command it has
+no permission rule for. `notifai init --claude-commands` adds allow rules to
+`~/.claude/settings.json` for the `send`, `ask`, `receive`, `acknowledge`,
+`status`, `replies`, `close`, `guidance` and `session rename` commands, so a
+question can leave while nobody is at the terminal. It is offered once Claude
+Code is wired, at a terminal or in a session in default mode, and written only
+on a yes. In a session in any other mode (`auto`, `acceptEdits`, `plan`,
+`bypassPermissions`) `notifai doctor` reports it as not applicable and nothing
+is offered or written. Setup, configuration and sign-out commands keep their
+prompt, and `notifai hooks uninstall` removes the rules with the wiring.
 
 Codex's default sandbox has no network, and outside full-access mode Codex
 asks before a command runs outside it. `notifai init --codex-commands` writes

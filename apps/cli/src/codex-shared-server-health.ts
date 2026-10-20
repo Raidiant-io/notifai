@@ -17,7 +17,7 @@ import type { ReadinessState } from './readiness.js'
 const execute = promisify(execFile)
 
 export const CODEX_SHARED_SERVER_STATE_ID = 'hooks-codex-shared-server'
-const TITLE = 'Codex question forms'
+const TITLE = 'Codex question cards'
 
 export interface CodexDaemonVersion {
   status?: string
@@ -69,14 +69,17 @@ export async function codexSharedServerState(
   if (version === null) return null
   const running = version !== 'not-running' && version.status === 'running'
   if (!running) {
-    const cause = autoStartDisabled(env)
-      ? '`daemon_auto_start = false` is set for this CODEX_HOME, so Codex does not start one'
-      : 'no Codex session here has started one; sessions launched with `--no-daemon` never do'
+    // An expected limit, not a fault: questions still work, as plain ones,
+    // so this reads as ready and nothing offers to change it.
+    const disabled = autoStartDisabled(env)
     return {
       id: CODEX_SHARED_SERVER_STATE_ID,
       title: TITLE,
-      status: 'optional-gap',
-      detail: `no shared Codex app-server is running for this CODEX_HOME (${cause}). Device answers still reach the agent; the card hooks use a plain-conversation question when a card cannot be closed. Terminal-only cards remain native`,
+      status: 'ready',
+      detail: 'questions work. ' + (disabled
+        ? 'This Codex home turns off Codex\'s shared server (`daemon_auto_start = false` in its config.toml), so a question that goes to your phone is asked as a plain question instead of a card your phone can close. Nothing to fix. For cards, remove that line and start a new Codex session'
+        : 'No shared Codex server is running for this Codex home, so a question that goes to your phone is asked as a plain question instead of a card your phone can close. Nothing to fix. For cards, start a new Codex session without `--no-daemon`'),
+      technical: { shared_server_running: false, daemon_auto_start_disabled: disabled },
     }
   }
   const server = version.appServerVersion ?? version.managedCodexVersion
@@ -102,6 +105,6 @@ export async function codexSharedServerState(
     id: CODEX_SHARED_SERVER_STATE_ID,
     title: TITLE,
     status: 'ready',
-    detail: `a shared Codex app-server (${server ?? 'version unknown'}) is running for this CODEX_HOME; sessions attached to it can have question forms closed by device answers`,
+    detail: `a shared Codex server (${server ?? 'version unknown'}) is running for this Codex home, so sessions that joined it show question cards your phone can close`,
   }
 }

@@ -76,11 +76,19 @@ Linux.
 
 ## Command approval
 
-Claude Code asks before each Bash command it has no permission rule for, unless
-the session skips permission prompts. A question, its wake-up and its
-acknowledgement are all commands, so an away User's first question can wait at
-a terminal approval nobody sees. Readiness reports this as `claude-commands`
-once Claude Code is wired; it never blocks setup. On the User's yes:
+In its default permission mode Claude Code asks before each Bash command it has
+no permission rule for. A question, its wake-up and its acknowledgement are all
+commands, so an away User's first question can wait at a terminal approval
+nobody sees. Readiness reports this as `claude-commands` once Claude Code is
+wired; it never blocks setup.
+
+The offer depends on the session's permission mode, which Notifai reads from
+the session's own hooks. Only in `default` mode, or outside Claude Code, does
+`claude-commands` carry a remedy. In `auto`, `acceptEdits`, `plan`,
+`bypassPermissions` or any other mode, and before the session has reported a
+mode, it reads `not applicable` with no remedy: do not offer the rules, do not
+ask the User about them, and do not run the command. With the remedy present,
+on the User's yes:
 
 ```bash
 notifai init --claude-commands --json

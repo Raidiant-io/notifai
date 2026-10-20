@@ -1,8 +1,14 @@
+import { mkdtempSync } from 'node:fs'
+import os from 'node:os'
+import path from 'node:path'
 import { describe, expect, it } from 'vitest'
 import {
   CLAUDE_COMMAND_RULES,
   addClaudeCommandRules,
+  claudeCommandReadiness,
   missingClaudeCommandRules,
+  readClaudePermissionMode,
+  recordClaudePermissionMode,
   removeClaudeCommandRules,
 } from './claude-command-approval.js'
 
@@ -46,5 +52,50 @@ describe('Claude Code command rules', () => {
   it('refuses to guess at a malformed permissions block', () => {
     expect(() => addClaudeCommandRules({ permissions: 'all' })).toThrow(/not an object/)
     expect(() => addClaudeCommandRules({ permissions: { allow: 'Bash' } })).toThrow(/not a list/)
+  })
+})
+
+describe('Claude Code command approval readiness', () => {
+  const offer = { by: 'cli', command: 'notifai init --claude-commands' }
+
+  it('offers the rules at a terminal outside Claude Code and in a default-mode session', () => {
+    for (const context of [null, { permissionMode: 'default' }]) {
+      const state = claudeCommandReadiness(false, context)
+      expect(state).toMatchObject({ id: 'claude-commands', status: 'optional-gap', remedy: offer, harnesses: ['claude-code'] })
+      expect(state.detail).toContain('default mode')
+    }
+  })
+
+  it.each(['auto', 'acceptEdits', 'plan', 'bypassPermissions', 'dontAsk'])('reports the rules as not applicable in %s mode, with no offer', (mode) => {
+    const state = claudeCommandReadiness(false, { permissionMode: mode })
+    expect(state).toMatchObject({ status: 'ready', technical: { permission_mode: mode, applicable: false } })
+    expect(state.remedy).toBeUndefined()
+    expect(state.detail).toContain(`\`${mode}\``)
+    expect(state.detail).toMatch(/^not applicable/)
+  })
+
+  it('makes no offer inside a session whose mode is not known yet', () => {
+    const state = claudeCommandReadiness(false, { permissionMode: null })
+    expect(state).toMatchObject({ status: 'ready', technical: { permission_mode: null, applicable: false } })
+    expect(state.remedy).toBeUndefined()
+  })
+
+  it('reports granted rules as ready in any mode', () => {
+    for (const context of [null, { permissionMode: 'default' }, { permissionMode: 'auto' }]) {
+      const state = claudeCommandReadiness(true, context)
+      expect(state.status).toBe('ready')
+      expect(state.remedy).toBeUndefined()
+    }
+  })
+
+  it('keeps only a well-formed mode for its session', () => {
+    const root = mkdtempSync(path.join(os.tmpdir(), 'nf-claude-mode-'))
+    const env = { HOME: root, XDG_STATE_HOME: path.join(root, 'state') }
+    expect(readClaudePermissionMode('s1', env)).toBeNull()
+    recordClaudePermissionMode('s1', env, 'plan')
+    recordClaudePermissionMode('s1', env, 42)
+    recordClaudePermissionMode('s1', env, '$(rm -rf /)')
+    expect(readClaudePermissionMode('s1', env)).toBe('plan')
+    expect(readClaudePermissionMode('s2', env)).toBeNull()
   })
 })
