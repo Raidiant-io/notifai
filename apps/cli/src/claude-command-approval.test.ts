@@ -1,4 +1,4 @@
-import { mkdtempSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { describe, expect, it } from 'vitest'
@@ -6,6 +6,10 @@ import {
   CLAUDE_COMMAND_RULES,
   addClaudeCommandRules,
   claudeCommandReadiness,
+  claudeCommandsNotWritten,
+  claudeLaunchMode,
+  claudeSessionPermissionMode,
+  claudeSettingsDefaultMode,
   missingClaudeCommandRules,
   readClaudePermissionMode,
   recordClaudePermissionMode,
@@ -74,10 +78,51 @@ describe('Claude Code command approval readiness', () => {
     expect(state.detail).toMatch(/^not applicable/)
   })
 
-  it('makes no offer inside a session whose mode is not known yet', () => {
+  it('offers the rules inside a session nothing names a mode for, as in first-time setup', () => {
     const state = claudeCommandReadiness(false, { permissionMode: null })
-    expect(state).toMatchObject({ status: 'ready', technical: { permission_mode: null, applicable: false } })
-    expect(state.remedy).toBeUndefined()
+    expect(state).toMatchObject({ status: 'optional-gap', remedy: offer, technical: { permission_mode: null, applicable: true } })
+  })
+
+  it('learns the mode from the hooks first, then the launch, then the settings', () => {
+    expect(claudeSessionPermissionMode({ reported: 'default', launch: 'auto', settings: 'plan' })).toEqual({ mode: 'default', source: 'hook' })
+    expect(claudeSessionPermissionMode({ reported: null, launch: 'bypassPermissions', settings: 'default' })).toEqual({ mode: 'bypassPermissions', source: 'launch' })
+    expect(claudeSessionPermissionMode({ reported: null, launch: null, settings: 'auto' })).toEqual({ mode: 'auto', source: 'settings' })
+    expect(claudeSessionPermissionMode({ reported: null, launch: null, settings: null })).toBeNull()
+  })
+
+  it('reads the launch mode from the Claude Code command line', () => {
+    expect(claudeLaunchMode(['claude', '--dangerously-skip-permissions'])).toBe('bypassPermissions')
+    expect(claudeLaunchMode(['claude', '--model', 'x', '--permission-mode', 'auto'])).toBe('auto')
+    expect(claudeLaunchMode(['claude', '--permission-mode=plan'])).toBe('plan')
+    expect(claudeLaunchMode(['claude', '--permission-mode', '$(x)'])).toBeNull()
+    expect(claudeLaunchMode(['claude', '--resume', 'abc'])).toBeNull()
+    expect(claudeLaunchMode(null)).toBeNull()
+  })
+
+  it('reads defaultMode from the most specific settings file that names one', () => {
+    const root = mkdtempSync(path.join(os.tmpdir(), 'nf-claude-default-mode-'))
+    const project = path.join(root, 'project')
+    const env = { HOME: root, CLAUDE_CONFIG_DIR: path.join(root, 'claude') }
+    mkdirSync(path.join(project, '.claude'), { recursive: true })
+    mkdirSync(env.CLAUDE_CONFIG_DIR, { recursive: true })
+    expect(claudeSettingsDefaultMode(env, [project])).toBeNull()
+    writeFileSync(path.join(env.CLAUDE_CONFIG_DIR, 'settings.json'), JSON.stringify({ permissions: { defaultMode: 'auto' } }))
+    expect(claudeSettingsDefaultMode(env, [project])).toBe('auto')
+    writeFileSync(path.join(project, '.claude', 'settings.json'), JSON.stringify({ permissions: { defaultMode: 'default' } }))
+    expect(claudeSettingsDefaultMode(env, [project])).toBe('default')
+    writeFileSync(path.join(project, '.claude', 'settings.local.json'), '{ not json')
+    expect(claudeSettingsDefaultMode(env, [project])).toBe('default')
+  })
+
+  it('says plainly why an explicit yes added nothing', () => {
+    const notApplicable = claudeCommandReadiness(false, { permissionMode: 'auto', source: 'launch' })
+    expect(claudeCommandsNotWritten(notApplicable, false, false)).toBe(
+      "Claude Code command approval was not added: this session runs in Claude Code's `auto` permission mode, and the approval is only for its default mode. To add it, run `notifai init --claude-commands` from a terminal or from a Claude Code session in its default mode.",
+    )
+    expect(claudeCommandsNotWritten(undefined, false, false)).toMatch(/^Claude Code command approval was not added: Notifai is not set up for Claude Code/)
+    expect(claudeCommandsNotWritten(claudeCommandReadiness(false, null), false, false)).toMatch(/setup stopped before it got there/)
+    expect(claudeCommandsNotWritten(claudeCommandReadiness(false, null), false, true)).toBeNull()
+    expect(claudeCommandsNotWritten(claudeCommandReadiness(true, null), true, false)).toBeNull()
   })
 
   it('reports granted rules as ready in any mode', () => {

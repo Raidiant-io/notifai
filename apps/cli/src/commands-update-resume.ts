@@ -2,7 +2,7 @@
 import { existsSync, readFileSync } from 'node:fs'
 import path from 'node:path'
 import { EXIT, type CommandDeps } from './commands-core.js'
-import { resolveActiveHarness } from './commands-harness-context.js'
+import { inheritedHarnessMarkers, resolveActiveHarness } from './commands-harness-context.js'
 import { activeQuestionRouteProblems } from './commands-hook-diagnostics.js'
 import { hooksRefreshCommand } from './commands-hook-install.js'
 import { skillInventory } from './commands-skill.js'
@@ -27,7 +27,7 @@ import { claimOlderHubHandover } from './hub-handover.js'
 
 /** Never replace package files while this exact owner still owes an answer. */
 export function updateWorkPending(deps: CommandDeps): string | null {
-  const active = resolveActiveHarness(deps.env, deps.cwd, (deps.now ?? Date.now)())
+  const active = inheritedHarnessMarkers(deps.env)
   if (active.contested.length > 0) return 'Several Agent Sessions could own this invocation; resume from an unambiguous Agent Session.'
   const owner = active.active
   if (owner?.sessionId === undefined) return null

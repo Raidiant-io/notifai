@@ -14,7 +14,7 @@ import {
   resolveGuidance,
 } from './guidance.js'
 import { renderGuidance } from './guidance-render.js'
-import { loadConfig } from './config.js'
+import { loadConfig, SHARED_PROJECT_CONFIG_REFUSAL, sharedProjectConfigPath } from './config.js'
 
 // ---------------------------------------------------------------------------
 // guidance show / set / unset
@@ -71,13 +71,17 @@ type GuidanceLayer = 'global' | 'project' | 'local'
 
 /**
  * Where a topic file for one layer lives. The project layer prefers an
- * existing `.notifai/guidance` up the tree and otherwise starts one at cwd,
- * the same anchoring `config set --project` uses for its file.
+ * existing `.notifai/guidance` up the tree and otherwise starts one beside the
+ * Project's shared config, the same anchoring `config set --project` uses for
+ * its file. Null where no shared file can belong to a Project.
  */
-function guidanceLayerDir(deps: CommandDeps, layer: GuidanceLayer): string {
+function guidanceLayerDir(deps: CommandDeps, layer: GuidanceLayer): string | null {
   if (layer === 'local') return personalProjectGuidanceDir(deps.cwd, deps.env)
   if (layer === 'project') {
-    return findProjectGuidanceDir(deps.cwd) ?? path.join(deps.cwd, '.notifai', 'guidance')
+    const existing = findProjectGuidanceDir(deps.cwd)
+    if (existing !== null) return existing
+    const shared = sharedProjectConfigPath(deps.cwd, deps.env)
+    return shared === null ? null : path.join(path.dirname(shared), 'guidance')
   }
   return globalGuidanceDir(deps.env)
 }
@@ -112,7 +116,12 @@ async function guidanceMutationTarget(
     }
     layer = selected as GuidanceLayer
   }
-  return { path: path.join(guidanceLayerDir(deps, layer), `${topic}.md`), layer }
+  const dir = guidanceLayerDir(deps, layer)
+  if (dir === null) {
+    deps.io.err(SHARED_PROJECT_CONFIG_REFUSAL)
+    return null
+  }
+  return { path: path.join(dir, `${topic}.md`), layer }
 }
 
 /**

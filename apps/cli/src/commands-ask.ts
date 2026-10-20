@@ -30,10 +30,9 @@ import { installsClaudePickerHooks } from './hook-events.js'
 import { hermesQuestionRouteReady } from './session-attendant-state.js'
 import { codexRoutingTrustProblems, findInstallations, handlerEvent } from './install-hooks.js'
 import { CODEX_CARD_VERSION_FLOOR, codexCardHooksReady, codexCardToolOffered } from './codex-card-capability.js'
-import { inferInvocationContext } from './invocation-context.js'
 import { activeOpenclawGeneration } from './openclaw-session-access.js'
 import { openclawGatewayReady } from './openclaw-gateway-readiness.js'
-import { enableProject, projectBinding } from './project-enablement.js'
+import { enableProject, inferredProjectName, projectBinding } from './project-enablement.js'
 import { spawnQuestionSettlement } from './question-settlement-process.js'
 import {
   CHOICE_USAGE,
@@ -672,7 +671,7 @@ export function askCommand(
   } catch (err) {
     return askFailure(deps, flags, 'config_invalid', 'configuration', `Question routing configuration is invalid: ${String(err)}`, 'fix the reported Notifai configuration and retry')
   }
-  const explicitProject = flags.project ?? explicitUseConfig.project.value ?? inferInvocationContext(deps.cwd).project
+  const explicitProject = flags.project ?? explicitUseConfig.project.value ?? inferredProjectName(deps.cwd, deps.env)
   if (explicitProject !== null) {
     const binding = projectBinding(deps.cwd, deps.env, explicitProject)
     // A disabled OpenClaw Project must remain disabled until the User or agent

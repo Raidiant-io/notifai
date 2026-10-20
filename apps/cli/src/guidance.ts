@@ -122,7 +122,7 @@ export function personalProjectGuidanceDir(
   cwd: string,
   env: NodeJS.ProcessEnv = process.env,
 ): string {
-  return path.join(globalConfigDir(env), 'projects', personalProjectIdentity(cwd), 'guidance')
+  return path.join(globalConfigDir(env), 'projects', personalProjectIdentity(cwd, env), 'guidance')
 }
 
 function topicsInDir(dir: string): Map<string, string> {

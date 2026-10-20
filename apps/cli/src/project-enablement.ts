@@ -3,7 +3,7 @@ import { existsSync, readFileSync, unlinkSync } from 'node:fs'
 import path from 'node:path'
 import { atomicWriteFileSync, ensurePrivateDirectory } from './atomic-file.js'
 import { withTargetFileLock } from './file-lock.js'
-import { gitCommonDirectory, globalConfigDir, projectIdentityRoot } from './config.js'
+import { globalConfigDir, projectLocation, projectRepositoryAnchor } from './config.js'
 import { inferInvocationContext } from './invocation-context.js'
 
 interface ProjectEnablementMarker {
@@ -19,30 +19,39 @@ export interface ProjectBinding {
 }
 
 /**
+ * The Project name inferred for a folder: from its Project root (see
+ * `projectLocation`), so a submodule or nested checkout inside a configured
+ * repository is named like the repository it belongs to. Null when the folder
+ * belongs to no Project or its root yields no usable name.
+ */
+export function inferredProjectName(cwd: string, env: NodeJS.ProcessEnv = process.env): string | null {
+  const location = projectLocation(cwd, env)
+  return location === null ? null : inferInvocationContext(location.root, undefined, { branch: false }).project
+}
+
+/**
  * Resolve the User-owned enablement record for this exact local Project.
  *
- * The opaque key binds the semantic Project id to Git's shared common
- * directory. Linked worktrees therefore share one decision, while another
- * checkout cannot borrow it merely by committing the same Project id.
- *
- * Outside Git the key falls back to the same canonical root Project config
- * resolves against, and the Project id is inferred from that root rather than
- * from the working directory. A hook fired in a nested directory would
- * otherwise compute a different key *and* a different Project name than the
- * `notifai project enable` run at the root, and read the Project as disabled.
+ * Name and key both come from the one Project root `projectLocation` decides,
+ * so a hook fired in a subdirectory, a submodule or a worktree's submodule
+ * reads the same decision `notifai project enable` wrote at the root. The
+ * opaque key binds the Project id to the root's Git common directory: linked
+ * worktrees share one decision, while another checkout cannot borrow it
+ * merely by committing the same Project id. Outside Git the root itself is
+ * the anchor. The home folder is never a Project, so it has no record.
  */
 export function projectBinding(
   cwd: string,
   env: NodeJS.ProcessEnv = process.env,
   explicitProject?: string | null,
 ): ProjectBinding | null {
-  const root = projectIdentityRoot(cwd)
-  const project = explicitProject ?? inferInvocationContext(root, undefined, { branch: false }).project
+  const location = projectLocation(cwd, env)
+  if (location === null) return null
+  const project = explicitProject ?? inferInvocationContext(location.root, undefined, { branch: false }).project
   if (project === null) return null
-  const repository = gitCommonDirectory(cwd) ?? root
   const key = createHash('sha256')
     .update('notifai-project-enablement-v1\0')
-    .update(repository)
+    .update(projectRepositoryAnchor(location))
     .update('\0')
     .update(project)
     .digest('hex')

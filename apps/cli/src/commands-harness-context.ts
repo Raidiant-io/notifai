@@ -3,6 +3,8 @@ import {
   type HermesClassicCliLocalInstance,
   type SourceContextHarness,
 } from './harnesses.js'
+import { readSessionIncarnation } from './hook-session-state.js'
+import { processAncestry, type AncestorProcess } from './process-ancestry.js'
 
 /**
  * Exact evidence that this shell command is running inside one supported
@@ -85,6 +87,66 @@ function harnessEnvCandidates(env: NodeJS.ProcessEnv): ActiveHarnessSession[] {
   return candidates
 }
 
+/**
+ * Whether a marker's session plausibly owns this process: its harness host
+ * must be this process or one of its ancestors.
+ *
+ * Markers are inherited by everything a harness starts, including long-lived
+ * processes that outlive the command: a tmux server or an editor started from
+ * an agent's shell gives every shell opened in it the agent's markers, and an
+ * `ask` from there would register on that session and put the answer into its
+ * conversation. So a marker is believed only where the tree agrees:
+ *
+ * - Claude Code names its own process in `CLAUDE_PID`; it must be an
+ *   ancestor. A dead or unrelated pid is no evidence at all.
+ * - Codex names no process, so the host its hooks recorded for the thread must
+ *   be an ancestor, or failing that some Codex process must be.
+ *
+ * Where nothing names a host (a build that exports no pid, a thread no hook
+ * has recorded) or the tree cannot be read (Windows), the marker stands as
+ * before: there is no evidence against it.
+ */
+export function markerInsideItsHost(
+  candidate: ActiveHarnessSession,
+  env: NodeJS.ProcessEnv,
+  chain: readonly AncestorProcess[] | null,
+  recordedHost: (sessionId: string) => number | undefined,
+): boolean {
+  if (chain === null) return true
+  if (candidate.harness === 'claude-code') {
+    const declared = Number(env['CLAUDE_PID'])
+    if (!Number.isInteger(declared) || declared <= 0) return true
+    return chain.some((ancestor) => ancestor.pid === declared)
+  }
+  if (candidate.harness === 'codex' && candidate.sessionId !== undefined) {
+    const host = recordedHost(candidate.sessionId)
+    if (host === undefined) return true
+    return chain.some((ancestor) => ancestor.pid === host || ancestor.name.toLowerCase().startsWith('codex'))
+  }
+  return true
+}
+
+let callerChain: AncestorProcess[] | null | undefined
+
+function recordedHarnessHost(env: NodeJS.ProcessEnv): (sessionId: string) => number | undefined {
+  return (sessionId) => {
+    try {
+      return readSessionIncarnation(sessionId, env)?.harness_process?.pid
+    } catch {
+      return undefined
+    }
+  }
+}
+
+/** The markers whose session this process really runs inside. */
+function verifiedCandidates(env: NodeJS.ProcessEnv): ActiveHarnessSession[] {
+  const candidates = harnessEnvCandidates(env)
+  if (!candidates.some((candidate) => candidate.harness === 'claude-code' || candidate.harness === 'codex')) return candidates
+  callerChain ??= processAncestry()
+  const host = recordedHarnessHost(env)
+  return candidates.filter((candidate) => markerInsideItsHost(candidate, env, callerChain ?? null, host))
+}
+
 interface ActiveHarnessResolution {
   active: ActiveHarnessSession | null
   /**
@@ -106,7 +168,19 @@ export function resolveActiveHarness(
   _cwd: string,
   _now: number,
 ): ActiveHarnessResolution {
-  const candidates = harnessEnvCandidates(env)
+  return resolution(verifiedCandidates(env))
+}
+
+/**
+ * Every marker in the environment, inherited or not. Only for guards that
+ * must err towards caution, such as not replacing package files while any
+ * session these markers name still owes an answer; never for attribution.
+ */
+export function inheritedHarnessMarkers(env: NodeJS.ProcessEnv): ActiveHarnessResolution {
+  return resolution(harnessEnvCandidates(env))
+}
+
+function resolution(candidates: ActiveHarnessSession[]): ActiveHarnessResolution {
   const first = candidates[0]
   if (first === undefined) return { active: null, contested: [] }
   return { active: first, contested: candidates.length > 1 ? candidates : [] }

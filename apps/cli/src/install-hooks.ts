@@ -1595,44 +1595,69 @@ export function codexStopDefinitionFingerprint(
     .digest('hex')
 }
 
+/** One Notifai handler Codex will skip until the User acts in `/hooks`. */
+export interface CodexTrustFinding {
+  file: string
+  event: string
+  /** `new`: never approved; `changed`: differs from what was approved; `disabled`: turned off in Codex. */
+  state: 'new' | 'changed' | 'disabled'
+}
+
 /**
  * Trust defects that make installed Codex handlers look present while Codex
- * skips them. Trust is user-owned; the supported repair is Codex's `/hooks`
- * review UI, never writing the trust store on the user's behalf. Because the
- * persisted shape is not a public Codex contract, this diagnosis can drift;
- * `/hooks` remains the source of truth.
+ * skips them, one per handler. Trust is user-owned; the supported repair is
+ * Codex's `/hooks` review UI, never writing the trust store on the user's
+ * behalf. Because the persisted shape is not a public Codex contract, this
+ * diagnosis can drift; `/hooks` remains the source of truth.
+ */
+export function codexTrustFindings(
+  installations: Installation[],
+  env: NodeJS.ProcessEnv = process.env,
+): CodexTrustFinding[] {
+  const state = codexTrustState(env)
+  return installations
+    .filter((installation) => installation.harness === 'codex')
+    .flatMap((installation) =>
+      installation.handlers.flatMap((handler): CodexTrustFinding[] => {
+        const entry = state[codexTrustKey(installation, handler)]
+        const record = typeof entry === 'object' && entry !== null ? (entry as Record<string, unknown>) : undefined
+        if (record?.['enabled'] === false) return [{ file: installation.file, event: handler.event, state: 'disabled' }]
+        const trustedHash = record?.['trusted_hash']
+        if (trustedHash === codexHookIdentityHash(handler)) return []
+        return [{ file: installation.file, event: handler.event, state: typeof trustedHash === 'string' ? 'changed' : 'new' }]
+      }),
+    )
+}
+
+/**
+ * The same defects as one plain line per hooks file: how many handlers wait
+ * and the one thing to do. Codex installs one handler per event and matcher,
+ * so a sentence per handler repeats itself a dozen times; the per-handler
+ * list stays in `codexTrustFindings` for technical detail.
  */
 export function codexTrustProblems(
   installations: Installation[],
   env: NodeJS.ProcessEnv = process.env,
 ): string[] {
-  const state = codexTrustState(env)
-  return installations
-    .filter((installation) => installation.harness === 'codex')
-    .flatMap((installation) =>
-      installation.handlers.flatMap((handler) => {
-        const key = codexTrustKey(installation, handler)
-        const entry = state[key]
-        const trustedHash =
-          typeof entry === 'object' && entry !== null
-            ? (entry as Record<string, unknown>)['trusted_hash']
-            : undefined
-        const currentHash = codexHookIdentityHash(handler)
-        if (
-          typeof entry === 'object' &&
-          entry !== null &&
-          (entry as Record<string, unknown>)['enabled'] === false
-        ) {
-          return [
-            `${handler.event} in ${installation.file} is disabled in Codex; open \`/hooks\` and enable the Notifai handler`,
-          ]
-        }
-        if (trustedHash === currentHash) return []
-        return [
-          `${handler.event} in ${installation.file} is ${typeof trustedHash === 'string' ? 'changed since it was trusted' : 'not trusted'}; open \`/hooks\` in Codex and approve the Notifai handler`,
-        ]
-      }),
-    )
+  return summarizeCodexTrustFindings(codexTrustFindings(installations, env))
+}
+
+export function summarizeCodexTrustFindings(findings: readonly CodexTrustFinding[]): string[] {
+  const files = [...new Set(findings.map((finding) => finding.file))]
+  return files.map((file) => {
+    const own = findings.filter((finding) => finding.file === file)
+    const pending = own.filter((finding) => finding.state !== 'disabled').length
+    const disabled = own.length - pending
+    const handlers = (count: number) => `${count} Notifai ${count === 1 ? 'handler' : 'handlers'}`
+    const verb = (count: number) => (count === 1 ? 'is' : 'are')
+    if (disabled === 0) {
+      return `${handlers(pending)} in ${file} ${verb(pending)} new or changed since Codex last approved ${pending === 1 ? 'it' : 'them'}; open /hooks in Codex and approve Notifai's handlers`
+    }
+    if (pending === 0) {
+      return `${handlers(disabled)} in ${file} ${verb(disabled)} turned off in Codex; open /hooks in Codex and turn Notifai's handlers on`
+    }
+    return `${handlers(pending)} in ${file} ${verb(pending)} new or changed since Codex last approved ${pending === 1 ? 'it' : 'them'} and ${disabled} ${verb(disabled)} turned off; open /hooks in Codex, approve Notifai's handlers and turn them on`
+  })
 }
 
 /**
