@@ -79,7 +79,10 @@ which runs the waiting wake at once, in the permission mode it last ran in
 (never a more permissive one). Do not ask the User to resume it meanwhile.
 `notifai config set reopen.terminal off` (or `reopen.automatic off` for every
 place) makes it wait for the User instead; change these only when the User
-asks. A conversation the Codex app stopped waits for the User to open it.
+asks. A conversation the Codex app started and then unloaded continues inside
+the app while the app is running, without opening it on screen
+(`reopen.codex_app`); if the app is not running, or the conversation is
+archived, it waits for the User to open it.
 A fork continues it under a new id: its questions and their answers move to
 the fork when the service supports it (an older service only once the fork
 has sent a notification), and expire otherwise. A `codex exec` run of it receives nothing.

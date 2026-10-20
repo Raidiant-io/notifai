@@ -49,13 +49,17 @@ function rig(overrides: Partial<ReopenHost> = {}) {
       opened.push({ launch, cwd, script: readFileSync(launch.args.at(-1)!, 'utf8') })
       return true
     },
+    codexApp: { platform: 'linux', launcher: null, alive: () => false, bundleOf: () => null, hasOpenUnder: () => false, processesOf: () => 'unknown',
+      holders: () => 'unknown', originator: () => ({ place: 'unknown', originator: null }), queuedWake: () => null,
+      sendEvent: async () => 'failed', openUrl: async () => 'not here' },
     ...overrides,
   }
   const cwd = mkdtempSync(path.join(os.tmpdir(), 'notifai-reopen-cwd-'))
   const target = (extra: Partial<ReopenTarget> = {}): ReopenTarget => ({
     sessionId: 'sess-1', harness: 'claude-code', place: 'terminal', stoppedSince: 500, cwd, claudeConfigDir: null, codexHome: null,
     orcaPane: false, launch: { exe: null, options: ['--model', 'opus'], start_mode: null, codex_host: null },
-    hooks: { terminal: 'terminal', terminal_seen: 'terminal', orca_pane: false, permission_mode: 'acceptEdits' }, items: ['answer:r1:1'], ...extra,
+    hooks: { terminal: 'terminal', terminal_seen: 'terminal', orca_pane: false, permission_mode: 'acceptEdits' }, items: ['answer:r1:1'],
+    transcriptPath: null, hostApp: null, harnessProcess: null, ...extra,
   })
   return { env, host, reopen: new SessionReopen(host), opened, queued, target, cwd, advance: (ms: number) => { now += ms } }
 }
@@ -108,7 +112,8 @@ describe('reopening a stopped conversation', () => {
     const cases: [string, Partial<ReopenHost>, Partial<ReopenTarget>, string, string?][] = [
       ['an app with no adapter', {}, { place: 'claude-desktop' }, 'place-waits'],
       ['a scripted run', {}, { place: 'headless' }, 'place-waits'],
-      ['the Codex app (no adapter in this version)', {}, { place: 'codex-app', harness: 'codex' }, 'adapter-unavailable'],
+      ['the Codex app, off this Mac', {}, { place: 'codex-app', harness: 'codex' }, 'not-macos'],
+      ['the Codex app, off', {}, { place: 'codex-app', harness: 'codex' }, 'off', '"reopen.codex_app" = "off"\n'],
       ['an Orca pane', {}, { orcaPane: true }, 'orca-pane'],
       ['an Orca pane its hooks saw', {}, { hooks: { terminal: null, terminal_seen: 'orca', orca_pane: true, permission_mode: null } }, 'orca-pane'],
       ['a missing folder', {}, { cwd: '/nonexistent/notifai-reopen' }, 'folder-missing'],

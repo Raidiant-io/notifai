@@ -5944,14 +5944,16 @@ describe('compatibility-first update guidance', () => {
       await doctorCommand({ ...makeDeps(io, {} as ApiClient), cwd, env, hookPlatform }, {}, { readiness: { states: [] }, updatesRunHere: false })
       return io.outLines
     }
-    expect(await run('darwin')).toEqual(['Reopen: terminals automatically; other apps wait for you'])
+    expect(await run('darwin')).toEqual(['Reopen: terminals automatically; the Codex app while it runs; other apps wait for you'])
     expect(await run('win32')).toEqual([])
     const file = path.join(env['XDG_CONFIG_HOME']!, 'notifai', 'config.toml')
     mkdirSync(path.dirname(file), { recursive: true })
     writeFileSync(file, '"reopen.terminal_app" = "iterm2"\n')
     expect(await run('linux')).toEqual(['Reopen: terminals automatically (in iTerm2); other apps wait for you'])
     writeFileSync(file, '"reopen.terminal" = "off"\n')
-    expect(await run('darwin')).toEqual(['Reopen: off for terminals; every stopped conversation waits for you'])
+    expect(await run('darwin')).toEqual(['Reopen: the Codex app while it runs; other apps wait for you'])
+    writeFileSync(file, '"reopen.terminal" = "off"\n"reopen.codex_app" = "off"\n')
+    expect(await run('darwin')).toEqual(['Reopen: off; every stopped conversation waits for you'])
     writeFileSync(file, '"reopen.automatic" = false\n')
     expect(await run('darwin')).toEqual(['Reopen: off; every stopped conversation waits for you'])
     // A project cannot change it.
@@ -5961,7 +5963,7 @@ describe('compatibility-first update guidance', () => {
     const jsonIo = new CapturedIo()
     await doctorCommand({ ...makeDeps(jsonIo, {} as ApiClient), cwd, env, hookPlatform: 'darwin' }, { json: true }, { readiness: { states: [] }, updatesRunHere: false })
     expect(JSON.parse(jsonIo.outLines.join('\n')).reopen).toMatchObject({ available: true, automatic: false, terminal: 'automatic',
-      codex_app: 'when-running', codex_app_available: false, permission_mode: 'same', sources: { automatic: 'user' }, sessions: [] })
+      codex_app: 'when-running', codex_app_available: true, permission_mode: 'same', sources: { automatic: 'user' }, sessions: [] })
   })
 
   it('reports a missing named CLI capability without blocking ordinary sends', async () => {

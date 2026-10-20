@@ -2587,6 +2587,7 @@ export class Hub {
         sessionId: session.id, harness: session.harness, place: registration.place, stoppedSince: stopped.since, cwd: registration.cwd,
         claudeConfigDir: registration.claudeConfigDir, codexHome: registration.codexHome, orcaPane: registration.terminalHost !== null,
         launch: registration.launch, hooks: readReopenLaunch(readSessionState(session.id, session.env).reopen_launch), items,
+        transcriptPath: registration.transcriptPath, hostApp: registration.hostApp, harnessProcess: session.harnessProcess,
       }, trigger)
     } catch (err) {
       this.logger.error('hub.reopen', { event: 'failed', session: session.id, message: err instanceof Error ? err.message : String(err) })

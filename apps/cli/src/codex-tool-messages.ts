@@ -11,6 +11,7 @@ import { refreshCodexInputActivity } from './codex-input-lifecycle.js'
 import { readNativeQuestionSnapshot } from './codex-native-turn.js'
 import { observeCodexQuestions } from './codex-question-bindings.js'
 import { codexAnswerPresentation } from './codex-answer-presentation.js'
+import { closeDismissedCodexCards } from './codex-card-dismissal.js'
 import { isDeepStrictEqual } from 'node:util'
 
 /** Missing, disabled, changed or untrusted hooks retain ordinary queue delivery. */
@@ -94,6 +95,9 @@ export async function deliverCodexToolMessage(
     const current = readAttendantLease(sessionId, deps.env)
     return mayObserve() && current?.incarnation === lease.incarnation && current.generation === lease.generation
   }
+  // A card of this turn whose question the User dismissed on a device closes, saying so.
+  await closeDismissedCodexCards({ sessionId, env: deps.env, ownerKey: incarnation.key, turnId: envelope.turn_id,
+    deadline: performance.now() + 2_000, mayWrite, logger })
   if (!hasSessionInputs(sessionId, deps.env, lease) || !mayWrite()) return
   const credential = deps.store.load()
   const writer = currentProcessIdentity()
