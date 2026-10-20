@@ -19,7 +19,7 @@ describe('renderConfigPlain', () => {
     const lines = renderConfigPlain(config, false)
     expect(lines).toHaveLength(CONFIG_KEYS.length)
     expect(lines[0]).toBe(`wait_seconds = ${JSON.stringify(config.wait_seconds.value)}`)
-    for (const line of lines) expect(line).toMatch(/^[a-z_]+ = /)
+    for (const line of lines) expect(line).toMatch(/^[a-z_.]+ = /)
   })
 
   it('appends the raw source tag under --explain', () => {
