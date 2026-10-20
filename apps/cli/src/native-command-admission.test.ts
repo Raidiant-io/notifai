@@ -190,3 +190,17 @@ it('routes the explicit Windows finalizer to its ownership validator only throug
   expect(await f.invoke(args, { uninstall }, { NOTIFAI_NATIVE_ENTRY: undefined })).toMatchObject({ code: 1, admitted: [] })
   expect(uninstall.mock.calls.length).toBe(1)
 })
+
+it.skipIf(process.platform === 'win32')('lets a staged, not yet active build describe its own activation, read-only', async () => {
+  const f = fixture()
+  // The automatic updater runs the candidate from its own immutable directory before activating it.
+  f.running(f.retired)
+  // Its launcher answers the account home, as the native launcher does.
+  writeFileSync(path.join(f.home, '.notifai', 'versions', f.retired, 'notifai'), `#!/bin/sh\necho '${f.home}'\n`, { mode: 0o700 })
+  const plan = await f.invoke(['activation-plan', '--json'])
+  expect(plan.admitted).toEqual(['diagnostic'])
+  expect(plan.code).toBe(0)
+  expect(JSON.parse(plan.output[0]!)).toMatchObject({ schema: 1, hub_ipc_versions: { min: 1, max: 1 }, hook_changes: [] })
+  // Ordinary commands from that build stay refused.
+  expect((await f.invoke(['config', 'show', '--json'])).code).toBe(1)
+})
