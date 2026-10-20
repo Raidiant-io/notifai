@@ -8,6 +8,52 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 This project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 and [Conventional Commits](https://www.conventionalcommits.org/en/v1.0.0/).
 
+## [13.1.0-beta.6](https://github.com/Raidiant-io/notifai/compare/v13.0.0...v13.1.0-beta.6) (2026-10-20)
+
+### Features
+
+* OpenCode's own question form now reaches the User's devices, and whichever answer comes first, from a device or in OpenCode, settles it. OpenClaw applies a changed plugin to a running Gateway and hands sessions over cleanly on reload, Hermes uses only the public plugin interface and holds writes while an approval prompt or session command is open, and Grok's question route is requalified.
+* Install CLI updates automatically on macOS and Linux through the shared hub, at most once a day, on the saved channel and never to an older build. An update never activates while a question, answer, note or acknowledgement is pending. Turn it off for the whole machine with `notifai config set updates.automatic off --yes`.
+* Answer the frequent Claude Code and Codex hooks from the running hub through the native launcher on macOS and Linux instead of starting the runtime each time, making warm hooks several times faster.
+* Block empty Codex wake-ups that no longer have anything to deliver, so they start no turn; a human prompt is never blocked. Codex app and IDE conversations that Codex unloads after 30 minutes idle stay open and answerable.
+* Each Claude Code and Codex session on macOS and Linux is now kept by a small native session helper, with one shared hub per user that talks to the service for all of them. At 25 sessions memory drops from about 600 MB to about 55 MB, the per-session process launches and credential reads every few seconds are gone, and a closed session's questions expire within seconds. Windows keeps the existing session attendant.
+* Claude Code hooks run in exec form on Claude Code 2.1.139 and newer, and stay in shell form on older versions; `notifai doctor` reports the hook form and the shared hub.
+* Closing an Agent Session ends its questions: they expire on every device, and an answer the agent had not read yet is dropped instead of being delivered later. The session's end record names any dropped answers.
+* Let Codex run Notifai commands outside its sandbox on the User's yes: `notifai init --codex-commands` writes a Codex rule that allows only the everyday Notifai commands, `notifai doctor` reports `codex-commands` readiness, and `notifai hooks uninstall --harness codex` removes the rule.
+* Codex question cards link to devices only with Codex app-server 0.163.0 or newer; older Codex falls back to an ordinary question, and a daily canary checks that card linking still works.
+* Keep questions open when an app or the machine stops a conversation on macOS and Linux: the Claude desktop app pausing or evicting it, the Codex app or IDE unloading it, an idle T3 Code or Orca chat, an Orca terminal host dying, or the machine shutting down, restarting, crashing or losing power. The conversation is stopped, not closed: its questions stay open for their own windows, notes sent to it wait for it, and everything is handed in when it comes back.
+* Reopen a terminal conversation the machine stopped when its answer or note arrives: Notifai opens a new terminal window in the conversation's folder and resumes it with exactly the permissions it ran with, never more permissive ones, and never during a shutdown. If the permissions cannot be reproduced exactly, the conversation waits for the User instead. Turn it off with `notifai config set reopen.automatic off`; `notifai doctor` reports what reopen will do.
+* Continue a stopped Codex app conversation inside the running Codex app on macOS when its answer or note arrives, with no window, focus change or navigation. Notifai never starts the Codex app; turn this off with `notifai config set reopen.codex_app off`.
+* A question the User dismisses on a device ends at once: a Claude Code picker or a Codex card still on screen closes, `notifai send --reply` returns with exit 3, and the agent carries on without an answer.
+* A fork of a stopped conversation (Codex `fork`, Claude Code `/branch`) takes its questions and waiting answers with it when the service supports it.
+
+### Bug Fixes
+
+* Restart the shared hub seamlessly after any update, including `notifai update`, npm and installer updates, rollbacks, and hubs started by earlier builds: nothing a session waits for lives only in the hub any more, so only an update that changes the User's hooks waits. Until a hub hands over, `notifai doctor` and `notifai update --check` name the build it runs and what it is waiting for.
+* Confirm a session's end for about 10 seconds before expiring its questions, so a reload, a handoff to another window or app, `codex resume`, or a second terminal on the same conversation keeps them. This also applies on Windows and wherever no hub attends the session.
+* Fast and partial phone answers always reach the agent. A Claude Code picker answered within a second or two, answered only in part, with several replies or with typed text no longer stays open; an answer the picker cannot carry closes it and reaches the agent as its next message.
+* Keep concurrent sends from several agents in one Project from failing on shared state; every Notification Request is submitted exactly once.
+* Behind a proxy or a custom certificate authority, the shared hub now reaches the service and answers arrive. The hub takes its network settings from sign-in and nothing else from the shell that started it, so API keys and tokens no longer reach it.
+* On Linux, a clock change (a network time step after resume, a VM clock correction) no longer makes running sessions look gone.
+* A submodule, nested clone or worktree inside a configured Project now belongs to that Project, and a loose config file in a plain parent folder no longer swallows every repository below it. The home folder is never a Project.
+* Setup inside a fresh Claude Code session keeps the User's yes to command approval. Command approval is offered only in Claude Code's default permission mode, and an explicit `--claude-commands` that adds nothing says why.
+* In Codex, `notifai ask` asks an ordinary question when the session has no question card, instead of pointing the agent at a tool it does not have.
+* A shell that inherited an agent session's markers, such as a tmux server or editor started from that session, no longer sends its questions into that session.
+* Back off wakes when the agent cannot take its input in, from 5 seconds up to 5 minutes, instead of starting a turn every second during an outage.
+* An idle Codex terminal on the shared server is woken only while a terminal shows the conversation, after a one-time behaviour check of that Codex version.
+* Keep Notifai's Codex control connection from labelling the User's own Codex threads.
+* Keep a Claude Code picker in a second window linked when the first window exits.
+* Settle hook repair requirements against the hook definition actually present, and give one Codex hook trust line per hooks file with a step the User can take.
+* Keep Claude Code hooks on the shared hub instead of starting the runtime for every hook, and recover a question claim left by a crashed process at once.
+* `notifai config` rows fit the terminal.
+* Lay out interactive screens on a terminal that reports zero width.
+* Never revive a closed session headlessly: Claude Code cold resume (`claude -p --resume`) is removed, and a stopped conversation reopens only in a visible terminal.
+* Keep every hook inside its own timeout: credential reads happen only when a hook actually calls the service, nested steps get a budget derived from the hook's declared timeout, and session pruning and update checks run in a detached daily maintenance process instead of on the prompt path.
+* Register Codex questions from the native question card itself, so an answered card no longer leaves a separately copied question pending.
+* Report integration health only for the active native build, so a retained older runtime can no longer surface stale CLI or skill faults in current hooks.
+* Hand a session's questions to one current answer owner, so an answer process started by an older version no longer holds them after an update.
+* Beta updates always choose the newer of the beta and stable releases.
+
 ## [13.0.0](https://github.com/Raidiant-io/notifai/compare/v12.1.1...v13.0.0) (2026-10-18)
 
 
