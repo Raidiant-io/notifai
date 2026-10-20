@@ -8,6 +8,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 This project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 and [Conventional Commits](https://www.conventionalcommits.org/en/v1.0.0/).
 
+## [13.1.0-beta.3](https://github.com/Raidiant-io/notifai/compare/v13.0.0...v13.1.0-beta.3) (2026-10-20)
+
+### Features
+
+* Each Claude Code and Codex session on macOS and Linux is now kept by a small native session helper, with one shared hub per user that talks to the service for all of them. At 25 sessions memory drops from about 600 MB to about 55 MB, the per-session process launches and credential reads every few seconds are gone, and a closed session's questions expire within one to two seconds. Windows keeps the existing session attendant.
+* Claude Code hooks run in exec form on Claude Code 2.1.139 and newer, and stay in shell form on older versions; `notifai doctor` reports the hook form and the shared hub.
+* Closing an Agent Session ends its questions: they expire on every device at once, and an answer the agent had not read yet is dropped instead of being delivered later. The session's end record names any dropped answers.
+* Let Codex run Notifai commands outside its sandbox on the User's yes: `notifai init --codex-commands` writes a Codex rule that allows only the everyday Notifai commands, `notifai doctor` reports `codex-commands` readiness, and `notifai hooks uninstall --harness codex` removes the rule.
+* Codex question cards link to devices only with Codex app-server 0.163.0 or newer; older Codex falls back to an ordinary question, and a daily canary checks that card linking still works.
+
+### Bug Fixes
+
+* Lay out interactive screens on a terminal that reports zero width.
+* Never revive a closed session. Claude Code cold resume (`claude -p --resume`) is removed; idle but open sessions still receive their answers, and the delivery contracts shown by `doctor` say so.
+* Keep every hook inside its own timeout: credential reads happen only when a hook actually calls the service, nested steps get a budget derived from the hook's declared timeout, and session pruning and update checks run in a detached daily maintenance process instead of on the prompt path.
+* Register Codex questions from the native question card itself, so an answered card no longer leaves a separately copied question pending.
+* Report integration health only for the active native build, so a retained older runtime can no longer surface stale CLI or skill faults in current hooks.
+* Beta updates always choose the newer of the beta and stable releases.
+
 ## [13.0.0](https://github.com/Raidiant-io/notifai/compare/v12.1.1...v13.0.0) (2026-10-18)
 
 
