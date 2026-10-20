@@ -14,7 +14,7 @@ import type { ApiClient } from './client.js'
 import type { CommandDeps } from './commands-core.js'
 import { readSessionIncarnation, recordSessionNotified } from './hook-session-state.js'
 import { childLockPath, endedRecordsDir, writerLockPath } from './hub-ipc.js'
-import { Hub, peerVerifierFor } from './hub.js'
+import { Hub, peerVerifierFor, type HubOptions } from './hub.js'
 import { nullLogger } from './logging.js'
 
 const supported = (process.platform === 'darwin' || process.platform === 'linux') && spawnSync('cc', ['--version']).status === 0
@@ -142,13 +142,13 @@ function startHub(env: NodeJS.ProcessEnv, fake: Service): Promise<number> {
   return startHubWith(env, fake).done
 }
 
-function startHubWith(env: NodeJS.ProcessEnv, fake: Service): { hub: Hub; done: Promise<number> } {
+function startHubWith(env: NodeJS.ProcessEnv, fake: Service, options: Partial<HubOptions> = {}): { hub: Hub; done: Promise<number> } {
   const deps: CommandDeps = {
     io: { out: () => undefined, err: () => undefined, confirm: async () => false, openUrl: () => undefined },
     store: { load: () => ({ machineId: 'mch_test', secret: 's', baseUrl: 'https://example.invalid', machineName: 't' }), save: () => undefined, clear: () => undefined, describe: () => 'memory' },
     env, cwd: '/tmp', logger: nullLogger(), clientFactory: () => fake.client,
   }
-  const hub = new Hub(deps, { deps, verifyPeer: peerVerifierFor(launcher), idleExitMs: 500, bootIdentity: () => null, endConfirmMs: 500 })
+  const hub = new Hub(deps, { deps, verifyPeer: peerVerifierFor(launcher), idleExitMs: 500, bootIdentity: () => null, endConfirmMs: 500, ...options })
   cleanups.push(() => hub.requestExit('test-cleanup'))
   return { hub, done: hub.run() }
 }
@@ -187,6 +187,24 @@ describe.skipIf(!supported)('native session child', () => {
     await until(() => hub.sessions.get(SESSION)?.registration.place === 'claude-desktop')
     // The harness's parent: here this test process, in the app its main process.
     expect(hub.sessions.get(SESSION)?.registration.hostApp?.pid).toBe(process.pid)
+    harness.process.kill('SIGKILL')
+    await until(() => fake.batches.some((batch) => batch.sessions.some((entry) => entry.state === 'ended')))
+    expect(await done).toBe(0)
+  }, 30_000)
+
+  it('says when the harness runs in an Orca pane, so the hub records the pane\'s terminal host', async () => {
+    const { root, env } = scratch()
+    env['CLAUDE_CODE_ENTRYPOINT'] = 'cli'
+    env['ORCA_AGENT_PANE'] = 'tab-1:pane-1'
+    recordSessionNotified(SESSION, env, Date.now())
+    const fake = service()
+    const asked: number[] = []
+    const terminalHost = { pid: process.pid, start: 'Tue Oct 20 10:00:00 2026' }
+    const { hub, done } = startHubWith(env, fake, { orcaTerminalHostOf: (pid) => { asked.push(pid); return terminalHost } })
+    const harness = await startHarness(root, env, 'direct')
+    await until(() => hub.sessions.get(SESSION)?.registration.terminalHost !== null && hub.sessions.get(SESSION) !== undefined)
+    expect(asked).toEqual([harness.pid])
+    expect(hub.sessions.get(SESSION)?.registration.place).toBe('terminal')
     harness.process.kill('SIGKILL')
     await until(() => fake.batches.some((batch) => batch.sessions.some((entry) => entry.state === 'ended')))
     expect(await done).toBe(0)

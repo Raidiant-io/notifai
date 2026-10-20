@@ -208,9 +208,9 @@ The next hub, started through the stable launcher, does four things:
 
 - continues every lease at the same generation;
 - reruns the recorded answer owners;
-- adopts the Codex conversations no child brings back: a dormant-open
-  conversation stays open with its answer queued, and an end still being
-  decided is decided again from fresh evidence;
+- adopts the conversations no child brings back: a stopped conversation
+  stays open with its answer waiting (a Codex thread's wake queued), and an
+  end still being decided is decided again from fresh evidence;
 - reports the ends of sessions that closed while no hub ran.
 
 The children reconnect.

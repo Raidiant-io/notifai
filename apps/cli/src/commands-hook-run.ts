@@ -22,6 +22,7 @@ import {
 } from './commands-core.js'
 import { claudeHookSourcePid, claudeSessionPid } from './commands-harness-context.js'
 import { claudePlaceOf, claudePlaceSignals, placeReceives } from './session-place.js'
+import { codexHostKind } from './codex-session-end.js'
 import { attendHook, recordCodexTurnStart, reportCodexSessionEnded } from './commands-hook-attend.js'
 import { hubSupported } from './hub-ipc.js'
 import { holdSessionEnd, hubAttendsSession, notifyHubSessionEnded, shutdownUnderway } from './hub-client.js'
@@ -941,8 +942,8 @@ export async function hookRunCommand(
       logger.info('hook.end', { hook: event, decided: false, outcome: 'held-for-confirmation' })
       return EXIT.ok
     }
-    if (sessionEnd && harness === 'claude-code' && envelope.session_id !== undefined && hubSupported(deps.hookPlatform ?? process.platform) &&
-        shutdownUnderway(deps.env, now())) {
+    if (sessionEnd && (harness === 'claude-code' || harness === 'codex') && envelope.session_id !== undefined &&
+        hubSupported(deps.hookPlatform ?? process.platform) && shutdownUnderway(deps.env, now())) {
       // The machine is going down and its hub may already be gone: the next
       // hub decides (stopped by the machine, or closed), never this hook.
       start({ cwd, stop_hook_active: envelope.stop_hook_active ?? null })
@@ -1110,14 +1111,16 @@ export async function hookRunCommand(
     let outcome: HookOutcome
     // What this turn hands the agent itself, before any diagnostic notice.
     let handedStdout: string | undefined
+    // A scripted run of a conversation another process hosts or held.
+    let runElsewhere = false
     if (event === 'user-prompt-submit') {
       if (envelope.session_id !== undefined) observeSessionInputWake(envelope.session_id, deps.env, envelope.prompt, (deps.now ?? Date.now)())
       const notice = lifecycleEnabled() && harness !== undefined && harness !== 'grok'
         ? cachedIntegrationFaultNotice({ ...deps, cwd }, harness) : undefined
-      // A scripted run (`claude -p`, an SDK script) of a conversation another
-      // process hosts is not where the User is: nothing held for it is handed in here.
-      const elsewhere = harness === 'claude-code' && envelope.session_id !== undefined &&
-        claudeRunElsewhere(envelope.session_id, deps.env, claudeHookSourcePid(deps.env, deps.hookPlatform ?? process.platform))
+      // A scripted run (`claude -p`, an SDK script, `codex exec`) of a conversation
+      // another process hosts is not where the User is: nothing held for it is handed in here.
+      const elsewhere = envelope.session_id !== undefined && scriptedRunElsewhere(deps, harness, envelope.session_id)
+      runElsewhere = elsewhere
       // Claude wakes carry a token; Codex prompts with one keep their own path.
       outcome = elsewhere ? { notes: [], log: { stage: 'scripted-run-receives-nothing' } }
         : envelope.session_id !== undefined && (envelope.prompt === sessionInputWake() ||
@@ -1140,8 +1143,7 @@ export async function hookRunCommand(
         await sweepAbandonedOpencodeForms(deps, { timeoutMs: budgets.serviceRequestMs, limit: 2 })
       }
       // A scripted run's turn end collects no answer meant for the place the conversation is in.
-      const scriptedElsewhere = event === 'stop' && harness === 'claude-code' && envelope.session_id !== undefined &&
-        claudeRunElsewhere(envelope.session_id, deps.env, claudeHookSourcePid(deps.env, deps.hookPlatform ?? process.platform))
+      const scriptedElsewhere = event === 'stop' && envelope.session_id !== undefined && scriptedRunElsewhere(deps, harness, envelope.session_id)
       outcome = scriptedElsewhere ? { notes: [], log: { stage: 'scripted-run-receives-nothing' } } : await handleStop(
         ctx,
         envelope,
@@ -1197,9 +1199,11 @@ export async function hookRunCommand(
         !codexWakeHasInput(deps, envelope.session_id)) {
       // A Notifai wake with nothing behind it: the session closed since it was
       // queued (a stale wake in a reopened conversation), or what it was for
-      // was already handed in. Blocking it means no turn and no model request.
-      deps.io.out(JSON.stringify({ decision: 'block', reason: CODEX_EMPTY_WAKE_REASON }))
-      logger.info('hook.gate', { stage: 'codex-wake', outcome: 'blocked', reason: 'nothing-waiting' })
+      // was already handed in; or a `codex exec` run of a conversation whose
+      // answers wait for the place it was open in. Blocking it means no turn
+      // and no model request.
+      deps.io.out(JSON.stringify({ decision: 'block', reason: runElsewhere ? CODEX_ELSEWHERE_WAKE_REASON : CODEX_EMPTY_WAKE_REASON }))
+      logger.info('hook.gate', { stage: 'codex-wake', outcome: 'blocked', reason: runElsewhere ? 'scripted-run' : 'nothing-waiting' })
       return EXIT.ok
     }
     if (!inputWritten && outcome.stdout !== undefined) {
@@ -1317,6 +1321,7 @@ function answerClaimsFor(
 
 /** What a Codex User sees under "Blocked by hook" when an empty wake is skipped. */
 export const CODEX_EMPTY_WAKE_REASON = 'Notifai: nothing is waiting for this session, so this wake started no turn.'
+export const CODEX_ELSEWHERE_WAKE_REASON = 'Notifai: answers for this conversation wait for it where it was open, not in this run, so this wake started no turn.'
 
 /**
  * Whether anything this Codex session can still be handed waits locally: it
@@ -1341,6 +1346,23 @@ export function claudeRunElsewhere(sessionId: string, env: NodeJS.ProcessEnv, so
   if (placeReceives(claudePlaceOf(claudePlaceSignals(env)))) return false
   const host = readSessionIncarnation(sessionId, env)?.harness_process
   return host !== undefined && host.pid !== sourcePid
+}
+
+/**
+ * A `codex exec` run of a thread another process hosts (or hosted until it
+ * stopped): nothing held for the thread is handed into a scripted run. Asks
+ * the process table only when the hook's process is not the thread's host.
+ */
+export function codexRunElsewhere(sessionId: string, env: NodeJS.ProcessEnv, sourcePid: number | undefined,
+  hostKind: (pid: number) => string = codexHostKind): boolean {
+  const host = readSessionIncarnation(sessionId, env)?.harness_process
+  if (host === undefined || sourcePid === undefined || host.pid === sourcePid) return false
+  return hostKind(sourcePid) === 'exec'
+}
+
+function scriptedRunElsewhere(deps: CommandDeps, harness: string | undefined, sessionId: string): boolean {
+  if (harness === 'claude-code') return claudeRunElsewhere(sessionId, deps.env, claudeHookSourcePid(deps.env, deps.hookPlatform ?? process.platform))
+  return harness === 'codex' && codexRunElsewhere(sessionId, deps.env, declaredHookSourcePid(deps))
 }
 
 /** Stable harness parent propagated by the managed adapter across child tools. */

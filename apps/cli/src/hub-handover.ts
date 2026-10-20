@@ -20,14 +20,12 @@ import { buildIdentity } from './distribution.js'
 import { claimHolderMayRun, readClaimFile } from './hook-question-lock.js'
 import { startHub } from './hub-client.js'
 import { readSessionState } from './hook-session-state.js'
-import { adoptionRecord } from './hub-adoption.js'
 import { HUB_IPC_VERSIONS, hubLockPath, hubRunDir, hubStatusPath, hubSupported, requestHub } from './hub-ipc.js'
 import { currentRuntimeBuild } from './launch-self.js'
 import type { Logger } from './logging.js'
 import { accountHome } from './platform.js'
 import { pidExists } from './process-identity.js'
 import { packageVersion } from './release.js'
-import { attendantStatusPath } from './session-attendant-state.js'
 
 /** Why a hub on another build has not handed over yet. */
 export type HandoverWait = WaitingReason
@@ -39,8 +37,6 @@ export type HandoverWait = WaitingReason
   | 'wake-writing'
   /** An earlier hub runs a question owner for a session it does not attend; its id is not on disk. */
   | 'question-unattended'
-  /** An earlier hub holds open a Codex conversation whose rollout was never recorded. */
-  | 'session-dormant'
 
 /**
  * Two reads of an older hub's status this far apart, both clear: longer than
@@ -90,8 +86,9 @@ function olderHubOnOtherBuild(status: Record<string, unknown>, self: ActiveRunti
  * from its status and this machine's records. Everything else it holds is
  * on disk or rebuilt: its sessions' questions and answers, staged inputs and
  * owed ends; an answer owner of a session it attends (that session's child
- * re-registers and the next hub runs it again); a Codex conversation without
- * a child (adopted, when its rollout is on record).
+ * re-registers and the next hub runs it again); a conversation without a
+ * child, stopped or with its end still undecided (adopted from its status,
+ * or, without a record, left lapsed until its windows end: late, never early).
  */
 export function olderHubWaits(env: NodeJS.ProcessEnv, status: Record<string, unknown>): HandoverWait[] {
   const settlements = status['settlements'], owed = status['pending_end_reports'], sessions = status['sessions'], ipc = status['ipc_version']
@@ -108,12 +105,6 @@ export function olderHubWaits(env: NodeJS.ProcessEnv, status: Record<string, unk
     const id = session['session_id']
     if (typeof id !== 'string') return ['hub-unverifiable']
     attended.set(sanitizeSessionId(id), id)
-    // A Codex session without a child: the next hub adopts it from its record, when there is one.
-    if (session['harness'] === 'codex' && session['child'] !== true) {
-      let record: Record<string, unknown> | null = null
-      try { record = JSON.parse(readFileSync(attendantStatusPath(id, env), 'utf8')) as Record<string, unknown> } catch { record = null }
-      if (record === null || adoptionRecord(env, id, record) === null) waits.add('session-dormant')
-    }
     // A wake it is writing into the session right now (Claude Code's inbox, a Codex thread's queue).
     const state = readSessionState(id, env)
     if ((state.input_wake !== undefined && !state.input_wake.queued && state.input_wake.writer.pid === pid) ||
@@ -298,7 +289,6 @@ const WAIT_TEXT: Record<HandoverWait, string> = {
   'answer-delivering': 'it is handing an answer to its agent',
   'wake-writing': 'it is writing a wake into a session',
   'question-unattended': 'it runs a question owner for a session it does not attend',
-  'session-dormant': 'it holds open a Codex conversation whose rollout was never recorded',
   'session-child-incompatible': 'a session child speaks a protocol the new build does not serve',
   'candidate-unverified': 'the active build could not be checked',
   'hub-unverifiable': 'the running hub does not report enough to show what it holds',

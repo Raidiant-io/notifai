@@ -1,14 +1,22 @@
 /**
- * Who ended a Claude Code conversation: the User, its app, or the machine.
+ * Who ended a conversation: the User, its app, or the machine.
  *
  * A close by the User expires the conversation's questions. A stop the User
  * did not make keeps them open for their own window, and what is answered
  * meanwhile reaches the conversation when it comes back in place:
  *
- * - **the app**: the Claude desktop app pauses or evicts a conversation it
- *   still lists (an idle pause, its process cap, memory pressure). Its own
- *   log names the pause; without that line, or with the log unreadable, the
- *   stop is taken for the User's.
+ * - **the app**, stopping a conversation it still lists:
+ *   - the Claude desktop app pauses or evicts it (an idle pause, its process
+ *     cap, memory pressure). Its own log names the pause; without that line,
+ *     or with the log unreadable, the stop is taken for the User's;
+ *   - the Codex app or the Codex IDE extension unloads it while its own
+ *     app-server keeps running;
+ *   - an Orca chat or T3 Code stops it after 30 minutes idle while the app
+ *     itself keeps running. Nothing but the timing tells this from the User
+ *     closing the tab, so an earlier stop is the User's;
+ *   - an Orca terminal pane loses its terminal host (Orca resumes it in the
+ *     same pane when the User opens the tab); a pane the User closes leaves
+ *     the host running.
  * - **the machine**: a shutdown, restart, crash or power loss. Recognised by a
  *   different boot at the next start, with the end still pending, never
  *   reported, or recorded after the machine said it was going down.
@@ -19,7 +27,8 @@
  */
 import { closeSync, openSync, readdirSync, readFileSync, readSync, statSync } from 'node:fs'
 import path from 'node:path'
-import type { ClaudePlace } from './session-place.js'
+import { codexAppSurface, type RolloutPlace } from './codex-session-end.js'
+import type { ClaudePlace, CodexHostKind, SessionPlace } from './session-place.js'
 
 /** Read at most this much of the desktop app's log, from its end. */
 const DESKTOP_LOG_TAIL_BYTES = 512 * 1024
@@ -29,7 +38,37 @@ const PAUSE_LINE_SLACK_MS = 60_000
 const DESKTOP_RECORD_MAX_BYTES = 1024 * 1024
 const DESKTOP_RECORD_SCAN_LIMIT = 5_000
 
-export type CloseVerdict = { cause: 'app'; reason: 'desktop-paused' } | { cause: 'user'; reason: string }
+/**
+ * Orca chats and T3 Code stop a conversation this long after its last
+ * activity (Orca sweeps every five minutes, so its stop lands at 30–35).
+ */
+export const APP_IDLE_STOP_MS = 30 * 60_000
+
+export type AppStopReason = 'desktop-paused' | 'app-unloaded' | 'ide-unloaded' | 'idle-stopped' | 'terminal-host-died'
+
+export type CloseVerdict = { cause: 'app'; reason: AppStopReason } | { cause: 'user'; reason: string }
+
+/** Liveness of a process recorded at registration; null when none was recorded. */
+export type Recorded = 'alive' | 'gone' | null
+
+/**
+ * The 30-minute idle stop of an Orca chat or T3 Code: the app still runs and
+ * the stop came at least `APP_IDLE_STOP_MS` after the conversation's last
+ * activity. Null when the place does not stop idle conversations.
+ */
+function appIdleStop(place: SessionPlace, hostApp: Recorded, idleMs: number | null): CloseVerdict | null {
+  if (place !== 'orca-chat' && place !== 't3') return null
+  if (hostApp !== 'alive') return { cause: 'user', reason: 'app-quit' }
+  if (idleMs === null || idleMs < APP_IDLE_STOP_MS) return { cause: 'user', reason: 'closed-in-app' }
+  return { cause: 'app', reason: 'idle-stopped' }
+}
+
+/** An Orca pane's terminal host: gone means Orca lost the pane's terminal, alive means the User closed the pane. */
+function terminalHostVerdict(terminalHost: Recorded | undefined): CloseVerdict | null {
+  if (terminalHost === 'gone') return { cause: 'app', reason: 'terminal-host-died' }
+  if (terminalHost === 'alive') return { cause: 'user', reason: 'pane-closed' }
+  return null
+}
 
 export type DesktopRecord = { localId: string; archived: boolean } | 'missing' | 'unreadable'
 
@@ -37,6 +76,12 @@ export interface ClaudeEndEvidence {
   place: ClaudePlace
   /** The conversation's transcript still exists (a deleted conversation is closed). */
   transcript: 'present' | 'missing'
+  /** An Orca terminal pane's terminal host, when the conversation ran in one. */
+  terminalHost?: Recorded
+  /** An Orca chat: the app process that started the harness. */
+  hostApp?: Recorded
+  /** From the conversation's last activity the hub saw to its end; null when unknown. */
+  idleMs?: number | null
   /** Only for a conversation in the Claude desktop app. */
   desktop?: {
     /** The app process that hosted the conversation still runs. */
@@ -49,8 +94,12 @@ export interface ClaudeEndEvidence {
 
 /** The verdict for one end the confirmation did not cancel. */
 export function classifyClaudeEnd(evidence: ClaudeEndEvidence): CloseVerdict {
-  if (evidence.place !== 'claude-desktop') return { cause: 'user', reason: 'closed' }
   if (evidence.transcript === 'missing') return { cause: 'user', reason: 'transcript-missing' }
+  const idle = appIdleStop(evidence.place, evidence.hostApp ?? null, evidence.idleMs ?? null)
+  if (idle !== null) return idle
+  const pane = evidence.place === 'terminal' || evidence.place === 'unreported' ? terminalHostVerdict(evidence.terminalHost) : null
+  if (pane !== null) return pane
+  if (evidence.place !== 'claude-desktop') return { cause: 'user', reason: 'closed' }
   const desktop = evidence.desktop
   if (desktop === undefined || !desktop.appAlive) return { cause: 'user', reason: 'app-quit' }
   if (desktop.record === 'missing') return { cause: 'user', reason: 'deleted' }
@@ -60,6 +109,53 @@ export function classifyClaudeEnd(evidence: ClaudeEndEvidence): CloseVerdict {
   // the conversation listed: only the app's log tells them apart.
   if (!desktop.pauseLogged) return { cause: 'user', reason: 'stopped-in-app' }
   return { cause: 'app', reason: 'desktop-paused' }
+}
+
+export interface CodexEndEvidence {
+  place: SessionPlace
+  /** Where the thread's rollout is now, found by its id. */
+  rollout: RolloutPlace
+  /** The process that hosted the thread (an app-server, a terminal, the shared server). */
+  host: 'alive' | 'gone'
+  hostKind: CodexHostKind
+  /** The rollout's recorded originator: the app the thread was born in; null when it cannot be read. */
+  originator: string | null
+  /** The app process that started the app-server (T3 Code's server, Orca's provider supervisor). */
+  hostApp: Recorded
+  /** From the conversation's last activity the hub saw to its end; null when unknown. */
+  idleMs: number | null
+  /** An Orca terminal pane's terminal host, when the thread ran in one. */
+  terminalHost: Recorded
+}
+
+/**
+ * The verdict for one Codex end the confirmation did not cancel (a reload in
+ * place cancels it earlier). In order:
+ * 1. archived or deleted (the rollout moved or is gone): closed;
+ * 2. a scripted run's end: closed;
+ * 3. an Orca chat or T3 Code: the 30-minute idle stop while the app runs is
+ *    the app's; any other stop there (an archive, a closed tab, a quit) the User's;
+ * 4. an Orca terminal pane whose terminal host died: the app's; one whose
+ *    host still runs was closed by the User;
+ * 5. the host gone: closed (a terminal closed, the app quit, a crash);
+ * 6. a thread the Codex app or IDE extension started, unloaded by that
+ *    client's own app-server while it runs: the app's;
+ * 7. anything else, including evidence that cannot be read: closed.
+ */
+export function classifyCodexEnd(evidence: CodexEndEvidence): CloseVerdict {
+  if (evidence.rollout === 'archived') return { cause: 'user', reason: 'archived' }
+  if (evidence.rollout === 'missing') return { cause: 'user', reason: 'deleted' }
+  if (evidence.rollout === 'unknown') return { cause: 'user', reason: 'rollout-unreadable' }
+  if (evidence.place === 'headless') return { cause: 'user', reason: 'run-ended' }
+  const idle = appIdleStop(evidence.place, evidence.hostApp, evidence.idleMs)
+  if (idle !== null) return idle
+  if (evidence.host === 'gone') {
+    const pane = evidence.place === 'terminal' ? terminalHostVerdict(evidence.terminalHost) : null
+    return pane ?? { cause: 'user', reason: 'harness-gone' }
+  }
+  const surface = codexAppSurface(evidence.originator)
+  if (surface !== null && evidence.hostKind === 'app-server') return { cause: 'app', reason: surface === 'app' ? 'app-unloaded' : 'ide-unloaded' }
+  return { cause: 'user', reason: 'closed' }
 }
 
 /**
@@ -185,4 +281,46 @@ export function claudeTranscriptPresent(configDir: string, sessionId: string, re
     try { if (statSync(path.join(configDir, 'projects', project, `${sessionId}.jsonl`)).isFile()) return true } catch { /* next */ }
   }
   return false
+}
+
+/** The first lines of a forked transcript carry its parent's id; read no further than this. */
+const FORK_HEAD_BYTES = 256 * 1024
+
+/**
+ * The conversation a Claude Code fork copied its history from, when the fork
+ * recorded it: `/branch` writes `forkedFrom.sessionId` on every copied line.
+ * A `--fork-session` fork rewrites its copied lines to its own id and records
+ * no parent, so it names none here. Null when the transcript cannot be read
+ * yet (Claude Code creates it at the first prompt) or names no other conversation.
+ */
+export function claudeForkParent(transcriptPath: string | null, sessionId: string): string | null {
+  if (transcriptPath === null) return null
+  let text: string
+  try {
+    const fd = openSync(transcriptPath, 'r')
+    try {
+      const buffer = Buffer.alloc(FORK_HEAD_BYTES)
+      const read = readSync(fd, buffer, 0, buffer.length, 0)
+      text = buffer.subarray(0, read).toString('utf8')
+    } finally {
+      closeSync(fd)
+    }
+  } catch {
+    return null
+  }
+  const lines = text.split('\n')
+  // A last line cut by the read limit is not evidence.
+  if (text.length >= FORK_HEAD_BYTES) lines.pop()
+  for (const line of lines) {
+    if (line.trim() === '') continue
+    let record: unknown
+    try { record = JSON.parse(line) } catch { continue }
+    if (typeof record !== 'object' || record === null) continue
+    const origin = (record as Record<string, unknown>)['forkedFrom']
+    if (typeof origin !== 'object' || origin === null) continue
+    const named = (origin as Record<string, unknown>)['sessionId']
+    if (typeof named !== 'string' || named === '') continue
+    return named !== sessionId && /^[0-9A-Za-z-]{1,128}$/.test(named) ? named : null
+  }
+  return null
 }

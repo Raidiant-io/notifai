@@ -437,10 +437,16 @@ kill, `/clear` or `/resume` of another conversation in its place, quitting
 the app, archiving or deleting it. Without a hub (Windows), SessionEnd closes
 at once.
 
-Two stops of a Claude Code conversation are not closes. The Claude desktop app
-pauses or evicts a conversation it still lists (an idle pause, its process
-limit, memory pressure), and its own log names the pause; without that line,
-the stop counts as a close (the Stop button looks the same). And the machine
+Some stops are not closes. The Claude desktop app pauses or evicts a
+conversation it still lists (an idle pause, its process limit, memory
+pressure), and its own log names the pause; without that line, the stop counts
+as a close (the Stop button looks the same). The Codex app and IDE extension
+unload a conversation they still list while their own Codex server keeps
+running. An Orca chat or T3 Code stops a conversation after 30 minutes idle
+while the app keeps running; nothing else tells that from closing the tab, so
+an earlier stop is a close. Orca loses a terminal pane's terminal host (and
+resumes the conversation in that pane when you open the tab); closing the pane
+leaves the host running and is a close. And the machine
 shuts down, restarts, crashes or loses power: on macOS and Linux the hub
 learns that a shutdown or restart has begun before the apps quit (from
 loginwindow on macOS, from systemd-logind on Linux), holds every end until the
@@ -452,26 +458,21 @@ you give meanwhile waits on this machine; the hub stays running while
 something waits. It is handed to the agent when the conversation comes back
 where it was or wherever you resume it (the desktop app reopening it,
 `claude --resume <id>` in a terminal): a wake-up as usual, or at its next
-prompt. A scripted run (`claude -p --resume`, an SDK script) receives nothing.
-If the conversation is deleted or archived while stopped, or you quit the
-desktop app it was paused in, it closes as above; when its last window ends, it
-ends. A note cannot be sent to a stopped session yet; one the service accepted
-just before the stop is delivered if the session comes back within the hour.
-Codex conversations other than the app's unloads (below) still close when the
-machine restarts, as before. `notifai doctor` shows stopped sessions and
-whether shutdowns are seen.
-
-The Codex app and the Codex IDE extension are the exception. Codex also runs
-SessionEnd, and stops the session child, when it unloads a conversation nobody
-has had open for a while, though the app still lists it. There the hub, after
-the end confirmation, looks: if the conversation's rollout is gone (archived or
-deleted), or the app's own Codex server has exited (the app quit), the session
-closed as above. If the conversation was started in that app and its server
-still runs, the session stays open: its questions stay answerable, and an
-answer waits in that conversation as a content-free wake that Codex starts only
-when the conversation is loaded again, that is, when you open it. Nothing runs
-while you are not looking. The hub stays to watch the app while something
-waits, so quitting the app still expires the questions within seconds.
+prompt. A Codex conversation gets one content-free wake in its own queue
+(written with `codex queue`, never through a connection to a Codex server),
+which Codex runs only when the conversation loads again: when you open it in
+the app, send in the Orca chat or T3 thread, or `codex resume` it. Nothing runs
+while you are not looking, and a thread some process has loaded gets no wake.
+A scripted run (`claude -p --resume`, an SDK script, `codex exec`) receives
+nothing. If the conversation is deleted or archived while stopped (a Codex
+rollout is found by its id in `sessions/` and `archived_sessions/`), or you
+quit the app it was stopped in, it closes as above; when its last window ends,
+it ends. A fork that names the stopped conversation (Codex records
+`forked_from_id`, Claude Code's `/branch` records `forkedFrom`) means it
+continues there: its questions expire, as they cannot follow it yet. A note
+cannot be sent to a stopped session yet; one the service accepted just before
+the stop is delivered if the session comes back within the hour. `notifai
+doctor` shows stopped sessions and whether shutdowns are seen.
 
 **Session child and hub** (`attend`, Claude Code and Codex on macOS and Linux).
 The `attend` handler is a second, asynchronous handler on SessionStart,

@@ -2,27 +2,37 @@
  * What a hub needs to take over a session that no session child will bring
  * back, written where it survives the hub.
  *
- * A Codex app or IDE conversation that Codex unloaded (dormant-open), or one
- * whose end was still being decided, has no child: nothing re-registers it
- * with the next hub. The hub that attends it writes this record into the
- * session's attendance status (`adoption`), and the next hub, whatever ended
- * the previous one (a handover, a crash), adopts every such session at start.
- * A hub from an earlier build never wrote the record; it is rebuilt from the
- * status, the session's incarnation and its recorded rollout.
+ * A conversation its app or the machine stopped, or one whose end was still
+ * being decided, has no child: nothing re-registers it with the next hub. The
+ * hub that attends it writes this record into the session's attendance status
+ * (`adoption`), and the next hub, whatever ended the previous one (a
+ * handover, a crash, a reboot), adopts every such session at start. A status
+ * without the record is rebuilt from the session's incarnation and its
+ * recorded rollout.
  */
 import { readdirSync, readFileSync } from 'node:fs'
 import path from 'node:path'
 import { stateDir } from './config.js'
-import { codexTranscriptState } from './codex-session-end.js'
+import { codexHomeOfRollout, locateCodexRollout } from './codex-session-end.js'
 import { claimHolderMayRun, readClaimFile } from './hook-question-lock.js'
 import { endsIncarnation, readSessionEndMarker, readSessionIncarnation, readSessionState } from './hook-session-state.js'
 import { childLockPath, writerLockPath } from './hub-ipc.js'
 import { pidExists, processIdentityLiveness, type ProcessIdentity } from './process-identity.js'
 import { attendantClaimPath } from './session-attendant-state.js'
-import type { ClaudePlace } from './session-place.js'
+import type { SessionPlace } from './session-place.js'
 
-const PLACES: ReadonlySet<string> = new Set<ClaudePlace>(['terminal', 'claude-desktop', 'claude-ide', 'claude-background', 'orca-chat',
-  'headless', 'unknown', 'unreported'])
+const PLACES: ReadonlySet<string> = new Set<SessionPlace>(['terminal', 'claude-desktop', 'claude-ide', 'claude-background', 'orca-chat',
+  'headless', 'unknown', 'unreported', 'codex-app', 'codex-ide', 't3'])
+
+/** Which process quitting, while a conversation is stopped, means the User quit its app: the harness (an app-server) or the app that started it. */
+export type StoppedWatch = 'harness' | 'host-app' | null
+
+export interface StoppedRecord {
+  since: number
+  cause: 'app' | 'machine'
+  boot: string | null
+  watch: StoppedWatch
+}
 
 export interface AdoptionRecord {
   harness: 'claude-code' | 'codex'
@@ -33,8 +43,8 @@ export interface AdoptionRecord {
   transcript_path: string | null
   claude_config_dir: string | null
   codex_home: string | null
-  /** Wall-clock milliseconds Codex unloaded the conversation while its app still lists it; null while it is not dormant. */
-  dormant_since: number | null
+  /** Wall-clock milliseconds of the last hook the hub saw for it (the idle stop of Orca chats and T3 Code); null when unknown. */
+  last_activity_at: number | null
   /** The rollout existed at some point, so its absence means an archive or delete. */
   transcript_seen: boolean
   /**
@@ -42,16 +52,18 @@ export interface AdoptionRecord {
    * confirming; null when none was pending. The next hub confirms it.
    */
   end_candidate_since: number | null
-  /** Where the conversation ran (Claude Code); `unreported` from a hub that did not record it. */
-  place: ClaudePlace
-  /** The process that started the harness (the Claude desktop app), when known. */
+  /** Where the conversation ran; `unreported` when it was not recorded. */
+  place: SessionPlace
+  /** The process that started the harness (the Claude desktop app, T3 Code's server, Orca's supervisor), when known. */
   host_app: ProcessIdentity | null
+  /** An Orca pane's terminal host, when the harness ran in one. */
+  terminal_host: ProcessIdentity | null
   /**
    * Stopped by its app or by the machine, not closed by the User (wall-clock
    * milliseconds, and the boot it stopped in): the next hub keeps it open for
    * its windows. Null while it is not stopped.
    */
-  stopped: { since: number; cause: 'app' | 'machine'; boot: string | null } | null
+  stopped: StoppedRecord | null
 }
 
 function processOf(value: unknown): ProcessIdentity | null {
@@ -67,7 +79,8 @@ function stoppedOf(value: unknown): AdoptionRecord['stopped'] {
   const since = stopped['since']
   const cause = stopped['cause']
   if (typeof since !== 'number' || !Number.isFinite(since) || (cause !== 'app' && cause !== 'machine')) return null
-  return { since, cause, boot: text(stopped['boot']) }
+  const watch = stopped['watch']
+  return { since, cause, boot: text(stopped['boot']), watch: watch === 'harness' || watch === 'host-app' ? watch : null }
 }
 
 const text = (value: unknown): string | null => typeof value === 'string' && value.length > 0 && value.length <= 4096 ? value : null
@@ -85,7 +98,7 @@ export function parseAdoptionRecord(value: unknown): AdoptionRecord | null {
   if ((harness !== 'claude-code' && harness !== 'codex') || typeof owner !== 'object' || owner === null ||
       typeof owner['pid'] !== 'number' || !Number.isSafeInteger(owner['pid']) || owner['pid'] <= 1 || text(owner['start']) === null) return null
   const ticks = text(record['harness_ticks'])
-  const dormant = record['dormant_since']
+  const activity = record['last_activity_at']
   const candidate = record['end_candidate_since']
   return {
     harness,
@@ -96,27 +109,21 @@ export function parseAdoptionRecord(value: unknown): AdoptionRecord | null {
     transcript_path: absolute(record['transcript_path']),
     claude_config_dir: absolute(record['claude_config_dir']),
     codex_home: absolute(record['codex_home']),
-    dormant_since: typeof dormant === 'number' && Number.isFinite(dormant) ? dormant : null,
+    last_activity_at: typeof activity === 'number' && Number.isFinite(activity) ? activity : null,
     transcript_seen: record['transcript_seen'] === true,
     end_candidate_since: typeof candidate === 'number' && Number.isFinite(candidate) ? candidate : null,
-    place: typeof record['place'] === 'string' && PLACES.has(record['place']) ? record['place'] as ClaudePlace : 'unreported',
+    place: typeof record['place'] === 'string' && PLACES.has(record['place']) ? record['place'] as SessionPlace : 'unreported',
     host_app: processOf(record['host_app']),
+    terminal_host: processOf(record['terminal_host']),
     stopped: stoppedOf(record['stopped']),
   }
-}
-
-/** The Codex home a rollout lives under (`<home>/sessions/…`), or null. */
-export function codexHomeOfRollout(transcriptPath: string): string | null {
-  const parts = transcriptPath.split(path.sep)
-  const index = parts.lastIndexOf('sessions')
-  return index > 0 ? parts.slice(0, index).join(path.sep) || path.sep : null
 }
 
 /**
  * The record for one session, from its attendance status: the one the hub
  * wrote, or, for a status an earlier hub wrote, one rebuilt from local
- * records. Null when it cannot be rebuilt: without a recorded rollout a
- * dormant conversation's archive, and its app, cannot be told.
+ * records. Null when it cannot be rebuilt: without a recorded rollout an
+ * archive, and the app a thread belongs to, cannot be told.
  */
 export function adoptionRecord(env: NodeJS.ProcessEnv, sessionId: string, status: Record<string, unknown>): AdoptionRecord | null {
   const written = parseAdoptionRecord(status['adoption'])
@@ -136,12 +143,13 @@ export function adoptionRecord(env: NodeJS.ProcessEnv, sessionId: string, status
     transcript_path: transcript,
     claude_config_dir: null,
     codex_home: codexHomeOfRollout(transcript),
-    dormant_since: status['reason'] === 'dormant-open' && typeof status['updated_at'] === 'number' ? status['updated_at'] : null,
+    last_activity_at: null,
     // The native turn was read from that rollout.
     transcript_seen: true,
     end_candidate_since: null,
     place: 'unreported',
     host_app: null,
+    terminal_host: null,
     stopped: null,
   }
 }
@@ -210,17 +218,17 @@ export function adoptionCandidates(env: NodeJS.ProcessEnv): AdoptionCandidate[] 
 }
 
 /**
- * Claude Code conversations a hub stopped (their app paused them, or the
- * machine went down) that are still owed something: the next hub keeps them
- * open until they come back in place or their windows end. The status reads
- * `exited` (`reason: stopped`) so a hub from an earlier build leaves it alone.
+ * Conversations a hub stopped (their app paused, unloaded or idled them out,
+ * or the machine went down) that are still owed something: the next hub keeps
+ * them open until they come back in place or their windows end. The status
+ * reads `exited` (`reason: stopped`) so a hub from an earlier build leaves it alone.
  */
 export function stoppedCandidates(env: NodeJS.ProcessEnv): { sessionId: string; status: Record<string, unknown>; record: AdoptionRecord }[] {
   const candidates: { sessionId: string; status: Record<string, unknown>; record: AdoptionRecord }[] = []
   for (const { sessionId, status } of attendanceStatuses(env)) {
     if (status['phase'] !== 'exited' || status['reason'] !== 'stopped' || typeof status['incarnation'] !== 'string') continue
     const record = parseAdoptionRecord(status['adoption'])
-    if (record === null || record.harness !== 'claude-code' || record.stopped === null) continue
+    if (record === null || record.stopped === null) continue
     const claim = readClaimFile(attendantClaimPath(sessionId, env))
     if (claim !== null && claimHolderMayRun(claim)) continue
     const incarnation = readSessionIncarnation(sessionId, env)
@@ -237,6 +245,7 @@ export function stoppedCandidates(env: NodeJS.ProcessEnv): { sessionId: string; 
  */
 export function recordedRolloutArchived(env: NodeJS.ProcessEnv, sessionId: string, status: Record<string, unknown>): boolean {
   const record = adoptionRecord(env, sessionId, status)
-  return record !== null && record.harness === 'codex' && record.transcript_seen &&
-    codexTranscriptState(record.transcript_path) === 'missing'
+  if (record === null || record.harness !== 'codex' || !record.transcript_seen) return false
+  const place = locateCodexRollout(record.codex_home, sessionId, record.transcript_path).place
+  return place === 'archived' || place === 'missing'
 }

@@ -3,10 +3,9 @@ import os from 'node:os'
 import path from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
 import { sanitizeSessionId, stateDir } from './config.js'
-import { beginSessionIncarnation, lifecycleStamp, markSessionEnded, readSessionIncarnation, updateSessionState } from './hook-session-state.js'
+import { beginSessionIncarnation, lifecycleStamp, markSessionEnded, updateSessionState } from './hook-session-state.js'
 import { handOverOlderHub, olderHubWaits, type ActiveRuntime } from './hub-handover.js'
 import { processStartTime } from './process-identity.js'
-import { attendantStatusPath } from './session-attendant-state.js'
 import { stageSessionMessages } from './session-inputs.js'
 
 const CLAUDE = '11111111-2222-3333-4444-555555555555'
@@ -85,23 +84,15 @@ describe('an earlier hub on another build', () => {
     expect(olderHubWaits(e, olderStatus())).toEqual([])
   })
 
-  it('leaves a Codex conversation without a child to the next hub when its rollout is on record', () => {
+  it('never waits for a conversation without a child: the next hub adopts it from its status, or leaves it lapsed', () => {
     const e = env()
-    const incarnation = start(CODEX, e)
+    start(CODEX, e)
     const codex = (fields: Record<string, unknown>) => ({ session_id: CODEX, harness: 'codex', phase: 'attending', reason: '', generation: 1,
       activity: 'idle', child: true, watching: true, accepts_messages: true, ...fields })
-    const dormant = codex({ phase: 'uncertain', reason: 'dormant-open', child: false })
     expect(olderHubWaits(e, olderStatus({}, [codex({})]))).toEqual([])
-    // No rollout on record: neither an archive nor its app can be told, so only that hub can keep it.
-    expect(olderHubWaits(e, olderStatus({}, [dormant]))).toEqual(['session-dormant'])
-    expect(olderHubWaits(e, olderStatus({}, [codex({ phase: 'uncertain', reason: 'session-child-disconnected', child: false })]))).toEqual(['session-dormant'])
-    // Its status and its recorded rollout rebuild what that hub held.
-    const key = readSessionIncarnation(CODEX, e)!.key
-    updateSessionState(CODEX, e, (state) => ({ ...state, harness: 'codex', codex_native_turn: { key, turn_id: 't1', transcript_path: '/tmp/codex/sessions/rollout-x.jsonl' } }))
-    mkdirSync(path.dirname(attendantStatusPath(CODEX, e)), { recursive: true })
-    writeFileSync(attendantStatusPath(CODEX, e), JSON.stringify({ session_id: CODEX, pid: 4242, phase: 'uncertain', reason: 'dormant-open',
-      incarnation, generation: 1, activity: 'idle', accepts_messages: false, updated_at: Date.now() }))
-    expect(olderHubWaits(e, olderStatus({}, [dormant]))).toEqual([])
+    // Stopped, or with its end undecided, and no rollout on record: nothing holds the handover back.
+    expect(olderHubWaits(e, olderStatus({}, [codex({ phase: 'exited', reason: 'stopped', child: false })]))).toEqual([])
+    expect(olderHubWaits(e, olderStatus({}, [codex({ phase: 'uncertain', reason: 'session-child-disconnected', child: false })]))).toEqual([])
   })
 
   it('waits when its status cannot show what it holds', () => {

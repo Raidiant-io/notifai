@@ -48,13 +48,19 @@ trusted tool hook can hand input into a working turn, Notifai uses that hook.
 Idle sessions, or sessions whose live input path cannot be established, use
 a content-free wake for the exact Agent Session in the same Codex home.
 Notifai does not cold-start or resume Codex to obtain a control connection.
-Closing the Agent Session ends its questions within seconds. A `codex resume`
+Closing the Agent Session ends its questions within seconds: exiting, closing
+its terminal, quitting its app, archiving or deleting it. A `codex resume`
 that reloads the same conversation in place, or continues it at once
-elsewhere, keeps them, and their answers follow it. In the Codex app or IDE
-extension, a conversation Codex unloads while the app still lists it stays
-open: its questions stay answerable, and an answer waits in that conversation
-until the User opens it again. Quitting the app, or archiving or deleting the
-conversation, closes it.
+elsewhere, keeps them, and their answers follow it. Stops the User did not
+make keep its questions open for their window: the Codex app or IDE
+extension unloading a conversation it still lists, an Orca chat or T3 Code
+stopping it after 30 idle minutes, Orca losing a pane's terminal, and the
+machine shutting down or restarting. An answer given meanwhile waits in the
+conversation and arrives when it comes back (opened in the app, the next
+send in the chat, `codex resume`), possibly hours later: check that the work
+it answers still applies. A fork continues under a new id and leaves the
+stopped conversation's questions to expire. A `codex exec` run of it receives
+nothing.
 Pending notes and answers remain in Notifai until
 a trusted tool hook, prompt hook, or `notifai receive` drains a bounded batch.
 A late wake-up cannot repeat an acknowledged answer: it contains no answer
