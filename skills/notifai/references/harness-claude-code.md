@@ -64,8 +64,16 @@ description.
 
 The picker takes whichever answer comes first and closes:
 
-- **A device answer** is the picker's own result. Its context names
-  `notifai acknowledge req_…`; run that before dependent work.
+- **A device answer** is the picker's own result, as the User gave it: a
+  question they skipped is left out, and typed text can stand beside or
+  instead of a choice. Its context names `notifai acknowledge req_…`; run that
+  before dependent work.
+- **A device answer the picker could not return** closes it unanswered, with
+  Notifai context that says so. End your turn: the answer arrives as your next
+  message, with its own acknowledgement command. Do not ask again.
+- **A question the User dismissed on a device** closes the picker unanswered,
+  with Notifai context that says so. They will not answer it: carry on
+  without it.
 - **A terminal answer** needs nothing from you. Notifai records it, so the
   devices stop asking.
 - **Esc, "Chat about this", or a denied picker** withdraws the device question.
