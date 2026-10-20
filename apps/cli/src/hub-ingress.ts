@@ -194,39 +194,41 @@ export async function runIngressHook(host: IngressHost, request: IngressRequest)
   const stderr: Buffer[] = []
   const env = request.env
   const budgets = hookStepBudgets(request.event, request.harness)
-  const deps: CommandDeps = {
-    ...host.deps,
-    env,
-    cwd: request.cwd,
-    io: {
-      // As `console.log`/`console.error` write one string.
-      out: (line) => { stdout.push(Buffer.from(`${line}\n`, 'utf8')) },
-      err: (line) => { stderr.push(Buffer.from(`${line}\n`, 'utf8')) },
-      interactive: false,
-      confirm: async (_question, fallback = false) => fallback,
-      openUrl: () => undefined,
-    },
-    // The hub's one read of the credential store: a hook never runs a credential helper.
-    store: host.cachedStore,
-    clientFactory: host.clientFactory,
-    // A logger of its own, under this hook's project settings, as the runtime starts one.
-    logger: bootstrapLogger({ env, cwd: request.cwd,
-      ...(budgets.logLockWaitMs === OWNER_STEP_BUDGETS.logLockWaitMs ? {} : { lockWaitMs: budgets.logLockWaitMs }) }),
-    // Detached work starts from the hook's environment, as the runtime would start it.
-    spawnHookMaintenance: (launch) => spawnHookMaintenance({ ...launch, env }),
-    spawnRetirement: (launch) => spawnRetirement({ ...launch, env }),
-    // The hub already owns question submission and answer waiting in-process.
-    spawnQuestionSettlement: (launch) => host.settle(launch.envelope.session_id ?? '', launch.harness,
-      launch.envelope.cwd ?? null, launch.purpose === 'submission' ? 'submission' : 'settlement'),
-    onSessionInputStaged: (sessionId) => host.inputStaged(sessionId),
-  }
-  delete deps.questionOwnerRole
-  delete deps.invokingNpmAdapterArtifact
   let code: number
   try {
-    // Git sees the hook's environment and is asked each question once, as in a runtime of its own.
-    code = await inHookScope(env, () =>
-      hookRunCommand(deps, request.event, async () => request.stdin.toString('utf8'), request.harness, request.integrationRevision))
+    // Everything, the logger's configuration read included, runs in the hook's
+    // scope: Git sees the hook's environment and is asked each question once.
+    code = await inHookScope(env, () => {
+      const deps: CommandDeps = {
+        ...host.deps,
+        env,
+        cwd: request.cwd,
+        io: {
+          // As `console.log`/`console.error` write one string.
+          out: (line) => { stdout.push(Buffer.from(`${line}\n`, 'utf8')) },
+          err: (line) => { stderr.push(Buffer.from(`${line}\n`, 'utf8')) },
+          interactive: false,
+          confirm: async (_question, fallback = false) => fallback,
+          openUrl: () => undefined,
+        },
+        // The hub's one read of the credential store: a hook never runs a credential helper.
+        store: host.cachedStore,
+        clientFactory: host.clientFactory,
+        // A logger of its own, under this hook's project settings, as the runtime starts one.
+        logger: bootstrapLogger({ env, cwd: request.cwd,
+          ...(budgets.logLockWaitMs === OWNER_STEP_BUDGETS.logLockWaitMs ? {} : { lockWaitMs: budgets.logLockWaitMs }) }),
+        // Detached work starts from the hook's environment, as the runtime would start it.
+        spawnHookMaintenance: (launch) => spawnHookMaintenance({ ...launch, env }),
+        spawnRetirement: (launch) => spawnRetirement({ ...launch, env }),
+        // The hub already owns question submission and answer waiting in-process.
+        spawnQuestionSettlement: (launch) => host.settle(launch.envelope.session_id ?? '', launch.harness,
+          launch.envelope.cwd ?? null, launch.purpose === 'submission' ? 'submission' : 'settlement'),
+        onSessionInputStaged: (sessionId) => host.inputStaged(sessionId),
+      }
+      delete deps.questionOwnerRole
+      delete deps.invokingNpmAdapterArtifact
+      return hookRunCommand(deps, request.event, async () => request.stdin.toString('utf8'), request.harness, request.integrationRevision)
+    })
   } catch {
     // A hook never fails its harness.
     code = 0
