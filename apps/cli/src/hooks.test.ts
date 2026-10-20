@@ -72,7 +72,7 @@ import {
   readProjectSession,
   writeProjectSession,
 } from './hook-project-sessions.js'
-import { acquireClaimFile, claimQuestionPush, releaseQuestionPush } from './hook-question-lock.js'
+import { acquireClaimFile, claimQuestionPush, releaseQuestionPush, supersedeQuestionOwner } from './hook-question-lock.js'
 import { attendantClaimPath, writeAttendantStatus } from './session-attendant-state.js'
 import { deliveryJournalPath, readDeliveryJournal } from './session-delivery.js'
 import { owedAcknowledgements, recordMessageAcknowledgementDue } from './hook-acknowledgements.js'
@@ -85,7 +85,9 @@ import {
 } from './hook-question-retirement.js'
 import { dropPendingQuestion, inspectQuestionState } from './hook-question-state.js'
 import {
+  beginSessionIncarnation,
   clearSessionState,
+  lifecycleStamp,
   pruneAbandonedSessions,
   readSessionEndMarker,
   readSessionIncarnation,
@@ -97,6 +99,7 @@ import {
 } from './hook-session-state.js'
 import { type PendingQuestion, type SessionState } from './hook-types.js'
 import { readOpenclawGeneration } from './openclaw-generation.js'
+import { processStartTime } from './process-identity.js'
 import { activeOpenclawGeneration, openclawOwnsMessage, openclawOwnsReply } from './openclaw-session-access.js'
 import { REPLY_MAX_WINDOW_SECONDS, type ClaimDeliveryAttemptRequestT } from '@raidiant/notifai-protocol'
 import { buildHookConfig, codexHookIdentityHash, codexTrustKey, findInstallations, QUESTION_STOP_TIMEOUT_SECONDS } from './install-hooks.js'
@@ -5657,6 +5660,176 @@ describe('durable state writes', () => {
  * Path-independent ownership stops the usual cause
  * of two handlers firing; this stops the consequence when something else does.
  */
+/**
+ * One current answer owner per session. A detached owner from an older
+ * runtime, or one that outlived its window, kept a session's questions after
+ * an update and every newer owner logged `claimed-elsewhere` behind it.
+ */
+describe('a newer answer owner taking over a session\'s questions', () => {
+  const live = (sessionId: string, overrides: Partial<PendingQuestion> = {}): PendingQuestion => ({
+    question: 'Ship it?', summary: 'Ship it?', question_id: `q_${sessionId}`, request_id: `req_${sessionId}`,
+    collapse_key: `notifai-hook-${sessionId}`, device_ids: ['dev_test'],
+    asked_at: NOW, reply_deadline_at: NOW + 480_000, owner_deadline_at: NOW + 600_000, ...overrides,
+  })
+  const claimFile = (env: NodeJS.ProcessEnv, sessionId: string): string =>
+    path.join(stateDir(env), 'sessions', `${sanitizeSessionId(sessionId)}.claim`)
+  /** A real, live process to stand in for the holder (its PID and start time are checked). */
+  const holderProcess = async (args: string[] = []): Promise<{ child: ChildProcess; start: string }> => {
+    const child = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)', ...args], { stdio: 'ignore' })
+    for (let attempt = 0; attempt < 100; attempt += 1) {
+      const start = processStartTime(child.pid!)
+      if (start !== null) return { child, start }
+      await new Promise((resolve) => setTimeout(resolve, 20))
+    }
+    child.kill('SIGKILL')
+    throw new Error('holder process never started')
+  }
+  const writeHolder = (env: NodeJS.ProcessEnv, sessionId: string, holder: Record<string, unknown>): void => {
+    mkdirSync(path.dirname(claimFile(env, sessionId)), { recursive: true })
+    writeFileSync(claimFile(env, sessionId), `${JSON.stringify({ at: Date.now(), token: 'holder-token', ...holder })}\n`)
+  }
+  const settlementCommand = 'notifai-runtime hook question-settlement --owner notifai --harness claude-code'
+
+  it('stops a waiting owner without touching its question once a successor takes its claim', async () => {
+    const h = harness([])
+    const sessionId = 'owner-yields'
+    writeSessionState(sessionId, h.env, { last_prompt_at: AWAY, pending: [live(sessionId)] })
+    let handedOver = false
+    h.deps.sleep = async (milliseconds: number) => {
+      h.advanceClock(milliseconds)
+      if (!handedOver && h.deps.now!() >= NOW + 60_000) {
+        // What `supersedeQuestionOwner` does from the successor's process.
+        const held = JSON.parse(readFileSync(claimFile(h.env, sessionId), 'utf8')) as Record<string, unknown>
+        expect(held).toMatchObject({ yields: true, owner_role: 'detached' })
+        writeFileSync(claimFile(h.env, sessionId), `${JSON.stringify({ ...held, token: 'successor', handoff: true, handoff_from: held['token'] })}\n`)
+        handedOver = true
+      }
+    }
+
+    await hookRunCommand(h.deps, 'question-settlement', stdin({ session_id: sessionId, cwd: h.deps.cwd }), 'codex')
+
+    expect(handedOver).toBe(true)
+    expect(h.deps.now!()).toBeLessThan(NOW + 480_000)
+    expect(h.recorder.closed).toEqual([])
+    expect(readSessionState(sessionId, h.env).pending?.map((entry) => entry.request_id)).toEqual([`req_${sessionId}`])
+    // Released for the successor even though the token is no longer this owner's.
+    expect(existsSync(claimFile(h.env, sessionId))).toBe(false)
+    expect(h.io.errLines.join('\n')).toContain('handed this session\'s questions to a newer answer owner')
+  })
+
+  it('stops an older runtime\'s detached owner and takes its questions over', async () => {
+    const h = harness([])
+    const sessionId = 'owner-legacy'
+    writeSessionState(sessionId, h.env, { last_prompt_at: AWAY, pending: [live(sessionId, { reply_deadline_at: NOW + 30_000 })] })
+    const { child, start } = await holderProcess(['hook', 'question-settlement', '--owner', 'notifai', '--harness', 'codex'])
+    const exited = new Promise<NodeJS.Signals | null>((resolve) => child.once('exit', (_code, signal) => resolve(signal)))
+    // What 13.0.0 wrote: no runtime version, no hand-off support.
+    writeHolder(h.env, sessionId, { pid: child.pid, start, pending_question_ids: [`q_${sessionId}`], owner_deadline_at: NOW + 600_000 })
+    h.deps.sleep = async (milliseconds: number) => {
+      h.advanceClock(milliseconds)
+      // Signals are delivered in real time; the virtual clock must not outrun them.
+      if (child.exitCode === null && child.signalCode === null) await new Promise((resolve) => setTimeout(resolve, 20))
+    }
+
+    try {
+      await hookRunCommand(h.deps, 'question-settlement', stdin({ session_id: sessionId, cwd: h.deps.cwd }), 'codex')
+      expect(await exited).toBe('SIGTERM')
+      // The new owner observed the question to its deadline and settled it.
+      expect(h.recorder.closed).toEqual([`req_${sessionId}`])
+      expect(h.io.errLines.join('\n')).not.toContain('already handling')
+    } finally {
+      child.kill('SIGKILL')
+    }
+  })
+
+  it('never stops a Stop hook, a process that is not an answer owner, or an answer mid-delivery', async () => {
+    const h = harness([])
+    const { child, start } = await holderProcess()
+    const signalled: number[] = []
+    const seams = (command: string | null) => ({ commandLine: () => command, signal: (pid: number) => { signalled.push(pid) } })
+    try {
+      writeSessionState('stop-holder', h.env, { pending: [live('stop-holder')] })
+      writeHolder(h.env, 'stop-holder', { pid: child.pid, start, owner_role: 'stop', yields: true, runtime_version: '1.0.0' })
+      expect(supersedeQuestionOwner('stop-holder', h.env, 'hub', Date.now(), seams(settlementCommand))).toEqual({ action: 'none' })
+
+      writeSessionState('not-an-owner', h.env, { pending: [live('not-an-owner')] })
+      writeHolder(h.env, 'not-an-owner', { pid: child.pid, start })
+      expect(supersedeQuestionOwner('not-an-owner', h.env, 'hub', Date.now(), seams('/bin/zsh -l'))).toEqual({ action: 'none' })
+
+      writeSessionState('mid-delivery', h.env, {
+        pending: [live('mid-delivery')],
+        accepted: { recorded_at: NOW, remaining: 0, answers: [] },
+      })
+      writeHolder(h.env, 'mid-delivery', { pid: child.pid, start })
+      expect(supersedeQuestionOwner('mid-delivery', h.env, 'hub', Date.now(), seams(settlementCommand))).toEqual({ action: 'none' })
+
+      writeSessionState('legacy-owner', h.env, { pending: [live('legacy-owner')] })
+      writeHolder(h.env, 'legacy-owner', { pid: child.pid, start })
+      expect(supersedeQuestionOwner('legacy-owner', h.env, 'detached', Date.now(), seams(settlementCommand)))
+        .toEqual({ action: 'signalled', pid: child.pid, reason: 'older-runtime' })
+      expect(signalled).toEqual([child.pid])
+    } finally {
+      child.kill('SIGKILL')
+    }
+  })
+
+  it('asks a current owner to step aside only when it is older, outlived its window, or detached under the hub', async () => {
+    const h = harness([])
+    const { child, start } = await holderProcess()
+    const version = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8')).version as string
+    const cooperative = { pid: child.pid, start, yields: true, owner_role: 'detached', runtime_version: version }
+    const case_ = (sessionId: string, holder: Record<string, unknown>, role: 'detached' | 'hub', now = Date.now()) => {
+      writeSessionState(sessionId, h.env, { pending: [live(sessionId)] })
+      writeHolder(h.env, sessionId, { ...cooperative, ...holder })
+      return supersedeQuestionOwner(sessionId, h.env, role, now)
+    }
+    try {
+      expect(case_('peer', {}, 'detached')).toEqual({ action: 'none' })
+      expect(case_('peer-hub', { owner_role: 'hub' }, 'hub')).toEqual({ action: 'none' })
+      expect(case_('newer', { runtime_version: '999.0.0' }, 'hub')).toEqual({ action: 'none' })
+      expect(case_('older', { runtime_version: '1.0.0' }, 'detached')).toMatchObject({ action: 'asked', reason: 'older-runtime' })
+      expect(case_('outlived', { owner_deadline_at: 1_000 }, 'detached')).toMatchObject({ action: 'asked', reason: 'outlived-window' })
+      expect(case_('under-hub', {}, 'hub')).toMatchObject({ action: 'asked', reason: 'hub-owns-sessions' })
+      const asked = JSON.parse(readFileSync(claimFile(h.env, 'under-hub'), 'utf8')) as Record<string, unknown>
+      expect(asked).toMatchObject({ handoff: true, handoff_from: 'holder-token', pid: child.pid })
+      expect(asked['token']).not.toBe('holder-token')
+      expect(child.exitCode).toBeNull()
+    } finally {
+      child.kill('SIGKILL')
+    }
+  })
+
+  it('closes the session itself when its host process is gone, instead of waiting out the window', async () => {
+    const h = harness([])
+    const sessionId = 'host-gone'
+    const { child, start } = await holderProcess()
+    beginSessionIncarnation(sessionId, h.env, { stamp: lifecycleStamp(), harnessProcess: { pid: child.pid!, start } })
+    writeSessionState(sessionId, h.env, { ...readSessionState(sessionId, h.env), last_prompt_at: AWAY, pending: [live(sessionId)] })
+    let killed = false
+    h.deps.sleep = async (milliseconds: number) => {
+      h.advanceClock(milliseconds)
+      if (!killed && h.deps.now!() >= NOW + 60_000) {
+        killed = true
+        const gone = new Promise((resolve) => child.once('exit', resolve))
+        child.kill('SIGKILL')
+        await gone
+      }
+    }
+    try {
+      await hookRunCommand(h.deps, 'question-settlement', stdin({ session_id: sessionId, cwd: h.deps.cwd }), 'codex')
+      expect(killed).toBe(true)
+      expect(h.deps.now!()).toBeLessThan(NOW + 480_000)
+      expect(sessionHasEnded(sessionId, h.env)).toBe(true)
+      expect(readSessionState(sessionId, h.env).pending ?? []).toEqual([])
+      // The service hears of the close, so the question expires on the phone too.
+      expect(h.recorder.attended?.map((entry) => entry.body.state)).toContain('ended')
+      expect(h.io.errLines.join('\n')).toContain('answer ownership ended locally')
+    } finally {
+      child.kill('SIGKILL')
+    }
+  })
+})
+
 describe('two hooks racing one question', () => {
   const REAL = Date.now()
 

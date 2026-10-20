@@ -1,5 +1,6 @@
 /** Cross-process ownership for exactly-once question escalation. */
 import { currentRuntimeBuild } from './launch-self.js'
+import { execFileSync } from 'node:child_process'
 import { randomBytes } from 'node:crypto'
 import {
   closeSync,
@@ -15,8 +16,10 @@ import { sanitizeSessionId, stateDir } from './config.js'
 import { pendingList, readSessionState } from './hook-session-state.js'
 import type { PendingQuestion } from './hook-types.js'
 import { currentProcessIdentity, pidExists, processIdentityLiveness } from './process-identity.js'
-import { LEGACY_QUESTION_CLAIM_TTL_SECONDS } from './question-timing.js'
+import { LEGACY_QUESTION_CLAIM_TTL_SECONDS, QUESTION_STOP_TEARDOWN_HEADROOM_SECONDS } from './question-timing.js'
 import { atomicWriteFileSync } from './atomic-file.js'
+import { packageVersion } from './release.js'
+import { compareVersions } from './version.js'
 /**
  * One question, one push, even with two Stop hooks racing.
  *
@@ -48,22 +51,34 @@ const CLAIM_GUARD_TTL_MS = 30_000
 
 const heldClaims = new Map<string, string>()
 
+/**
+ * Who owns a session's questions: a Stop hook (which may be holding the
+ * harness's turn end), a detached owner process, or the hub in-process.
+ */
+export type QuestionOwnerRole = 'stop' | 'detached' | 'hub'
+
 export function claimQuestionPush(
   sessionId: string,
   env: NodeJS.ProcessEnv,
   now: number = Date.now(),
   beforeStaleReplace?: () => void,
   ownerDeadlineAt?: number,
+  role: QuestionOwnerRole = 'stop',
 ): boolean {
   const file = claimPath(sessionId, env)
   const pendingQuestionIds = pendingList(readSessionState(sessionId, env)).map(
     claimQuestionIdentity,
   )
+  const version = packageVersion()
   const token = acquireClaimFile(
     file,
     {
       pending_question_ids: pendingQuestionIds,
       ...(ownerDeadlineAt === undefined ? {} : { owner_deadline_at: ownerDeadlineAt }),
+      owner_role: role,
+      ...(version === null ? {} : { runtime_version: version }),
+      // This owner watches its claim and steps aside when asked (`questionPushHeld`).
+      yields: true,
     },
     now,
     beforeStaleReplace,
@@ -71,6 +86,122 @@ export function claimQuestionPush(
   if (token === null) return false
   heldClaims.set(file, token)
   return true
+}
+
+/**
+ * Whether this process still holds the question claim it took. False once a
+ * successor asked it to step aside (or the claim was otherwise replaced): the
+ * owner then stops without consuming, closing or retiring anything, and the
+ * successor observes the same questions from where it left them.
+ */
+export function questionPushHeld(sessionId: string, env: NodeJS.ProcessEnv): boolean {
+  const file = claimPath(sessionId, env)
+  const token = heldClaims.get(file)
+  return token !== undefined && readClaimFile(file)?.['token'] === token
+}
+
+/** How long a background owner waits for an older owner to give way. */
+export const QUESTION_OWNER_SUPERSEDE_WAIT_MS = 45_000
+
+export type QuestionOwnerSupersession =
+  | { action: 'none' }
+  | { action: 'asked' | 'signalled'; pid: number; reason: 'older-runtime' | 'outlived-window' | 'hub-owns-sessions' }
+
+/**
+ * A background owner (`detached` or `hub`) meets a live holder of the
+ * session's question claim. One current owner per session is the rule, so it
+ * takes over from a holder that is
+ * - from an older runtime (any holder that predates this field is older);
+ * - past its own owner deadline plus teardown, i.e. outlived its window; or
+ * - a detached owner, when the hub itself asks (the hub owns questions where
+ *   it runs, and wakes the session through its child).
+ *
+ * A holder that honours hand-off requests is asked: its token changes, it
+ * notices before or after its next reply poll and stops without touching the
+ * questions. An older holder cannot be asked, so it is stopped with SIGTERM,
+ * only when it is provably a detached `hook question-settlement` process
+ * (never a Stop hook holding a turn) and no accepted answer is mid-delivery;
+ * the successor then continues exactly as after a crash of that process.
+ * A Stop hook is never superseded: it may be holding the harness's turn end.
+ */
+export function supersedeQuestionOwner(
+  sessionId: string,
+  env: NodeJS.ProcessEnv,
+  role: Exclude<QuestionOwnerRole, 'stop'>,
+  now: number = Date.now(),
+  seams: { commandLine?: (pid: number) => string | null; signal?: (pid: number) => void } = {},
+): QuestionOwnerSupersession {
+  const file = claimPath(sessionId, env)
+  const holder = readClaimFile(file)
+  if (holder === null || typeof holder['pid'] !== 'number' || typeof holder['start'] !== 'string' ||
+      typeof holder['token'] !== 'string' || holder['pid'] === process.pid || holder['owner_role'] === 'stop') return { action: 'none' }
+  const pid = holder['pid']
+  if (processIdentityLiveness({ pid, start: holder['start'] }) !== 'alive') return { action: 'none' }
+  const ours = packageVersion()
+  const theirs = typeof holder['runtime_version'] === 'string' ? holder['runtime_version'] : null
+  const order = theirs === null || ours === null ? 'unparseable' : compareVersions(theirs, ours)
+  const cooperative = holder['yields'] === true
+  const deadline = holder['owner_deadline_at']
+  const reason = !cooperative || order === 'before' ? 'older-runtime' as const
+    : typeof deadline === 'number' && now > deadline + QUESTION_STOP_TEARDOWN_HEADROOM_SECONDS * 1000 ? 'outlived-window' as const
+      : role === 'hub' && holder['owner_role'] === 'detached' && order !== 'after' ? 'hub-owns-sessions' as const
+        : null
+  if (reason === null) return { action: 'none' }
+  if (cooperative) {
+    if (holder['handoff'] === true || requestQuestionOwnerHandoff(file, holder['token'])) return { action: 'asked', pid, reason }
+    return { action: 'none' }
+  }
+  // An older runtime has no way to be asked. Stop it only when it is a
+  // detached answer owner and stopping it cannot cut an answer in half.
+  if (readSessionState(sessionId, env).accepted !== undefined) return { action: 'none' }
+  const command = (seams.commandLine ?? processCommandLine)(pid)
+  if (command === null || !/\bhook question-settlement\b/.test(command)) return { action: 'none' }
+  const guard = `${file}.guard`
+  if (!acquireClaimGuard(guard)) return { action: 'none' }
+  try {
+    const current = readClaimFile(file)
+    if (current?.['token'] !== holder['token'] || current['pid'] !== pid ||
+        processIdentityLiveness({ pid, start: holder['start'] }) !== 'alive') return { action: 'none' }
+    try {
+      (seams.signal ?? ((target: number) => process.kill(target, 'SIGTERM')))(pid)
+    } catch {
+      return { action: 'none' }
+    }
+    return { action: 'signalled', pid, reason }
+  } finally {
+    rmSync(guard, { force: true })
+  }
+}
+
+/** Ask a live, hand-off-aware question owner to step aside. */
+function requestQuestionOwnerHandoff(file: string, expectedToken: string): boolean {
+  const guard = `${file}.guard`
+  if (!acquireClaimGuard(guard)) return false
+  try {
+    const holder = readClaimFile(file)
+    if (holder?.['token'] !== expectedToken || holder['yields'] !== true) return false
+    atomicWriteFileSync(file, `${JSON.stringify({ ...holder, token: randomBytes(12).toString('base64url'),
+      handoff: true, handoff_from: expectedToken })}\n`)
+    return true
+  } finally {
+    rmSync(guard, { force: true })
+  }
+}
+
+/** The full command line of a process (POSIX `ps`), or null. */
+function processCommandLine(pid: number): string | null {
+  if (process.platform === 'win32') return null
+  try {
+    const output = execFileSync('ps', ['-o', 'command=', '-p', String(pid)], {
+      encoding: 'utf8',
+      env: { PATH: process.env['PATH'] ?? '/bin:/usr/bin', LC_ALL: 'C' },
+      stdio: ['ignore', 'pipe', 'ignore'],
+      timeout: 2_000,
+    }).trim()
+    return output === '' ? null : output
+  } catch {
+    return null
+  }
 }
 
 /**
@@ -221,8 +352,17 @@ export function releaseQuestionPush(sessionId: string, env: NodeJS.ProcessEnv): 
   const token = heldClaims.get(file)
   if (token === undefined) return
   heldClaims.delete(file)
-  // Missing or replaced claims are not ours to release.
-  releaseClaimFile(file, token)
+  // Missing or replaced claims are not ours to release; a claim a successor
+  // asked this owner to hand over is, so the successor can take it now.
+  const guard = `${file}.guard`
+  if (!acquireClaimGuard(guard)) return
+  try {
+    const holder = readClaimFile(file)
+    if (holder?.['token'] === token || (holder?.['handoff'] === true && holder['handoff_from'] === token &&
+        holder['pid'] === process.pid)) rmSync(file, { force: true })
+  } finally {
+    rmSync(guard, { force: true })
+  }
 }
 
 /** The guard serializes stale replacement and release; recover a crashed guard. */
