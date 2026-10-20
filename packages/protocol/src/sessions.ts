@@ -299,7 +299,9 @@ export type AttendanceBatchRequestT = Static<typeof AttendanceBatchRequest>
 /**
  * One entry's outcome, in request order. `unknown_session` replaces the
  * per-session 404; `unknown_successor` refuses a `continued` end whose
- * successor is not an Agent Session of this Account, changing nothing.
+ * successor is not another Agent Session of this Account or has already
+ * ended, changing nothing. The per-session route answers it with a 404 whose
+ * `details.reason` is `unknown_successor`.
  */
 export type AttendanceBatchResult = { session_id: string } & (
   | AttendanceResponse
