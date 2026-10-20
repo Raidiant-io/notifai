@@ -16,7 +16,7 @@ import {
   questionsAwaitingAnswer,
   recordConfirmedNativeAnswerTarget,
 } from './native-answer-operation.js'
-import { markCodexOrdinaryPresentation, mayRetireFromPrompt, nativeFormMayAnswer, reserveCurrentCodexQuestion, type NativeQuestionAdmission } from './codex-question-bindings.js'
+import { markCodexOrdinaryPresentation, markNativeQuestionsDismissed, mayRetireFromPrompt, nativeFormMayAnswer, reserveCurrentCodexQuestion, type NativeQuestionAdmission } from './codex-question-bindings.js'
 import { isDeepStrictEqual } from 'node:util'
 import { currentCodexTurn } from './session-attendant-state.js'
 import { reserveClaudeQuestion } from './claude-question-bindings.js'
@@ -2464,6 +2464,10 @@ async function escalate(
       .map((entry) => entry.pending)
     const unproven = finalized.filter((entry) => entry.response === null)
     if (confirmedSilent.length > 0) {
+      // Dismissed on a device: a picker still showing one of these closes and says so.
+      const dismissed = new Set(confirmedSilent.flatMap(entry =>
+        entry.question_id !== undefined && waited.closed.has(entry.request_id!) ? [entry.question_id] : []))
+      if (dismissed.size > 0) updateSessionState(sessionId, ctx.env, state => markNativeQuestionsDismissed(state, dismissed))
       await retirePendings(ctx, envelope, sessionId, confirmedSilent, 'expired')
     }
     if (unproven.length > 0) {

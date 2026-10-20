@@ -28,6 +28,7 @@ import {
   SUMMARY_MAX_LENGTH,
   type QuestionT,
   type ReplyAnswerT,
+  type ReplyAnswerView,
 } from '@raidiant/notifai-protocol'
 import type { ServiceIdentity } from './credentials.js'
 import type {
@@ -280,45 +281,70 @@ function pickerLabel(binding: CodexQuestionBinding, choiceId: string): string | 
   return binding.picker?.labels[choiceId] ?? binding.question.choices?.find((choice) => choice.id === choiceId)?.label
 }
 
+/** Joins the answers one question received in several replies, in the order written. */
+const LATER_PART = '; then '
+
 /**
- * The app answer this registration's picker can carry, as the picker's own
- * answers: each question's picker text mapped to its chosen picker labels, or
- * to the typed text. Null keeps the ordinary path: a partial answer, a
- * multipart reply, another Machine's question, or anything already presented.
+ * One question's answer in one reply as the picker's own value: the chosen
+ * picker labels, then any typed text. Null when the reply did not answer it.
+ */
+function pickerValue(binding: CodexQuestionBinding, part: ReplyAnswerView | undefined): { value: string; typed: boolean } | null {
+  if (part === undefined) return null
+  const labels = [...new Set(part.choice_ids ?? [])].flatMap((id) => {
+    const label = pickerLabel(binding, id)
+    return label === undefined ? [] : [label]
+  })
+  const typed = part.text?.trim() ?? ''
+  const value = [...labels, ...(typed === '' ? [] : [typed])].join(', ')
+  return value === '' ? null : { value, typed: typed !== '' }
+}
+
+/**
+ * The device answer as this registration's picker result: each answered
+ * question's exact picker text mapped to its picker labels or typed text.
+ * Every reply the device sent counts, in the order written. A question no
+ * reply answered is left out, as Claude Code leaves out a question the User
+ * skips in the picker. When a question was answered more than once, a later
+ * choice corrects an earlier one, as it does on every other route, and
+ * answers with typed text are all kept in order, so the agent can tell an
+ * addition from a correction.
+ *
+ * Null only when this is not the picker's own answer to give: unclaimed,
+ * another Machine's, another question's, or one already presented another
+ * way. That answer goes the ordinary route.
  */
 export function claudePickerAnswers(
   registration: CodexQuestionRegistration,
   answer: AnsweredPending,
   service: ServiceIdentity,
 ): Record<string, string> | null {
-  if (answer.delivery_claim !== true || answer.replies.length !== 1 || !isDeepStrictEqual(answer.reply, answer.replies[0]) ||
+  if (answer.delivery_claim !== true ||
       !isDeepStrictEqual(answer.pending.service_identity, service) || !isClaudeRegistration(registration) ||
       registration.ordinary_only === true || registration.terminated === true ||
       registration.question_id !== answer.pending.question_id ||
       registration.confirmed_request_id === undefined || registration.confirmed_request_id !== answer.pending.request_id ||
       !isDeepStrictEqual(registration.service_identity, service) ||
       !isDeepStrictEqual(registration.questions.map((item) => item.question), answer.pending.questions)) return null
-  const parts = answer.reply.answers
-  if (parts.length !== registration.questions.length ||
-      new Set(parts.map((part) => part.question_id)).size !== parts.length) return null
+  const replies = [...(answer.replies.length > 0 ? answer.replies : [answer.reply])].sort((a, b) => a.seq - b.seq)
   const answers: Record<string, string> = {}
   for (const binding of registration.questions) {
-    const part = parts.find((entry) => entry.question_id === binding.question.id)
-    if (part === undefined || binding.verified !== true || binding.ambiguous === true) return null
-    const choices = part.choice_ids ?? []
-    if (new Set(choices).size !== choices.length || (binding.question.multi !== true && choices.length > 1)) return null
-    const labels: string[] = []
-    for (const id of choices) {
-      const label = pickerLabel(binding, id)
-      if (label === undefined) return null
-      labels.push(label)
+    if (binding.verified !== true || binding.ambiguous === true) return null
+    const values: Array<{ value: string; typed: boolean }> = []
+    for (const reply of replies) {
+      const given = pickerValue(binding, reply.answers.findLast((part) => part.question_id === binding.question.id))
+      if (given !== null && given.value !== values.at(-1)?.value) values.push(given)
     }
-    const typed = part.text?.trim()
-    const value = [...labels, ...(typed ? [typed] : [])].join(', ')
-    if (value === '') return null
-    answers[pickerTitle(binding)] = value
+    if (values.length === 0) continue
+    answers[pickerTitle(binding)] = values.some((entry) => entry.typed)
+      ? values.map((entry) => entry.value).join(LATER_PART)
+      : values.at(-1)!.value
   }
-  return answers
+  return Object.keys(answers).length === 0 ? null : answers
+}
+
+/** The picker's questions an answer left out, by their exact picker text. */
+export function claudePickerUnanswered(registration: CodexQuestionRegistration, answers: Record<string, string>): string[] {
+  return registration.questions.map(pickerTitle).filter((title) => !Object.hasOwn(answers, title))
 }
 
 /**

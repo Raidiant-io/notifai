@@ -47,6 +47,8 @@ export interface CodexQuestionRegistration {
   ordinary_only?: true
   /** Explicit retirement/withdrawal cannot become native authority again. */
   terminated?: true
+  /** The User dismissed the question on a device: no answer will come, so a form still showing it closes. */
+  dismissed?: true
 }
 
 /** The text the native form must show for this question. */
@@ -197,6 +199,13 @@ export function markCodexOrdinaryPresentation(state: SessionState, questionIds: 
 export function nativeFormMayAnswer(state: SessionState, questionId: string | undefined): boolean {
   return questionId !== undefined && state.codex_question_bindings?.some(item =>
     item.question_id === questionId && item.ordinary_only !== true && item.terminated !== true) === true
+}
+
+/** The User dismissed these questions on a device. Written before they retire, so a waiting form sees why. */
+export function markNativeQuestionsDismissed(state: SessionState, questionIds: ReadonlySet<string>): SessionState {
+  if (!state.codex_question_bindings?.some(item => questionIds.has(item.question_id))) return state
+  return { ...state, codex_question_bindings: state.codex_question_bindings.map(item =>
+    questionIds.has(item.question_id) ? { ...item, dismissed: true as const } : item) }
 }
 
 /** Explicit cancellation only, in the transaction selecting the questions. */

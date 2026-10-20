@@ -192,6 +192,13 @@ export interface SessionState {
     receipt: string
     at: number
   }
+  /**
+   * A picker Notifai closed with no answer of its own to return, because the
+   * User dismissed its question on a device or answered there in a way the
+   * picker could not carry. Its tool result says only that the picker got no
+   * answer; this is the context that says why, read once.
+   */
+  claude_picker_closed?: { question_id: string; digest: string; context: string }
   /** A content-free native wake is outstanding for this incarnation. */
   input_wake?: {
     incarnation: string; token: string; queued: boolean; writer: ProcessIdentity

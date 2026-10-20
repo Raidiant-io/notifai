@@ -386,7 +386,7 @@ export async function hookRunCommand(
       const outcome = harness === 'claude-code'
         ? await claudePermissionRequest(deps, envelope, logger, { signalled })
         : 'not-bound'
-      logger.info('hook.end', { hook: event, outcome, decided: outcome === 'answered' })
+      logger.info('hook.end', { hook: event, outcome, decided: outcome === 'answered' || outcome === 'closed' })
     } catch (err) {
       logger.error('hook.end', { hook: event, outcome: 'ignored', ...failureData(err) })
     } finally {

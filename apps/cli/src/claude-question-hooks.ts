@@ -28,6 +28,7 @@ import {
   CLAUDE_PICKER_TURN,
   CLAUDE_QUESTION_TOOL,
   claudePickerAnswers,
+  claudePickerUnanswered,
   claudeTerminalAnswers,
   isClaudeRegistration,
   pickerDigest,
@@ -56,7 +57,7 @@ import {
   updateSessionState,
 } from './hook-session-state.js'
 import type { AnsweredPending, HookContext, HookEnvelope, SessionState } from './hook-types.js'
-import { TRANSPORT_LIMIT } from './injection-render.js'
+import { TRANSPORT_LIMIT, quoted } from './injection-render.js'
 import type { Logger } from './logging.js'
 import {
   executeNativeAnswerOperation,
@@ -173,16 +174,19 @@ export function closeClaudePicker(
 
 /**
  * An app answer that was returned through a picker and never confirmed by its
- * tool result, as context for the next prompt. Read once.
+ * tool result, or why a picker was closed without one, as context for the
+ * next prompt. Read once.
  */
 export function takeOwedClaudePickerAnswer(sessionId: string, env: NodeJS.ProcessEnv): string | null {
-  if (readSessionState(sessionId, env).claude_picker_presented === undefined) return null
+  const known = readSessionState(sessionId, env)
+  if (known.claude_picker_presented === undefined && known.claude_picker_closed === undefined) return null
   let context: string | null = null
   updateSessionState(sessionId, env, (state) => {
-    if (state.claude_picker_presented === undefined) return state
-    context = state.claude_picker_presented.context
+    if (state.claude_picker_presented === undefined && state.claude_picker_closed === undefined) return state
+    context = [state.claude_picker_presented?.context, state.claude_picker_closed?.context].filter(Boolean).join('\n\n')
     const next = { ...state }
     delete next.claude_picker_presented
+    delete next.claude_picker_closed
     return next
   })
   return context
@@ -195,6 +199,30 @@ function pickerDecision(toolInput: unknown, answers: Record<string, string>): st
       decision: { behavior: 'allow', updatedInput: { ...(toolInput as Record<string, unknown>), answers } },
     },
   })
+}
+
+/**
+ * Context the agent reads beside a picker result of "no answer", when a
+ * device answer exists that could not come back through the picker. It
+ * carries none of the answer: the ordinary route delivers that exactly once,
+ * with its acknowledgement, as soon as the session is free to take it, which
+ * a picker left open would prevent.
+ */
+export const CLAUDE_PICKER_ANSWER_FOLLOWS =
+  'Notifai — the user answered this question on their device instead. That answer could not come back through the picker, ' +
+  'so it reaches you as your next message. End your turn now and act on the answer when it arrives.'
+
+/** Context the agent reads beside a picker result of "no answer" when the User dismissed the question on a device. */
+export const CLAUDE_PICKER_DISMISSED =
+  'Notifai — the user dismissed this question on their device, so it will not be answered. Carry on without an answer to it.'
+
+/**
+ * Close the picker with no answer of its own. Claude Code reports that the
+ * User did not answer, without an error; the context saying why follows from
+ * `PostToolUse`, or with the next prompt if that never runs.
+ */
+function pickerClosedDecision(toolInput: unknown): string {
+  return pickerDecision(toolInput, {})
 }
 
 type Registered = { questionId: string } | { reason: string; detail?: Record<string, unknown> }
@@ -285,10 +313,13 @@ function pickerPresentation(input: {
 }): NativeInputAnswers {
   const mine = (state: SessionState): boolean =>
     state.claude_picker?.question_id === input.questionId && sameProcess(state.claude_picker.waiter, input.writer)
-  const answersFor = (answers: AnsweredPending[], state: SessionState): Record<string, string> | null => {
-    if (!mine(state) || answers.length !== 1) return null
+  const registered = (state: SessionState): CodexQuestionRegistration | null => {
     const registration = registrationOf(state, input.questionId)
-    if (registration === undefined || registration.owner_key !== input.ownerKey) return null
+    return registration === undefined || registration.owner_key !== input.ownerKey ? null : registration
+  }
+  const answersFor = (answers: AnsweredPending[], state: SessionState): Record<string, string> | null => {
+    const registration = registered(state)
+    if (!mine(state) || answers.length !== 1 || registration === null) return null
     return claudePickerAnswers(registration, answers[0]!, input.service)
   }
   return {
@@ -325,12 +356,14 @@ function pickerPresentation(input: {
           updateSessionState(input.sessionId, input.env, latest => {
             valid = validate(latest).valid && mayWrite()
             if (!valid) return latest
+            const skipped = claudePickerUnanswered(registered(latest)!, answers)
             return { ...latest, claude_picker_presented: {
               question_id: answer.pending.question_id!,
               request_id: answer.pending.request_id!,
               answers,
               context: answersContext(selected, pendingList(latest).length),
-              receipt: acknowledgementContext(selected) + TRANSPORT_LIMIT,
+              receipt: (skipped.length === 0 ? '' : ` The user left ${skipped.map(quoted).join(' and ')} unanswered.`) +
+                acknowledgementContext(selected) + TRANSPORT_LIMIT,
               at: input.wall(),
             } }
           })
@@ -356,6 +389,13 @@ export interface ClaudePickerSeams {
  * `PermissionRequest` for `AskUserQuestion`. Returns having written either one
  * decision or nothing; nothing leaves the picker to the terminal.
  *
+ * Once the User answered on a device the picker never stays open: the hook
+ * returns the answer as the picker's own result (`answered`), or, when it
+ * cannot, closes the picker so the ordinary route can deliver it (`closed`).
+ * A question the User dismissed on a device closes its picker too, saying so.
+ * Only a picker nobody answered or dismissed on a device is left to the
+ * terminal.
+ *
  * A picker in a Project the User has not enabled stays in the terminal, as
  * does a subagent's: Claude Code does not give its subagents this tool, and
  * the device answer would be owed to the agent that owns the session's
@@ -366,7 +406,7 @@ export async function claudePermissionRequest(
   envelope: HookEnvelope,
   logger: Logger,
   seams: ClaudePickerSeams = {},
-): Promise<'answered' | 'left-to-terminal' | 'not-bound'> {
+): Promise<'answered' | 'closed' | 'left-to-terminal' | 'not-bound'> {
   const sessionId = envelope.session_id
   if (envelope.tool_name !== CLAUDE_QUESTION_TOOL || sessionId === undefined) return 'not-bound'
   const terminalOnly = (reason: string, detail: Record<string, unknown> = {}): 'not-bound' => {
@@ -424,6 +464,26 @@ export async function claudePermissionRequest(
     return 'left-to-terminal'
   }
 
+  /**
+   * A device answer exists that this picker cannot return: close the picker
+   * instead of leaving it on screen. While it is open the session cannot take
+   * the ordinary route's wake, so the answer would wait for someone at the
+   * terminal. The device question stays answered and the answer stays queued.
+   */
+  const close = (context: string, reason: string, stage: string): 'closed' => {
+    updateSessionState(sessionId, deps.env, (state) => {
+      const next = holding(state) ? withoutPicker(state) : state
+      return { ...next, claude_picker_closed: { question_id: questionId, digest, context } }
+    })
+    deps.io.out(pickerClosedDecision(envelope.tool_input))
+    logger.info('hook.gate', { hook: 'permission-request', reason, question_ids: [questionId], stage })
+    return 'closed'
+  }
+  const closeForAnswer = (stage: string): 'closed' => close(CLAUDE_PICKER_ANSWER_FOLLOWS, 'answer-follows', stage)
+  const answerOnItsWay = (state: SessionState): boolean =>
+    state.waiting_answers?.some(answer => answer.pending.question_id === questionId) === true ||
+    state.accepted?.answers.some(answer => answer.pending.question_id === questionId) === true
+
   let stagedSince: number | null = null
   for (;;) {
     // Esc, a session ending, or this handler's own timeout: the picker has no answer to wait for.
@@ -436,24 +496,27 @@ export async function claudePermissionRequest(
       return 'left-to-terminal'
     }
     const registration = registrationOf(state, questionId)
-    if (registration === undefined || registration.terminated === true || registration.ordinary_only === true) return leave('question-closed')
+    // The User dismissed the question on a device: nobody will answer it there, so the session must not wait on it.
+    if (registration?.dismissed === true && !answerOnItsWay(state)) return close(CLAUDE_PICKER_DISMISSED, 'dismissed', 'question-dismissed')
+    if (registration === undefined || registration.terminated === true || registration.ordinary_only === true) {
+      return answerOnItsWay(state) ? closeForAnswer('question-closed') : leave('question-closed')
+    }
+    if (!answerOnItsWay(state)) {
+      // Nobody answered on a device: the question expired or was retired, and the terminal still can.
+      if (!pendingList(state).some(pending => pending.question_id === questionId)) return leave('question-settled')
+      stagedSince = null
+      await sleep(CLAUDE_PICKER_POLL_MS)
+      continue
+    }
+    stagedSince ??= monotonic()
     const waiting = state.waiting_answers?.find(answer => answer.pending.question_id === questionId)
-    if (waiting === undefined) {
-      if (state.accepted?.answers.some(answer => answer.pending.question_id === questionId)) {
-        stagedSince ??= monotonic()
-        if (monotonic() - stagedSince >= CLAUDE_PICKER_HANDOVER_MS) return leave('handover-timed-out')
-      } else if (!pendingList(state).some(pending => pending.question_id === questionId)) {
-        return leave('question-settled')
-      } else {
-        stagedSince = null
-      }
-    } else {
+    if (waiting !== undefined) {
       const credential = deps.store.load()
       const service = credential === null ? null : { base_url: credential.baseUrl, machine_id: credential.machineId }
+      // Not this picker's answer to give (unclaimed, or another Machine's): it can only go the ordinary route.
       if (credential === null || service === null || claudePickerAnswers(registration, waiting, service) === null) {
-        return leave('answer-needs-ordinary-route')
+        return closeForAnswer('answer-needs-ordinary-route')
       }
-      stagedSince ??= monotonic()
       const lease = readAttendantLease(sessionId, deps.env)
       if (lease === null || lease.incarnation === incarnation.incarnation) {
         const deadlineAt = now() + 2_000
@@ -467,34 +530,42 @@ export async function claudePermissionRequest(
             : current?.incarnation === lease.incarnation && current.generation === lease.generation
         }
         let written = false
-        const drained = await drainSessionInputs({
-          lease,
-          mayWrite,
-          nativeOnly: true,
-          nativeAnswers: pickerPresentation({
-            sessionId, env: deps.env, lease, incarnation: incarnation.incarnation, ownerKey: incarnation.key,
-            questionId, toolInput: envelope.tool_input,
-            writer, service, serviceCurrent: () => isDeepStrictEqual(deps.store.load(), credential),
-            out: (line) => { written = true; deps.io.out(line) }, wall: now,
-          }),
-          sequencer: {
-            sessionId, env: deps.env, writer, log: logger,
-            client: makeClient(deps, credential.baseUrl, `Bearer nfm_${credential.machineId}.${credential.secret}`, {
-              timeoutMs: 750, deadlineAt, now,
+        try {
+          const drained = await drainSessionInputs({
+            lease,
+            mayWrite,
+            nativeOnly: true,
+            nativeAnswers: pickerPresentation({
+              sessionId, env: deps.env, lease, incarnation: incarnation.incarnation, ownerKey: incarnation.key,
+              questionId, toolInput: envelope.tool_input,
+              writer, service, serviceCurrent: () => isDeepStrictEqual(deps.store.load(), credential),
+              out: (line) => { written = true; deps.io.out(line) }, wall: now,
             }),
-            monotonic, wall: now, recoveryDeadline: monotonic() + 500,
-            sleep: async (ms) => { if (now() < deadlineAt) await sleep(Math.min(ms, Math.max(0, deadlineAt - now()))) },
-          },
-          // Never reached: a native-only drain writes through the picker or not at all.
-          write: () => undefined,
-        })
-        if (drained && written) {
-          logger.info('hook.gate', { hook: 'permission-request', reason: 'answered', question_ids: [questionId], stage: 'picker-answered' })
-          return 'answered'
+            sequencer: {
+              sessionId, env: deps.env, writer, log: logger,
+              client: makeClient(deps, credential.baseUrl, `Bearer nfm_${credential.machineId}.${credential.secret}`, {
+                timeoutMs: 750, deadlineAt, now,
+              }),
+              monotonic, wall: now, recoveryDeadline: monotonic() + 500,
+              sleep: async (ms) => { if (now() < deadlineAt) await sleep(Math.min(ms, Math.max(0, deadlineAt - now()))) },
+            },
+            // Never reached: a native-only drain writes through the picker or not at all.
+            write: () => undefined,
+          })
+          if (drained && written) {
+            logger.info('hook.gate', { hook: 'permission-request', reason: 'answered', question_ids: [questionId], stage: 'picker-answered' })
+            return 'answered'
+          }
+        } catch (err) {
+          // The decision is already on its way to Claude Code: a second one would never be read.
+          if (written) return 'answered'
+          logger.info('hook.gate', { hook: 'permission-request', reason: 'retry', question_ids: [questionId], stage: 'picker-handover-failed',
+            error: err instanceof Error ? err.message : String(err) })
         }
       }
-      if (monotonic() - stagedSince >= CLAUDE_PICKER_HANDOVER_MS) return leave('handover-timed-out')
     }
+    // Staged and still not handed over, or still being staged: stop holding the session.
+    if (monotonic() - stagedSince >= CLAUDE_PICKER_HANDOVER_MS) return closeForAnswer('handover-timed-out')
     await sleep(CLAUDE_PICKER_POLL_MS)
   }
 }
@@ -568,6 +639,14 @@ export function claudePostToolUse(deps: CommandDeps, envelope: HookEnvelope, log
         stage = 'app-answer-beside-terminal'
         context = `${presented.context} The picker was answered in the terminal at the same moment. Both answers are the user's own; if they differ, ask which one governs before acting on either.`
       }
+      return next
+    }
+    const closed = state.claude_picker_closed
+    if (closed !== undefined && closed.digest === digest) {
+      const next = { ...state }
+      delete next.claude_picker_closed
+      stage = 'picker-closed-context'
+      context = closed.context
       return next
     }
     if (state.claude_picker === undefined || state.claude_picker.digest !== digest) return state
