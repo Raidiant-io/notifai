@@ -497,6 +497,9 @@ export function updateSessionState(
     // durable marker exists, no observer may recreate state for that session.
     if (sessionHasEnded(sessionId, env)) return current
     const next = update(current)
+    // An updater that changed nothing returns the state it was given: the file
+    // is not rewritten and flushed again. A missing file is still created.
+    if (next === current && existsSync(file)) return current
     writeSessionStateUnlocked(file, sessionId, next)
     return next
   })

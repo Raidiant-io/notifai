@@ -22,10 +22,14 @@ export interface ProcessIdentity {
 export function processStartTime(pid: number, platform: NodeJS.Platform = process.platform): string | null {
   if (!Number.isInteger(pid) || pid <= 0) return null
   if (platform === 'win32') return buildIdentity() !== null ? windowsProcessInfo(pid)?.start ?? null : windowsProcessStart(pid)
+  // This process's own start never changes: read it once.
+  if (pid === process.pid) return selfStart ??= posixProcessStart(pid)
   // One read per process within one hook the hub runs: a start never changes
   // while its PID lives, and every liveness check asks whether it still does.
   return oncePerHook(`process-start\0${pid}`, () => posixProcessStart(pid))
 }
+
+let selfStart: string | null | undefined
 
 function posixProcessStart(pid: number): string | null {
   try {
