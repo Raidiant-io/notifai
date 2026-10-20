@@ -10,6 +10,7 @@
  */
 import { spawnSync } from 'node:child_process'
 import { compareVersions } from './version.js'
+import { olderClaudeAttendantsAlive } from './claude-form-readers.js'
 
 /**
  * The first Claude Code release with the hook `args` field. Source: Anthropic's
@@ -28,7 +29,7 @@ export interface ClaudeHookForm {
   form: ClaudeHookFormName
   /** The installed Claude Code's version, or null when it could not be read. */
   version: string | null
-  reason: 'version-supported' | 'version-below-floor' | 'version-unknown' | 'version-unknown-kept-exec'
+  reason: 'version-supported' | 'version-below-floor' | 'version-unknown' | 'version-unknown-kept-exec' | 'older-attendants-running'
 }
 
 const probed = new Map<string, string | null>()
@@ -69,7 +70,15 @@ function runClaudeVersion(env: NodeJS.ProcessEnv): string | null {
  * of a downgrade, so an install from another environment never flips it back
  * and forth.
  */
-export function claudeHookForm(version: string | null, currentlyExec = false): ClaudeHookForm {
+export function claudeHookForm(version: string | null, currentlyExec = false, olderAttendants = 0): ClaudeHookForm {
+  const decided = decideForm(version, currentlyExec)
+  // Never move shell form to exec form under an attendant that reads only
+  // shell form: it would withdraw from its session (see claude-form-readers).
+  if (decided.form === 'exec' && !currentlyExec && olderAttendants > 0) return { form: 'shell', version, reason: 'older-attendants-running' }
+  return decided
+}
+
+function decideForm(version: string | null, currentlyExec: boolean): ClaudeHookForm {
   if (version === null) {
     return currentlyExec
       ? { form: 'exec', version, reason: 'version-unknown-kept-exec' }
@@ -82,10 +91,11 @@ export function claudeHookForm(version: string | null, currentlyExec = false): C
 
 /** The decision for this machine: the probed version, or a test's. */
 export function claudeHookFormFor(
-  deps: { env: NodeJS.ProcessEnv; claudeCodeVersion?: () => string | null },
+  deps: { env: NodeJS.ProcessEnv; claudeCodeVersion?: () => string | null; hookPlatform?: NodeJS.Platform },
   currentlyExec = false,
 ): ClaudeHookForm {
-  return claudeHookForm(deps.claudeCodeVersion !== undefined ? deps.claudeCodeVersion() : probeClaudeCodeVersion(deps.env), currentlyExec)
+  return claudeHookForm(deps.claudeCodeVersion !== undefined ? deps.claudeCodeVersion() : probeClaudeCodeVersion(deps.env), currentlyExec,
+    currentlyExec ? 0 : olderClaudeAttendantsAlive(deps.env, deps.hookPlatform ?? process.platform))
 }
 
 /** Plain words for doctor. */
@@ -99,5 +109,7 @@ export function describeClaudeHookForm(decision: ClaudeHookForm): string {
       return 'shell form: the Claude Code version could not be read (`claude --version` did not answer)'
     case 'version-unknown-kept-exec':
       return 'exec form, kept: the Claude Code version could not be read now, and exec form was written when a supporting version was known'
+    case 'older-attendants-running':
+      return `shell form, kept while an older Notifai still attends a Claude Code session; exec form follows once it hands that session over (Claude Code ${decision.version})`
   }
 }

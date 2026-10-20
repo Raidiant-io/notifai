@@ -26,15 +26,18 @@ export interface ActivationPlan {
 }
 
 /**
- * Mirrors the integration resume exactly: resume rewrites a harness's hook
- * file only when this build finds a fault in it, so those files are the ones
- * whose bytes an activation would change.
+ * Mirrors the automatic integration resume exactly: it rewrites a Codex or
+ * Claude Code hook file only when this build finds a fault in it beyond Claude
+ * Code's hook form, so those files are the ones an activation would change.
  */
 export function activationPlan(deps: CommandDeps): ActivationPlan {
   const changes: ActivationPlan['hook_changes'] = []
-  for (const { installation, env } of integrationInstallations(deps)) {
+  for (const { installation } of integrationInstallations(deps)) {
     if (!TRUST_SENSITIVE_HOOK_HARNESSES.has(installation.harness)) continue
-    const reasons = installationFaults(installation, deps.hookPlatform, { ...deps, env })
+    // Claude Code's shell/exec form alone is not counted: that rewrite runs the
+    // same handlers, is picked up live, and is never made while an older
+    // attendant that reads only shell form runs (claude-form-readers).
+    const reasons = installationFaults(installation, deps.hookPlatform)
     if (reasons.length > 0) changes.push({ harness: installation.harness, file: installation.file, reasons })
   }
   return { schema: 1, version: packageVersion(), hub_ipc_versions: { ...HUB_IPC_VERSIONS }, hook_changes: changes }

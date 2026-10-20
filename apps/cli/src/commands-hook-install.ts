@@ -1,5 +1,6 @@
 import { buildIdentity } from './distribution.js'
 import { claudeHookFormFor } from './claude-hook-form.js'
+import { clearClaudeFormDeferral, recordClaudeFormDeferral } from './claude-form-readers.js'
 import { hookAdapterPath, resolveHookAdapterHome } from './hook-adapter.js'
 /** Hook installation and uninstallation across supported harnesses. */
 import { existsSync, lstatSync, readFileSync, readdirSync, rmSync, rmdirSync } from 'node:fs'
@@ -324,7 +325,11 @@ function installDocumentHooks(deps: CommandDeps, flags: HooksInstallFlags, harne
   ): { file: string; foreignStopCount: number; apply: () => void } => {
     const foreignStopCount = foreignStopHandlers(document).length
     // Exec form only for a Claude Code known to support it.
-    const claudeForm = harness === 'claude-code' ? claudeHookFormFor(deps, documentHasExecForm(document)).form : undefined
+    const claudeDecision = harness === 'claude-code' ? claudeHookFormFor(deps, documentHasExecForm(document)) : undefined
+    const claudeForm = claudeDecision?.form
+    // Exec form held back for an older attendant: the hub applies it once that attendant is gone.
+    if (claudeDecision?.reason === 'older-attendants-running') recordClaudeFormDeferral(deps.env, file)
+    else if (claudeDecision !== undefined) clearClaudeFormDeferral(deps.env)
     const result = mergeHooks(
       document,
       buildHookConfig({

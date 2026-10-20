@@ -112,10 +112,12 @@ export async function updateResumeCommand(deps: CommandDeps, flags: { json?: boo
     for (const { installation, env } of assessment.installations) {
       if (setupPending(installation.file)) continue
       if (installationFaults(installation, deps.hookPlatform, { ...deps, env }).length === 0) continue
-      if (flags.automatic === true && TRUST_SENSITIVE_HOOK_HARNESSES.has(installation.harness)) {
+      if (flags.automatic === true && TRUST_SENSITIVE_HOOK_HARNESSES.has(installation.harness) &&
+          installationFaults(installation, deps.hookPlatform).length > 0) {
         // An automatic update never rewrites these: Codex would skip the changed
         // hooks until the User trusts them again, and Claude Code would apply the
         // change to its running sessions. The User's own update repairs them.
+        // Claude Code's hook form alone is the exception (see activation-plan).
         pending.push(`${installation.harness} hooks need repair by an explicit update or notifai hooks install --harness ${installation.harness}; automatic updates leave them unchanged.`)
         continue
       }

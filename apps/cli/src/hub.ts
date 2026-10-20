@@ -67,6 +67,7 @@ import {
 } from './automatic-update.js'
 import { hubEnvironment } from './hub-client.js'
 import { osAccountHome } from './os-account-home.js'
+import { olderClaudeAttendantsAlive, readClaudeFormDeferral } from './claude-form-readers.js'
 import type { managedInstallation as ManagedInstallation } from './native-installation.js'
 import {
   childLockPath,
@@ -1612,6 +1613,7 @@ export class Hub {
       return
     }
     const now = this.clock.wall()
+    this.applyDeferredClaudeForm(now)
     for (const session of this.sessions.values()) {
       // An archived or deleted Codex conversation is closed (E5); Codex runs no SessionEnd for it.
       if (session.transcriptGone()) { this.endSession(session, 'session-archived'); continue }
@@ -1653,6 +1655,32 @@ export class Hub {
     }
     if (this.endRecords().length > 0) this.sweep()
     this.touch()
+  }
+
+  private claudeFormTriedAt = 0
+
+  /**
+   * An install or update held Claude Code's exec-form hooks back while an
+   * older attendant ran (it reads only shell form). Once none runs (each gone,
+   * or handed its session to this hub at its next hook), apply the change the
+   * User's install or update already asked for. Never while one still runs.
+   */
+  applyDeferredClaudeForm(now: number): void {
+    if (now - this.claudeFormTriedAt < 60_000) return
+    const deferral = readClaudeFormDeferral(this.env)
+    if (deferral === null || olderClaudeAttendantsAlive(this.env) > 0) return
+    this.claudeFormTriedAt = now
+    const env = { ...this.env }
+    if (deferral.claude_config_dir === null) delete env['CLAUDE_CONFIG_DIR']
+    else env['CLAUDE_CONFIG_DIR'] = deferral.claude_config_dir
+    void import('./commands-hook-install.js').then(({ hooksRefreshCommand }) => {
+      const code = hooksRefreshCommand({ ...this.deps, env, io: { out: () => undefined, err: (line) => this.logger.debug('hub.session', { note: line }),
+        confirm: async () => false, openUrl: () => undefined } }, 'claude-code')
+      this.logger.info('hub.session', { event: 'claude-hook-form-applied', outcome: code === EXIT.ok ? 'ok' : 'failed',
+        deferred: readClaudeFormDeferral(this.env) !== null })
+    }).catch((err: unknown) => {
+      this.logger.error('hub.session', { event: 'claude-hook-form-applied', outcome: 'failed', message: err instanceof Error ? err.message : String(err) })
+    })
   }
 
   /** Something happened; re-evaluate idle exit. */
