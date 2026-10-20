@@ -1,5 +1,5 @@
 import { automaticUpdateReport, automaticUpdatesRunHere } from './automatic-update.js'
-import { reopenLine, reopenReport } from './session-reopen.js'
+import { reopenLine, reopenReport, reopenStalledLine } from './session-reopen.js'
 import { CLAUDE_EXEC_FORM_MIN_VERSION, claudeHookFormFor, describeClaudeHookForm } from './claude-hook-form.js'
 import { claudeFormFaults } from './integration-health.js'
 import { buildIdentity } from './distribution.js'
@@ -1008,6 +1008,8 @@ export async function doctorCommand(
   // And whether a conversation a restart stopped opens again by itself when its answer arrives.
   const reopen = reopenReport(deps.env, deps.hookPlatform ?? process.platform)
   if (reopen.available) deps.io.out(reopenLine(reopen))
+  const stalledLine = reopen.available ? reopenStalledLine(reopen) : null
+  if (stalledLine !== null) deps.io.out(stalledLine)
   const surfacedUpdate = readiness.states.some(
     (state) => state.id === 'contract' && (state.status === 'gap' || state.status === 'optional-gap'),
   )

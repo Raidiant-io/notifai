@@ -2,13 +2,13 @@
  * The window's last check, `notifai --internal-reopen-guard <record>`,
  * compiled from `launcher/main.c` and run for real.
  */
-import { execFileSync, spawnSync } from 'node:child_process'
+import { execFileSync, spawn, spawnSync } from 'node:child_process'
 import { chmodSync, closeSync, mkdirSync, mkdtempSync, openSync, readFileSync, writeFileSync } from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { beforeAll, describe, expect, it } from 'vitest'
-import { guardRecord } from './session-reopen.js'
+import { exactProcessArguments, guardRecord } from './session-reopen.js'
 
 const posix = process.platform !== 'win32'
 let launcher = ''
@@ -108,5 +108,21 @@ describe.skipIf(!posix)('the reopen guard', () => {
     } finally {
       closeSync(fd)
     }
+  })
+})
+
+describe.skipIf(!posix)('a harness\'s exact command line', () => {
+  it('is read word by word, spaces and quotes included, and not at all for a process that is gone', async () => {
+    const words = ['-e', 'setTimeout(() => undefined, 30_000)', '--disallowedTools', 'Bash(rm -rf:*)', "it's", '']
+    const child = spawn(process.execPath, words, { stdio: 'ignore' })
+    try {
+      await new Promise((resolve) => child.once('spawn', resolve))
+      expect(exactProcessArguments(child.pid!, launcher)).toEqual([process.execPath, ...words])
+    } finally {
+      child.kill('SIGKILL')
+    }
+    await new Promise((resolve) => child.once('exit', resolve))
+    expect(exactProcessArguments(child.pid!, launcher)).toBeNull()
+    if (process.platform === 'darwin') expect(exactProcessArguments(process.pid, null)).toBeNull()
   })
 })

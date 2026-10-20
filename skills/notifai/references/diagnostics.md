@@ -52,9 +52,12 @@ check (`codex-check-…`), a held wake (`wake-held`) and a terminal seen closed
 (`terminal-closed`). `--event hub.reopen` shows a stopped conversation being
 reopened in a new terminal window or continued in the Codex app, or why it was
 left waiting (reopening off, an Orca pane, open elsewhere, its folder gone, no
-desktop session, the Codex app not running); doctor's
-`Reopen:` line says what happens by default, and its JSON `reopen` lists each
-recent outcome. While it runs, the hub also answers
+desktop session, the Codex app not running, how it started or its permissions
+not known exactly); while the machine shuts down it reopens nothing until the
+next start. Doctor's `Reopen:` line says what happens by default, and its JSON
+`reopen` lists each recent outcome; `stalled` is a reopened conversation that
+came back but has not taken its answer, most likely at a prompt in its
+window, and doctor says so. While it runs, the hub also answers
 the frequent hooks of quiet sessions; any other hook starts the runtime as
 before, and doctor's JSON counts both and says why a hook went to the runtime.
 A hub that crashed three times in ten minutes stops

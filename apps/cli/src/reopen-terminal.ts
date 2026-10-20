@@ -1,7 +1,7 @@
 /**
  * The terminal reopen: a new terminal window, in the conversation's folder,
- * that runs `claude --resume <id>` or `codex resume <id>` in the permission
- * mode the conversation last ran in, never a more permissive one.
+ * that runs `claude --resume <id>` or `codex resume <id>` with the permission
+ * posture the conversation ran with: never a more permissive one.
  *
  * Everything here is decided from records and settings; nothing is launched.
  * `session-reopen.ts` owns when a reopen happens and runs what this returns.
@@ -11,8 +11,10 @@
  * conversation's config home, asks the native launcher to check once more
  * that nothing else has the conversation open (`--internal-reopen-guard`),
  * and then replaces itself with the harness inside the User's login shell, so
- * PATH and keys load exactly as in a terminal they open themselves. It holds
- * no secret and no prompt.
+ * PATH and keys load exactly as in a terminal they open themselves; the
+ * config home is set again after the login profile, which cannot move it. It
+ * holds no prompt, only the options the conversation's own command line
+ * showed every process on the machine.
  */
 import { existsSync, statSync } from 'node:fs'
 import os from 'node:os'
@@ -209,105 +211,247 @@ export function chooseTerminal(setting: ReopenTerminalApp, command: string | nul
 }
 
 // -- the harness command ---------------------------------------------------------
+//
+// A reopen runs the conversation the way it ran: the same permission posture,
+// never a more permissive one and not needlessly a narrower one. So the
+// options a terminal harness was started with are read exactly from its
+// process when it registers (`launchRecordOf`) and replayed: the permission
+// options and everything that narrows or shapes them (denied and allowed
+// tools, settings, MCP servers, system prompts, `-c` overrides, profiles).
+// Only what would start something else is left out: the prompt, the
+// conversation picker, a new worktree, a session name. A command line with an
+// option this build does not know is not replayed at all, and the
+// conversation waits for the User: guessing could widen what it may do.
 
-/** Claude Code permission modes a reopen may pass on; anything else resumes in the ordinary mode. */
-const CLAUDE_MODES: ReadonlySet<string> = new Set(['default', 'acceptEdits', 'plan', 'auto', 'dontAsk', 'bypassPermissions'])
+type OptionKind = 'flag' | 'value' | 'values' | 'optional'
+/** `keep`: replayed; `drop`: never replayed; `refuse`: the command line is not one a reopen can repeat. */
+type OptionRule = readonly [OptionKind, 'keep' | 'drop' | 'refuse']
 
-/** Options a reopen keeps from the original command line: never the prompt, never `-c`. */
-const CLAUDE_KEPT: Readonly<Record<string, 'value' | 'values'>> = { '--model': 'value', '--add-dir': 'values' }
-const CODEX_KEPT: Readonly<Record<string, 'value' | 'flag'>> = {
-  '--no-daemon': 'flag', '-p': 'value', '--profile': 'value', '-m': 'value', '--model': 'value', '--add-dir': 'value',
-  '-s': 'value', '--sandbox': 'value', '-a': 'value', '--ask-for-approval': 'value',
+interface OptionEntry { rule: OptionRule; canonical: string }
+
+function table(groups: Readonly<Record<string, OptionRule>>, aliases: Readonly<Record<string, string>> = {}): ReadonlyMap<string, OptionEntry> {
+  const map = new Map<string, OptionEntry>(Object.entries(groups).map(([name, rule]) => [name, { rule, canonical: name }]))
+  for (const [alias, name] of Object.entries(aliases)) map.set(alias, { rule: groups[name]!, canonical: name })
+  return map
 }
+
+/** Claude Code 2.1 options by what a reopen does with them. */
+const CLAUDE_OPTIONS = table({
+  '--add-dir': ['values', 'keep'], '--allowedTools': ['values', 'keep'], '--disallowedTools': ['values', 'keep'],
+  '--betas': ['values', 'keep'], '--mcp-config': ['values', 'keep'], '--tools': ['values', 'keep'],
+  '--agent': ['value', 'keep'], '--agents': ['value', 'keep'], '--append-system-prompt': ['value', 'keep'],
+  '--append-system-prompt-file': ['value', 'keep'], '--system-prompt': ['value', 'keep'], '--system-prompt-file': ['value', 'keep'],
+  '--effort': ['value', 'keep'], '--fallback-model': ['value', 'keep'], '--model': ['value', 'keep'], '--permission-mode': ['value', 'keep'],
+  '--permission-prompt-tool': ['value', 'keep'], '--plugin-dir': ['value', 'keep'], '--plugin-url': ['value', 'keep'],
+  '--setting-sources': ['value', 'keep'], '--settings': ['value', 'keep'], '--autocompact': ['value', 'keep'],
+  '--system-prompt-snapshot': ['value', 'keep'],
+  '--allow-dangerously-skip-permissions': ['flag', 'keep'], '--dangerously-skip-permissions': ['flag', 'keep'],
+  '--strict-mcp-config': ['flag', 'keep'], '--restricted': ['flag', 'keep'], '--safe-mode': ['flag', 'keep'], '--bare': ['flag', 'keep'],
+  '--disable-slash-commands': ['flag', 'keep'], '--chrome': ['flag', 'keep'], '--no-chrome': ['flag', 'keep'], '--ide': ['flag', 'keep'],
+  '--verbose': ['flag', 'keep'], '--brief': ['flag', 'keep'], '--ax-screen-reader': ['flag', 'keep'],
+  '--exclude-dynamic-system-prompt-sections': ['flag', 'keep'],
+  '--name': ['value', 'drop'], '--session-id': ['value', 'drop'], '--debug-file': ['value', 'drop'],
+  '--remote-control-session-name-prefix': ['value', 'drop'], '--file': ['values', 'drop'],
+  '--continue': ['flag', 'drop'], '--fork-session': ['flag', 'drop'], '--tmux': ['flag', 'drop'],
+  '--resume': ['optional', 'drop'], '--debug': ['optional', 'drop'], '--from-pr': ['optional', 'drop'], '--remote-control': ['optional', 'drop'],
+  '--worktree': ['optional', 'drop'], '--teleport': ['optional', 'drop'], '--prompt-suggestions': ['optional', 'drop'],
+  '--print': ['flag', 'refuse'], '--bg': ['flag', 'refuse'], '--cloud': ['optional', 'refuse'], '--environment': ['value', 'refuse'],
+  '--desktop': ['flag', 'refuse'],
+}, {
+  '--allowed-tools': '--allowedTools', '--disallowed-tools': '--disallowedTools', '-n': '--name', '-c': '--continue', '-r': '--resume',
+  '-d': '--debug', '-w': '--worktree', '-p': '--print', '--background': '--bg',
+})
+
+/** Codex CLI 0.163 options (`codex` and `codex resume`) by what a reopen does with them. */
+const CODEX_OPTIONS = table({
+  '--config': ['value', 'keep'], '--enable': ['value', 'keep'], '--disable': ['value', 'keep'], '--model': ['value', 'keep'],
+  '--local-provider': ['value', 'keep'], '--profile': ['value', 'keep'], '--sandbox': ['value', 'keep'], '--ask-for-approval': ['value', 'keep'],
+  '--add-dir': ['value', 'keep'],
+  '--oss': ['flag', 'keep'], '--approve-for-me': ['flag', 'keep'], '--dangerously-bypass-approvals-and-sandbox': ['flag', 'keep'],
+  '--dangerously-bypass-hook-trust': ['flag', 'keep'], '--search': ['flag', 'keep'], '--no-alt-screen': ['flag', 'keep'],
+  '--no-daemon': ['flag', 'keep'], '--strict-config': ['flag', 'keep'],
+  '--cd': ['value', 'drop'], '--image': ['values', 'drop'],
+  '--worktree': ['flag', 'drop'], '--last': ['flag', 'drop'], '--all': ['flag', 'drop'], '--include-non-interactive': ['flag', 'drop'],
+  '--remote': ['value', 'refuse'], '--remote-auth-token-env': ['value', 'refuse'],
+}, { '-c': '--config', '-m': '--model', '-p': '--profile', '-s': '--sandbox', '-a': '--ask-for-approval', '-C': '--cd', '-i': '--image' })
+
+interface OptionGroup { name: string; values: string[] }
 
 /**
- * The options of a Claude Code command line a reopen keeps: the model and
- * extra directories. Permission options are not kept: the mode the
- * conversation last ran in decides them (see `claudeResumeArgs`).
+ * The options of a command line, each under its canonical name, with the
+ * words that belong to it; null when one is unknown or refused. Words that
+ * belong to no option (the prompt, a subcommand, a session id) are left out.
  */
-export function claudeKeptOptions(argv: readonly string[]): string[] {
-  const kept: string[] = []
-  for (let index = 1; index < argv.length; index += 1) {
+function parseOptions(argv: readonly string[], options: ReadonlyMap<string, OptionEntry>, from = 1): { kept: OptionGroup[] } | null {
+  const kept: OptionGroup[] = []
+  for (let index = from; index < argv.length; index += 1) {
     const word = argv[index]!
-    const [name, inline] = word.startsWith('--') && word.includes('=') ? [word.slice(0, word.indexOf('=')), word.slice(word.indexOf('=') + 1)] : [word, null]
-    const kind = CLAUDE_KEPT[name]
-    if (kind === undefined) continue
-    if (inline !== null) { kept.push(name, inline); continue }
-    if (kind === 'value') {
-      if (index + 1 < argv.length) kept.push(name, argv[++index]!)
-      continue
+    if (word === '--') break
+    if (!word.startsWith('-') || word === '-') continue
+    let name = word
+    let inline: string | null = null
+    if (word.startsWith('--') && word.includes('=')) {
+      name = word.slice(0, word.indexOf('='))
+      inline = word.slice(word.indexOf('=') + 1)
+    } else if (!word.startsWith('--') && word.length > 2) {
+      // `-anever`, `-a=never`: a short option with its value attached.
+      name = word.slice(0, 2)
+      inline = word.slice(2).replace(/^=/, '')
+      if (options.get(name)?.rule[0] !== 'value') return null
     }
+    const entry = options.get(name)
+    if (entry === undefined || entry.rule[1] === 'refuse') return null
+    const [kind, action] = entry.rule
     const values: string[] = []
-    while (index + 1 < argv.length && !argv[index + 1]!.startsWith('-')) values.push(argv[++index]!)
-    if (values.length > 0) kept.push(name, ...values)
+    if (kind === 'flag') {
+      if (inline !== null && action === 'keep') return null
+    } else if (kind === 'value') {
+      if (inline !== null) values.push(inline)
+      else if (index + 1 < argv.length) values.push(argv[++index]!)
+      else return null
+    } else {
+      if (inline !== null) values.push(inline)
+      while (index + 1 < argv.length && !argv[index + 1]!.startsWith('-')) {
+        const next = argv[++index]!
+        values.push(next)
+        if (kind === 'optional') break
+      }
+      if (kind === 'values' && values.length === 0) return null
+    }
+    if (action === 'keep') kept.push({ name: entry.canonical, values })
   }
-  return kept
+  return { kept }
 }
+
+const flatten = (groups: readonly OptionGroup[]): string[] => groups.flatMap((group) => [group.name, ...group.values])
+
+/** At most this many replayed words, each at most this long: a longer command line is not replayed. */
+export const REPLAY_MAX_WORDS = 128
+export const REPLAY_MAX_WORD = 16_384
+
+function bounded(options: string[]): string[] | null {
+  return options.length <= REPLAY_MAX_WORDS && options.every((word) => word.length <= REPLAY_MAX_WORD) ? options : null
+}
+
+/** The options of a Claude Code command line a reopen replays; null when it cannot repeat them. */
+export function claudeLaunchOptions(argv: readonly string[]): string[] | null {
+  const parsed = parseOptions(argv, CLAUDE_OPTIONS)
+  return parsed === null ? null : bounded(flatten(parsed.kept))
+}
+
+/** The options of a Codex command line a reopen replays; null when it cannot repeat them. */
+export function codexLaunchOptions(argv: readonly string[]): string[] | null {
+  const parsed = parseOptions(argv, CODEX_OPTIONS)
+  return parsed === null ? null : bounded(flatten(parsed.kept))
+}
+
+/** Claude Code permission modes a reopen may name. */
+const CLAUDE_MODES: ReadonlySet<string> = new Set(['default', 'manual', 'acceptEdits', 'plan', 'auto', 'dontAsk', 'bypassPermissions'])
+/** The modes no wider than the ordinary one: `reopen.permission_mode = "default"` keeps them. */
+const CLAUDE_NARROW_MODES: ReadonlySet<string> = new Set(['default', 'manual', 'plan', 'dontAsk'])
 
 /** The permission mode a Claude Code command line starts in, when it names one. */
-export function claudeStartMode(argv: readonly string[]): string | null {
-  for (let index = 1; index < argv.length; index += 1) {
-    const word = argv[index]!
-    if (word === '--dangerously-skip-permissions') return 'bypassPermissions'
-    if (word === '--permission-mode' && index + 1 < argv.length) return argv[index + 1]!
-    if (word.startsWith('--permission-mode=')) return word.slice('--permission-mode='.length)
+export function claudeStartMode(options: readonly string[]): string | null {
+  const parsed = parseOptions(['claude', ...options], CLAUDE_OPTIONS)
+  let mode: string | null = null
+  for (const group of parsed?.kept ?? []) {
+    if (group.name === '--dangerously-skip-permissions') return 'bypassPermissions'
+    if (group.name === '--permission-mode') mode = group.values[0] ?? null
   }
-  return null
-}
-
-/** The options of a Codex command line a reopen keeps; permission options follow `codexResumeArgs`. */
-export function codexKeptOptions(argv: readonly string[]): string[] {
-  const kept: string[] = []
-  for (let index = 1; index < argv.length; index += 1) {
-    const word = argv[index]!
-    const [name, inline] = word.startsWith('--') && word.includes('=') ? [word.slice(0, word.indexOf('=')), word.slice(word.indexOf('=') + 1)] : [word, null]
-    const kind = CODEX_KEPT[name]
-    if (kind === undefined) continue
-    if (kind === 'flag') { kept.push(name); continue }
-    const value = inline ?? (index + 1 < argv.length ? argv[++index]! : null)
-    if (value !== null) kept.push(name, value)
-  }
-  return kept
+  return mode
 }
 
 /**
- * `claude --resume <id>` with the kept options and the permission mode, always
- * named (a resume otherwise restores the mode the transcript last recorded):
- * `same` resumes in the mode the conversation last ran in (its hooks report it
- * at every prompt; before any, the mode its command line started in), never a
- * more permissive one; `default` and an unknown mode resume in the ordinary
- * mode.
+ * `claude --resume <id>` with the replayed options, in the mode the
+ * conversation last ran in (its hooks report it at every prompt; before any,
+ * the mode its command line started in), always named. Where it could reach
+ * full bypass by switching modes, it still can. `default` resumes in the ordinary mode, or a
+ * narrower one it last ran in, without the options that widen it.
  */
-export function claudeResumeArgs(sessionId: string, kept: readonly string[], lastMode: string | null, setting: ReopenPermissionMode): string[] {
-  const args = ['--resume', sessionId, ...kept]
-  const mode = setting === 'same' && lastMode !== null && CLAUDE_MODES.has(lastMode) ? lastMode : 'default'
+export function claudeResumeArgs(sessionId: string, options: readonly string[], lastMode: string | null, setting: ReopenPermissionMode): string[] {
+  const groups = parseOptions(['claude', ...options], CLAUDE_OPTIONS)?.kept ?? []
+  const started = claudeStartMode(options)
+  const could = started === 'bypassPermissions' || groups.some((group) => group.name === '--allow-dangerously-skip-permissions')
+  const known = lastMode !== null && CLAUDE_MODES.has(lastMode) ? lastMode : null
+  // Nothing reported nor named: the ordinary mode, never whatever the transcript last recorded.
+  let mode = known ?? started ?? 'default'
+  const widening = new Set(['--permission-mode', '--dangerously-skip-permissions',
+    ...(setting === 'default' ? ['--allow-dangerously-skip-permissions', '--allowedTools'] : [])])
+  const args = ['--resume', sessionId, ...flatten(groups.filter((group) => !widening.has(group.name)))]
+  if (setting === 'default') mode = mode !== null && CLAUDE_NARROW_MODES.has(mode) ? mode : 'default'
+  else if (could && mode !== 'bypassPermissions' && !groups.some((group) => group.name === '--allow-dangerously-skip-permissions')) {
+    args.push('--allow-dangerously-skip-permissions')
+  }
   if (mode === 'bypassPermissions') args.push('--dangerously-skip-permissions')
-  else args.push('--permission-mode', mode)
+  else if (mode !== null) args.push('--permission-mode', mode)
   return args
 }
 
+/** A `-c key=value` override's key and its value without TOML quotes. */
+function configOverride(text: string): { key: string; value: string } | null {
+  const at = text.indexOf('=')
+  if (at <= 0) return null
+  return { key: text.slice(0, at).trim(), value: text.slice(at + 1).trim().replace(/^(["'])(.*)\1$/, '$2') }
+}
+
+/** Whether one replayed Codex option widens what the conversation may do beyond Codex's ordinary posture. */
+function codexWidens(group: OptionGroup): boolean {
+  const value = group.values[0] ?? ''
+  if (group.name === '--dangerously-bypass-approvals-and-sandbox' || group.name === '--approve-for-me') return true
+  if (group.name === '--ask-for-approval') return value === 'never'
+  if (group.name === '--sandbox') return value === 'danger-full-access'
+  if (group.name !== '--config') return false
+  const override = configOverride(value)
+  if (override === null) return false
+  if (override.key === 'approval_policy') return override.value === 'never'
+  if (override.key === 'sandbox_mode') return override.value === 'danger-full-access'
+  if (override.key === 'sandbox_workspace_write.network_access') return override.value === 'true'
+  return override.key === 'approvals_reviewer' && override.value !== 'user'
+}
+
 /**
- * `codex resume <id>` with the kept options. Codex reports only whether a
- * thread bypasses approvals and the sandbox; so `same` passes the bypass only
- * when the thread last ran with it, and otherwise keeps the approval and
- * sandbox options of the command line minus full access. `default` keeps no
- * permission option.
+ * `codex resume <id>` with the replayed options: exactly as the thread ran
+ * with `same`; with `default`, without the options that widen Codex's
+ * ordinary posture (full access, no approvals, network, automatic review).
  */
-export function codexResumeArgs(sessionId: string, kept: readonly string[], lastMode: string | null, setting: ReopenPermissionMode): string[] {
-  const args = ['resume', sessionId]
-  const permission = new Set(['-s', '--sandbox', '-a', '--ask-for-approval'])
-  for (let index = 0; index < kept.length; index += 1) {
-    const word = kept[index]!
-    if (!permission.has(word)) {
-      args.push(word)
-      if (word !== '--no-daemon') args.push(kept[++index]!)
-      continue
+export function codexResumeArgs(sessionId: string, options: readonly string[], setting: ReopenPermissionMode): string[] {
+  const groups = parseOptions(['codex', ...options], CODEX_OPTIONS)?.kept ?? []
+  return ['resume', sessionId, ...flatten(setting === 'default' ? groups.filter((group) => !codexWidens(group)) : groups)]
+}
+
+const APPROVAL_POLICIES: ReadonlySet<string> = new Set(['untrusted', 'on-failure', 'on-request', 'never'])
+const SANDBOX_MODES: ReadonlySet<string> = new Set(['read-only', 'workspace-write', 'danger-full-access'])
+
+/**
+ * A Codex thread's permission posture as Codex recorded it for its last
+ * turn (the rollout's `turn_context`), as `-c` overrides: what a thread on
+ * the shared background server, whose terminal's command line Notifai cannot
+ * read, resumes with. Null when any part is one this build cannot express
+ * exactly.
+ */
+export function codexPostureOptions(context: Readonly<Record<string, unknown>>): string[] | null {
+  const approval = context['approval_policy']
+  const reviewer = context['approvals_reviewer']
+  const sandbox = context['sandbox_policy']
+  if (typeof approval !== 'string' || !APPROVAL_POLICIES.has(approval)) return null
+  if (reviewer !== undefined && reviewer !== 'user') return null
+  if (typeof sandbox !== 'object' || sandbox === null || Array.isArray(sandbox)) return null
+  const policy = sandbox as Record<string, unknown>
+  const type = policy['type']
+  if (typeof type !== 'string' || !SANDBOX_MODES.has(type)) return null
+  const options = ['--config', `approval_policy="${approval}"`, '--config', `sandbox_mode="${type}"`]
+  for (const [key, value] of Object.entries(policy)) {
+    if (key === 'type') continue
+    if (type !== 'workspace-write') return null
+    if (['network_access', 'exclude_tmpdir_env_var', 'exclude_slash_tmp'].includes(key) && typeof value === 'boolean') {
+      options.push('--config', `sandbox_workspace_write.${key}=${value}`)
+    } else if (key === 'writable_roots' && Array.isArray(value) && value.every((root) => typeof root === 'string' && path.isAbsolute(root))) {
+      options.push('--config', `sandbox_workspace_write.writable_roots=${JSON.stringify(value)}`)
+    } else {
+      return null
     }
-    const value = kept[++index]!
-    if (setting === 'same' && lastMode !== null && !(value === 'danger-full-access' || value === 'never')) args.push(word, value)
   }
-  if (setting === 'same' && lastMode === 'bypassPermissions') args.push('--dangerously-bypass-approvals-and-sandbox')
-  return args
+  return options
 }
 
 // -- the script ---------------------------------------------------------------------
@@ -317,7 +461,7 @@ export function shellQuote(word: string): string {
   return `'${word.replaceAll("'", `'\\''`)}'`
 }
 
-/** Shells whose login form takes `-l -c 'exec "$@"' name args…`; any other runs the harness without the login profile. */
+/** Shells whose login form takes `-l -c '<pins>; exec "$@"' name args…`; any other runs the harness without the login profile. */
 const POSIX_LOGIN_SHELLS: ReadonlySet<string> = new Set(['sh', 'bash', 'zsh', 'dash', 'ksh', 'mksh'])
 
 export interface ReopenScript {
@@ -331,8 +475,13 @@ export interface ReopenScript {
   command: readonly string[]
   /** The User's login shell (from the account database). */
   loginShell: string | null
-  /** Variables the conversation needs that a fresh login shell would not set (its config home, Notifai's own state). */
-  exports: Readonly<Record<string, string>>
+  /**
+   * Variables the conversation runs with whatever the User's profile sets:
+   * its config home and Notifai's own folders, or null to unset one (a
+   * conversation in the default home). Applied before the last check and
+   * again after the login profile has run.
+   */
+  pinned: Readonly<Record<string, string | null>>
 }
 
 /** The one-line note a window shows when its folder is gone; nothing else runs. */
@@ -347,12 +496,14 @@ export function reopenScript(input: ReopenScript): string {
     `printf '\\033]0;%s\\007\\033[H\\033[2J' ${shellQuote(input.title)}`,
     `cd -- ${shellQuote(input.cwd)} 2>/dev/null || { printf '%s\\n' ${shellQuote(FOLDER_GONE_LINE)}; exit 0; }`,
   ]
-  for (const [name, value] of Object.entries(input.exports)) lines.push(`${name}=${shellQuote(value)}; export ${name}`)
+  const pins = Object.entries(input.pinned).map(([name, value]) => value === null ? `unset ${name}` : `${name}=${shellQuote(value)}; export ${name}`)
+  lines.push(...pins)
   lines.push(`${shellQuote(input.launcher)} --internal-reopen-guard ${shellQuote(input.record)} || exit 0`)
   const command = input.command.map(shellQuote).join(' ')
   const shell = input.loginShell
   if (shell !== null && path.isAbsolute(shell) && POSIX_LOGIN_SHELLS.has(path.basename(shell))) {
-    lines.push(`exec ${shellQuote(shell)} -l -c 'exec "$@"' notifai ${command}`)
+    // The login profile loads PATH and keys as in a terminal the User opens; the pins come after it, so it cannot move the conversation's home.
+    lines.push(`exec ${shellQuote(shell)} -l -c ${shellQuote([...pins, 'exec "$@"'].join('; '))} notifai ${command}`)
   } else {
     lines.push(`exec ${command}`)
   }

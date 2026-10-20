@@ -137,8 +137,8 @@ import { QUESTION_WAITER_CEILING_SECONDS } from './question-timing.js'
 import { claudePlaceOf, codexPlaceOf, orcaTerminalHostOf, parentProcessOf, placeReceives, type SessionPlace } from './session-place.js'
 import { readReopenLaunch } from './reopen-terminal.js'
 import {
+  exactProcessArguments,
   launchRecordOf,
-  processArguments,
   SessionReopen,
   systemReopenHost,
   type LaunchRecord,
@@ -305,6 +305,8 @@ export interface HubOptions {
    * replace parts of the machine (tests).
    */
   reopen?: Partial<ReopenHost>
+  /** A harness's exact command line, read at registration for a later reopen (tests replace it). */
+  launchArguments?: (pid: number) => string[] | null
 }
 
 export interface HandoverOptions {
@@ -1974,7 +1976,8 @@ export class Hub {
     }
     // A terminal conversation a restart stops reopens with the command it ran: read it while it runs.
     if (registration.place === 'terminal' && this.reopen !== null) {
-      registration.launch = launchRecordOf(registration.harness, processArguments(harnessPid))
+      registration.launch = launchRecordOf(registration.harness,
+        (this.options.launchArguments ?? ((pid: number) => exactProcessArguments(pid, launcherExecutable())))(harnessPid))
     }
   }
 
@@ -2578,9 +2581,16 @@ export class Hub {
   async reopenStopped(session: HubSession, trigger: ReopenTrigger): Promise<void> {
     const stopped = session.stopped
     if (this.reopen === null || stopped === null || session.ending !== null || this.handingOver || this.exiting) return
-    const lease = session.lease.generation === null ? null : { incarnation: session.lease.incarnation, generation: session.lease.generation }
-    const items = [...(pendingInputRevisionIds(session.id, session.env, lease) ?? []), ...session.held.map((message) => `held:${message.message_id}`)]
+    const items = this.reopenItems(session)
     if (items.length === 0) return
+    // Never while the machine goes down: a window opened now could hold the
+    // restart up, and the attempt would be spent. Nothing is marked
+    // considered, so the hub the next boot starts reopens it.
+    const boot = (this.options.bootIdentity ?? currentBootIdentity)()
+    if (this.shutdownInProgress() || (stopped.cause === 'machine' && stopped.boot !== null && stopped.boot === boot)) {
+      this.logger.info('hub.reopen', { event: 'deferred', session: session.id, trigger, reason: 'shutting-down' })
+      return
+    }
     const registration = session.registration
     try {
       await this.reopen.reopenFor({
@@ -2592,6 +2602,12 @@ export class Hub {
     } catch (err) {
       this.logger.error('hub.reopen', { event: 'failed', session: session.id, message: err instanceof Error ? err.message : String(err) })
     }
+  }
+
+  /** What waits for a conversation: answers, notes and edits, by id. */
+  private reopenItems(session: HubSession): string[] {
+    const lease = session.lease.generation === null ? null : { incarnation: session.lease.incarnation, generation: session.lease.generation }
+    return [...(pendingInputRevisionIds(session.id, session.env, lease) ?? []), ...session.held.map((message) => `held:${message.message_id}`)]
   }
 
   /**
@@ -3310,6 +3326,8 @@ export class Hub {
     for (const session of this.sessions.values()) {
       if (session.ending !== null) continue
       if (session.stopped !== null) { this.checkStopped(session); continue }
+      // Back from a reopen: stalled if it does not take what it was reopened for.
+      if (this.reopen?.watching(session.id) === true) this.reopen.progress(session.id, this.reopenItems(session))
       // An archived or deleted Codex conversation is closed (E5); Codex runs no SessionEnd for it.
       if (session.transcriptGone()) { this.endSession(session, 'session-archived'); continue }
       if (session.lease.phase === 'dormant' && session.notified) { session.lease.needsFresh = true; this.driver.poke() }
