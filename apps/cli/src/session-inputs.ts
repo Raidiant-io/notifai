@@ -178,6 +178,11 @@ function messagesPath(sessionId: string, env: NodeJS.ProcessEnv): string {
 
 /** Cache only: the service remains authoritative and claims fence stale copies. */
 export function stageSessionMessages(sessionId: string, env: NodeJS.ProcessEnv, lease: DeliveryLease, messages: readonly AttendanceMessage[]): void {
+  // Nothing changed since the last exchange (the usual idle case): no locked,
+  // fsynced rewrite of the state and message files every exchange.
+  const cached = readSessionMessageCache(sessionId, env, lease)
+  if (cached !== null && JSON.stringify(cached) === JSON.stringify(messages) &&
+      readSessionState(sessionId, env).input_delivery_fenced === undefined) return
   updateSessionState(sessionId, env, state => {
     atomicWriteFileSync(messagesPath(sessionId, env), JSON.stringify({ session_id: sessionId, ...lease, messages }))
     // The resident stages only after a fresh authenticated attendance exchange.

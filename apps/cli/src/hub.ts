@@ -518,7 +518,7 @@ class EndedSession implements AttendedSession {
   }
 }
 
-interface History { starts: { at: number; pid: number; clean: boolean }[]; fault?: { reason: string; since: number } }
+interface History { starts: { at: number; pid: number; clean: boolean; boot?: string | null }[]; fault?: { reason: string; since: number } }
 
 export class Hub {
   readonly clock: HubClock
@@ -580,7 +580,10 @@ export class Hub {
     const history = this.readHistory()
     const now = this.clock.wall()
     const recent = history.starts.filter((start) => now - start.at < HUB_CRASH_WINDOW_MS)
-    this.crashes = recent.filter((start) => !start.clean && start.pid !== process.pid && !pidExists(start.pid)).length
+    // A hub that died with its machine (a reboot, power loss) did not crash.
+    const boot = (this.options.bootIdentity ?? currentBootIdentity)()
+    this.crashes = recent.filter((start) => !start.clean && start.pid !== process.pid && !pidExists(start.pid) &&
+      !(boot !== null && typeof start.boot === 'string' && start.boot !== boot)).length
     if (this.crashes >= HUB_CRASH_LIMIT) {
       // Repeated crashes: stop restarting for the rest of the window and say so.
       this.writeHistory({ starts: recent, fault: history.fault ?? { reason: 'repeated-crashes', since: now } })
@@ -592,7 +595,7 @@ export class Hub {
       this.logger.info('hub.start', { outcome: 'already-running' })
       return EXIT.ok
     }
-    this.writeHistory({ starts: [...recent, { at: now, pid: process.pid, clean: false }].slice(-20) })
+    this.writeHistory({ starts: [...recent, { at: now, pid: process.pid, clean: false, boot }].slice(-20) })
     try {
       await this.listen()
     } catch (err) {
@@ -609,7 +612,8 @@ export class Hub {
     this.sweep()
     this.safetyTimer = setInterval(() => this.safetyTick(), this.options.safetyTickMs ?? SAFETY_TICK_MS)
     this.safetyTimer.unref?.()
-    await new Promise<void>((resolve) => { this.exitResolve = resolve })
+    // An exit asked for during startup (a signal, `stop`) must not be lost.
+    if (!this.exiting) await new Promise<void>((resolve) => { this.exitResolve = resolve })
     signals?.()
     await this.shutdown(exchange)
     return EXIT.ok
@@ -1302,6 +1306,11 @@ export class Hub {
         refreshCodexInputActivity(session.id, session.env, session.record.key, session.registration.transcriptPath ?? undefined,
           (owner) => session.harnessAlive(owner))
         void reconcileSessionInputWakes(session.id, session.env, this.deps.codexQueueControl).catch(() => undefined)
+      }
+      if (session.lease.phase === 'attending' && session.lease.leaseEndsAt !== null && this.clock.monotonic() >= session.lease.leaseEndsAt) {
+        // The service has not renewed the lease (an outage): say so to status readers.
+        session.lease.setPhase('acquiring', 'lease-lapsed')
+        session.writeStatus()
       }
       const probe = session.probe()
       if (probe.state === 'ended') this.endSession(session, probe.reason)

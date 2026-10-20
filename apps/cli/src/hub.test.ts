@@ -652,6 +652,20 @@ describe('hub', () => {
     expect(readHubReport(env)).toMatchObject({ running: false, fault: { reason: 'repeated-crashes' }, recent_crashes: 3 })
   })
 
+  it('does not count hubs lost to a reboot as crashes', async () => {
+    const env = hubEnv()
+    const run = path.join(env['XDG_STATE_HOME']!, 'notifai', 'run')
+    mkdirSync(run, { recursive: true, mode: 0o700 })
+    const dead: number[] = []
+    for (let pid = 99_990; dead.length < 3 && pid > 90_000; pid -= 1) if (!pidExists(pid)) dead.push(pid)
+    const now = Date.now()
+    writeFileSync(path.join(run, 'hub-history.json'), JSON.stringify({ starts: dead.map((pid, index) => ({ at: now - index * 1_000, pid, clean: false, boot: 'earlier-boot' })) }))
+    const { hub, done } = startHub(env, fakeService(), new Map())
+    await hubListening(env)
+    hub.requestExit('test')
+    expect(await done).toBe(0)
+  })
+
   it('names the child lock file the way the native child does', () => {
     expect(fnv64Hex('')).toBe('cbf29ce484222325')
     expect(fnv64Hex('a')).toBe('af63dc4c8601ec8c')
