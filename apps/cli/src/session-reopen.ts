@@ -32,7 +32,7 @@
  */
 import { randomBytes } from 'node:crypto'
 import { spawn, execFileSync } from 'node:child_process'
-import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
+import { chmodSync, closeSync, constants, existsSync, fstatSync, mkdirSync, openSync, readdirSync, readFileSync, readSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { atomicWriteFileSync } from './atomic-file.js'
@@ -57,11 +57,13 @@ import {
 } from './reopen-codex-app.js'
 import {
   chooseTerminal,
-  claudeKeptOptions,
+  claudeLaunchOptions,
   claudeResumeArgs,
-  claudeStartMode,
-  codexKeptOptions,
+  codexLaunchOptions,
+  codexPostureOptions,
   codexResumeArgs,
+  REPLAY_MAX_WORD,
+  REPLAY_MAX_WORDS,
   reopenScript,
   reopenTitle,
   systemTerminalProbe,
@@ -74,6 +76,12 @@ import type { SessionPlace } from './session-place.js'
 
 /** A reopen not confirmed by the conversation coming back within this long counts as no response (Proposal). */
 export const REOPEN_CONFIRM_MS = 60_000
+/**
+ * A reopened conversation that came back but has not taken what it was
+ * reopened for after this long is stalled: most likely at a prompt in its
+ * window (a permission or a resume question). Recorded for `notifai doctor`.
+ */
+export const REOPEN_STALL_MS = 3 * 60_000
 /** At most this many reopens per stopped period (Proposal). */
 export const REOPEN_ATTEMPTS = 2
 /** At most this many windows per minute on the machine; more wait (Proposal). */
@@ -126,40 +134,44 @@ export function adapterAllowed(settings: ReopenSettings, adapter: ReopenAdapterI
 // -- what a reopen needs to know ------------------------------------------------------
 
 /**
- * How the harness was started, read from its command line at registration
- * (kept only for a terminal): the executable when it was named by path, the
- * options a reopen keeps, the mode it started in, and for Codex whether the
- * thread ran in its own terminal or on the shared background server.
+ * How the harness was started, read exactly from its process at
+ * registration (kept only for a terminal): the executable when it was named
+ * by path, the options a reopen replays (see `reopen-terminal.ts`), and for
+ * Codex whether the thread ran in its own terminal or on the shared
+ * background server. `options` is null for the shared server, whose
+ * terminal's command line Notifai cannot read: the thread's own record of its
+ * permission posture stands in for it. A conversation with no record of this
+ * version (it started before this build, or its command line could not be
+ * read exactly) is not reopened: it waits for the User.
  */
 export interface LaunchRecord {
+  v: 2
   exe: string | null
-  options: string[]
-  start_mode: string | null
+  options: string[] | null
   codex_host: 'tui' | 'shared-server' | null
 }
 
 export function parseLaunchRecord(value: unknown): LaunchRecord | null {
   if (typeof value !== 'object' || value === null || Array.isArray(value)) return null
   const record = value as Record<string, unknown>
-  const options = Array.isArray(record['options']) ? record['options'].filter((word): word is string => typeof word === 'string' && word.length <= 4096) : []
-  const exe = typeof record['exe'] === 'string' && path.isAbsolute(record['exe']) ? record['exe'] : null
-  const mode = typeof record['start_mode'] === 'string' && /^[A-Za-z]{1,32}$/.test(record['start_mode']) ? record['start_mode'] : null
+  if (record['v'] !== 2) return null
   const host = record['codex_host'] === 'tui' || record['codex_host'] === 'shared-server' ? record['codex_host'] : null
-  return { exe, options: options.slice(0, 32), start_mode: mode, codex_host: host }
+  const raw = record['options']
+  let options: string[] | null = null
+  if (Array.isArray(raw)) {
+    if (raw.length > REPLAY_MAX_WORDS || !raw.every((word): word is string => typeof word === 'string' && word.length <= REPLAY_MAX_WORD)) return null
+    options = raw
+  } else if (raw !== null || host !== 'shared-server') {
+    return null
+  }
+  const exe = typeof record['exe'] === 'string' && path.isAbsolute(record['exe']) ? record['exe'] : null
+  return { v: 2, exe, options, codex_host: host }
 }
 
-/** A process's command line: exact from `/proc` on Linux; split on spaces from `ps` on macOS. */
+/** A process's command line as `ps` shows it: exact on Linux; split on spaces on macOS, so only for telling what a process is. */
 export function processArguments(pid: number, platform: NodeJS.Platform = process.platform): string[] | null {
   if (!Number.isInteger(pid) || pid <= 1) return null
-  if (platform === 'linux') {
-    try {
-      const words = readFileSync(`/proc/${pid}/cmdline`, 'utf8').split('\0')
-      if (words.at(-1) === '') words.pop()
-      return words.length === 0 ? null : words
-    } catch {
-      return null
-    }
-  }
+  if (platform === 'linux') return linuxArguments(pid)
   if (platform !== 'darwin') return null
   try {
     const line = execFileSync('ps', ['-ww', '-o', 'args=', '-p', String(pid)], {
@@ -171,31 +183,108 @@ export function processArguments(pid: number, platform: NodeJS.Platform = proces
   }
 }
 
-/** The launch record of a terminal harness, from its command line; null when it cannot be read. */
-export function launchRecordOf(harness: 'claude-code' | 'codex', argv: readonly string[] | null, platform: NodeJS.Platform = process.platform): LaunchRecord | null {
-  if (argv === null || argv.length === 0) return null
-  const exe = path.isAbsolute(argv[0]!) ? argv[0]! : null
-  // `ps` on macOS joins arguments with spaces: a folder that does not exist was split, so it is not kept.
-  const usable = (options: string[]): string[] => {
-    if (platform !== 'darwin') return options
-    const kept: string[] = []
-    for (let index = 0; index < options.length; index += 1) {
-      const word = options[index]!
-      if (word !== '--add-dir') { kept.push(word); continue }
-      const folders: string[] = []
-      while (index + 1 < options.length && !options[index + 1]!.startsWith('-')) {
-        const folder = options[++index]!
-        try { if (statSync(folder).isDirectory()) folders.push(folder) } catch { /* split or gone */ }
-      }
-      if (folders.length > 0) kept.push('--add-dir', ...(harness === 'codex' ? folders.slice(0, 1) : folders))
-    }
-    return kept
+function linuxArguments(pid: number): string[] | null {
+  try {
+    const words = readFileSync(`/proc/${pid}/cmdline`, 'utf8').split('\0')
+    if (words.at(-1) === '') words.pop()
+    return words.length === 0 ? null : words
+  } catch {
+    return null
   }
-  if (harness === 'claude-code') return { exe, options: usable(claudeKeptOptions(argv)), start_mode: claudeStartMode(argv), codex_host: null }
+}
+
+/**
+ * A process's exact command line, word by word: from `/proc` on Linux, and
+ * from the kernel through the native launcher on macOS
+ * (`--internal-process-args`). Null when it cannot be read exactly.
+ */
+export function exactProcessArguments(pid: number, launcher: string | null, platform: NodeJS.Platform = process.platform): string[] | null {
+  if (!Number.isInteger(pid) || pid <= 1) return null
+  if (platform === 'linux') return linuxArguments(pid)
+  if (platform !== 'darwin' || launcher === null) return null
+  try {
+    const output = execFileSync(launcher, ['--internal-process-args', String(pid)], {
+      encoding: 'utf8', timeout: 2_000, stdio: ['ignore', 'pipe', 'ignore'], env: {}, maxBuffer: 4 * 1024 * 1024,
+    })
+    if (!output.endsWith('\0')) return null
+    const words = output.slice(0, -1).split('\0')
+    return words.length === 0 || words[0] === '' ? null : words
+  } catch {
+    return null
+  }
+}
+
+/** The launch record of a terminal harness, from its exact command line; null when a reopen could not repeat it. */
+export function launchRecordOf(harness: 'claude-code' | 'codex', argv: readonly string[] | null): LaunchRecord | null {
+  if (argv === null || argv.length === 0) return null
+  // The harness's own executable; not an interpreter running it (`node …/cli.js`), which the login shell's `claude` or `codex` replaces.
+  const exe = path.isAbsolute(argv[0]!) && /^(claude|codex)(\.|-|$)/.test(path.basename(argv[0]!)) ? argv[0]! : null
+  if (harness === 'claude-code') {
+    const options = claudeLaunchOptions(argv)
+    return options === null ? null : { v: 2, exe, options, codex_host: null }
+  }
   const subcommand = codexSubcommand(argv)
-  const shared = argv.includes('app-server') || subcommand === 'daemon' || argv.includes('--listen')
   // The shared server runs its own managed copy of Codex: a terminal resumes with the `codex` the User runs.
-  return { exe: shared ? null : exe, options: shared ? [] : usable(codexKeptOptions(argv)), start_mode: null, codex_host: shared ? 'shared-server' : 'tui' }
+  if (argv.includes('app-server') || subcommand === 'daemon' || argv.includes('--listen')) return { v: 2, exe: null, options: null, codex_host: 'shared-server' }
+  const options = codexLaunchOptions(argv)
+  return options === null ? null : { v: 2, exe, options, codex_host: 'tui' }
+}
+
+/**
+ * A Codex thread's permission posture as its rollout records it: the
+ * `turn_context` of its first and of its last turn. Null when the rollout
+ * cannot be read or records none.
+ */
+export interface CodexTurnPostures {
+  /** The first turn's posture, as a comparable string. */
+  first: string
+  /** The last turn's context. */
+  last: Record<string, unknown>
+}
+
+const POSTURE_KEYS = ['approval_policy', 'approvals_reviewer', 'sandbox_policy', 'permission_profile'] as const
+const ROLLOUT_HEAD_BYTES = 8 * 1024 * 1024
+const ROLLOUT_TAIL_BYTES = 2 * 1024 * 1024
+
+export function postureKey(context: Readonly<Record<string, unknown>>): string {
+  return JSON.stringify(POSTURE_KEYS.map((key) => context[key] ?? null))
+}
+
+export function readCodexTurnPostures(transcriptPath: string | null): CodexTurnPostures | null {
+  if (transcriptPath === null || !path.isAbsolute(transcriptPath)) return null
+  let fd: number | undefined
+  try {
+    fd = openSync(transcriptPath, constants.O_RDONLY | constants.O_NOFOLLOW)
+    const size = fstatSync(fd).size
+    const read = (at: number, count: number): string[] => {
+      const bytes = Buffer.alloc(count)
+      const got = readSync(fd!, bytes, 0, count, at)
+      return bytes.subarray(0, got).toString('utf8').split('\n')
+    }
+    const context = (line: string): Record<string, unknown> | null => {
+      if (!line.includes('"turn_context"')) return null
+      try {
+        const record = JSON.parse(line) as { type?: unknown; payload?: unknown }
+        return record.type === 'turn_context' && typeof record.payload === 'object' && record.payload !== null ? record.payload as Record<string, unknown> : null
+      } catch {
+        return null
+      }
+    }
+    const head = read(0, Math.min(size, ROLLOUT_HEAD_BYTES))
+    if (size > ROLLOUT_HEAD_BYTES) head.pop()
+    let first: Record<string, unknown> | null = null
+    for (const line of head) if ((first = context(line)) !== null) break
+    const tailAt = Math.max(0, size - ROLLOUT_TAIL_BYTES)
+    const tail = read(tailAt, size - tailAt)
+    if (tailAt > 0) tail.shift()
+    let last: Record<string, unknown> | null = null
+    for (let index = tail.length - 1; index >= 0 && last === null; index -= 1) last = context(tail[index]!)
+    return first === null || last === null ? null : { first: postureKey(first), last }
+  } catch {
+    return null
+  } finally {
+    if (fd !== undefined) closeSync(fd)
+  }
 }
 
 /** What a session's hooks last saw: the terminal and the permission mode (kept in its session state as `reopen_launch`). */
@@ -236,6 +325,10 @@ export type ReopenTrigger = 'answer' | 'note' | 'hub-start'
 /** Why a conversation was left waiting for the User. */
 export type ReopenWait = 'off' | 'place-waits' | 'orca-pane' | 'folder-missing' | 'live-elsewhere' | 'live-unknown' |
   'attach-unknown' | 'harness-missing' | 'no-display' | 'terminal-unavailable' | 'launcher-missing' | 'attempts-used' | 'launch-failed' |
+  /** How it was started is not known exactly (it started before this build, or its command line could not be read or repeated). */
+  'launch-unknown' |
+  /** Its permission posture cannot be reproduced exactly; or (Codex) it changed since the thread started, so its command line no longer says it. */
+  'permission-unknown' | 'permission-changed' |
   CodexAppWait | 'app-started'
 
 /** What a Codex app attempt records in place of a terminal's name. */
@@ -281,6 +374,8 @@ export interface ReopenHost {
   codexAttach: CodexAttachCheck
   /** The harness executable as the User's login shell finds it, or null. */
   resolveHarness(name: 'claude' | 'codex'): string | null
+  /** A Codex thread's recorded permission posture (its rollout's turn contexts). */
+  codexPostures(transcriptPath: string | null): CodexTurnPostures | null
   /** Queue the content-free wake into an unloaded Codex thread, so the reopened terminal runs it at once. */
   queueCodexWake(sessionId: string): Promise<void>
   /** Open the window: true, or why it did not open. */
@@ -308,6 +403,7 @@ export function systemReopenHost(env: NodeJS.ProcessEnv, logger: Logger, launche
     },
     codexAttach: async () => ({ state: 'unknown', confirmed: false, reason: 'not-asked' }),
     resolveHarness: (name) => resolveInLoginShell(loginShell, name, env),
+    codexPostures: readCodexTurnPostures,
     queueCodexWake: async () => undefined,
     open: (launch, cwd) => openWindow(launch, cwd, env),
     codexApp: systemCodexAppHost(launcher),
@@ -398,8 +494,8 @@ interface SessionRecord {
   attempts: number
   /** Items already considered: each causes at most one attempt. */
   seen: string[]
-  last: { at: number; trigger: ReopenTrigger | null; outcome: 'launched' | 'confirmed' | 'resumed' | 'no-response' | 'waiting'; reason?: string;
-    token?: string; terminal?: string; pid?: number } | null
+  last: { at: number; trigger: ReopenTrigger | null; outcome: 'launched' | 'confirmed' | 'resumed' | 'no-response' | 'waiting' | 'stalled';
+    reason?: string; token?: string; terminal?: string; pid?: number; items?: string[] } | null
   updated_at: number
 }
 
@@ -464,6 +560,8 @@ export function guardRecord(input: { token: string; harness: 'claude-code' | 'co
 
 export class SessionReopen {
   private readonly inFlight = new Set<string>()
+  /** Conversations that came back from a reopen and have not yet taken what they were reopened for. */
+  private readonly delivering = new Set<string>()
 
   constructor(private readonly host: ReopenHost) {}
 
@@ -530,7 +628,7 @@ export class SessionReopen {
       const before = { attempts: record.attempts, seen: record.seen, last: record.last }
       record.attempts += 1
       record.seen = [...record.seen, ...fresh].slice(-200)
-      record.last = { at: now, trigger, outcome: 'launched', token, terminal: launch.app }
+      record.last = { at: now, trigger, outcome: 'launched', token, terminal: launch.app, items: fresh.slice(0, 50) }
       record.updated_at = now
       this.save(record)
       const opened = await this.host.open(launch, target.cwd!)
@@ -560,8 +658,46 @@ export class SessionReopen {
     record.last = { ...record.last, outcome, ...(pid === null ? {} : { pid }) }
     record.updated_at = now
     this.save(record)
+    if ((record.last.items ?? []).length > 0) this.delivering.add(sessionId)
     this.host.logger.info('hub.reopen', { event: outcome, session: sessionId, same_process: pid === harnessPid,
       after_ms: Math.max(0, now - record.last.at) })
+  }
+
+  /** Whether a conversation that came back from a reopen is still to take what it was reopened for. */
+  watching(sessionId: string): boolean {
+    return this.delivering.has(sessionId)
+  }
+
+  /**
+   * A reopened conversation that came back: once none of what it was
+   * reopened for still waits, it is done; if some still waits after
+   * `REOPEN_STALL_MS`, it is stalled (at a prompt in its window, most
+   * likely), and `hub.reopen` and `notifai doctor` say so.
+   */
+  progress(sessionId: string, pending: readonly string[]): void {
+    if (!this.delivering.has(sessionId)) return
+    const record = readSessionRecord(this.host.env, sessionId)
+    const last = record?.last
+    if (record === null || last === null || last === undefined || !['confirmed', 'resumed', 'stalled'].includes(last.outcome)) {
+      this.delivering.delete(sessionId)
+      return
+    }
+    const now = this.host.now()
+    const waiting = (last.items ?? []).filter((item) => pending.includes(item))
+    if (waiting.length === 0) {
+      this.delivering.delete(sessionId)
+      if (last.outcome !== 'stalled') return
+      record.last = { ...last, outcome: 'confirmed', reason: 'taken-late' }
+      record.updated_at = now
+      this.save(record)
+      this.host.logger.info('hub.reopen', { event: 'unstalled', session: sessionId, after_ms: Math.max(0, now - last.at) })
+      return
+    }
+    if (last.outcome === 'stalled' || now - last.at < REOPEN_STALL_MS) return
+    record.last = { ...last, outcome: 'stalled', reason: 'not-taken' }
+    record.updated_at = now
+    this.save(record)
+    this.host.logger.info('hub.reopen', { event: 'stalled', session: sessionId, waiting: waiting.length, after_ms: Math.max(0, now - last.at) })
   }
 
   /** A reopen nothing confirmed within its minute: no response. The window, if any, is the User's now. */
@@ -632,7 +768,7 @@ export class SessionReopen {
     const before = { attempts: record.attempts, seen: record.seen, last: record.last }
     record.attempts += 1
     record.seen = [...record.seen, ...fresh].slice(-200)
-    record.last = { at: now, trigger, outcome: 'launched', token, terminal: CODEX_APP }
+    record.last = { at: now, trigger, outcome: 'launched', token, terminal: CODEX_APP, items: fresh.slice(0, 50) }
     record.updated_at = now
     this.save(record)
     const sent = await sendCodexAppUrl(plan, this.host.codexApp)
@@ -677,27 +813,40 @@ export class SessionReopen {
     if (host.launcher === null) return { wait: 'launcher-missing' }
     const choice = chooseTerminal(settings.terminalApp, settings.terminalCommand, shared ? null : target.hooks?.terminal ?? null, host.terminal, settings.focus)
     if (!choice.ok) return { wait: choice.reason }
-    const recordedExe = target.launch?.exe ?? null
+    const launch = target.launch
+    if (launch === null) return { wait: 'launch-unknown' }
+    const recordedExe = launch.exe
     const exe = recordedExe !== null && existsSync(recordedExe) ? recordedExe : host.resolveHarness(target.harness === 'claude-code' ? 'claude' : 'codex')
     if (exe === null) return { wait: 'harness-missing' }
-    const mode = target.harness === 'claude-code' ? target.hooks?.permission_mode ?? target.launch?.start_mode ?? null : target.hooks?.permission_mode ?? null
-    const args = target.harness === 'claude-code'
-      ? claudeResumeArgs(target.sessionId, target.launch?.options ?? [], mode, settings.permissionMode)
-      : codexResumeArgs(target.sessionId, target.launch?.options ?? [], mode, settings.permissionMode)
-    const exports: Record<string, string> = {}
-    if (target.claudeConfigDir !== null && target.harness === 'claude-code') exports['CLAUDE_CONFIG_DIR'] = target.claudeConfigDir
-    if (target.codexHome !== null && target.harness === 'codex') exports['CODEX_HOME'] = target.codexHome
+    let args: string[]
+    if (target.harness === 'claude-code') {
+      if (launch.options === null) return { wait: 'launch-unknown' }
+      args = claudeResumeArgs(target.sessionId, launch.options, target.hooks?.permission_mode ?? null, settings.permissionMode)
+    } else {
+      // Codex records each turn's posture: a terminal's command line says it only while it is unchanged.
+      const postures = host.codexPostures(target.transcriptPath)
+      if (postures === null) return { wait: 'permission-unknown' }
+      let options = launch.options
+      if (options === null) options = codexPostureOptions(postures.last)
+      else if (postures.first !== postureKey(postures.last)) return { wait: 'permission-changed' }
+      if (options === null) return { wait: 'permission-unknown' }
+      args = codexResumeArgs(target.sessionId, options, settings.permissionMode)
+    }
+    // Set again after the User's login profile, so it cannot move the conversation to another home; unset for the default home.
+    const pinned: Record<string, string | null> = target.harness === 'claude-code'
+      ? { CLAUDE_CONFIG_DIR: target.claudeConfigDir }
+      : { CODEX_HOME: target.codexHome }
     // Which Notifai the conversation used, when not the default one.
     for (const name of ['XDG_STATE_HOME', 'XDG_CONFIG_HOME']) {
       const value = host.env[name]
-      if (value !== undefined && path.isAbsolute(value)) exports[name] = value
+      if (value !== undefined && path.isAbsolute(value)) pinned[name] = value
     }
     const cwd = target.cwd
     const title = reopenTitle(target.harness, cwd)
     return {
       loaded,
       script: (record) => reopenScript({ launcher: host.launcher!, record, cwd, title, command: [exe, ...args],
-        loginShell: host.loginShell, exports }),
+        loginShell: host.loginShell, pinned }),
       launch: (script) => choice.launch(script, cwd, title),
     }
   }
@@ -747,6 +896,8 @@ export function reopenReport(env: NodeJS.ProcessEnv, platform: NodeJS.Platform =
     .slice(0, 20)
     .map((record) => ({ session_id: record.session_id, at: new Date(record.last!.at).toISOString(), outcome: record.last!.outcome,
       reason: record.last!.reason ?? null, terminal: record.last!.terminal ?? null, attempts: record.attempts }))
+  // Reopened, back, and still not taking what it was reopened for: most likely at a prompt in its window.
+  const stalled = sessions.filter((session) => session.outcome === 'stalled').map((session) => session.session_id)
   return {
     available: platform === 'darwin' || platform === 'linux',
     automatic: settings.automatic,
@@ -758,7 +909,16 @@ export function reopenReport(env: NodeJS.ProcessEnv, platform: NodeJS.Platform =
     permission_mode: settings.permissionMode,
     sources,
     sessions,
+    stalled,
   }
+}
+
+/** Doctor's line for reopened conversations that stalled, or null. */
+export function reopenStalledLine(report: ReturnType<typeof reopenReport>): string | null {
+  const count = report.stalled.length
+  if (count === 0) return null
+  return count === 1 ? 'Reopen: a reopened conversation is waiting at a prompt in its window'
+    : `Reopen: ${count} reopened conversations are waiting at a prompt in their windows`
 }
 
 /** Doctor's one line: what happens to a stopped conversation when its answer arrives. */

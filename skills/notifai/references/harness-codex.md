@@ -74,9 +74,12 @@ conversation and arrives when it comes back (opened in the app, the next
 send in the chat, `codex resume`), possibly hours later: check that the work
 it answers still applies. Notes sent meanwhile wait and arrive the same way.
 A terminal conversation the machine stopped reopens by itself when an answer
-or note arrives: a new terminal window in its folder runs `codex resume`,
-which runs the waiting wake at once, in the permission mode it last ran in
-(never a more permissive one). Do not ask the User to resume it meanwhile.
+or note arrives: a new terminal window in its folder and Codex home runs
+`codex resume`, which runs the waiting wake at once, with the approval,
+sandbox and config options the thread ran with (never more permissive ones).
+One whose permissions changed since it started, that started before this
+Notifai version, or with an option Notifai does not know, waits for the User
+instead. Do not ask the User to resume it meanwhile.
 `notifai config set reopen.terminal off` (or `reopen.automatic off` for every
 place) makes it wait for the User instead; change these only when the User
 asks. A conversation the Codex app started and then unloaded continues inside

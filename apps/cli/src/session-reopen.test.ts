@@ -7,7 +7,10 @@ import type { TerminalLaunch } from './reopen-terminal.js'
 import {
   guardRecord,
   launchRecordOf,
+  postureKey,
+  readCodexTurnPostures,
   REOPEN_CONFIRM_MS,
+  REOPEN_STALL_MS,
   reopenDir,
   reopenReport,
   reopenSettings,
@@ -27,6 +30,9 @@ function setting(env: NodeJS.ProcessEnv, toml: string): void {
   writeFileSync(file, toml)
 }
 
+/** A Codex thread that ran with no approvals in a read-only sandbox throughout. */
+const NEVER_READ_ONLY = { approval_policy: 'never', approvals_reviewer: 'user', sandbox_policy: { type: 'read-only' } }
+
 function rig(overrides: Partial<ReopenHost> = {}) {
   const env = overrides.env ?? environment()
   const opened: { launch: TerminalLaunch; cwd: string; script: string }[] = []
@@ -44,6 +50,7 @@ function rig(overrides: Partial<ReopenHost> = {}) {
     codexSharedServer: () => false,
     codexAttach: async () => ({ state: 'unknown', confirmed: false, reason: 'test' }),
     resolveHarness: (name) => `/usr/local/bin/${name}`,
+    codexPostures: () => ({ first: postureKey(NEVER_READ_ONLY), last: NEVER_READ_ONLY }),
     queueCodexWake: async (id) => { queued.push(id) },
     open: async (launch, cwd) => {
       opened.push({ launch, cwd, script: readFileSync(launch.args.at(-1)!, 'utf8') })
@@ -57,7 +64,7 @@ function rig(overrides: Partial<ReopenHost> = {}) {
   const cwd = mkdtempSync(path.join(os.tmpdir(), 'notifai-reopen-cwd-'))
   const target = (extra: Partial<ReopenTarget> = {}): ReopenTarget => ({
     sessionId: 'sess-1', harness: 'claude-code', place: 'terminal', stoppedSince: 500, cwd, claudeConfigDir: null, codexHome: null,
-    orcaPane: false, launch: { exe: null, options: ['--model', 'opus'], start_mode: null, codex_host: null },
+    orcaPane: false, launch: { v: 2, exe: null, options: ['--model', 'opus', '--disallowedTools', 'Bash(rm:*)'], codex_host: null },
     hooks: { terminal: 'terminal', terminal_seen: 'terminal', orca_pane: false, permission_mode: 'acceptEdits' }, items: ['answer:r1:1'],
     transcriptPath: null, hostApp: null, harnessProcess: null, ...extra,
   })
@@ -72,7 +79,9 @@ describe('reopening a stopped conversation', () => {
     expect(opened[0]!.launch.command).toBe('/usr/bin/open')
     expect(opened[0]!.launch.args.slice(0, 3)).toEqual(['-g', '-a', 'Terminal'])
     expect(opened[0]!.cwd).toBe(cwd)
-    expect(opened[0]!.script).toContain(`exec '/bin/zsh' -l -c 'exec "$@"' notifai '/usr/local/bin/claude' '--resume' 'sess-1' '--model' 'opus' '--permission-mode' 'acceptEdits'`)
+    expect(opened[0]!.script).toContain(`notifai '/usr/local/bin/claude' '--resume' 'sess-1' '--model' 'opus' '--disallowedTools' 'Bash(rm:*)' '--permission-mode' 'acceptEdits'`)
+    // The default config home, whatever the User's login profile exports.
+    expect(opened[0]!.script).toContain(`exec '/bin/zsh' -l -c 'unset CLAUDE_CONFIG_DIR; XDG_STATE_HOME=`)
     // The script is private and executable; the guard record names this conversation and its home.
     const script = opened[0]!.launch.args.at(-1)!
     expect(statSync(script).mode & 0o777).toBe(0o700)
@@ -126,6 +135,14 @@ describe('reopening a stopped conversation', () => {
       ['the shared server holding it, closed but not confirmed', { codexHolders: () => [4242], codexSharedServer: () => true,
         codexAttach: async () => ({ state: 'closed', confirmed: false, reason: 'passive' }) }, { harness: 'codex' }, 'attach-unknown'],
       ['no harness on the login shell PATH', { resolveHarness: () => null }, {}, 'harness-missing'],
+      ['a conversation started before this build, or whose command line could not be read', {}, { launch: null }, 'launch-unknown'],
+      ['a Codex thread whose posture changed since its command line', { codexPostures: () => ({ first: postureKey({ approval_policy: 'on-request' }),
+        last: NEVER_READ_ONLY }) }, { harness: 'codex', launch: { v: 2, exe: null, options: ['--ask-for-approval', 'on-request'], codex_host: 'tui' } },
+      'permission-changed'],
+      ['a Codex thread with no recorded posture', { codexPostures: () => null }, { harness: 'codex' }, 'permission-unknown'],
+      ['a shared-server Codex thread whose posture cannot be expressed', { codexPostures: () => ({ first: '', last: { approval_policy: 'never',
+        sandbox_policy: { type: 'external-sandbox' } } }) }, { harness: 'codex', launch: { v: 2, exe: null, options: null, codex_host: 'shared-server' } },
+      'permission-unknown'],
       ['no native launcher', { launcher: null }, {}, 'launcher-missing'],
       ['Linux without a desktop session', { terminal: { platform: 'linux', env: {}, hasApp: () => false, which: () => '/usr/bin/xterm' } }, {}, 'no-display'],
       ['the window failing to open', { open: async () => 'open exited 1' }, {}, 'launch-failed'],
@@ -145,18 +162,24 @@ describe('reopening a stopped conversation', () => {
   it('queues an unloaded Codex thread\'s wake before its terminal opens, and joins one the shared server holds unattached', async () => {
     const order: string[] = []
     const unloaded = rig({ queueCodexWake: async () => { order.push('queued') }, open: async () => { order.push('opened'); return true } })
-    const codex = { harness: 'codex' as const, launch: { exe: null, options: ['--no-daemon'], start_mode: null, codex_host: 'tui' as const },
+    const codex = { harness: 'codex' as const, launch: { v: 2 as const, exe: null, options: ['--no-daemon', '--ask-for-approval', 'never', '--sandbox', 'read-only'],
+      codex_host: 'tui' as const },
       hooks: { terminal: null, terminal_seen: null, orca_pane: false, permission_mode: 'default' } }
     expect((await unloaded.reopen.reopenFor(unloaded.target(codex), 'answer')).outcome).toBe('launched')
     expect(order).toEqual(['queued', 'opened'])
+    // Exactly as it ran: no approvals is kept, and so is the narrower sandbox.
+    const tui = rig()
+    expect((await tui.reopen.reopenFor(tui.target(codex), 'answer')).outcome).toBe('launched')
+    expect(tui.opened[0]!.script).toContain(`'/usr/local/bin/codex' 'resume' 'sess-1' '--no-daemon' '--ask-for-approval' 'never' '--sandbox' 'read-only'`)
 
     const shared = rig({ codexHolders: () => [4242], codexSharedServer: (pid) => pid === 4242,
       codexAttach: async () => ({ state: 'closed', confirmed: true, reason: 'terminal-gone+reloaded' }) })
-    expect((await shared.reopen.reopenFor(shared.target({ ...codex, launch: { exe: null, options: [], start_mode: null, codex_host: 'shared-server' },
+    expect((await shared.reopen.reopenFor(shared.target({ ...codex, launch: { v: 2, exe: null, options: null, codex_host: 'shared-server' },
       hooks: { terminal: 'iterm2', terminal_seen: 'iterm2', orca_pane: true, permission_mode: null } }), 'answer')).outcome).toBe('launched')
     // Loaded: no wake before the terminal holds it; the guard lets that server's lock be.
     expect(shared.queued).toEqual([])
-    expect(shared.opened[0]!.script).toContain(`'/usr/local/bin/codex' 'resume' 'sess-1'`)
+    // Its terminal's command line is not readable: the posture the thread recorded for its last turn stands in.
+    expect(shared.opened[0]!.script).toContain(`'/usr/local/bin/codex' 'resume' 'sess-1' '--config' 'approval_policy="never"' '--config' 'sandbox_mode="read-only"'`)
     // The server's environment is not the conversation's: its terminal and Orca facts are ignored.
     expect(shared.opened[0]!.launch.args).toContain('Terminal')
     const record = readFileSync(shared.opened[0]!.launch.args.at(-1)!.replace(/\.command$/, '.json'), 'utf8')
@@ -166,7 +189,7 @@ describe('reopening a stopped conversation', () => {
   it('treats a thread the shared server turns out not to hold as unloaded: its wake is queued first', async () => {
     const r = rig({ codexHolders: () => [4242], codexSharedServer: () => true,
       codexAttach: async () => ({ state: 'not-loaded', confirmed: false, reason: 'not-loaded' }) })
-    expect((await r.reopen.reopenFor(r.target({ harness: 'codex', launch: { exe: null, options: [], start_mode: null, codex_host: 'shared-server' } }),
+    expect((await r.reopen.reopenFor(r.target({ harness: 'codex', launch: { v: 2, exe: null, options: null, codex_host: 'shared-server' } }),
       'answer')).outcome).toBe('launched')
     expect(r.queued).toEqual(['sess-1'])
   })
@@ -202,6 +225,25 @@ describe('reopening a stopped conversation', () => {
     expect(reopenReport(other.env, 'darwin').sessions[0]).toMatchObject({ outcome: 'no-response', reason: 'window-did-not-run' })
     advance(0)
   })
+
+  it('records a reopened conversation that comes back but does not take what it was reopened for as stalled', async () => {
+    const { reopen, target, env, advance } = rig()
+    const launched = await reopen.reopenFor(target(), 'answer')
+    if (launched.outcome !== 'launched') throw new Error('not launched')
+    writeFileSync(path.join(reopenDir(env), `${launched.token}.pid`), '777\n')
+    reopen.resumed('sess-1', 777)
+    expect(reopen.watching('sess-1')).toBe(true)
+    advance(REOPEN_STALL_MS - 1)
+    reopen.progress('sess-1', ['answer:r1:1'])
+    expect(reopenReport(env, 'darwin').sessions[0]).toMatchObject({ outcome: 'confirmed' })
+    advance(1)
+    reopen.progress('sess-1', ['answer:r1:1'])
+    expect(reopenReport(env, 'darwin')).toMatchObject({ sessions: [{ outcome: 'stalled', reason: 'not-taken' }], stalled: ['sess-1'] })
+    // Answered at the window at last: taken, late.
+    reopen.progress('sess-1', [])
+    expect(reopenReport(env, 'darwin')).toMatchObject({ sessions: [{ outcome: 'confirmed', reason: 'taken-late' }], stalled: [] })
+    expect(reopen.watching('sess-1')).toBe(false)
+  })
 })
 
 describe('reopen settings and records', () => {
@@ -213,16 +255,28 @@ describe('reopen settings and records', () => {
     expect(reopenSettings(env)).toMatchObject({ automatic: false, terminal: 'automatic', focus: 'front' })
   })
 
-  it('reads how a terminal harness was started without its prompt or its config overrides', () => {
-    expect(launchRecordOf('claude-code', ['/usr/local/bin/claude', '--permission-mode', 'plan', '--model', 'opus', 'do it'], 'linux'))
-      .toEqual({ exe: '/usr/local/bin/claude', options: ['--model', 'opus'], start_mode: 'plan', codex_host: null })
-    expect(launchRecordOf('codex', ['codex', '--no-daemon', '-c', 'secret=1', '-p', 'work'], 'linux'))
-      .toEqual({ exe: null, options: ['--no-daemon', '-p', 'work'], start_mode: null, codex_host: 'tui' })
-    expect(launchRecordOf('codex', ['/opt/codex', 'app-server', '--listen', 'unix:///x'], 'linux'))
-      .toEqual({ exe: null, options: [], start_mode: null, codex_host: 'shared-server' })
-    // macOS joins arguments with spaces: a folder that does not exist was split, and is not kept.
-    expect(launchRecordOf('claude-code', ['claude', '--add-dir', '/nonexistent/My', 'Folder', os.tmpdir()], 'darwin')?.options)
-      .toEqual(['--add-dir', os.tmpdir()])
+  it('reads how a terminal harness was started, with every option a reopen replays and without its prompt', () => {
+    expect(launchRecordOf('claude-code', ['/usr/local/bin/claude', '--permission-mode', 'plan', '--model', 'opus', 'do it']))
+      .toEqual({ v: 2, exe: '/usr/local/bin/claude', options: ['--permission-mode', 'plan', '--model', 'opus'], codex_host: null })
+    expect(launchRecordOf('codex', ['codex', '--no-daemon', '-c', 'approval_policy="untrusted"', '-p', 'work']))
+      .toEqual({ v: 2, exe: null, options: ['--no-daemon', '--config', 'approval_policy="untrusted"', '--profile', 'work'], codex_host: 'tui' })
+    expect(launchRecordOf('codex', ['/opt/codex', 'app-server', '--listen', 'unix:///x']))
+      .toEqual({ v: 2, exe: null, options: null, codex_host: 'shared-server' })
+    // An option this build does not know, or no command line: no record, so no reopen.
+    expect(launchRecordOf('claude-code', ['claude', '--future-deny', 'x'])).toBeNull()
+    expect(launchRecordOf('codex', null)).toBeNull()
+  })
+
+  it('reads a Codex thread\'s first and last recorded posture from its rollout', () => {
+    const file = path.join(mkdtempSync(path.join(os.tmpdir(), 'notifai-rollout-')), 'rollout.jsonl')
+    const line = (payload: Record<string, unknown>) => JSON.stringify({ type: 'turn_context', payload: { cwd: '/w', model: 'm', ...payload } })
+    writeFileSync(file, [JSON.stringify({ type: 'session_meta', payload: {} }), line({ approval_policy: 'on-request', sandbox_policy: { type: 'read-only' } }),
+      JSON.stringify({ type: 'event_msg', payload: {} }), line(NEVER_READ_ONLY), ''].join('\n'))
+    const postures = readCodexTurnPostures(file)
+    expect(postures?.last).toMatchObject(NEVER_READ_ONLY)
+    expect(postures?.first).toBe(postureKey({ approval_policy: 'on-request', sandbox_policy: { type: 'read-only' } }))
+    expect(postures?.first).not.toBe(postureKey(postures!.last))
+    expect(readCodexTurnPostures(path.join(path.dirname(file), 'missing.jsonl'))).toBeNull()
   })
 
   it('writes no guard record a fixed grammar could misread', () => {

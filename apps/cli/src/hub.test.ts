@@ -557,6 +557,8 @@ function startHub(env: NodeJS.ProcessEnv, service: FakeService, peers: Map<numbe
   return { hub, done }
 }
 let lastHelloPid = 0
+/** The command line a terminal Claude Code conversation in these tests was started with. */
+const LAUNCHED = ['/usr/local/bin/claude', '--disallowedTools', 'Bash(rm:*)', '--permission-mode', 'acceptEdits']
 
 async function hubListening(env: NodeJS.ProcessEnv): Promise<void> {
   await until(() => {
@@ -2543,7 +2545,8 @@ describe('hub: conversations stopped by their app or the machine', () => {
     describeHost(env, host)
     const service = fakeService()
     const peers = new Map<number, PeerCredentials>()
-    const first = startHub(env, service, peers, memoryStore(), 100, { endConfirmMs: 150 }, { powerWatch: false, claudeDesktop: null, runHook: noHook })
+    const first = startHub(env, service, peers, memoryStore(), 100, { endConfirmMs: 150 }, { powerWatch: false, claudeDesktop: null, runHook: noHook,
+      reopen: { open: async () => 'not in this test' }, launchArguments: () => LAUNCHED })
     await hubListening(env)
     const child = await writerChild(env, peers, 900470, host, { transcript_path: transcript(env) })
     await until(() => renewals(service) >= 1)
@@ -2565,7 +2568,8 @@ describe('hub: conversations stopped by their app or the machine', () => {
     await until(() => opened.length === 1, 5_000)
     expect(opened[0]!.args.slice(0, 3)).toEqual(['-g', '-a', 'Terminal'])
     const script = opened[0]!.args.at(-1)!
-    expect(readFileSync(script, 'utf8')).toContain(`'/usr/local/bin/claude' '--resume' '${SESSION}' '--permission-mode' 'default'`)
+    // With the options it was started with, read from its process when it registered.
+    expect(readFileSync(script, 'utf8')).toContain(`'/usr/local/bin/claude' '--resume' '${SESSION}' '--disallowedTools' 'Bash(rm:*)' '--permission-mode' 'acceptEdits'`)
     // More arrivals and safety ticks while it opens: still one window.
     second.hub.inputStaged(SESSION)
     await new Promise((resolve) => setTimeout(resolve, 400))
@@ -2580,6 +2584,44 @@ describe('hub: conversations stopped by their app or the machine', () => {
     expect(reopenReport(env, 'darwin').sessions).toMatchObject([{ session_id: SESSION, outcome: 'confirmed', terminal: 'terminal', attempts: 1 }])
     back.socket.destroy()
     await stopHub(second.hub, service, second.done)
+  })
+
+  it('never reopens while the machine goes down, and reopens at the next boot\'s hub start with nothing spent', async () => {
+    const env = hubEnv()
+    recordSessionNotified(SESSION, env, Date.now())
+    const host = await standIn()
+    describeHost(env, host)
+    const service = fakeService()
+    const peers = new Map<number, PeerCredentials>()
+    const first = startHub(env, service, peers, memoryStore(), 100, { endConfirmMs: 150 }, { powerWatch: false, claudeDesktop: null, runHook: noHook,
+      reopen: { open: async () => 'not in this test' }, launchArguments: () => LAUNCHED })
+    await hubListening(env)
+    const child = await writerChild(env, peers, 900480, host, { transcript_path: transcript(env) })
+    await until(() => renewals(service) >= 1)
+    question(env)
+    await stopHub(first.hub, service, first.done)
+    child.socket.destroy()
+    host.process.kill('SIGKILL')
+    const opened: TerminalLaunch[] = []
+    const reopen = { launcher: '/opt/notifai/notifai', resolveHarness: () => '/usr/local/bin/claude',
+      terminal: { platform: 'darwin' as const, env, hasApp: () => false, which: () => null }, open: async (launch: TerminalLaunch) => { opened.push(launch); return true as const } }
+    // The next boot goes down at once: the machine says so before this hub starts.
+    writeFileSync(path.join(path.dirname(hubLockPath(env)), 'shutdown.json'), JSON.stringify({ boot: 'going-down', since: Date.now(), name: 'x' }))
+    const second = startHub(env, service, peers, memoryStore(), 100, { endConfirmMs: 150 }, { powerWatch: false, claudeDesktop: null, runHook: noHook,
+      bootIdentity: () => 'going-down', reopen })
+    await until(() => second.hub.sessions.get(SESSION)?.stopped?.cause === 'machine', 5_000)
+    answered(env)
+    second.hub.inputStaged(SESSION)
+    await new Promise((resolve) => setTimeout(resolve, 400))
+    expect(opened).toHaveLength(0)
+    expect(reopenReport(env, 'darwin').sessions).toEqual([])
+    await stopHub(second.hub, service, second.done)
+    // After the boot, the first hub to start reopens it: the answer was never marked considered, and no attempt was spent.
+    const third = startHub(env, service, peers, memoryStore(), 100, { endConfirmMs: 150 }, { powerWatch: false, claudeDesktop: null, runHook: noHook,
+      bootIdentity: () => 'booted-again', reopen })
+    await until(() => opened.length === 1, 5_000)
+    expect(reopenReport(env, 'darwin').sessions).toMatchObject([{ session_id: SESSION, outcome: 'launched', attempts: 1 }])
+    await stopHub(third.hub, service, third.done)
   })
 
   it('ends a stopped conversation once its question\'s window is over, and the hub then leaves', async () => {

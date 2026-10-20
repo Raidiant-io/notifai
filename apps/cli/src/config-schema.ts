@@ -351,12 +351,12 @@ const INFO: Record<ConfigKey, Omit<ConfigKeyInfo, 'key'>> = {
     machineOnly: true,
     choices: REOPEN_PERMISSION_MODES,
     choiceHints: {
-      same: 'the mode it last ran in',
+      same: 'the permissions it ran with',
       default: 'the harness\'s ordinary mode, which asks before acting',
     },
     summary: 'Which permission mode a reopened conversation runs in',
     detail:
-      '`same` (the default) resumes it in the permission mode it last ran in, and never in a more permissive one. `default` resumes it in the harness\'s ordinary mode: the agent then stops at its first approval until you answer it at this machine.',
+      '`same` (the default) resumes it with the permission options it was started with and the mode it last ran in, and never with more permissive ones; a conversation whose permissions Notifai cannot repeat exactly waits for you instead. `default` resumes it in the harness\'s ordinary mode, or a narrower one it ran in, without the options that widen it: the agent then stops at its first approval until you answer it at this machine.',
     advanced: true,
   },
   log_level: {

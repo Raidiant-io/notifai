@@ -1,10 +1,15 @@
+import { execFileSync } from 'node:child_process'
+import { mkdtempSync, writeFileSync } from 'node:fs'
+import os from 'node:os'
+import path from 'node:path'
 import { describe, expect, it } from 'vitest'
 import {
   chooseTerminal,
-  claudeKeptOptions,
+  claudeLaunchOptions,
   claudeResumeArgs,
   claudeStartMode,
-  codexKeptOptions,
+  codexLaunchOptions,
+  codexPostureOptions,
   codexResumeArgs,
   customTerminalLaunch,
   reopenScript,
@@ -88,32 +93,65 @@ describe('which window opens', () => {
 })
 
 describe('the harness command', () => {
-  it('keeps the model and extra folders of a Claude Code command line, never its prompt', () => {
-    const argv = ['claude', '--model', 'opus', '--add-dir', '/a', '/b', '--permission-mode', 'plan', 'fix the build', '--add-dir=/c']
-    expect(claudeKeptOptions(argv)).toEqual(['--model', 'opus', '--add-dir', '/a', '/b', '--add-dir', '/c'])
-    expect(claudeStartMode(argv)).toBe('plan')
-    expect(claudeStartMode(['claude', '--dangerously-skip-permissions'])).toBe('bypassPermissions')
+  it('replays every option of a Claude Code command line that shapes what it may do, never its prompt or picker', () => {
+    const argv = ['claude', '--model', 'opus', '--add-dir', '/a', '/b', '--permission-mode', 'plan', '--disallowedTools', 'Bash(rm:*)', 'WebFetch',
+      '--settings', '{"permissions":{"deny":["Read(./.env)"]}}', '--mcp-config', '/m.json', '--strict-mcp-config', '--append-system-prompt', 'be careful',
+      '--allowed-tools=Edit', '-r', 'old-id', '--name', 'work', '--', 'fix the build']
+    expect(claudeLaunchOptions(argv)).toEqual(['--model', 'opus', '--add-dir', '/a', '/b', '--permission-mode', 'plan', '--disallowedTools',
+      'Bash(rm:*)', 'WebFetch', '--settings', '{"permissions":{"deny":["Read(./.env)"]}}', '--mcp-config', '/m.json', '--strict-mcp-config',
+      '--append-system-prompt', 'be careful', '--allowedTools', 'Edit'])
+    expect(claudeStartMode(claudeLaunchOptions(argv)!)).toBe('plan')
+    expect(claudeStartMode(['--dangerously-skip-permissions'])).toBe('bypassPermissions')
+    // An option this build does not know, or a run that is not a terminal conversation: not repeated at all.
+    expect(claudeLaunchOptions(['claude', '--brand-new-deny', 'x'])).toBeNull()
+    expect(claudeLaunchOptions(['claude', '-p', 'hi'])).toBeNull()
   })
 
-  it('resumes Claude Code in the mode it last ran in, never a more permissive one', () => {
-    expect(claudeResumeArgs('s1', ['--model', 'opus'], 'acceptEdits', 'same')).toEqual(['--resume', 's1', '--model', 'opus', '--permission-mode', 'acceptEdits'])
+  it('resumes Claude Code with those options in the mode it last ran in, never a more permissive one', () => {
+    const options = ['--model', 'opus', '--disallowedTools', 'Bash(rm:*)', '--permission-mode', 'plan']
+    expect(claudeResumeArgs('s1', options, 'acceptEdits', 'same'))
+      .toEqual(['--resume', 's1', '--model', 'opus', '--disallowedTools', 'Bash(rm:*)', '--permission-mode', 'acceptEdits'])
+    // Before any prompt reported a mode: the one it started in.
+    expect(claudeResumeArgs('s1', options, null, 'same')).toEqual(['--resume', 's1', '--model', 'opus', '--disallowedTools', 'Bash(rm:*)', '--permission-mode', 'plan'])
     expect(claudeResumeArgs('s1', [], 'bypassPermissions', 'same')).toEqual(['--resume', 's1', '--dangerously-skip-permissions'])
+    // Started bypassed, then switched to the ordinary mode: bypass stays reachable as before, not on.
+    expect(claudeResumeArgs('s1', ['--dangerously-skip-permissions'], 'default', 'same'))
+      .toEqual(['--resume', 's1', '--allow-dangerously-skip-permissions', '--permission-mode', 'default'])
     // Always named: a resume would otherwise restore the mode its transcript last recorded.
-    expect(claudeResumeArgs('s1', [], 'default', 'same')).toEqual(['--resume', 's1', '--permission-mode', 'default'])
+    expect(claudeResumeArgs('s1', [], null, 'same')).toEqual(['--resume', 's1', '--permission-mode', 'default'])
     expect(claudeResumeArgs('s1', [], 'yolo', 'same')).toEqual(['--resume', 's1', '--permission-mode', 'default'])
-    expect(claudeResumeArgs('s1', [], 'bypassPermissions', 'default')).toEqual(['--resume', 's1', '--permission-mode', 'default'])
+    // `default`: the ordinary mode or a narrower one, without what widens it; what narrows it stays.
+    expect(claudeResumeArgs('s1', ['--allowedTools', 'Bash', '--disallowedTools', 'WebFetch', '--dangerously-skip-permissions'], 'bypassPermissions', 'default'))
+      .toEqual(['--resume', 's1', '--disallowedTools', 'WebFetch', '--permission-mode', 'default'])
+    expect(claudeResumeArgs('s1', [], 'plan', 'default')).toEqual(['--resume', 's1', '--permission-mode', 'plan'])
   })
 
-  it('resumes Codex with its kept options; bypass only when it last ran bypassed, never full access otherwise', () => {
-    const kept = codexKeptOptions(['codex', '--no-daemon', '-m', 'gpt-5', '-c', 'x=1', '-s', 'danger-full-access', '-a', 'on-request',
-      '--dangerously-bypass-approvals-and-sandbox', 'write tests'])
-    expect(kept).toEqual(['--no-daemon', '-m', 'gpt-5', '-s', 'danger-full-access', '-a', 'on-request'])
-    expect(codexResumeArgs('t1', kept, 'default', 'same')).toEqual(['resume', 't1', '--no-daemon', '-m', 'gpt-5', '-a', 'on-request'])
-    expect(codexResumeArgs('t1', kept, 'bypassPermissions', 'same'))
-      .toEqual(['resume', 't1', '--no-daemon', '-m', 'gpt-5', '-a', 'on-request', '--dangerously-bypass-approvals-and-sandbox'])
-    expect(codexResumeArgs('t1', kept, 'bypassPermissions', 'default')).toEqual(['resume', 't1', '--no-daemon', '-m', 'gpt-5'])
-    // Nothing reported: no permission option at all.
-    expect(codexResumeArgs('t1', kept, null, 'same')).toEqual(['resume', 't1', '--no-daemon', '-m', 'gpt-5'])
+  it('replays a Codex command line\'s approval, sandbox and config overrides exactly', () => {
+    const options = codexLaunchOptions(['codex', '--no-daemon', '-m', 'gpt-5', '-a', 'never', '-s', 'workspace-write', '-c',
+      'sandbox_workspace_write.network_access=false', '--config=approval_policy="never"', '-i', 'a.png', 'b.png', '-C', '/x', 'write tests'])
+    expect(options).toEqual(['--no-daemon', '--model', 'gpt-5', '--ask-for-approval', 'never', '--sandbox', 'workspace-write', '--config',
+      'sandbox_workspace_write.network_access=false', '--config', 'approval_policy="never"'])
+    expect(codexResumeArgs('t1', options!, 'same')).toEqual(['resume', 't1', ...options!])
+    expect(codexLaunchOptions(['codex', 'resume', 'old', '-anever', '--last'])).toEqual(['--ask-for-approval', 'never'])
+    expect(codexLaunchOptions(['codex', '--remote', 'ws://h:1'])).toBeNull()
+    expect(codexLaunchOptions(['codex', '--new-thing'])).toBeNull()
+    // `default`: without what widens Codex's ordinary posture; narrowing overrides stay.
+    expect(codexResumeArgs('t1', ['--dangerously-bypass-approvals-and-sandbox', '--ask-for-approval', 'never', '--sandbox', 'read-only',
+      '--config', 'approval_policy="never"', '--config', 'sandbox_workspace_write.network_access=false', '--approve-for-me'], 'default'))
+      .toEqual(['resume', 't1', '--sandbox', 'read-only', '--config', 'sandbox_workspace_write.network_access=false'])
+  })
+
+  it('expresses a Codex thread\'s recorded posture as overrides, or not at all', () => {
+    expect(codexPostureOptions({ approval_policy: 'never', approvals_reviewer: 'user', sandbox_policy: { type: 'read-only' } }))
+      .toEqual(['--config', 'approval_policy="never"', '--config', 'sandbox_mode="read-only"'])
+    expect(codexPostureOptions({ approval_policy: 'on-request', sandbox_policy: { type: 'workspace-write', network_access: false,
+      writable_roots: ['/extra'], exclude_slash_tmp: true } })).toEqual(['--config', 'approval_policy="on-request"', '--config',
+      'sandbox_mode="workspace-write"', '--config', 'sandbox_workspace_write.network_access=false', '--config',
+      'sandbox_workspace_write.writable_roots=["/extra"]', '--config', 'sandbox_workspace_write.exclude_slash_tmp=true'])
+    expect(codexPostureOptions({ approval_policy: { granular: {} }, sandbox_policy: { type: 'read-only' } })).toBeNull()
+    expect(codexPostureOptions({ approval_policy: 'never', approvals_reviewer: 'auto', sandbox_policy: { type: 'read-only' } })).toBeNull()
+    expect(codexPostureOptions({ approval_policy: 'never', sandbox_policy: { type: 'external-sandbox' } })).toBeNull()
+    expect(codexPostureOptions({ approval_policy: 'never', sandbox_policy: { type: 'workspace-write', new_knob: 1 } })).toBeNull()
   })
 })
 
@@ -121,7 +159,7 @@ describe('the window script', () => {
   const script = reopenScript({
     launcher: '/opt/notifai/notifai', record: '/s/run/reopen/abc.json', cwd: "/work/it's here",
     title: reopenTitle('claude-code', "/work/it's here"), command: ['/usr/local/bin/claude', '--resume', 's1'], loginShell: '/bin/zsh',
-    exports: { CLAUDE_CONFIG_DIR: '/h/.claude-work' },
+    pinned: { CLAUDE_CONFIG_DIR: '/h/.claude-work', XDG_STATE_HOME: null },
   })
 
   it('deletes itself, clears the window, titles it, checks once more and becomes the harness in the login shell', () => {
@@ -132,16 +170,29 @@ describe('the window script', () => {
       `printf '\\033]0;%s\\007\\033[H\\033[2J' 'Claude Code · it'\\''s here · reopened by Notifai'`,
       `cd -- '/work/it'\\''s here' 2>/dev/null || { printf '%s\\n' 'Notifai did not reopen this conversation: its folder no longer exists.'; exit 0; }`,
       "CLAUDE_CONFIG_DIR='/h/.claude-work'; export CLAUDE_CONFIG_DIR",
+      'unset XDG_STATE_HOME',
       "'/opt/notifai/notifai' --internal-reopen-guard '/s/run/reopen/abc.json' || exit 0",
-      `exec '/bin/zsh' -l -c 'exec "$@"' notifai '/usr/local/bin/claude' '--resume' 's1'`,
+      // Set again after the login profile: a profile that exports another home cannot move the conversation.
+      `exec '/bin/zsh' -l -c 'CLAUDE_CONFIG_DIR='\\''/h/.claude-work'\\''; export CLAUDE_CONFIG_DIR; unset XDG_STATE_HOME; exec "$@"' notifai '/usr/local/bin/claude' '--resume' 's1'`,
       '',
     ])
   })
 
   it('names no secret: only the config home and Notifai\'s own folders are set', () => {
     for (const name of ['ANTHROPIC_API_KEY', 'OPENAI_API_KEY', 'TOKEN', 'SECRET', 'PASSWORD']) expect(script).not.toContain(name)
-    const fish = reopenScript({ launcher: '/l', record: '/r.json', cwd: '/w', title: 't', command: ['/c', 'resume', 'x'], loginShell: '/usr/bin/fish', exports: {} })
+    const fish = reopenScript({ launcher: '/l', record: '/r.json', cwd: '/w', title: 't', command: ['/c', 'resume', 'x'], loginShell: '/usr/bin/fish', pinned: {} })
     expect(fish.trim().split('\n').at(-1)).toBe("exec '/c' 'resume' 'x'")
+  })
+
+  it.skipIf(process.platform === 'win32')('keeps the conversation\'s config home whatever the login profile exports', () => {
+    const home = mkdtempSync(path.join(os.tmpdir(), 'notifai-reopen-profile-'))
+    writeFileSync(path.join(home, '.profile'), 'CLAUDE_CONFIG_DIR=/elsewhere; export CLAUDE_CONFIG_DIR\nCODEX_HOME=/other; export CODEX_HOME\n')
+    const file = path.join(home, 'reopen.command')
+    writeFileSync(file, reopenScript({ launcher: '/usr/bin/true', record: '/r.json', cwd: home, title: 't', command: ['/usr/bin/env'],
+      loginShell: '/bin/sh', pinned: { CLAUDE_CONFIG_DIR: '/h/.claude-work', CODEX_HOME: null } }), { mode: 0o700 })
+    const output = execFileSync('/bin/sh', [file], { encoding: 'utf8', env: { HOME: home, PATH: '/usr/bin:/bin', CODEX_HOME: '/inherited' } })
+    expect(output.split('\n')).toContain('CLAUDE_CONFIG_DIR=/h/.claude-work')
+    expect(output).not.toContain('CODEX_HOME=')
   })
 
   it('quotes every word for a POSIX shell', () => {

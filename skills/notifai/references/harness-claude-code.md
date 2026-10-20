@@ -40,9 +40,11 @@ the conversation comes back (the app reopening it, `claude --resume`),
 possibly hours later: check that the work it answers still applies. Notes
 sent meanwhile wait and arrive the same way. A terminal conversation the
 machine stopped reopens by itself when an answer or note arrives: a new
-terminal window in its folder runs `claude --resume` in the permission mode it
-last ran in (never a more permissive one). Do not ask the User to resume it
-meanwhile. `notifai config set reopen.terminal off` (or `reopen.automatic off`
+terminal window in its folder and config home runs `claude --resume` with the
+options it was started with, in the permission mode it last ran in (never a
+more permissive one). One that started before this Notifai version, or with
+an option Notifai does not know, waits for the User instead. Do not ask the
+User to resume it meanwhile. `notifai config set reopen.terminal off` (or `reopen.automatic off`
 for every place) makes it wait for the User instead; change these only when
 the User asks. A `/branch` of it continues it
 under a new id: its questions and their answers move to the branch when the
