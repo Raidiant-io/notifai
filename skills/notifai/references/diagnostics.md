@@ -45,7 +45,11 @@ staged, held back and why, or activated; `--event hub.handover` shows a hub on
 an earlier build handing over to the active build, or the one thing it still
 finishes first, and doctor's hub line says the same. A restart loses nothing:
 `--event hub.session` shows the next hub adopting Codex conversations no child
-brings back. While it runs, the hub also answers
+brings back. For a Codex terminal on Codex's shared server, doctor's wake
+route says whether answers can start a turn there or wait for the next turn,
+and its JSON (`shared_server_check`) names the step a failed check stopped at; `--event hub.session` shows the
+check (`codex-check-…`), a held wake (`wake-held`) and a terminal seen closed
+(`terminal-closed`). While it runs, the hub also answers
 the frequent hooks of quiet sessions; any other hook starts the runtime as
 before, and doctor's JSON counts both and says why a hook went to the runtime.
 A hub that crashed three times in ten minutes stops

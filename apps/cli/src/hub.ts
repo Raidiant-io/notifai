@@ -26,6 +26,8 @@ import { claudePickerHolds } from './claude-question-hooks.js'
 import { createClient, type ApiClient } from './client.js'
 import { codexInputObserver, refreshCodexInputActivity } from './codex-input-lifecycle.js'
 import { connectCodexQueue } from './codex-queue-control.js'
+import { codexAttachVerified, codexThreadAttachState, type CodexAttachInput, type CodexAttachState } from './codex-attach-signal.js'
+import { checkCodexServerBuild } from './codex-attach-canary.js'
 import {
   codexAppSurface,
   codexHostHoldsThread,
@@ -35,6 +37,7 @@ import {
   locateCodexRollout,
   readCodexSessionMeta,
   readCodexThreadOriginator,
+  type CodexHostKind,
   type RolloutPlace,
 } from './codex-session-end.js'
 import { readNativeTurnSnapshot } from './codex-native-turn.js'
@@ -157,6 +160,15 @@ export const HUB_CRASH_WINDOW_MS = 10 * 60_000
 const IDLE_BEFORE_WAKE_REPLACEMENT_MS = 30_000
 /** Safety re-read of activity and pending input; events do the ordinary work. */
 const SAFETY_TICK_MS = 15_000
+/**
+ * How often an open question's conversation on Codex's shared server is
+ * checked for a closed terminal (Codex reports none), and how long one
+ * confirmation that a terminal shows it lets a wake through.
+ */
+const CODEX_ATTACH_WATCH_MS = 10_000
+const CODEX_ATTACH_WAKE_MS = 10_000
+/** A SessionEnd this soon after Notifai's own confirming request is that request's reload. */
+const CODEX_OWN_RELOAD_MS = 10_000
 /** A claimed write must begin within this bound of the child reading the request. */
 const CHILD_WRITE_DEADLINE_MS = 8_000
 /**
@@ -245,6 +257,14 @@ export interface HubOptions {
   runHook?: (event: string, envelope: Record<string, unknown> | null, harness: HookInstallableHarness, env: NodeJS.ProcessEnv) => Promise<number>
   /** Test seam: what kind of process hosts a Codex session; production asks `ps`. */
   codexHostKind?: typeof codexHostKind
+  /** Test seams for Codex's shared server (see `codex-attach-signal.ts`). */
+  codexAttach?: {
+    /** Whether Codex's behaviour was checked for the binary this host runs. */
+    verified?: (host: ProcessIdentity) => boolean
+    state?: (input: CodexAttachInput) => Promise<CodexAttachState>
+    checkBuild?: (host: ProcessIdentity) => Promise<{ outcome: 'passed' | 'failed'; step?: number; codexVersion: string | null; detail?: string } | null>
+    watchMs?: number
+  }
   /** Test seam: whether a process holds a Codex thread's writer lock; production asks `lsof` or `/proc`. */
   codexHostHoldsThread?: (codexHome: string | null, threadId: string, pid: number) => boolean
   /** Test seam: whether any process has a Codex thread loaded; production asks `lsof` or `/proc`. */
@@ -349,6 +369,8 @@ type Probe =
   | { state: 'ended'; reason: EndReason }
 
 type EndReason = 'harness-gone' | 'session-replaced' | 'session-end-hook' | 'session-archived' |
+  /** No terminal shows a conversation on Codex's shared server any more (it reports no close). */
+  'terminal-closed' |
   /** A stopped conversation: every window it waited for ended, it was deleted or archived, or its app quit. */
   'window-over' | 'session-deleted' | 'app-quit' |
   /** It continued as a fork with a new id; until the service can re-home its items there, they expire. */
@@ -432,6 +454,18 @@ class HubSession implements AttendedSession {
   private lastPhaseWritten = ''
   ending: EndReason | null = null
   codexObserver: ReturnType<typeof codexInputObserver> | null = null
+  /**
+   * Codex's shared server only (see `codex-attach-signal.ts`): until when
+   * (monotonic) a confirmation that a terminal shows the thread lets a wake
+   * through; when the input check last asked (at most every 10 s); whether
+   * the close watch waits for the next turn (a terminal that joined the
+   * thread shows it; a waiting item is checked by the input check meanwhile);
+   * and Notifai's own last confirming request, whose reload runs SessionEnd.
+   */
+  attachWakeUntil = 0
+  attachAskedAt = -Infinity
+  attachWatchPaused = false
+  attachOwnReload: { pid: number; at: number } | null = null
   /** An end signal waiting for the end confirmation (see `END_CONFIRM_MS`). */
   endCandidate: { child: ChildLink | null; transcriptPath: string | null; timer: ReturnType<typeof setTimeout>; reason: EndReason;
     since: number } | null = null
@@ -476,7 +510,7 @@ class HubSession implements AttendedSession {
   private observeCodex(): void {
     if (this.harness !== 'codex') return
     this.codexObserver = codexInputObserver(this.id, this.env, this.record.key, () => this.hub.clock.monotonic(),
-      this.registration.transcriptPath ?? undefined, (owner) => this.harnessAlive(owner))
+      this.registration.transcriptPath ?? undefined, (owner) => this.harnessAlive(owner), (owner) => this.hub.codexIdleWake(this, owner))
   }
 
   /** The primary as a writer, while its child is connected. */
@@ -708,6 +742,8 @@ class HubSession implements AttendedSession {
   /** A hook boundary passed (prompt, turn end, interrupt): read activity again. */
   hinted(): void {
     if (this.stopped !== null) return
+    // A turn passed: the close watch looks again.
+    this.attachWatchPaused = false
     this.lastActivity = Math.max(this.lastActivity, this.hub.clock.wall())
     if (this.forkChecks > 0) this.hub.checkFork(this)
     if (this.harness === 'codex') refreshCodexInputActivity(this.id, this.env, this.record.key,
@@ -746,8 +782,10 @@ class HubSession implements AttendedSession {
         (!state.input_wake?.queued || (this.settledIdle() && inputWakeOverdue(state, this.hub.clock.wall()))) &&
         hasSessionInputs(this.id, this.env, null)
     } else {
-      pending = !state.input_wake?.queued && hasSessionInputs(this.id, this.env, lease) &&
-        (this.codexObserver?.mayWake() ?? false)
+      const waiting = !state.input_wake?.queued && hasSessionInputs(this.id, this.env, lease)
+      pending = waiting && (this.codexObserver?.mayWake() ?? false)
+      // On Codex's shared server a wake waits until a terminal is seen to show the thread.
+      if (waiting && !pending && this.hub.codexSharedServer(this)) void this.hub.checkCodexAttach(this, 'input')
     }
     if (!pending || this.lease.needsFresh) return
     this.lease.needsFresh = true
@@ -1128,6 +1166,8 @@ export class Hub {
     })
     this.safetyTimer = setInterval(() => this.safetyTick(), this.options.safetyTickMs ?? SAFETY_TICK_MS)
     this.safetyTimer.unref?.()
+    this.attachWatchTimer = setInterval(() => this.watchCodexAttach(), this.options.codexAttach?.watchMs ?? CODEX_ATTACH_WATCH_MS)
+    this.attachWatchTimer.unref?.()
     this.scheduleAutomaticUpdate(this.options.automaticUpdate?.firstDelayMs ?? AUTOMATIC_UPDATE_FIRST_MS)
     // An exit asked for during startup (a signal, `stop`) must not be lost.
     if (!this.exiting) await new Promise<void>((resolve) => { this.exitResolve = resolve })
@@ -1319,6 +1359,7 @@ export class Hub {
     for (const session of this.sessions.values()) if (session.endCandidate !== null) clearTimeout(session.endCandidate.timer)
     this.powerWatch?.stop()
     if (this.safetyTimer !== null) clearInterval(this.safetyTimer)
+    if (this.attachWatchTimer !== null) clearInterval(this.attachWatchTimer)
     if (this.updateTimer !== null) clearTimeout(this.updateTimer)
     this.driver.stop()
     await exchange
@@ -2165,6 +2206,12 @@ export class Hub {
    * end waits for the end confirmation.
    */
   endSignalled(session: HubSession, harnessPid: number | null, transcriptPath: string | null): void {
+    // Notifai's own confirming request reloaded the thread (nobody showed it): not an end.
+    const own = session.attachOwnReload
+    if (own !== null && this.clock.monotonic() - own.at < CODEX_OWN_RELOAD_MS && (harnessPid === null || harnessPid === own.pid)) {
+      this.logger.info('hub.session', { event: 'end-ignored', session: session.id, reason: 'own-check' })
+      return
+    }
     // A process that never hosted this conversation here ends nothing: a
     // scripted run of the same id the hub refused, or one that started after
     // the conversation stopped.
@@ -2342,7 +2389,7 @@ export class Hub {
       place: session.registration.place,
       rollout: located.place,
       host: session.harnessGone() ? 'gone' : 'alive',
-      hostKind: (this.options.codexHostKind ?? codexHostKind)(session.harnessProcess.pid),
+      hostKind: this.codexHostKind(session.harnessProcess.pid),
       // No rollout, no originator: nothing then shows the app still lists it.
       originator: readCodexThreadOriginator(located.path ?? transcriptPath),
       hostApp: recordedLiveness(session.registration.hostApp),
@@ -3012,6 +3059,125 @@ export class Hub {
   /** An answer was staged for a session: hand it in now rather than at a later tick. */
   inputStaged(sessionId: string): void {
     this.sessions.get(sessionId)?.checkInput()
+  }
+
+  // -- Codex's shared server: is the conversation still on a screen? ------------
+
+  private readonly sharedHosts = new Map<string, boolean>()
+  private readonly attachChecking = new Set<string>()
+  private codexBuildChecking = false
+  private attachWatchTimer: ReturnType<typeof setInterval> | null = null
+
+  /** Whether the session's Codex host is the shared server (asked once per host process). */
+  codexSharedServer(session: HubSession): boolean {
+    if (session.harness !== 'codex') return false
+    const key = identityKey(session.harnessProcess)
+    let shared = this.sharedHosts.get(key)
+    if (shared === undefined) {
+      const kind = this.codexHostKind(session.harnessProcess.pid)
+      if (kind === 'unknown') return false
+      shared = kind === 'shared-server'
+      if (this.sharedHosts.size > 256) this.sharedHosts.clear()
+      this.sharedHosts.set(key, shared)
+    }
+    return shared
+  }
+
+  /** What kind of Codex process hosts a session: its own app, a terminal, the shared server. */
+  codexHostKind(pid: number): CodexHostKind {
+    return (this.options.codexHostKind ?? codexHostKind)(pid)
+  }
+
+  /**
+   * The idle-wake rule: anywhere but the shared server as before; there only
+   * shortly after a terminal was confirmed to show the thread.
+   */
+  codexIdleWake(session: HubSession, owner: ProcessIdentity): boolean {
+    if (identityKey(owner) !== identityKey(session.harnessProcess)) return this.codexHostKind(owner.pid) !== 'shared-server'
+    return !this.codexSharedServer(session) || this.clock.monotonic() < session.attachWakeUntil
+  }
+
+  private codexAttachVerified(session: HubSession): boolean {
+    return (this.options.codexAttach?.verified ?? ((host: ProcessIdentity) => codexAttachVerified(host, this.env)))(session.harnessProcess)
+  }
+
+  /**
+   * Ask whether a terminal shows a shared-server conversation: before a wake
+   * (`input`: both checks, so a terminal that joined it is woken too), or for
+   * the close watch (`watch`: the confirming request only when the passive
+   * check sees no terminal). Confirmed shown: the wake goes through. Confirmed
+   * not shown: the User closed it, and its questions expire. Anything else
+   * changes nothing. Nothing runs before Codex's behaviour was checked for
+   * the binary that server runs; that check is started here.
+   */
+  async checkCodexAttach(session: HubSession, why: 'input' | 'watch'): Promise<void> {
+    if (this.attachChecking.has(session.id) || session.ending !== null || session.stopped !== null || session.endCandidate !== null ||
+        this.handingOver || this.exiting) return
+    if (why === 'input' && this.clock.monotonic() - session.attachAskedAt < CODEX_ATTACH_WATCH_MS) return
+    if (!this.codexAttachVerified(session)) { this.checkCodexBuild(session); return }
+    this.attachChecking.add(session.id)
+    if (why === 'input') session.attachAskedAt = this.clock.monotonic()
+    const host = session.harnessProcess
+    let result: CodexAttachState
+    try {
+      const input: CodexAttachInput = {
+        threadId: session.id, env: session.env, host, confirm: why === 'input' ? 'always' : 'closed',
+        beforeConfirm: () => { session.attachOwnReload = { pid: host.pid, at: this.clock.monotonic() } },
+      }
+      result = await (this.options.codexAttach?.state ?? ((value: CodexAttachInput) =>
+        codexThreadAttachState(value, { verified: () => true })))(input)
+    } catch {
+      result = { state: 'unknown', confirmed: false, reason: 'check-failed' }
+    } finally {
+      this.attachChecking.delete(session.id)
+    }
+    if (this.sessions.get(session.id) !== session || session.ending !== null || session.stopped !== null ||
+        identityKey(session.harnessProcess) !== identityKey(host)) return
+    if (result.state === 'attached' && result.confirmed) {
+      session.attachWakeUntil = this.clock.monotonic() + CODEX_ATTACH_WAKE_MS
+      // Only a terminal that joined it shows it: asking again every few seconds would reload nothing new.
+      if (why === 'watch') session.attachWatchPaused = true
+      if (why === 'input') {
+        this.logger.info('hub.session', { event: 'terminal-shows', session: session.id, reason: result.reason })
+        session.checkInput()
+      }
+      return
+    }
+    if (result.state === 'closed' && result.confirmed) {
+      this.logger.info('hub.session', { event: 'terminal-closed', session: session.id, reason: result.reason })
+      this.endSession(session, 'terminal-closed')
+      return
+    }
+    if (why === 'input') this.logger.info('hub.session', { event: 'wake-held', session: session.id, reason: result.reason })
+  }
+
+  /** Check, in the background and once per binary, that Codex still behaves as the shared-server checks need. */
+  private checkCodexBuild(session: HubSession): void {
+    if (this.codexBuildChecking || this.exiting) return
+    this.codexBuildChecking = true
+    const run = this.options.codexAttach?.checkBuild ?? ((host: ProcessIdentity) => checkCodexServerBuild(this.env, host, this.clock.wall(),
+      undefined, (event) => this.logger.info('hub.session', { ...event, event: `codex-check-${String(event['event'])}` })))
+    void run(session.harnessProcess).then((result) => {
+      if (result === null) return
+      this.logger.info('hub.session', { event: 'codex-check-finished', outcome: result.outcome, step: result.step ?? null,
+        codex_version: result.codexVersion, detail: result.detail ?? null })
+      if (result.outcome === 'passed') for (const each of this.sessions.values()) if (this.codexSharedServer(each)) each.checkInput()
+    }).catch((err: unknown) => {
+      this.logger.error('hub.session', { event: 'codex-check-failed', message: err instanceof Error ? err.message : String(err) })
+    }).finally(() => { this.codexBuildChecking = false })
+  }
+
+  /**
+   * Codex runs no hook when a terminal on its shared server closes. While a
+   * conversation there has asked the User something, look every few seconds.
+   */
+  private watchCodexAttach(): void {
+    for (const session of this.sessions.values()) {
+      if (session.harness !== 'codex' || session.attachWatchPaused || session.ending !== null || session.stopped !== null ||
+          session.endCandidate !== null || session.child === null || session.child.closed || !session.notified ||
+          !this.codexSharedServer(session)) continue
+      void this.checkCodexAttach(session, 'watch')
+    }
   }
 
   codexAdapters(session: HubSession): CodexWakeAdapters {

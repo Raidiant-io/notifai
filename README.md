@@ -556,7 +556,17 @@ received, from your devices into that running session. Claude Code gets a
 content-free wake in its inbox, written by the session child. Codex uses its trusted synchronous `PostToolUse` hook during
 active turns and also queues a content-free wake while input is pending,
 whether working or idle. If no tool boundary occurs, the queued wake preserves
-delivery at turn end. Child callbacks cannot consume the parent session's input
+delivery at turn end. A plain `codex` terminal that joined Codex's shared
+server is the exception: when that terminal closes, Codex keeps the
+conversation loaded for about 30 minutes and says nothing, so a wake there
+could start a turn nobody sees. There Notifai wakes an idle session only when
+it can see that a terminal still shows the conversation, and treats a closed
+terminal as the end of the session. It relies on Codex behaviour that Codex
+does not promise, so the hub first checks, once per installed Codex build, in
+a throwaway Codex home with a mock model, that Codex still behaves that way
+([`docs/CODEX-ATTACH-CANARY.md`](docs/CODEX-ATTACH-CANARY.md)). Until
+that check passes, the session is not woken while idle and the note or
+answer waits for your next prompt there. Child callbacks cannot consume the parent session's input
 or change its activity. Each hand-off is claimed first, so an edited answer can only follow
 the answer it replaces, and nothing is written twice. The agent acknowledges
 each one with `notifai acknowledge sm_…`, exactly as it acknowledges an

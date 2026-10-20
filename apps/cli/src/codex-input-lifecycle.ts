@@ -1,5 +1,6 @@
 /** Exact native activity used by the existing input scheduler. */
 import { readNativeTurnSnapshot } from './codex-native-turn.js'
+import { codexHostKind, type CodexHostKind } from './codex-session-end.js'
 import { readSessionIncarnation, readSessionState, sessionHasEnded, updateSessionState } from './hook-session-state.js'
 import { processIdentityLiveness, type ProcessIdentity } from './process-identity.js'
 import { reconcileNativeTurn } from './session-attendant-state.js'
@@ -32,12 +33,35 @@ export function refreshCodexInputActivity(
   return native.latest.ended ? native.latest.outcome === 'aborted' ? 'aborted' : 'idle' : 'working'
 }
 
+/**
+ * The idle-wake rule without a way to tell whether a terminal shows the
+ * thread: never on Codex's shared server. That server keeps a closed
+ * terminal's thread loaded, idle and clientless for about 30 minutes and
+ * tells no one, so a wake there could start a turn nobody sees; the input
+ * waits for the User's next prompt instead. The hub, which can tell, passes
+ * its own rule. A process's command line is fixed for its life, so the host
+ * is asked once per process (an unknown answer is asked again, and wakes).
+ */
+export function hostKindIdleWake(hostKind: (pid: number) => CodexHostKind = codexHostKind): (owner: ProcessIdentity) => boolean {
+  let host: { pid: number; start: string; wakes: boolean } | undefined
+  return (owner) => {
+    if (host?.pid !== owner.pid || host.start !== owner.start) {
+      const kind = hostKind(owner.pid)
+      if (kind === 'unknown') return true
+      host = { pid: owner.pid, start: owner.start, wakes: kind !== 'shared-server' }
+    }
+    return host.wakes
+  }
+}
+
 /** One observer owns the grace interval across probes and final wake checks.
- * Only a continuous read failure permits the bounded queue fallback. */
+ * Only a continuous read failure permits the bounded queue fallback.
+ * `idleWake` decides whether an idle thread on its current host may be woken. */
 export function codexInputObserver(
   sessionId: string, env: NodeJS.ProcessEnv, expectedKey: string, monotonic: () => number,
   transcriptPath?: string,
   alive: (owner: ProcessIdentity) => boolean = (owner) => processIdentityLiveness(owner) === 'alive',
+  idleWake: (owner: ProcessIdentity) => boolean = hostKindIdleWake(),
 ): { observe: () => CodexInputActivity; mayWake: () => boolean; unknownAllowed: () => boolean } {
   let unknownSince: number | undefined
   const observe = (): CodexInputActivity => {
@@ -54,7 +78,7 @@ export function codexInputObserver(
       const activity = observe()
       const owner = readSessionIncarnation(sessionId, env)
       if (owner?.key !== expectedKey || sessionHasEnded(sessionId, env) ||
-          owner.harness_process === undefined || !alive(owner.harness_process)) return false
+          owner.harness_process === undefined || !alive(owner.harness_process) || !idleWake(owner.harness_process)) return false
       // Aborting fences its turn; it does not cancel pending User input.
       return activity === 'idle' || activity === 'aborted' ||
         (activity === 'unknown' && monotonic() - unknownSince! >= 6_000)
