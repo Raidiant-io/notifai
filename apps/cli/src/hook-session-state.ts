@@ -325,6 +325,29 @@ export function rotateSessionIncarnation(
 }
 
 /**
+ * Name another process as the one hosting this same incarnation: the
+ * conversation moved to another live writer (another terminal, the desktop
+ * app) without ending, so its key, service identity and start stay. Only the
+ * holder of `key` may do it, and never for an incarnation that has ended.
+ */
+export function rehostSessionIncarnation(
+  sessionId: string,
+  env: NodeJS.ProcessEnv,
+  key: string,
+  harnessProcess: ProcessIdentity,
+  boot?: string,
+): SessionIncarnation | null {
+  const stateFile = sessionStatePath(sessionId, env)
+  return withFileLock(`${stateFile}.lock`, () => {
+    const current = readSessionIncarnation(sessionId, env)
+    if (current === null || current.key !== key || endsIncarnation(readSessionEndMarker(sessionId, env), current)) return null
+    const next: SessionIncarnation = { ...current, harness_process: harnessProcess, ...(boot === undefined ? {} : { boot }) }
+    atomicWriteFileSync(sessionIncarnationPath(sessionId, env), `${JSON.stringify(next)}\n`)
+    return next
+  })
+}
+
+/**
  * Whether this Agent Session ever had a Notification Request accepted on this
  * machine. Its Session Attendant makes no network call before this marker
  * exists, so sessions that never notified are never reported.

@@ -419,17 +419,33 @@ delivered. Acknowledgements the agent still owed are cancelled. If a hook is
 still waiting for an answer when the session closes, it tells the Notifai
 service right away, so the questions expire on your devices at once.
 
+SessionEnd is not always a close, so on macOS and Linux the hub that attends
+the session decides about ten seconds later (the end confirmation), and the
+hook cleans up nothing meanwhile. The same applies when the session child sees
+its harness exit or goes away. If the same conversation is back by then, it
+was never closed: its questions stay open and what waits for it follows it.
+That covers the shared Codex server reloading a thread in place when a
+terminal runs `codex resume` (it runs SessionEnd first), the Claude desktop
+app respawning a session, and a handoff that continues it at once in another
+terminal or app (`/desktop`, `/app`, a resume in a new tab). A Claude Code
+conversation can be open in two places at once; each has its own session
+child, only the most recently opened receives answers and notes, and closing
+one leaves the other. Anything else closed: exiting, closing the terminal, a
+kill, `/clear` or `/resume` of another conversation in its place, quitting
+the app, archiving or deleting it. Without a hub (Windows), SessionEnd closes
+at once.
+
 The Codex app and the Codex IDE extension are the exception. Codex also runs
 SessionEnd, and stops the session child, when it unloads a conversation nobody
-has had open for a while, though the app still lists it. There the hub that attends the session waits a
-few seconds and looks: if the conversation's rollout is gone (archived or
+has had open for a while, though the app still lists it. There the hub, after
+the end confirmation, looks: if the conversation's rollout is gone (archived or
 deleted), or the app's own Codex server has exited (the app quit), the session
 closed as above. If the conversation was started in that app and its server
 still runs, the session stays open: its questions stay answerable, and an
 answer waits in that conversation as a content-free wake that Codex starts only
 when the conversation is loaded again, that is, when you open it. Nothing runs
 while you are not looking. The hub stays to watch the app while something
-waits, so quitting the app still expires the questions at once.
+waits, so quitting the app still expires the questions within seconds.
 
 **Session child and hub** (`attend`, Claude Code and Codex on macOS and Linux).
 The `attend` handler is a second, asynchronous handler on SessionStart,
@@ -438,8 +454,8 @@ with no shell in between, when its version is known to support that (2.1.139 or
 later, read from `claude --version` at install); otherwise in shell form, which
 works the same way. `notifai doctor` shows the form and why, and `notifai update`
 moves the hooks to exec form after Claude Code is upgraded. It runs the native launcher as a tiny **session
-child**: one per Agent Session, staying the harness's own child for the life of
-the session. It learns from the kernel when the harness exits, so it never polls
+child**: one per Agent Session and process hosting it, staying the harness's own
+child for the life of the session. It learns from the kernel when the harness exits, so it never polls
 and has no timer, and it is the only process that writes into Claude Code's
 inbox, opening each connection with the session's own token. It holds no
 credential and makes no network connection. When a child already serves the
@@ -453,9 +469,10 @@ once, holds every session's presence lease behind one batched exchange with
 the service, waits for answers to registered questions, and nudges Codex
 through its queue. It makes no network call for a session until that session
 has sent a Notification Request, so sessions that never notified are never
-reported. When the harness exits, is killed, or its machine restarts, the hub
-reports the session ended, so its questions expire on your devices; a hub that
-was not running reports it at the next Notifai activity. A hub crash is not a
+reported. When the harness exits or is killed, the hub reports the session
+ended after the end confirmation, unless it continues elsewhere at once, so its
+questions expire on your devices; when its machine restarts, or the hub was not
+running, it is reported at the next Notifai activity. A hub crash is not a
 close: children restart it and register again, and nothing expires. Only an
 opaque id leaves the machine: never process ids, paths, or session files.
 `notifai doctor` shows the hub and the sessions it attends.
@@ -506,9 +523,10 @@ hook timeout, so the attend handler declares the complete answer window (about
 72 hours) and the next prompt or turn end starts another child after that. Codex
 publishes no session status, so the hub reads working or idle from this
 thread's own transcript and hooks (a third attend copy on Interrupt only tells
-the hub the turn ended). And Codex stops the child when the thread closes or
-unloads, so SessionEnd itself reports the session ended, except for an unloaded
-Codex app or IDE conversation, which stays open as described above. Codex runs
+the hub the turn ended). And Codex stops the child when the thread closes,
+reloads or unloads, so SessionEnd hands the end to the hub, which decides it as
+described above: a thread its Codex server holds again (its writer lock) was
+reloaded in place and runs on until its next prompt brings a child back. Codex runs
 no SessionEnd when a loaded conversation is archived, so the hub also watches
 each Codex session's rollout and ends the session when it is archived or
 deleted. Codex runs hooks

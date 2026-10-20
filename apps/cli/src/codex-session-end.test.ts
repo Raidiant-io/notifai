@@ -1,11 +1,14 @@
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { spawn } from 'node:child_process'
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
 import {
   classifyCodexSessionEnd,
   codexDormantSurface,
+  codexHostHoldsThread,
   codexHostKind,
+  codexThreadWriterLockPath,
   codexTranscriptState,
   readCodexThreadOriginator,
   type CodexEndEvidence,
@@ -74,5 +77,40 @@ describe('Codex SessionEnd classification', () => {
 
   it('does not take an ordinary process for an app-server', () => {
     expect(codexHostKind(process.pid)).toBe(process.platform === 'win32' ? 'unknown' : 'other')
+  })
+})
+
+describe('Codex thread writer lock', () => {
+  const THREAD = '01a15732-d133-7602-9f11-cbee134b7ba0'
+
+  it.skipIf(process.platform !== 'darwin' && process.platform !== 'linux')(
+    'tells the process holding a thread\'s writer lock open from any other, and a released lock from a held one', async () => {
+      const home = mkdtempSync(path.join(os.tmpdir(), 'notifai-codex-lock-'))
+      roots.push(home)
+      const lock = codexThreadWriterLockPath(home, THREAD)
+      expect(lock).toBe(path.join(home, 'thread-writer-locks', `${THREAD}.lock`))
+      expect(codexHostHoldsThread(home, THREAD, process.pid)).toBe(false) // no lock file yet
+      mkdirSync(path.dirname(lock), { recursive: true })
+      writeFileSync(lock, '')
+      // A stand-in host: a shell that keeps the lock open, as Codex does while the thread is loaded.
+      const host = spawn('/bin/sh', ['-c', 'exec 9<>"$0"; exec sleep 30', lock], { stdio: 'ignore' })
+      try {
+        let held = false
+        for (let i = 0; i < 100 && !held; i += 1) {
+          held = codexHostHoldsThread(home, THREAD, host.pid!)
+          if (!held) await new Promise((resolve) => setTimeout(resolve, 50))
+        }
+        expect(held).toBe(true)
+        expect(codexHostHoldsThread(home, THREAD, process.pid)).toBe(false)
+        expect(codexHostHoldsThread(home, '01a15732-0000-0000-0000-000000000000', host.pid!)).toBe(false)
+      } finally {
+        host.kill('SIGKILL')
+      }
+      await new Promise((resolve) => host.once('exit', resolve))
+      expect(codexHostHoldsThread(home, THREAD, host.pid!)).toBe(false)
+    })
+
+  it('cannot tell on Windows, so a reload there is never assumed', () => {
+    expect(codexHostHoldsThread(null, THREAD, process.pid, 'win32')).toBe(false)
   })
 })

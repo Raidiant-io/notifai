@@ -48,7 +48,9 @@ trusted tool hook can hand input into a working turn, Notifai uses that hook.
 Idle sessions, or sessions whose live input path cannot be established, use
 a content-free wake for the exact Agent Session in the same Codex home.
 Notifai does not cold-start or resume Codex to obtain a control connection.
-Closing the Agent Session ends its questions. In the Codex app or IDE
+Closing the Agent Session ends its questions within seconds. A `codex resume`
+that reloads the same conversation in place, or continues it at once
+elsewhere, keeps them, and their answers follow it. In the Codex app or IDE
 extension, a conversation Codex unloads while the app still lists it stays
 open: its questions stay answerable, and an answer waits in that conversation
 until the User opens it again. Quitting the app, or archiving or deleting the

@@ -87,9 +87,17 @@ export function credentialGenerationPath(env: NodeJS.ProcessEnv): string {
   return path.join(hubRunDir(env), 'credential-generation')
 }
 
-/** The flock the native child holds for one session (see `session-child.h`). */
+/**
+ * The flock the first native child of a session holds (see `session-child.h`);
+ * a child of an earlier build holds only this one.
+ */
 export function childLockPath(env: NodeJS.ProcessEnv, sessionId: string): string {
   return path.join(hubRunDir(env), 'children', `${fnv64Hex(sessionId)}.lock`)
+}
+
+/** The flock a native child holds for one session and one harness process. */
+export function writerLockPath(env: NodeJS.ProcessEnv, sessionId: string, harnessPid: number): string {
+  return path.join(hubRunDir(env), 'children', `${fnv64Hex(sessionId)}-${harnessPid}.lock`)
 }
 
 /** Local end records a child writes when its harness exits. */

@@ -23,8 +23,7 @@ import {
 import { claudeHookSourcePid, claudeSessionPid } from './commands-harness-context.js'
 import { attendHook, recordCodexTurnStart, reportCodexSessionEnded } from './commands-hook-attend.js'
 import { hubSupported } from './hub-ipc.js'
-import { holdCodexSessionEnd, hubAttendsSession, notifyHubSessionEnded } from './hub-client.js'
-import { codexDormantSurface, readCodexThreadOriginator } from './codex-session-end.js'
+import { holdSessionEnd, hubAttendsSession, notifyHubSessionEnded } from './hub-client.js'
 import { waitForReply } from './commands-send-support.js'
 import { loadConfig, type CliConfig } from './config.js'
 import { withFileLock } from './file-lock.js'
@@ -915,14 +914,18 @@ export async function hookRunCommand(
   // client construction and hook handling can all throw, and a hook that exits
   // non-zero makes the harness report a failure — strictly worse than skipping.
   try {
-    if (sessionEnd && harness === 'codex' && envelope.session_id !== undefined &&
-        codexDormantSurface(readCodexThreadOriginator(envelope.transcript_path)) !== null &&
-        await holdCodexSessionEnd(deps.env, envelope.session_id, envelope.transcript_path)) {
-      // A conversation of the Codex app or IDE extension: Codex also ends a
-      // session it only unloaded, which stays open while the app lists it.
-      // The hub that attends it decides, and cleans up only for a close.
+    if (sessionEnd && (harness === 'codex' || harness === 'claude-code') && envelope.session_id !== undefined &&
+        await holdSessionEnd(deps.env, envelope.session_id, {
+          harnessPid: harness === 'claude-code' ? claudeHookSourcePid(deps.env, deps.hookPlatform ?? process.platform) : declaredHookSourcePid(deps),
+          transcriptPath: envelope.transcript_path,
+        })) {
+      // SessionEnd is not final: the shared Codex server runs it for a reload
+      // on resume, the desktop app for a respawn, a handoff starts the same
+      // conversation elsewhere at once, another place may still have it open,
+      // and an app unloads conversations it still lists. The hub that attends
+      // it decides after the end confirmation, and cleans up only for a close.
       start({ cwd, stop_hook_active: envelope.stop_hook_active ?? null })
-      logger.info('hook.end', { hook: event, decided: false, outcome: 'held-for-classification' })
+      logger.info('hook.end', { hook: event, decided: false, outcome: 'held-for-confirmation' })
       return EXIT.ok
     }
     if (sessionEnd) {
