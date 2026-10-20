@@ -175,6 +175,21 @@ static void boot_identity(char *out, size_t size) {
 #endif
 }
 
+/* A process's start as `processStartTime` names it: `ps -o lstart` text on
+ * macOS, `linux:<boot id>:<start ticks>` on Linux, where `lstart` follows the
+ * boot time and so moves whenever the realtime clock is stepped. */
+static void format_identity(const proc_record *record, char *out, size_t size) {
+    out[0] = 0;
+    if (record->ticks[0]) {
+        char boot[128];
+        boot_identity(boot, sizeof(boot));
+        if (boot[0] && snprintf(out, size, "%s:%s", boot, record->ticks) >= (int)size) out[0] = 0;
+        return;
+    }
+    format_start(record->start, out, size);
+    normalize_spaces(out);
+}
+
 static unsigned long long monotonic_ns(void) {
 #ifdef __APPLE__
     /* The clock `systemMonotonicNs` reads in the native runtime. */
@@ -297,7 +312,7 @@ static int connect_unix(const char *path, int timeout_ms) {
 typedef struct {
     char session[512], harness[16], event[64], source[64], cwd[PATH_MAX], transcript[PATH_MAX];
     char state[PATH_MAX], run[PATH_MAX], socket_path[PATH_MAX], self[PATH_MAX];
-    char harness_start[64], harness_ticks[32], boot[128];
+    char harness_start[192], harness_ticks[32], boot[128];
     char inbox_socket[PATH_MAX], token[1024];
     char writer_lock[PATH_MAX];
     pid_t harness_pid;
@@ -336,6 +351,61 @@ static void child_end_record(child_state *child) {
 /* Start the hub detached: a new session, null stdio, a fresh environment with
  * nothing session-specific in it, and the launcher's own path so the hub runs
  * whatever build is active now. */
+/* How this machine reaches the service (`hubNetworkPath` in hub-client.ts):
+ * the proxy and certificate settings recorded when the User signed in, never
+ * this session's. Static: the forked process execs at once. */
+static const char *network_names[] = { "HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy", "ALL_PROXY", "all_proxy",
+    "NO_PROXY", "no_proxy", "NODE_EXTRA_CA_CERTS", "SSL_CERT_FILE", "SSL_CERT_DIR", NULL };
+static char network_entries[11][4200];
+
+/* No record yet (a machine signed in before there was one): write it once
+ * from this process's own settings, as `initHubNetwork` does, and use it.
+ * Linked into place, so a record another starter wrote first is kept. */
+static void init_hub_network(const char *file) {
+    jbuf b = {0};
+    jb_text(&b, "{");
+    for (int i = 0; network_names[i]; i++) {
+        const char *value = getenv(network_names[i]);
+        if (!value || !value[0] || strlen(value) > 4096 || strpbrk(value, "\r\n")) continue;
+        jb_field(&b, network_names[i], value);
+    }
+    jb_text(&b, "}\n");
+    char temp[PATH_MAX];
+    if (!b.failed && snprintf(temp, sizeof(temp), "%s.%ld.tmp", file, (long)getpid()) < (int)sizeof(temp)) {
+        int fd = open(temp, O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC | O_NOFOLLOW, 0600);
+        if (fd >= 0) {
+            int ok = write_all(fd, b.data, b.length) && fsync(fd) == 0;
+            close(fd);
+            if (ok) (void)link(temp, file);
+            unlink(temp);
+        }
+    }
+    free(b.data);
+}
+
+static int hub_network(const child_state *child, char **out, int room) {
+    char file[PATH_MAX], text[65536];
+    if (snprintf(file, sizeof(file), "%s/network.json", child->run) >= (int)sizeof(file)) return 0;
+    int fd = open(file, O_RDONLY | O_CLOEXEC | O_NOFOLLOW);
+    if (fd < 0 && errno == ENOENT) {
+        init_hub_network(file);
+        fd = open(file, O_RDONLY | O_CLOEXEC | O_NOFOLLOW);
+    }
+    if (fd < 0) return 0;
+    ssize_t n = read(fd, text, sizeof(text) - 1);
+    close(fd);
+    if (n <= 0) return 0;
+    text[n] = 0;
+    int count = 0;
+    for (int i = 0; network_names[i] && count < room; i++) {
+        char value[4097];
+        if (json_field(text, (size_t)n, network_names[i], value, sizeof(value)) != 1 || !value[0]) continue;
+        if (snprintf(network_entries[i], sizeof(network_entries[i]), "%s=%s", network_names[i], value) >= (int)sizeof(network_entries[i])) continue;
+        out[count++] = network_entries[i];
+    }
+    return count;
+}
+
 static void child_start_hub(child_state *child) {
     char lock_path[PATH_MAX];
     if (snprintf(lock_path, sizeof(lock_path), "%s/hub-start.lock", child->run) >= (int)sizeof(lock_path)) return;
@@ -358,10 +428,13 @@ static void child_start_hub(child_state *child) {
         sigprocmask(SIG_SETMASK, &none, NULL);
         /* The start lock is close-on-exec: the parent child holds it until
          * this hub answers, so a racing child waits instead of starting another. */
-        static const char *keep[] = { "HOME", "PATH", "USER", "LOGNAME", "SHELL", "LANG", "TMPDIR",
+        /* The account, its locale and Notifai's own settings, as `hubEnvironment`
+         * keeps them: never this session's PATH-dependent tools, desktop or
+         * secrets, which the registration carries or which stay here. */
+        static const char *keep[] = { "HOME", "PATH", "USER", "LOGNAME", "SHELL", "LANG", "TZ", "TMPDIR",
             "XDG_CONFIG_HOME", "XDG_STATE_HOME", "XDG_DATA_HOME", "XDG_CACHE_HOME", "XDG_RUNTIME_DIR",
             "DBUS_SESSION_BUS_ADDRESS", NULL };
-        char *environment[64];
+        char *environment[80];
         int count = 0;
         for (char **entry = environ; *entry && count < 60; entry++) {
             int wanted = !strncmp(*entry, "NOTIFAI_", 8) && strncmp(*entry, "NOTIFAI_HOOK_SOURCE_PID=", 24) &&
@@ -373,6 +446,7 @@ static void child_start_hub(child_state *child) {
             }
             if (wanted) environment[count++] = *entry;
         }
+        count += hub_network(child, environment + count, 80 - 1 - count);
         environment[count] = NULL;
         char *arguments[] = { child->self, "hub", "--owner", "notifai", NULL };
         execve(child->self, arguments, environment);
@@ -437,6 +511,13 @@ static int child_register(child_state *child) {
         if (override && override[0] && strlen(override) < 64) jb_field(&reg, "originator_override", override);
     }
     if (codex && codex[0] == '/') jb_field(&reg, "codex_home", codex);
+    /* This session's own: the PATH its harness runs with (which `codex` wakes
+     * it) and its desktop (where a window it reopens appears). */
+    const char *search = getenv("PATH"), *display = getenv("DISPLAY"), *wayland = getenv("WAYLAND_DISPLAY"), *authority = getenv("XAUTHORITY");
+    if (search && search[0] && strlen(search) <= 32768) jb_field(&reg, "path", search);
+    if (display && display[0] && strlen(display) <= 256) jb_field(&reg, "display", display);
+    if (wayland && wayland[0] && strlen(wayland) <= 256) jb_field(&reg, "wayland_display", wayland);
+    if (authority && authority[0] == '/') jb_field(&reg, "xauthority", authority);
     jb_field(&reg, "launcher", child->self);
     jb_text(&reg, "}");
     int ok = !hello.failed && !reg.failed && send_frame(child->hub, hello.data) && send_frame(child->hub, reg.data);
@@ -657,8 +738,7 @@ static int identify_harness(child_state *child) {
     if (!chosen) return 0;
     child->harness_pid = chosen->pid;
     snprintf(child->harness_ticks, sizeof(child->harness_ticks), "%s", chosen->ticks);
-    format_start(chosen->start, child->harness_start, sizeof(child->harness_start));
-    normalize_spaces(child->harness_start);
+    format_identity(chosen, child->harness_start, sizeof(child->harness_start));
     return child->harness_start[0] != 0;
 }
 
@@ -927,9 +1007,8 @@ static void json_process(jbuf *b, const char *key, pid_t pid) {
     jb_string(b, key);
     jb_raw(b, ":", 1);
     if (!proc_lookup(pid, &record)) { jb_text(b, "null"); return; }
-    char start[64];
-    format_start(record.start, start, sizeof(start));
-    normalize_spaces(start);
+    char start[192];
+    format_identity(&record, start, sizeof(start));
     jbuf nested = {0};
     jb_text(&nested, "{");
     jb_number(&nested, "pid", record.pid);

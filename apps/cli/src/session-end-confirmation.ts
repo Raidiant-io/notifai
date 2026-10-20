@@ -1,6 +1,7 @@
 /**
- * SessionEnd where no hub decides it: Windows, which has no hub, and a macOS
- * or Linux session whose child never registered with one.
+ * SessionEnd where no hub decides it: Windows, which has no hub, a macOS or
+ * Linux session whose child never registered with one, and a hub that did not
+ * answer the hook in time.
  *
  * SessionEnd is not always a close (a reload, a handoff to another place), so
  * the hook does not end a session that still has something to lose. It writes
@@ -8,6 +9,12 @@
  * waits out the same end confirmation the hub uses, looks for the same
  * conversation running again, and then keeps it or ends it as SessionEnd
  * would have.
+ *
+ * Each end has exactly one decider. A hub that attends the session decides
+ * it with its own close classifier, which keeps a conversation the app or
+ * machine only stopped: a hub that was slow at SessionEnd took the request
+ * all the same, so this process hands the candidate to it again and never
+ * decides an end a hub holds.
  *
  * A signal that cannot be read counts as no restart: where nothing is
  * readable (a Codex writer lock on Windows) the session ends after the
@@ -33,7 +40,7 @@ import {
   withdrawEndCandidate,
   type LifecycleStamp,
 } from './hook-session-state.js'
-import { notifyHubSessionEnded, shutdownUnderway } from './hub-client.js'
+import { holdSessionEnd, hubAttendsSession, notifyHubSessionEnded, shutdownUnderway } from './hub-client.js'
 import type { Logger } from './logging.js'
 import { systemMonotonicNs } from './monotonic-clock.js'
 import { descriptorStartMatches, pidExists, processStartTime } from './process-identity.js'
@@ -68,6 +75,26 @@ export interface EndConfirmationSeams {
   /** Whether `pid` is the live process a Claude Code descriptor names. */
   claudeProcessLive?: (pid: number, procStart: string) => boolean
   shutdownUnderway?: (env: NodeJS.ProcessEnv) => boolean
+  /** Who decides the end when a hub attends the session (see `endOwner`). */
+  hubEndOwner?: (env: NodeJS.ProcessEnv, candidate: EndCandidate) => Promise<HubEndOwner>
+}
+
+/**
+ * `hub`: a hub attends the session and holds its end (or has already decided
+ * it). `unresponsive`: a hub attends it but did not answer, so the decision
+ * waits for it, late and never early. `none`: no hub attends it; this
+ * process decides.
+ */
+export type HubEndOwner = 'hub' | 'unresponsive' | 'none'
+
+/** How long the resolver waits for an attending hub to take the end back. */
+const HUB_HANDBACK_MS = 5_000
+
+async function hubEndOwner(env: NodeJS.ProcessEnv, candidate: EndCandidate): Promise<HubEndOwner> {
+  if (!hubAttendsSession(candidate.sessionId, env)) return 'none'
+  const held = await holdSessionEnd(env, candidate.sessionId,
+    candidate.harnessPid === null ? {} : { harnessPid: candidate.harnessPid }, HUB_HANDBACK_MS)
+  return held === 'held' ? 'hub' : held === 'unreachable' ? 'unresponsive' : 'none'
 }
 
 function serialize(candidate: EndCandidate): string {
@@ -223,6 +250,13 @@ async function resolveEndCandidate(deps: CommandDeps, candidate: EndCandidate, s
     logger?.info('hook.gate', { stage: 'end-confirmation', session: candidate.sessionId, harness: candidate.harness, outcome, ...data })
     return outcome
   }
+  // A hub that attends the session decides its end, as it would have had it
+  // answered SessionEnd in time.
+  const owner = await (seams.hubEndOwner ?? hubEndOwner)(env, candidate)
+  if (owner === 'hub') {
+    return withdrawEndCandidate(candidate.sessionId, env, candidate.since) ? log('superseded', { reason: 'hub-decides' }) : log('superseded')
+  }
+  if (owner === 'unresponsive') return log('deferred', { reason: 'hub-unresponsive' })
   const reason = cameBack(env, candidate, seams)
   if (reason !== null) {
     return withdrawEndCandidate(candidate.sessionId, env, candidate.since) ? log('kept', { reason }) : log('superseded')

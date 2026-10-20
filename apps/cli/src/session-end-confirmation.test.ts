@@ -1,4 +1,5 @@
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { createServer, type Server } from 'node:net'
 import path from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
 import type { CommandDeps } from './commands-core.js'
@@ -16,6 +17,9 @@ import {
   updateSessionState,
 } from './hook-session-state.js'
 import { END_CONFIRM_MS } from './hub.js'
+import { encodeFrame, FrameDecoder, hubRunDir, hubSocketPath } from './hub-ipc.js'
+import { acquireClaimFile } from './hook-question-lock.js'
+import { attendantClaimPath } from './session-attendant-state.js'
 import { nullLogger } from './logging.js'
 import { processStartTime } from './process-identity.js'
 import { confirmSessionEnds, END_CONFIRMATION_MS, type EndConfirmationSeams } from './session-end-confirmation.js'
@@ -182,5 +186,57 @@ describe('SessionEnd without a hub', () => {
 
   it('uses the hub\'s end confirmation', () => {
     expect(END_CONFIRMATION_MS).toBe(END_CONFIRM_MS)
+  })
+})
+
+describe('SessionEnd a slow hub attends', () => {
+  /** A hub that attends the session and answers its first end request only after the hook gave up on it. */
+  async function slowHub(env: NodeJS.ProcessEnv, firstReplyMs: number): Promise<{ server: Server; requests: string[] }> {
+    mkdirSync(hubRunDir(env), { recursive: true, mode: 0o700 })
+    acquireClaimFile(attendantClaimPath(SESSION, env), { role: 'hub' })
+    const requests: string[] = []
+    const server = createServer((socket) => {
+      const decoder = new FrameDecoder()
+      socket.on('data', (chunk) => {
+        for (const frame of decoder.push(chunk)) {
+          if (frame['type'] === 'hello') continue
+          requests.push(String(frame['type']))
+          const reply = (): void => { socket.end(encodeFrame({ type: 'ok', held: true })) }
+          if (requests.length === 1) setTimeout(reply, firstReplyMs)
+          else reply()
+        }
+      })
+      socket.on('error', () => undefined)
+    })
+    await new Promise<void>((resolve) => server.listen(hubSocketPath(env), resolve))
+    return { server, requests }
+  }
+
+  it('leaves the decision to the hub, which classifies stops, instead of ending the session itself', async () => {
+    const f = fixture('claude-code')
+    const hub = await slowHub(f.env, 1_500)
+    try {
+      expect(await f.sessionEnd()).toBe(0)
+      // The hook gave up on the hub after 800 ms and opened its own candidate.
+      expect(f.launches).toEqual([expect.objectContaining({ harness: 'claude-code' })])
+      expect(await confirmSessionEnds(f.deps, { wait: false }, NO_RESTART)).toEqual({ ended: 0, kept: 0, deferred: 0, superseded: 1 })
+      // Handed back to the hub; nothing expired, nothing told the hub the session ended.
+      expect(hub.requests).toEqual(['session-end-candidate', 'session-end-candidate'])
+      expect(readSessionEndMarker(SESSION, f.env)).toBeNull()
+      expect(readSessionState(SESSION, f.env).pending).toHaveLength(1)
+      expect(existsSync(endCandidatePath(SESSION, f.env))).toBe(false)
+      expect(f.retirements).toEqual([])
+    } finally {
+      hub.server.close()
+    }
+  })
+
+  it('waits, deciding nothing, while the attending hub does not answer', async () => {
+    const f = fixture('codex')
+    await f.sessionEnd()
+    expect(await confirmSessionEnds(f.deps, { wait: false }, { ...NO_RESTART, hubEndOwner: async () => 'unresponsive' }))
+      .toEqual({ ended: 0, kept: 0, deferred: 1, superseded: 0 })
+    expect(existsSync(endCandidatePath(SESSION, f.env))).toBe(true)
+    expect(readSessionEndMarker(SESSION, f.env)).toBeNull()
   })
 })

@@ -318,6 +318,8 @@ export interface ReopenTarget {
   harnessProcess: ProcessIdentity | null
   /** What waits for it: answers, notes and edits, by id. */
   items: readonly string[]
+  /** The session's own desktop (Linux: `DISPLAY`, `WAYLAND_DISPLAY`, `XAUTHORITY`), where its window opens. */
+  display?: Readonly<Record<string, string>>
 }
 
 export type ReopenTrigger = 'answer' | 'note' | 'hub-start'
@@ -378,8 +380,8 @@ export interface ReopenHost {
   codexPostures(transcriptPath: string | null): CodexTurnPostures | null
   /** Queue the content-free wake into an unloaded Codex thread, so the reopened terminal runs it at once. */
   queueCodexWake(sessionId: string): Promise<void>
-  /** Open the window: true, or why it did not open. */
-  open(launch: TerminalLaunch, cwd: string): Promise<true | string>
+  /** Open the window on the session's desktop: true, or why it did not open. */
+  open(launch: TerminalLaunch, cwd: string, display?: Readonly<Record<string, string>>): Promise<true | string>
   /** The running Codex app, for its own conversations. */
   codexApp: CodexAppHost
 }
@@ -405,7 +407,7 @@ export function systemReopenHost(env: NodeJS.ProcessEnv, logger: Logger, launche
     resolveHarness: (name) => resolveInLoginShell(loginShell, name, env),
     codexPostures: readCodexTurnPostures,
     queueCodexWake: async () => undefined,
-    open: (launch, cwd) => openWindow(launch, cwd, env),
+    open: (launch, cwd, display) => openWindow(launch, cwd, { ...env, ...display }),
     codexApp: systemCodexAppHost(launcher),
     ...overrides,
   }
@@ -631,7 +633,7 @@ export class SessionReopen {
       record.last = { at: now, trigger, outcome: 'launched', token, terminal: launch.app, items: fresh.slice(0, 50) }
       record.updated_at = now
       this.save(record)
-      const opened = await this.host.open(launch, target.cwd!)
+      const opened = await this.host.open(launch, target.cwd!, target.display)
       if (opened !== true) {
         removeAttempt(env, token)
         Object.assign(record, before)
@@ -811,7 +813,9 @@ export class SessionReopen {
       }
     }
     if (host.launcher === null) return { wait: 'launcher-missing' }
-    const choice = chooseTerminal(settings.terminalApp, settings.terminalCommand, shared ? null : target.hooks?.terminal ?? null, host.terminal, settings.focus)
+    // The session's desktop, not the hub's: the hub serves every session and has none of its own.
+    const terminal = target.display === undefined ? host.terminal : { ...host.terminal, env: { ...host.terminal.env, ...target.display } }
+    const choice = chooseTerminal(settings.terminalApp, settings.terminalCommand, shared ? null : target.hooks?.terminal ?? null, terminal, settings.focus)
     if (!choice.ok) return { wait: choice.reason }
     const launch = target.launch
     if (launch === null) return { wait: 'launch-unknown' }

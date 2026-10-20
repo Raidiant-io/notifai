@@ -958,7 +958,7 @@ export async function hookRunCommand(
         await holdSessionEnd(deps.env, envelope.session_id, {
           harnessPid: harness === 'claude-code' ? claudeHookSourcePid(deps.env, deps.hookPlatform ?? process.platform) : declaredHookSourcePid(deps),
           transcriptPath: envelope.transcript_path,
-        })) {
+        }) === 'held') {
       // SessionEnd is not final: the shared Codex server runs it for a reload
       // on resume, the desktop app for a respawn, a handoff starts the same
       // conversation elsewhere at once, another place may still have it open,

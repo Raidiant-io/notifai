@@ -213,7 +213,15 @@ function ownHostFile(file) {
 let registeredHostStart = null
 function hostProcessStart() {
   if (registeredHostStart !== null) return registeredHostStart
-  const start = process.platform === "win32" && UNINSTALL_BARRIER !== null
+  // Linux names a start by boot and kernel ticks, as the CLI does: \`lstart\`
+  // there moves whenever the realtime clock is stepped.
+  const linuxStart = () => {
+    const stat = readFileSync("/proc/self/stat", "utf8")
+    const ticks = stat.slice(stat.lastIndexOf(")") + 2).split(" ")[19]
+    const boot = readFileSync("/proc/sys/kernel/random/boot_id", "utf8").trim()
+    return ticks && /^\\d+$/.test(ticks) && boot ? \`linux:\${boot}:\${ticks}\` : ""
+  }
+  const start = process.platform === "linux" ? linuxStart() : process.platform === "win32" && UNINSTALL_BARRIER !== null
     ? execFileSync(ADAPTER, ["--internal-process-info", String(process.pid)], {
       encoding: "utf8", timeout: 2_000, windowsHide: true, stdio: ["ignore", "pipe", "ignore"],
     }).trim().split(/\\r?\\n/)[0]

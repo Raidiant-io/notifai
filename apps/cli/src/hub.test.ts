@@ -579,6 +579,32 @@ async function registered(env: NodeJS.ProcessEnv, sessionId: string, pid: number
 }
 
 describe('hub', () => {
+  it('runs each session with its own PATH and desktop, never another session\'s', async () => {
+    const env = { ...hubEnv(), PATH: '/hub/bin:/usr/bin:/bin', DISPLAY: ':9', WAYLAND_DISPLAY: 'wayland-9' }
+    writeDescriptor(env, SESSION)
+    const service = fakeService()
+    const peers = new Map<number, PeerCredentials>()
+    const { hub, done } = startHub(env, service, peers)
+    await hubListening(env)
+    const peer = peerOf(900401, { pid: HARNESS.pid, comm: 'claude', start: HARNESS.start })
+    const child = await registered(env, SESSION, 900401, peer, peers,
+      { path: '/session/bin:/usr/bin', display: ':1', xauthority: '/run/user/1000/xauth' })
+    expect(child.frames[0]).toEqual({ type: 'registered', session_id: SESSION })
+    // The hub's own desktop (here, whichever process started it) is no session's.
+    const own = hub.sessions.get(SESSION)!.env
+    expect([own['PATH'], own['DISPLAY'], own['WAYLAND_DISPLAY'], own['XAUTHORITY']]).toEqual(['/session/bin:/usr/bin', ':1', undefined, '/run/user/1000/xauth'])
+    // The next hub takes it over with the same environment.
+    await until(() => {
+      try { return (JSON.parse(readFileSync(attendantStatusPath(SESSION, env), 'utf8')) as { adoption?: unknown }).adoption !== undefined } catch { return false }
+    })
+    expect((JSON.parse(readFileSync(attendantStatusPath(SESSION, env), 'utf8')) as { adoption: Record<string, unknown> }).adoption)
+      .toMatchObject({ session_path: '/session/bin:/usr/bin', display: { DISPLAY: ':1', XAUTHORITY: '/run/user/1000/xauth' } })
+    child.socket.destroy()
+    hub.requestExit('test')
+    service.release()
+    await done
+  })
+
   it('registers a child of the harness, attends it in one batch, and reports the end the child sees', async () => {
     const env = hubEnv()
     writeDescriptor(env, SESSION)

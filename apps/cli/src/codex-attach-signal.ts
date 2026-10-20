@@ -30,7 +30,7 @@ import path from 'node:path'
 import { atomicWriteFileSync } from './atomic-file.js'
 import { connectCodexControl, type CodexControl } from './codex-native-control.js'
 import { stateDir } from './config.js'
-import { normalizeProcessStart, processStartTime, type ProcessIdentity } from './process-identity.js'
+import { normalizeProcessStart, processStartTime, processWallStart, type ProcessIdentity } from './process-identity.js'
 
 /**
  * What Notifai can say about a thread on the shared server:
@@ -111,7 +111,7 @@ export function codexListenerOn(port: number, platform: NodeJS.Platform = proces
     pid = parseSsListener(run('ss', ['-ltnpH', `sport = :${port}`]))
   }
   if (pid === null) return null
-  const start = processStartTime(pid, platform)
+  const start = processWallStart(pid)
   const startedAtMs = start === null ? null : parseProcessStart(start)
   return startedAtMs === null ? null : { pid, startedAtMs }
 }
@@ -296,7 +296,7 @@ export function hostBinaryIdentity(host: ProcessIdentity): CodexBinaryIdentity |
   if (executable === null || start === null || normalizeProcessStart(start) !== normalizeProcessStart(host.start)) return null
   const identity = codexBinaryIdentity(executable)
   // Replaced in place after the process started: it may not run what is on disk now.
-  if (identity === null || identity.mtimeMs > (parseProcessStart(host.start) ?? 0) + 1_000) return null
+  if (identity === null || identity.mtimeMs > (parseProcessStart(processWallStart(host.pid) ?? '') ?? 0) + 1_000) return null
   return identity
 }
 
