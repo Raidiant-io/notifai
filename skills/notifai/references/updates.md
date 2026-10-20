@@ -33,6 +33,11 @@ Offer to perform an update only when one of these holds:
 (a Codex app conversation Codex unloaded while something still waits on it) clear
 by themselves; never end sessions or drop work to let an update in.
 
+After any update, including one the User ran, a hub still running the earlier
+build hands its sessions to the new one once the same work no longer waits.
+`update --check --json` reports such a hub as `hub_handover` (its version and
+`waiting_for`); it is `null` otherwise. It needs no action and no restart.
+
 The switch is one setting for the whole machine. Change it only when the User
 asks: `notifai config set updates.automatic off --yes` turns automatic updates
 off, and `notifai config unset updates.automatic --yes` turns them back on. No

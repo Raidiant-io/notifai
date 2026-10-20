@@ -793,6 +793,69 @@ describe('hub', () => {
     expect(attempts).toBe(0)
   })
 
+  it('hands over to another active build once nothing waits, keeping every lease', async () => {
+    const env = hubEnv()
+    writeDescriptor(env, SESSION)
+    recordSessionNotified(SESSION, env, Date.now())
+    const service = fakeService()
+    const peers = new Map<number, PeerCredentials>()
+    const running = 'a'.repeat(64), incompatible = 'b'.repeat(64), next = 'c'.repeat(64)
+    let active = running
+    const planned: string[] = []
+    let successor: { hub: Hub; done: Promise<number> } | null = null
+    const first = startHub(env, service, peers, memoryStore(), undefined, {}, { handover: {
+      builds: () => ({ running, active }),
+      plan: async (build) => {
+        planned.push(build)
+        return { schema: 1, version: '1.1.0', hub_ipc_versions: build === incompatible ? { min: 2, max: 2 } : { min: 1, max: 1 }, hook_changes: [] }
+      },
+      startSuccessor: () => { successor = startHub(env, service, peers) },
+    } })
+    await hubListening(env)
+    const peer = (pid: number) => peerOf(pid, { pid: HARNESS.pid, comm: 'claude', start: HARNESS.start })
+    const child = await registered(env, SESSION, 900040, peer(900040), peers)
+    expect(child.frames[0]).toMatchObject({ type: 'registered' })
+    await until(() => readAttendantEndingLease(SESSION, env)?.generation === 1)
+    // Its own build is active: nothing to do.
+    expect(await first.hub.checkBuildHandover()).toBeNull()
+    expect(first.hub.status()).toMatchObject({ handover: null })
+
+    // Another build became active (a manual update) while a question waits: it stays and says why.
+    active = next
+    updateSessionState(SESSION, env, (state) => ({ ...state, pending: [{ question: 'Deploy?', summary: 'Deploy?', request_id: 'req_wait' } as never] }))
+    expect(await first.hub.checkBuildHandover()).toEqual(['question-waiting'])
+    expect(first.hub.status()).toMatchObject({ handover: { active_build: next, waiting_for: ['question-waiting'] } })
+    expect(planned).toEqual([])
+    updateSessionState(SESSION, env, (state) => ({ ...state, pending: [] }))
+    // An active build whose hub could not serve this child: it stays too.
+    active = incompatible
+    expect(await first.hub.checkBuildHandover()).toEqual(['session-child-incompatible'])
+    await new Promise((resolve) => setTimeout(resolve, 50))
+    expect(child.closed).toBe(false)
+
+    // Nothing waits: it leaves, keeping the lease, and the next hub continues it.
+    active = next
+    expect(await first.hub.checkBuildHandover()).toEqual([])
+    service.release()
+    expect(await first.done).toBe(0)
+    await until(() => child.closed)
+    await until(() => successor !== null)
+    await hubListening(env)
+    const handedOver = service.batches.length
+    const again = await registered(env, SESSION, 900041, peer(900041), peers, { hook_event: 'UserPromptSubmit', source: undefined })
+    expect(again.frames[0]).toMatchObject({ type: 'registered' })
+    await until(() => service.batches.slice(handedOver).some((batch) => batch.body.sessions.some((entry) => entry.session_id === SESSION)))
+    const entries = service.batches.flatMap((batch) => batch.body.sessions)
+    expect(entries.every((entry) => entry.state === 'running')).toBe(true)
+    const after = service.batches.slice(handedOver).flatMap((batch) => batch.body.sessions)
+    expect(after.every((entry) => entry.generation === 1)).toBe(true)
+    expect(readSessionEndMarker(SESSION, env)).toBeNull()
+    expect(planned).toEqual([incompatible, next])
+    again.socket.destroy()
+    service.release()
+    await (successor as { done: Promise<number> } | null)!.done
+  })
+
     it('names the child lock file the way the native child does', () => {
     expect(fnv64Hex('')).toBe('cbf29ce484222325')
     expect(fnv64Hex('a')).toBe('af63dc4c8601ec8c')

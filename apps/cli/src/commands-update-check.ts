@@ -14,6 +14,7 @@ import { pendingList, readSessionState } from './hook-session-state.js'
 import { localIntegrationAssessment } from './integration-health.js'
 import { codexToolHookReady, CODEX_TOOL_HOOK_RECOVERY } from './codex-tool-messages.js'
 import { automaticUpdateReport, automaticUpdatesRunHere } from './automatic-update.js'
+import { hubHandoverReport } from './hub-handover.js'
 
 /** Read-only update plan; integration changes belong to explicit resume. */
 export async function cliUpdateCheckCommand(
@@ -54,6 +55,8 @@ export async function cliUpdateCheckCommand(
     discovery_error: discovery.error,
     available_version: newer,
     ...automatic,
+    // A hub still on an earlier build than the active one, and what it waits for before it hands over.
+    hub_handover: hubHandoverReport(deps.env),
     update_command: updateCliCommand(deps),
     release_notes_url: releaseNotesUrl(discovery.target),
     changelog: installedChangelog(version, flags.from),

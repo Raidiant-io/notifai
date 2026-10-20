@@ -72,6 +72,19 @@ export function spawnRetirement(launch: HookMaintenanceLaunch): void {
   })
 }
 
+/**
+ * Replace a hub from an earlier build with this (active) build's once nothing
+ * waits, in a detached process: the check reads its status twice, seconds apart.
+ */
+export function spawnHubHandover(launch: HookMaintenanceLaunch): void {
+  launchSelf(['hook', 'hub-handover', '--owner', 'notifai'], {
+    cwd: launch.cwd,
+    env: launch.env ?? process.env,
+    ...(launch.detachTimeoutMs === undefined ? {} : { detachTimeoutMs: launch.detachTimeoutMs }),
+    retain: () => undefined,
+  })
+}
+
 /** The work itself, run by the detached process. Each part keeps its own throttle. */
 export async function runHookMaintenance(options: {
   env: NodeJS.ProcessEnv

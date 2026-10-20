@@ -66,6 +66,8 @@ import {
   type WaitingReason,
 } from './automatic-update.js'
 import { hubEnvironment } from './hub-client.js'
+import { readActiveBuild } from './hub-handover.js'
+import type { ActivationPlan } from './activation-plan.js'
 import { osAccountHome } from './os-account-home.js'
 import { olderClaudeAttendantsAlive, readClaudeFormDeferral } from './claude-form-readers.js'
 import type { managedInstallation as ManagedInstallation } from './native-installation.js'
@@ -188,6 +190,21 @@ export interface HubOptions {
    * `hubCommand` supplies the production updater for a managed installation.
    */
   automaticUpdate?: AutomaticUpdateOptions
+  /**
+   * Handing over to another active build (a manual, npm or curl update, a
+   * rollback). Absent: off (tests and development). `hubCommand` supplies it
+   * for a managed installation.
+   */
+  handover?: HandoverOptions
+}
+
+export interface HandoverOptions {
+  /** The build this hub runs and the installation's active build; production reads its own build and `active.json`. */
+  builds?: () => { running: string; active: string | null } | null
+  /** Ask the active build what its hub serves. Null when it cannot say. */
+  plan?: (activeBuild: string) => Promise<ActivationPlan | null>
+  /** Start the next hub after this one hands over; production runs the stable launcher. */
+  startSuccessor?: (env: NodeJS.ProcessEnv) => void
 }
 
 export interface AutomaticUpdateOptions {
@@ -645,8 +662,13 @@ export class Hub {
   private readonly links = new Set<ChildLink>()
   private updateTimer: ReturnType<typeof setTimeout> | null = null
   private updating = false
-  /** An automatic update activated a new build: start its hub after this one leaves. */
-  private successor = false
+  /** An automatic update activated a new build, or another build became active: start its hub after this one leaves. */
+  private successor: 'automatic-update' | 'build-superseded' | null = null
+  /** Another build is active; what this hub still waits for before it hands over. */
+  private handoverState: { active_build: string; waiting_for: WaitingReason[] } | null = null
+  private handoverChecking = false
+  private handoverPlan: { build: string; at: number; plan: ActivationPlan | null } | null = null
+  private runtimeBuildValue: string | null | undefined
   /** Hook ingress: what this hub answered itself, what it handed back to the runtime and why. */
   private readonly ingressCounts = { served: 0, declined: 0, reasons: {} as Record<string, number> }
   private ingressInFlight = 0
@@ -725,15 +747,17 @@ export class Hub {
     if (!this.exiting) await new Promise<void>((resolve) => { this.exitResolve = resolve })
     signals?.()
     await this.shutdown(exchange)
-    if (this.successor) {
+    if (this.successor !== null) {
       // The handover (design §4.8): this hub has kept every lease on disk and
       // released the lock; the new build's hub takes them over. Children also
       // reconnect and would start it themselves.
+      const reason = this.successor
       try {
-        (this.options.automaticUpdate?.startSuccessor ?? startSuccessorHub)(this.env)
-        this.logger.info('hub.exit', { reason: 'automatic-update', successor: 'started' })
+        ((reason === 'automatic-update' ? this.options.automaticUpdate?.startSuccessor : this.options.handover?.startSuccessor) ??
+          startSuccessorHub)(this.env)
+        this.logger.info('hub.exit', { reason, successor: 'started' })
       } catch (err) {
-        this.logger.error('hub.exit', { reason: 'automatic-update', successor: 'failed', message: err instanceof Error ? err.message : String(err) })
+        this.logger.error('hub.exit', { reason, successor: 'failed', message: err instanceof Error ? err.message : String(err) })
       }
     }
     return EXIT.ok
@@ -761,7 +785,7 @@ export class Hub {
     try {
       const outcome = await (options.attempt ?? attemptAutomaticUpdate)({ ...this.automaticUpdateHost(), ...options.host })
       if (outcome.outcome === 'activated' && !this.exiting) {
-        this.successor = true
+        this.successor = 'automatic-update'
         this.requestExit('automatic-update')
       }
       return outcome
@@ -819,6 +843,74 @@ export class Hub {
     }
     if (this.ended.size > 0) reasons.add('session-ending')
     return [...reasons]
+  }
+
+  // -- handing over to another active build ---------------------------------------
+
+  /** The build this hub runs (its `versions/<build>` directory), or null outside a managed installation. */
+  runtimeBuild(): string | null {
+    if (this.runtimeBuildValue === undefined) {
+      try { this.runtimeBuildValue = currentRuntimeBuild(this.env)?.build ?? null } catch { this.runtimeBuildValue = null }
+    }
+    return this.runtimeBuildValue
+  }
+
+  /**
+   * Another build became active under this hub (a manual, npm or curl update,
+   * a rollback): hand over to it as soon as nothing waits, under the blockers
+   * that hold an automatic activation back. Leaving keeps every lease; the
+   * children reconnect to the next hub, which runs the active build.
+   */
+  async checkBuildHandover(): Promise<WaitingReason[] | null> {
+    const options = this.options.handover
+    if (options === undefined || this.exiting || this.updating || this.handoverChecking) return null
+    const builds = options.builds !== undefined ? options.builds()
+      : this.runtimeBuild() === null ? null : { running: this.runtimeBuild()!, active: readActiveBuild(this.env) }
+    if (builds === null || builds.active === null || builds.active === builds.running) {
+      if (this.handoverState !== null) { this.handoverState = null; this.statusChanged() }
+      return null
+    }
+    const active = builds.active
+    this.handoverChecking = true
+    try {
+      const reasons = new Set<WaitingReason>(this.updateBlockers())
+      if (reasons.size === 0) {
+        // The children connected now must be served by the active build's hub.
+        const now = this.clock.monotonic()
+        if (this.handoverPlan === null || this.handoverPlan.build !== active ||
+            (this.handoverPlan.plan === null && now - this.handoverPlan.at >= AUTOMATIC_UPDATE_INTERVAL_MS)) {
+          let plan: ActivationPlan | null = null
+          try { plan = await (options.plan ?? ((build) => this.activePlan(build)))(active) } catch { plan = null }
+          this.handoverPlan = { build: active, at: now, plan }
+        }
+        const plan = this.handoverPlan.plan
+        if (plan === null) reasons.add('candidate-unverified')
+        else if ([...this.links].some((link) => !link.closed && (link.ipcVersion < plan.hub_ipc_versions.min || link.ipcVersion > plan.hub_ipc_versions.max))) {
+          reasons.add('session-child-incompatible')
+        }
+        // Work may have arrived while the plan was asked for.
+        for (const reason of this.updateBlockers()) reasons.add(reason)
+      }
+      const waiting = [...reasons]
+      if (this.handoverState?.active_build !== active || this.handoverState.waiting_for.join() !== waiting.join()) {
+        this.logger.info('hub.handover', { event: waiting.length > 0 ? 'waiting' : 'handing-over', active_build: active, waiting_for: waiting })
+      }
+      this.handoverState = { active_build: active, waiting_for: waiting }
+      this.statusChanged()
+      if (waiting.length === 0 && !this.exiting && !this.updating && this.ingressInFlight === 0) {
+        if (this.sessions.size > 0 || this.children > 0) this.successor = 'build-superseded'
+        this.requestExit('build-superseded')
+      }
+      return waiting
+    } finally {
+      this.handoverChecking = false
+    }
+  }
+
+  private async activePlan(build: string): Promise<ActivationPlan | null> {
+    if (nativeInstallationModule === null) return null
+    const release = nativeInstallationModule.managedInstallation({ env: this.env }).versionRelease(build)
+    return candidatePlan(release.launcher, hubEnvironment(this.env), os.homedir())
   }
 
   /** Ask the hub to leave (idle, stop request, signal, logout timeout). */
@@ -1684,6 +1776,7 @@ export class Hub {
     }
     delete deps.spawnHookMaintenance
     delete deps.spawnRetirement
+    delete deps.spawnHubHandover
     return hookRunCommand(deps, event, async () => envelope === null ? '' : JSON.stringify(envelope), harness)
   }
 
@@ -1714,6 +1807,7 @@ export class Hub {
     }
     const now = this.clock.wall()
     this.applyDeferredClaudeForm(now)
+    void this.checkBuildHandover()
     for (const session of this.sessions.values()) {
       // An archived or deleted Codex conversation is closed (E5); Codex runs no SessionEnd for it.
       if (session.transcriptGone()) { this.endSession(session, 'session-archived'); continue }
@@ -1831,6 +1925,9 @@ export class Hub {
       pid: process.pid,
       version: packageVersion(),
       build: buildIdentity()?.sourceDigest ?? null,
+      // Its presence tells a newer build that this hub hands itself over.
+      runtime_build: this.runtimeBuild(),
+      handover: this.handoverState,
       ipc_version: HUB_IPC_VERSION,
       started_at: new Date(this.startedAt).toISOString(),
       transport: this.driver.transport,
@@ -1930,6 +2027,6 @@ export function startSuccessorHub(env: NodeJS.ProcessEnv): void {
 export async function hubCommand(deps: CommandDeps): Promise<number> {
   // Automatic updates run only in a managed native installation.
   if (buildIdentity() !== null) nativeInstallationModule = await import('./native-installation.js')
-  const hub = new Hub(deps, { deps, handleSignals: true, ...(buildIdentity() !== null ? { automaticUpdate: {} } : {}) })
+  const hub = new Hub(deps, { deps, handleSignals: true, ...(buildIdentity() !== null ? { automaticUpdate: {}, handover: {} } : {}) })
   return hub.run()
 }

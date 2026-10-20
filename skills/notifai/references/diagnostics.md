@@ -41,7 +41,9 @@ On macOS and Linux one shared hub attends every Agent Session on the machine.
 normal when no session is open. `notifai logs --event hub.session` and
 `--event hub.exchange` show sessions registering, ending, and the hub's
 service traffic; `--event update.automatic` shows automatic updates being
-staged, held back and why, or activated. While it runs, the hub also answers
+staged, held back and why, or activated; `--event hub.handover` shows a hub on
+an earlier build waiting for that work to clear, then handing over to the
+active build, and doctor's hub line says the same. While it runs, the hub also answers
 the frequent hooks of quiet sessions; any other hook starts the runtime as
 before, and doctor's JSON counts both and says why a hook went to the runtime.
 A hub that crashed three times in ten minutes stops
