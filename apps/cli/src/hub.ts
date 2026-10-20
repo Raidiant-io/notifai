@@ -85,6 +85,7 @@ import {
   hubStatusPath,
 } from './hub-ipc.js'
 import { SessionLease, type LeaseOutcome } from './hub-lease.js'
+import { shareGitIdentityAnswers } from './git-query.js'
 import { ingressRefusal, parseIngressRequest, resultFrames, runIngressHook, type IngressHost, type IngressIdentity } from './hub-ingress.js'
 import { currentRuntimeBuild } from './launch-self.js'
 import { bootstrapLogger, type Logger } from './logging.js'
@@ -707,6 +708,10 @@ export class Hub {
       return EXIT.failed
     }
     this.logger.info('hub.start', { outcome: 'listening', ipc_version: HUB_IPC_VERSION, crashes: this.crashes })
+    // Hook ingress: repository identity is asked of Git once per checkout while it is unchanged,
+    // and the hook handlers are loaded now rather than in front of the first hook.
+    shareGitIdentityAnswers()
+    void import('./commands-hook-run.js').catch(() => undefined)
     this.writeStatusNow()
     const signals = this.options.handleSignals === true ? this.installSignals() : null
     const exchange = this.driver.run().catch((err: unknown) => {

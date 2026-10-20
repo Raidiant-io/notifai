@@ -24,6 +24,7 @@
 import { realpathSync } from 'node:fs'
 import path from 'node:path'
 import type { CommandDeps } from './commands-core.js'
+import { inHookScope } from './git-query.js'
 import { HOOK_INSTALLABLE_HARNESSES, type HookInstallableHarness } from './harnesses.js'
 import { readSessionState, sessionHasEnded } from './hook-session-state.js'
 import type { HookEnvelope, SessionState } from './hook-types.js'
@@ -34,10 +35,11 @@ import { isSessionInputWake, readSessionMessagesFile } from './session-inputs.js
 
 /** The events the hub answers, per harness. Everything else always starts the runtime. */
 export const INGRESS_EVENTS: Readonly<Record<'claude-code' | 'codex', readonly string[]>> = {
-  // Claude Code's PostToolUse and PermissionRequest exist only for its question
-  // picker, and SessionEnd does the close bookkeeping: all keep the runtime.
+  // Claude Code's PostToolUse and PermissionRequest, and Codex's PreToolUse,
+  // exist only for question pickers and cards; SessionEnd does the close
+  // bookkeeping. All of them keep the runtime.
   'claude-code': ['session-start', 'subagent-start', 'user-prompt-submit', 'stop'],
-  codex: ['session-start', 'subagent-start', 'user-prompt-submit', 'stop', 'pre-tool-use', 'post-tool-use'],
+  codex: ['session-start', 'subagent-start', 'user-prompt-submit', 'stop', 'post-tool-use'],
 }
 
 /** Largest hook input the hub takes; the runtime reads at most this much too. */
@@ -144,7 +146,7 @@ export function ingressRefusal(request: IngressRequest, identity: IngressIdentit
   const sessionId = envelope.session_id
   if (typeof sessionId !== 'string' || sessionId === '') return 'no-session'
   // A Codex card is registered (and its answer delivered) by the runtime.
-  if ((request.event === 'pre-tool-use' || request.event === 'post-tool-use') && envelope.tool_name === 'request_user_input_async') return 'question-card'
+  if (request.event === 'post-tool-use' && envelope.tool_name === 'request_user_input_async') return 'question-card'
   // A Notifai wake is the delivery of something staged; the runtime hands it in or blocks it.
   if (request.event === 'user-prompt-submit' && typeof envelope.prompt === 'string' &&
       (isSessionInputWake(envelope.prompt) || /^Notifai wake [0-9a-f-]{36}\. /.test(envelope.prompt))) return 'input-wake'
@@ -222,7 +224,9 @@ export async function runIngressHook(host: IngressHost, request: IngressRequest)
   delete deps.invokingNpmAdapterArtifact
   let code: number
   try {
-    code = await hookRunCommand(deps, request.event, async () => request.stdin.toString('utf8'), request.harness, request.integrationRevision)
+    // Git sees the hook's environment and is asked each question once, as in a runtime of its own.
+    code = await inHookScope(env, () =>
+      hookRunCommand(deps, request.event, async () => request.stdin.toString('utf8'), request.harness, request.integrationRevision))
   } catch {
     // A hook never fails its harness.
     code = 0

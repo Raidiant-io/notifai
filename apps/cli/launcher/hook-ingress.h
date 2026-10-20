@@ -28,7 +28,7 @@ typedef struct { char *data; size_t length; int ended; } ingress_input;
 
 static int ingress_event_served(const char *harness, const char *event) {
     static const char *claude[] = { "session-start", "subagent-start", "user-prompt-submit", "stop", NULL };
-    static const char *codex[] = { "session-start", "subagent-start", "user-prompt-submit", "stop", "pre-tool-use", "post-tool-use", NULL };
+    static const char *codex[] = { "session-start", "subagent-start", "user-prompt-submit", "stop", "post-tool-use", NULL };
     const char **events = !strcmp(harness, "claude-code") ? claude : !strcmp(harness, "codex") ? codex : NULL;
     for (int i = 0; events && events[i]; i++) if (!strcmp(events[i], event)) return 1;
     return 0;

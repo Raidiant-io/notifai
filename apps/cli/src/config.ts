@@ -2,7 +2,7 @@ import {
   INTERRUPTION_LEVELS,
   REPLY_MAX_WINDOW_SECONDS,
 } from '@raidiant/notifai-protocol'
-import { execFileSync } from 'node:child_process'
+import { gitQuery } from './git-query.js'
 import { createHash } from 'node:crypto'
 import { existsSync, readFileSync } from 'node:fs'
 import path from 'node:path'
@@ -287,14 +287,9 @@ function canonicalDir(dir: string): string {
 
 /** Git-owned anchor shared by every linked worktree of one local checkout. */
 export function gitCommonDirectory(cwd: string): string | null {
+  const raw = gitQuery(cwd, ['rev-parse', '--git-common-dir'])
+  if (raw === null || raw === '') return null
   try {
-    const raw = execFileSync('git', ['-C', cwd, 'rev-parse', '--git-common-dir'], {
-      encoding: 'utf8',
-      stdio: ['ignore', 'pipe', 'ignore'],
-      timeout: 2_000,
-      windowsHide: true,
-    }).trim()
-    if (raw === '') return null
     return canonicalDir(path.isAbsolute(raw) ? raw : path.resolve(cwd, raw))
   } catch {
     return null

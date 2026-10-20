@@ -136,7 +136,8 @@ describe('hook ingress requests', () => {
     expect(parseIngressRequest(frame(['hook', 'permission-request', '--harness', 'claude-code']))).toBe('event')
     expect(parseIngressRequest(frame(['hook', 'post-tool-use', '--harness', 'claude-code']))).toBe('event')
     expect(parseIngressRequest(frame(['hook', 'stop', '--harness', 'cursor']))).toBe('harness')
-    expect(INGRESS_EVENTS.codex).toContain('pre-tool-use')
+    expect(parseIngressRequest(frame(['hook', 'pre-tool-use', '--harness', 'codex']))).toBe('event')
+    expect(INGRESS_EVENTS.codex).toContain('post-tool-use')
   })
 
   it('calls a session quiet only when nothing is asked, answered, staged or unknown', () => {
@@ -204,10 +205,11 @@ describe.skipIf(!supported)('hook ingress through the launcher', () => {
     const at = lab()
     startHub(at)
     await hubListening(at)
-    const ordinary = await runHook(at, 'pre-tool-use', 'codex', envelope('PreToolUse', { tool_name: 'shell', turn_id: 't1', tool_use_id: 'u1' }, at))
+    const ordinary = await runHook(at, 'post-tool-use', 'codex', envelope('PostToolUse', { tool_name: 'shell', turn_id: 't1', tool_use_id: 'u1' }, at))
     expect(ordinary).toMatchObject({ code: 0, stdout: '' })
     expect(runtimeRuns(at)).toEqual([])
-    const card = await runHook(at, 'pre-tool-use', 'codex', envelope('PreToolUse', { tool_name: 'request_user_input_async', turn_id: 't1', tool_use_id: 'u2' }, at))
+    const card = await runHook(at, 'post-tool-use', 'codex', envelope('PostToolUse', { tool_name: 'request_user_input_async', turn_id: 't1', tool_use_id: 'u2',
+      tool_response: { accepted: true } }, at))
     expect(card.stdout).toBe('{"runtime":true}\n')
     expect(runtimeRuns(at)).toHaveLength(1)
   })
