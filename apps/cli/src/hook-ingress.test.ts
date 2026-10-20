@@ -244,7 +244,7 @@ describe.skipIf(!supported)('hook ingress through the launcher', () => {
     cleanups.push(() => silent.close())
     const run = await runHook(at, 'stop', 'claude-code', envelope('Stop', {}, at))
     expect(run.stdout).toBe('{"runtime":true}\n')
-    expect(run.ms).toBeLessThan(3_000)
+    expect(run.ms).toBeLessThan(5_000)
   })
 
   it('never runs a hook whose launcher gave up before committing it to the hub', async () => {

@@ -19,8 +19,11 @@
 #define INGRESS_MAX_STDIN 1000000
 /* As the runtime: input that has not ended within this is read by the runtime itself. */
 #define INGRESS_STDIN_WAIT_MS 2000
-/* How long a reachable hub has to accept or decline before the runtime starts instead. */
-#define INGRESS_ANSWER_WAIT_MS 1000
+/* How long a reachable hub has to accept or decline before the runtime starts
+ * instead. A hub that is up but busy (many sessions' hooks at once) answers
+ * within a few hundred milliseconds; starting runtimes beside it only slows it
+ * further. Inside every served hook's budget (5 s at least) with room to spare. */
+#define INGRESS_ANSWER_WAIT_MS 3000
 #define INGRESS_SERVED 1
 #define INGRESS_FALLBACK 0
 
