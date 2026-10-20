@@ -17,11 +17,28 @@ export interface CodexControl {
   close(): void
 }
 
+/**
+ * The identity every Notifai connection to a Codex app-server initializes with.
+ *
+ * Codex keeps one originator per app-server process: the first client that
+ * initializes with an ordinary name claims it, and every thread that process
+ * later creates records it (rollout `session_meta.originator`, the
+ * `originator` header and user agent of its model requests). Each such
+ * initialize also rewrites the process-wide user-agent suffix. Codex exempts
+ * exactly the names its own tooling uses for side connections; discovery's
+ * `codex app-server daemon version` already initializes with this one just
+ * before Notifai connects. Using it means a Notifai connection never labels a
+ * User's threads, whether it connects before or after their terminals.
+ */
+export const CODEX_CONTROL_CLIENT_INFO = Object.freeze({ name: 'codex_app_server_daemon', title: 'Notifai', version: '1' })
+
 /** Positive evidence that this request sent no bytes. RPC refusal is uncertain. */
 export class CodexControlNotSent extends Error {}
 
 /** Discovery proves a running endpoint, its namespace and an already loaded
- * thread. It never loads, resumes or takes ownership of a thread. */
+ * thread. It never loads, resumes or takes ownership of a thread. Every Notifai
+ * connection to a Codex app-server is opened here, so it always initializes
+ * with `CODEX_CONTROL_CLIENT_INFO`. */
 export async function connectCodexControl(
   sessionId: string, env: NodeJS.ProcessEnv, deadlineAt: number,
   now: () => number = () => performance.now(),
@@ -77,7 +94,7 @@ export async function connectCodexControl(
       })
     }
     stage = 'initialize'
-    const initialized = await call('initialize', { clientInfo: { name: 'notifai_control', version: '1' }, capabilities: { experimentalApi: true } }) as { codexHome?: string }
+    const initialized = await call('initialize', { clientInfo: CODEX_CONTROL_CLIENT_INFO, capabilities: { experimentalApi: true } }) as { codexHome?: string }
     stage = 'namespace'
     if (initialized.codexHome === undefined || realpathSync(initialized.codexHome) !== home) throw new Error('Different native queue namespace')
     await connected.send(JSON.stringify({ method: 'initialized', params: {} }))

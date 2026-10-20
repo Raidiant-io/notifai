@@ -43,7 +43,9 @@ Against the `codex` on `PATH`, in a throwaway `CODEX_HOME`:
    the card question shape (`title`, string `options`). Each check names the
    CLI module it guards.
 2. The daemon starts, reports `appServerVersion`, and that version passes the
-   shipped floor.
+   shipped floor. Notifai's shipped control connection (`connectCodexControl`)
+   then connects before any other client, initializes, and refuses a thread
+   that is not loaded.
 3. `initialize` with `experimentalApi` names the same `CODEX_HOME`, a thread
    starts, and a turn runs against a local mock of the Responses API whose
    first reply is one `request_user_input_async` call.
@@ -64,6 +66,13 @@ Against the `codex` on `PATH`, in a throwaway `CODEX_HOME`:
    run through the trust-hash scheme Notifai writes, and carry `session_id`,
    `turn_id`, `tool_use_id`, `tool_input.questions` and an accepted
    `tool_response`: the fields the card hook reads.
+9. The canary's thread records the canary client as its originator, in the
+   rollout's `session_meta` and in the `originator` header of every model
+   request, although Notifai's control connection reached the daemon first.
+   Codex lets the first client with an ordinary name label every thread an
+   app-server creates; Notifai initializes with
+   `CODEX_CONTROL_CLIENT_INFO`, a name Codex exempts, so it can never relabel a
+   User's threads. A failure here means Codex stopped exempting that name.
 
 ## What it does not prove
 

@@ -24,7 +24,9 @@
  *
  * What a green run proves: the newest Codex's app-server protocol, daemon
  * discovery, turn admission, steer precondition, rollout record and hook
- * payload still match what the shipped CLI depends on.
+ * payload still match what the shipped CLI depends on, and Notifai's control
+ * connection, opened first, still cannot become the originator of the
+ * thread.
  *
  * What it does not prove: that a real model emits the card (the model is
  * mocked), that the Codex TUI clears the card when the steer is consumed (no
@@ -229,7 +231,7 @@ export function startMockProvider({ card = CANARY_CARD, steerText = CANARY_STEER
       let body = {}
       try { body = JSON.parse(raw) } catch { body = {} }
       const kind = classifyProviderRequest(body, card, steerText)
-      requests.push({ kind, url: request.url, body })
+      requests.push({ kind, url: request.url, originator: request.headers.originator, body })
       response.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-cache' })
       const id = `resp_canary_${requests.length}`
       const emit = (event, data) => response.write(`event: ${event}\ndata: ${JSON.stringify({ type: event, ...data })}\n\n`)
@@ -390,6 +392,7 @@ export async function runRoundTrip({ env: baseEnv = process.env, keep = false, l
   const helpers = {
     ...(await distModule('unix-websocket.js')),
     ...(await distModule('codex-answer-control.js')),
+    ...(await distModule('codex-native-control.js')),
     ...(await distModule('codex-card-capability.js')),
     ...(await distModule('codex-native-turn.js')),
     ...(await distModule('install-hooks.js')),
@@ -438,6 +441,14 @@ export async function runRoundTrip({ env: baseEnv = process.env, keep = false, l
       const verdict = helpers.codexCardVersionVerdict(version.appServerVersion ?? version.managedCodexVersion)
       if (!verdict.supported) throw new Error(`${verdict.reason}: ${verdict.version ?? 'none'} against floor ${helpers.CODEX_CARD_VERSION_FLOOR}`)
       return `${verdict.version} >= ${helpers.CODEX_CARD_VERSION_FLOOR}`
+    })
+
+    await step("Notifai's control connection initializes before any other client and refuses an unloaded thread", 'codex-native-control.ts CODEX_CONTROL_CLIENT_INFO', async () => {
+      let refusedAt = null
+      const control = await helpers.connectCodexControl('00000000-0000-0000-0000-000000000000', env, performance.now() + 15_000, undefined, stage => { refusedAt = stage })
+      control?.close()
+      if (control !== null || refusedAt !== 'loaded-thread') throw new Error(`expected a refusal at loaded-thread, got ${control === null ? refusedAt : 'a connection'}`)
+      return `as ${helpers.CODEX_CONTROL_CLIENT_INFO.name}`
     })
 
     let threadId
@@ -497,6 +508,20 @@ export async function runRoundTrip({ env: baseEnv = process.env, keep = false, l
         if (error?.rpc === undefined) throw error
         return `refused: ${error.rpc.message ?? JSON.stringify(error.rpc)}`
       }
+    })
+
+    // Codex lets the first ordinarily named client on an app-server label every
+    // thread it creates. Notifai connected first above, so this proves Codex
+    // still exempts the name Notifai initializes with.
+    await step("the thread keeps its own client as originator although Notifai's control connected first", 'codex-native-control.ts CODEX_CONTROL_CLIENT_INFO', async () => {
+      const file = helpers.findNativeTranscript(threadId, env)
+      if (file === null) throw new Error('no rollout file for the thread')
+      const meta = JSON.parse(readFileSync(file, 'utf8').split('\n', 1)[0])
+      const recorded = meta?.type === 'session_meta' ? meta.payload?.originator : undefined
+      const sent = [...new Set(mock.requests.map(request => request.originator))]
+      if (recorded !== 'notifai_canary') throw new Error(`the rollout records originator ${JSON.stringify(recorded)}`)
+      if (sent.length !== 1 || sent[0] !== 'notifai_canary') throw new Error(`model requests carried originator ${JSON.stringify(sent)}`)
+      return 'rollout and model requests: notifai_canary'
     })
 
     await step("Notifai's transcript reader finds the accepted card in the rollout", 'codex-native-turn.ts readNativeQuestionSnapshot', async () => {
