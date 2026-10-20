@@ -231,7 +231,15 @@ export function integrationFaultNotice(deps: CommandDeps, harness?: HookInstalla
         reported: faults.length === 0 || (consume && shouldReport) ? fingerprint : previous.reported,
       }))
       // Let hooks find this assessment without repeating the scan.
-      if (!cached) atomicWriteFileSync(scopePointerFile(deps, harness), JSON.stringify({ scope: key }))
+      // Hooks for other scopes share this pointer. Publish it under its own
+      // lock; while a sibling holds that lock it is publishing an assessment
+      // just as current, so this one keeps its notice and skips the hint.
+      if (!cached) {
+        const pointer = scopePointerFile(deps, harness)
+        try {
+          withFileLock(`${pointer}.lock`, () => atomicWriteFileSync(pointer, JSON.stringify({ scope: key })), { waitMs: 0 })
+        } catch { /* A sibling publishes the pointer. */ }
+      }
       if (!shouldReport) return undefined
       return faultNoticeText(faults)
     }, { waitMs: 0 })
