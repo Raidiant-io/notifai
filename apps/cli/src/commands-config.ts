@@ -13,6 +13,7 @@ import {
   BOOLEAN_CONFIG_KEYS,
   CONFIG_KEYS,
   MACHINE_ONLY_CONFIG_KEYS,
+  ON_OFF_CONFIG_KEYS,
   NUMERIC_CONFIG_KEYS,
   ORIGIN_LIST_CONFIG_KEYS,
   USER_OWNED_CONFIG_KEYS,
@@ -183,9 +184,10 @@ export async function configSetCommand(
   }
   if (BOOLEAN_CONFIG_KEYS.includes(configKey)) {
     // The machine-wide update switch also reads naturally as on/off.
-    const words = configKey === 'updates.automatic' ? { true: ['true', 'on'], false: ['false', 'off'] } : { true: ['true'], false: ['false'] }
+    const onOff = ON_OFF_CONFIG_KEYS.includes(configKey)
+    const words = onOff ? { true: ['true', 'on'], false: ['false', 'off'] } : { true: ['true'], false: ['false'] }
     if (!words.true.includes(rawValue) && !words.false.includes(rawValue)) {
-      deps.io.err(`${key} is a toggle — pass ${configKey === 'updates.automatic' ? '"on" or "off"' : '"true" or "false"'}, not "${rawValue}".`)
+      deps.io.err(`${key} is a toggle — pass ${onOff ? '"on" or "off"' : '"true" or "false"'}, not "${rawValue}".`)
       return EXIT.usage
     }
     value = words.true.includes(rawValue)

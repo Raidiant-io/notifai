@@ -38,7 +38,13 @@ still lists, an Orca chat stopping it after 30 idle minutes, Orca losing a
 pane's terminal, and the machine shutting down or restarting. An answer given meanwhile arrives when
 the conversation comes back (the app reopening it, `claude --resume`),
 possibly hours later: check that the work it answers still applies. Notes
-sent meanwhile wait and arrive the same way. A `/branch` of it continues it
+sent meanwhile wait and arrive the same way. A terminal conversation the
+machine stopped reopens by itself when an answer or note arrives: a new
+terminal window in its folder runs `claude --resume` in the permission mode it
+last ran in (never a more permissive one). Do not ask the User to resume it
+meanwhile. `notifai config set reopen.terminal off` (or `reopen.automatic off`
+for every place) makes it wait for the User instead; change these only when
+the User asks. A `/branch` of it continues it
 under a new id: its questions and their answers move to the branch when the
 service supports it (an older service only once the branch has sent a
 notification), and expire otherwise. A scripted `claude -p --resume` of it receives nothing.

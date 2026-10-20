@@ -29,6 +29,8 @@ import { spawn, type ChildProcess } from 'node:child_process'
 import { nullLogger } from './logging.js'
 import { pidExists, processStartTime } from './process-identity.js'
 import { readHubReport } from './hub-client.js'
+import type { TerminalLaunch } from './reopen-terminal.js'
+import { reopenReport } from './session-reopen.js'
 import { readAttendantEndingLease, readAttendantLease } from './session-attendant-state.js'
 
 const SESSION = '11111111-2222-3333-4444-555555555555'
@@ -2532,6 +2534,52 @@ describe('hub: conversations stopped by their app or the machine', () => {
       }
       await stopHub(second.hub, service, second.done)
     }
+  })
+
+  it('reopens a terminal conversation the machine took down once its answer arrives, once, and confirms it when it comes back', async () => {
+    const env = hubEnv()
+    recordSessionNotified(SESSION, env, Date.now())
+    const host = await standIn()
+    describeHost(env, host)
+    const service = fakeService()
+    const peers = new Map<number, PeerCredentials>()
+    const first = startHub(env, service, peers, memoryStore(), 100, { endConfirmMs: 150 }, { powerWatch: false, claudeDesktop: null, runHook: noHook })
+    await hubListening(env)
+    const child = await writerChild(env, peers, 900470, host, { transcript_path: transcript(env) })
+    await until(() => renewals(service) >= 1)
+    question(env)
+    // The power goes.
+    await stopHub(first.hub, service, first.done)
+    child.socket.destroy()
+    host.process.kill('SIGKILL')
+    const opened: TerminalLaunch[] = []
+    const second = startHub(env, service, peers, memoryStore(), 100, { endConfirmMs: 150 }, { powerWatch: false, claudeDesktop: null, runHook: noHook,
+      bootIdentity: () => 'after-power-loss', reopen: { launcher: '/opt/notifai/notifai', resolveHarness: () => '/usr/local/bin/claude',
+        terminal: { platform: 'darwin', env, hasApp: () => false, which: () => null }, open: async (launch) => { opened.push(launch); return true as const } } })
+    await until(() => second.hub.sessions.get(SESSION)?.stopped?.cause === 'machine', 5_000)
+    // An open question alone reopens nothing.
+    await new Promise((resolve) => setTimeout(resolve, 300))
+    expect(opened).toHaveLength(0)
+    answered(env)
+    second.hub.inputStaged(SESSION)
+    await until(() => opened.length === 1, 5_000)
+    expect(opened[0]!.args.slice(0, 3)).toEqual(['-g', '-a', 'Terminal'])
+    const script = opened[0]!.args.at(-1)!
+    expect(readFileSync(script, 'utf8')).toContain(`'/usr/local/bin/claude' '--resume' '${SESSION}' '--permission-mode' 'default'`)
+    // More arrivals and safety ticks while it opens: still one window.
+    second.hub.inputStaged(SESSION)
+    await new Promise((resolve) => setTimeout(resolve, 400))
+    expect(opened).toHaveLength(1)
+    // The window's shell became `claude --resume`: its SessionStart brings the conversation back here.
+    const reopened = await standIn()
+    describeHost(env, reopened)
+    writeFileSync(script.replace(/\.command$/, '.pid'), `${reopened.pid}\n`)
+    const back = await writerChild(env, peers, 900471, reopened, { source: 'resume', transcript_path: transcript(env) })
+    expect(back.frames[0]).toEqual({ type: 'registered', session_id: SESSION })
+    await until(() => second.hub.sessions.get(SESSION)?.stopped === null, 5_000)
+    expect(reopenReport(env, 'darwin').sessions).toMatchObject([{ session_id: SESSION, outcome: 'confirmed', terminal: 'terminal', attempts: 1 }])
+    back.socket.destroy()
+    await stopHub(second.hub, service, second.done)
   })
 
   it('ends a stopped conversation once its question\'s window is over, and the hub then leaves', async () => {

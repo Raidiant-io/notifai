@@ -49,7 +49,11 @@ brings back. For a Codex terminal on Codex's shared server, doctor's wake
 route says whether answers can start a turn there or wait for the next turn,
 and its JSON (`shared_server_check`) names the step a failed check stopped at; `--event hub.session` shows the
 check (`codex-check-…`), a held wake (`wake-held`) and a terminal seen closed
-(`terminal-closed`). While it runs, the hub also answers
+(`terminal-closed`). `--event hub.reopen` shows a stopped conversation being
+reopened in a new terminal window, or why it was left waiting (reopening off,
+an Orca pane, open elsewhere, its folder gone, no desktop session); doctor's
+`Reopen:` line says what happens by default, and its JSON `reopen` lists each
+recent outcome. While it runs, the hub also answers
 the frequent hooks of quiet sessions; any other hook starts the runtime as
 before, and doctor's JSON counts both and says why a hook went to the runtime.
 A hub that crashed three times in ten minutes stops

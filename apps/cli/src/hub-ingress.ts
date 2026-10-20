@@ -57,7 +57,7 @@ const QUIET_STATE_FIELDS: ReadonlySet<string> = new Set([
   'grok_activation_context', 'integration_observation', 'runtime_builds', 'codex_native_turn', 'codex_tool_hook',
   'harness', 'activation_cwd', 'codex_stop_definition_fingerprint', 'cursor_activation_claimed_at',
   'cursor_activation_confirmed_at', 'last_prompt_at', 'last_stop_at', 'question_history', 'harness_session_title',
-  'codex_question_marker_counter', 'codex_card_tool',
+  'codex_question_marker_counter', 'codex_card_tool', 'reopen_launch',
 ])
 
 /** Variables the launcher scrubs before it starts the runtime, and the admission markers the runtime consumes. */

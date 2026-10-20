@@ -5233,6 +5233,20 @@ describe('config surfaces', () => {
     expect(automaticUpdatesSetting(deps.env)).toEqual({ enabled: true, source: 'default' })
   })
 
+  it('keeps reopening a machine-wide setting: on/off for the switch, a fixed choice per place', async () => {
+    const io = new CapturedIo()
+    const deps = configDeps(io)
+    for (const flags of [{ project: true }, { local: true }, { session: 'sess' }]) {
+      expect(await configSetCommand(deps, 'reopen.terminal', 'off', { yes: true, ...flags })).toBe(EXIT.usage)
+    }
+    expect(await configSetCommand(deps, 'reopen.automatic', 'off', { yes: true })).toBe(EXIT.ok)
+    expect(loadConfig({ cwd: deps.cwd, env: deps.env })['reopen.automatic'].value).toBe(false)
+    expect(await configSetCommand(deps, 'reopen.terminal', 'sometimes', { yes: true })).toBe(EXIT.usage)
+    expect(io.errLines.at(-1)).toContain('automatic, off')
+    expect(await configSetCommand(deps, 'reopen.codex_app', 'launch', { yes: true })).toBe(EXIT.ok)
+    expect(loadConfig({ cwd: deps.cwd, env: deps.env })['reopen.codex_app'].value).toBe('launch')
+  })
+
   it('removes one machine setting, preserves its siblings, and restores default provenance', async () => {
     const io = new CapturedIo()
     const deps = configDeps(io)
@@ -5906,7 +5920,7 @@ describe('compatibility-first update guidance', () => {
     const env = isolatedEnv(cwd)
     const run = async (updatesRunHere: boolean) => {
       const io = new InteractiveIo()
-      const deps = { ...makeDeps(io, {} as ApiClient), cwd, env }
+      const deps = { ...makeDeps(io, {} as ApiClient), cwd, env, hookPlatform: 'win32' as const }
       await doctorCommand(deps, {}, { readiness: { states: [] }, updatesRunHere })
       return io.outLines
     }
@@ -5920,6 +5934,34 @@ describe('compatibility-first update guidance', () => {
     await doctorCommand({ ...makeDeps(jsonIo, {} as ApiClient), cwd, env }, { json: true }, { readiness: { states: [] }, updatesRunHere: true })
     expect(JSON.parse(jsonIo.outLines.join('\n')).updates).toMatchObject({ automatic: { enabled: false, source: 'user', runs_here: true },
       staged: null, waiting_for: [], last_automatic: null })
+  })
+
+  it('says in one line whether a stopped conversation reopens by itself, from this machine\'s settings only', async () => {
+    const cwd = mkdtempSync(path.join(os.tmpdir(), 'notifai-reopen-line-'))
+    const env = isolatedEnv(cwd)
+    const run = async (hookPlatform: NodeJS.Platform) => {
+      const io = new InteractiveIo()
+      await doctorCommand({ ...makeDeps(io, {} as ApiClient), cwd, env, hookPlatform }, {}, { readiness: { states: [] }, updatesRunHere: false })
+      return io.outLines
+    }
+    expect(await run('darwin')).toEqual(['Reopen: terminals automatically; other apps wait for you'])
+    expect(await run('win32')).toEqual([])
+    const file = path.join(env['XDG_CONFIG_HOME']!, 'notifai', 'config.toml')
+    mkdirSync(path.dirname(file), { recursive: true })
+    writeFileSync(file, '"reopen.terminal_app" = "iterm2"\n')
+    expect(await run('linux')).toEqual(['Reopen: terminals automatically (in iTerm2); other apps wait for you'])
+    writeFileSync(file, '"reopen.terminal" = "off"\n')
+    expect(await run('darwin')).toEqual(['Reopen: off for terminals; every stopped conversation waits for you'])
+    writeFileSync(file, '"reopen.automatic" = false\n')
+    expect(await run('darwin')).toEqual(['Reopen: off; every stopped conversation waits for you'])
+    // A project cannot change it.
+    mkdirSync(path.join(cwd, '.notifai'), { recursive: true })
+    writeFileSync(path.join(cwd, '.notifai', 'config.toml'), '"reopen.automatic" = true\n')
+    expect(await run('darwin')).toEqual(['Reopen: off; every stopped conversation waits for you'])
+    const jsonIo = new CapturedIo()
+    await doctorCommand({ ...makeDeps(jsonIo, {} as ApiClient), cwd, env, hookPlatform: 'darwin' }, { json: true }, { readiness: { states: [] }, updatesRunHere: false })
+    expect(JSON.parse(jsonIo.outLines.join('\n')).reopen).toMatchObject({ available: true, automatic: false, terminal: 'automatic',
+      codex_app: 'when-running', codex_app_available: false, permission_mode: 'same', sources: { automatic: 'user' }, sessions: [] })
   })
 
   it('reports a missing named CLI capability without blocking ordinary sends', async () => {

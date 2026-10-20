@@ -17,7 +17,17 @@
  * and not an essay.
  */
 import { CLI_SOUNDS, INTERRUPTION_LEVELS } from '@raidiant/notifai-protocol'
-import { LOG_LEVELS, configBounds, type ConfigKey } from './config.js'
+import {
+  LOG_LEVELS,
+  ON_OFF_CONFIG_KEYS,
+  REOPEN_CODEX_APP_POLICIES,
+  REOPEN_FOCUS,
+  REOPEN_PERMISSION_MODES,
+  REOPEN_TERMINAL_APPS,
+  REOPEN_TERMINAL_POLICIES,
+  configBounds,
+  type ConfigKey,
+} from './config.js'
 
 export type ConfigKind = 'string' | 'url' | 'integer' | 'boolean' | 'enum' | 'list'
 
@@ -25,7 +35,7 @@ export type ConfigKind = 'string' | 'url' | 'integer' | 'boolean' | 'enum' | 'li
  * Which surface a key belongs to. Grouping is the difference between a flat
  * list of keys and a few short ones a reader can hold in their head.
  */
-export type ConfigGroup = 'questions' | 'delivery' | 'project' | 'trust' | 'updates' | 'diagnostics'
+export type ConfigGroup = 'questions' | 'delivery' | 'project' | 'trust' | 'updates' | 'reopen' | 'diagnostics'
 
 export const CONFIG_GROUPS: { id: ConfigGroup; title: string; blurb: string }[] = [
   {
@@ -52,6 +62,11 @@ export const CONFIG_GROUPS: { id: ConfigGroup; title: string; blurb: string }[] 
     id: 'updates',
     title: 'Updates',
     blurb: 'Whether this machine keeps Notifai current by itself. It is one setting for the whole machine; no project can change it.',
+  },
+  {
+    id: 'reopen',
+    title: 'Reopening conversations',
+    blurb: 'Whether a conversation stopped by a restart or a crash opens again where it was when an answer or note arrives for it. Settings for the whole machine; no project can change them.',
   },
   {
     id: 'diagnostics',
@@ -241,6 +256,110 @@ const INFO: Record<ConfigKey, Omit<ConfigKeyInfo, 'key'>> = {
       'On (the default), Notifai checks for a newer release once a day and installs it by itself, on the channel this machine already uses: beta stays beta and stable stays stable, and it never installs an older version. Waiting questions, answers and sessions carry over to the new version, so an update never waits for them; it keeps an update waiting only rather than change hook definitions that Codex would make you approve again. After an update, agents are told once what changed.\n\nOff, nothing installs by itself: agents offer an available update about once a week and you decide.\n\nThis is one setting for the whole machine. It is read only from this machine\'s configuration file, never from a project\'s or a session\'s, because every project here runs the same Notifai. `on` and `off` are accepted as well as `true` and `false`.',
     example: 'false',
   },
+  'reopen.automatic': {
+    label: 'Reopen conversations',
+    group: 'reopen',
+    kind: 'boolean',
+    machineOnly: true,
+    summary: 'Whether Notifai reopens a stopped conversation when an answer arrives',
+    detail:
+      'On (the default), when an answer or note arrives for a conversation that a restart, a crash or its app stopped, Notifai opens it again where it was, so the agent gets it right away. It never opens a conversation anywhere else, and never one you closed yourself.\n\nOff, every stopped conversation waits for you to open it again; what arrived is handed to it then.\n\nThis is the switch for every place at once. `reopen.terminal` and `reopen.codex_app` set each place on its own. `on` and `off` are accepted as well as `true` and `false`.',
+    example: 'false',
+  },
+  'reopen.terminal': {
+    label: 'Reopen in a terminal',
+    group: 'reopen',
+    kind: 'enum',
+    machineOnly: true,
+    choices: REOPEN_TERMINAL_POLICIES,
+    choiceHints: {
+      automatic: 'open a new terminal window that resumes it',
+      off: 'wait for you to resume it',
+    },
+    summary: 'What happens to a terminal conversation a restart stopped',
+    detail:
+      '`automatic` (the default) opens a new terminal window in the conversation\'s folder that runs `claude --resume` or `codex resume` for it. The window opens in the background where the system allows it.\n\nOrca panes are left to Orca, which resumes them itself when you open the tab.',
+  },
+  'reopen.codex_app': {
+    label: 'Reopen in the Codex app',
+    group: 'reopen',
+    kind: 'enum',
+    machineOnly: true,
+    choices: REOPEN_CODEX_APP_POLICIES,
+    choiceHints: {
+      'when-running': 'continue it in the app while the app runs',
+      launch: 'also open the app at that conversation',
+      off: 'wait for you to open it',
+    },
+    summary: 'What happens to a Codex app conversation the app stopped',
+    detail:
+      '`when-running` (the default) continues the conversation inside the Codex app while the app is running, without bringing it to the front. `launch` also opens the app at that conversation when it is not running. `off` waits for you to open it.\n\nThis version does not reopen Codex app conversations yet; the answer waits in the conversation and runs when you open it.',
+  },
+  'reopen.terminal_app': {
+    label: 'Terminal app',
+    group: 'reopen',
+    kind: 'enum',
+    machineOnly: true,
+    choices: REOPEN_TERMINAL_APPS,
+    choiceHints: {
+      auto: 'the one the conversation ran in, or the system terminal',
+      terminal: 'Terminal (macOS)',
+      iterm2: 'iTerm2 (macOS)',
+      ghostty: 'Ghostty',
+      wezterm: 'WezTerm',
+      kitty: 'kitty',
+      alacritty: 'Alacritty',
+      'gnome-terminal': 'GNOME Terminal (Linux)',
+      konsole: 'Konsole (Linux)',
+      custom: 'the command in `reopen.terminal_command`',
+    },
+    summary: 'Which terminal app a conversation reopens in',
+    detail:
+      '`auto` (the default) uses the terminal app the conversation ran in when Notifai can open a window there, and otherwise the system terminal: Terminal on macOS, the desktop\'s default terminal on Linux. Editor terminals, tmux and Orca panes cannot be opened from outside, so those conversations use the system terminal.\n\n`custom` runs the command in `reopen.terminal_command`.',
+    advanced: true,
+  },
+  'reopen.terminal_command': {
+    label: 'Custom terminal command',
+    group: 'reopen',
+    kind: 'string',
+    machineOnly: true,
+    summary: 'The command that opens a terminal when the terminal app is `custom`',
+    detail:
+      'Words separated by spaces; `{cwd}` becomes the conversation\'s folder and `{script}` the file to run. No shell reads it, so quotes and pipes are not interpreted.',
+    unsetMeans: 'not set',
+    example: 'wezterm start --cwd {cwd} -- {script}',
+    advanced: true,
+  },
+  'reopen.focus': {
+    label: 'Reopened window focus',
+    group: 'reopen',
+    kind: 'enum',
+    machineOnly: true,
+    choices: REOPEN_FOCUS,
+    choiceHints: {
+      background: 'open behind what you are doing',
+      front: 'bring the window to the front',
+    },
+    summary: 'Whether a reopened terminal window comes to the front',
+    detail:
+      '`background` (the default) opens the window without taking focus from what you are doing, on macOS. On Linux the desktop decides where a new window goes.',
+    advanced: true,
+  },
+  'reopen.permission_mode': {
+    label: 'Reopened permission mode',
+    group: 'reopen',
+    kind: 'enum',
+    machineOnly: true,
+    choices: REOPEN_PERMISSION_MODES,
+    choiceHints: {
+      same: 'the mode it last ran in',
+      default: 'the harness\'s ordinary mode, which asks before acting',
+    },
+    summary: 'Which permission mode a reopened conversation runs in',
+    detail:
+      '`same` (the default) resumes it in the permission mode it last ran in, and never in a more permissive one. `default` resumes it in the harness\'s ordinary mode: the agent then stops at its first approval until you answer it at this machine.',
+    advanced: true,
+  },
   log_level: {
     label: 'Log level',
     group: 'diagnostics',
@@ -305,7 +424,7 @@ export function acceptedValues(key: ConfigKey): string {
   if (key === 'sound') {
     return `${CLI_SOUNDS.join(', ')}, a custom sound id, or a custom sound name`
   }
-  if (key === 'updates.automatic') return 'on or off (or true or false)'
+  if (ON_OFF_CONFIG_KEYS.includes(key)) return 'on or off (or true or false)'
   switch (info.kind) {
     case 'boolean':
       return 'true or false'
@@ -329,7 +448,7 @@ export function formatValue(key: ConfigKey, value: unknown): string {
   const info = INFO[key]
   if (value === null || value === undefined) return info.unsetMeans ?? 'not set'
   if (Array.isArray(value)) return value.length === 0 ? (info.unsetMeans ?? 'not set') : value.join(', ')
-  if (typeof value === 'boolean') return key === 'updates.automatic' ? (value ? 'on' : 'off') : value ? 'yes' : 'no'
+  if (typeof value === 'boolean') return ON_OFF_CONFIG_KEYS.includes(key) ? (value ? 'on' : 'off') : value ? 'yes' : 'no'
   if (typeof value === 'number' && info.unit !== undefined) return formatDuration(value, info.unit)
   return String(value)
 }
