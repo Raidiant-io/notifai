@@ -776,7 +776,19 @@ describe('hub', () => {
     expect(successors).toBe(0)
   })
 
-  it('names the child lock file the way the native child does', () => {
+  it('leaves when idle even while update passes keep coming, and runs none for nothing attended', async () => {
+    const env = hubEnv()
+    let attempts = 0
+    const { done } = startHub(env, fakeService(), new Map(), memoryStore(), undefined, { automaticUpdate: {
+      firstDelayMs: 10, intervalMs: 50,
+      attempt: async () => { attempts += 1; return { outcome: 'current' } },
+    } })
+    // idleExitMs is 400 ms here; passes every 50 ms must not hold the hub.
+    expect(await done).toBe(0)
+    expect(attempts).toBe(0)
+  })
+
+    it('names the child lock file the way the native child does', () => {
     expect(fnv64Hex('')).toBe('cbf29ce484222325')
     expect(fnv64Hex('a')).toBe('af63dc4c8601ec8c')
     expect(os.platform()).toBeTruthy()

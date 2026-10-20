@@ -735,8 +735,13 @@ export class Hub {
   async runAutomaticUpdate(): Promise<AttemptOutcome | null> {
     const options = this.options.automaticUpdate
     if (options === undefined || this.updating || this.exiting) return null
+    if (!this.busy()) {
+      // Nothing attended: this hub is on its way out, and a pass must not
+      // hold it here (it would reset the idle clock). The next hub checks.
+      this.scheduleAutomaticUpdate(options.intervalMs ?? AUTOMATIC_UPDATE_INTERVAL_MS)
+      return null
+    }
     this.updating = true
-    this.touch()
     try {
       const outcome = await (options.attempt ?? attemptAutomaticUpdate)({ ...this.automaticUpdateHost(), ...options.host })
       if (outcome.outcome === 'activated' && !this.exiting) {
