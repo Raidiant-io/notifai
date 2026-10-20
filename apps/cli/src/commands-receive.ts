@@ -4,7 +4,7 @@ import { EXIT, makeClient, log, type CommandDeps } from './commands-core.js'
 import { readSessionIncarnation, sessionHasEnded } from './hook-session-state.js'
 import { currentProcessIdentity, processIdentityLiveness } from './process-identity.js'
 import { readAttendantLease } from './session-attendant-state.js'
-import { drainSessionInputs, hasSessionInputs, observeSessionInputWake, sessionInputWake } from './session-inputs.js'
+import { drainSessionInputs, forgetQueuedInputWake, hasSessionInputs } from './session-inputs.js'
 
 export async function receiveSessionInputs(
   deps: CommandDeps, sessionId: string, write: (text: string) => void,
@@ -48,7 +48,7 @@ export async function receiveCommand(deps: CommandDeps): Promise<number> {
     return EXIT.usage
   }
   log(deps).bind({ session: current.sessionId })
-  observeSessionInputWake(current.sessionId, deps.env, sessionInputWake())
+  forgetQueuedInputWake(current.sessionId, deps.env)
   const received = await receiveSessionInputs(deps, current.sessionId, (text) => deps.io.out(text), 'command')
   if (!received) {
     const pending = hasSessionInputs(current.sessionId, deps.env, readAttendantLease(current.sessionId, deps.env))

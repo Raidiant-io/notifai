@@ -1,5 +1,5 @@
 import { nativeInstallationIdentity } from './native-installation-identity.js'
-import { hasSessionInputs, inputWakeOverdue, stageSessionMessages, wakeSessionInputs, wakeCodexSessionInputs, reconcileSessionInputWakes } from './session-inputs.js'
+import { hasSessionInputs, inputWakeDeferred, inputWakeOverdue, stageSessionMessages, wakeSessionInputs, wakeCodexSessionInputs, reconcileSessionInputWakes } from './session-inputs.js'
 /**
  * `notifai hook attend`: the asynchronous handler that becomes an Agent
  * Session's Session Attendant, or exits within milliseconds when a healthy
@@ -446,14 +446,17 @@ export async function attendHook(
         localInputPending: () => {
           const state = readSessionState(sessionId, deps.env)
           // A picker handler that holds the only pending answer returns it itself.
-          return !claudePickerHolds(state) &&
+          return !claudePickerHolds(state) && !inputWakeDeferred(state, clock.wall()) &&
             (!state.input_wake?.queued || (settledIdle() && inputWakeOverdue(state, clock.wall()))) &&
             hasSessionInputs(sessionId, deps.env, null)
         },
       } : {}),
       ...(codexWakeNeeded === null ? {} : {
-        localInputPending: () => !readSessionState(sessionId, deps.env).input_wake?.queued &&
-          hasSessionInputs(sessionId, deps.env, readAttendantLease(sessionId, deps.env)) && codexWakeNeeded(),
+        localInputPending: () => {
+          const state = readSessionState(sessionId, deps.env)
+          return !state.input_wake?.queued && !inputWakeDeferred(state, clock.wall()) &&
+            hasSessionInputs(sessionId, deps.env, readAttendantLease(sessionId, deps.env)) && codexWakeNeeded()
+        },
       }),
       ...(messages === null
         ? {}

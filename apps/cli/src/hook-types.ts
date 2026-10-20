@@ -188,6 +188,12 @@ export interface SessionState {
     /** This wake already replaced one the harness accepted but never presented. */
     replacement?: boolean
   }
+  /**
+   * Wakes the agent was shown since input was last handed in. Each costs a
+   * model turn, so the next wake waits `inputWakeBackoffMs(count)` after the
+   * last one (see `inputWakeDeferred`). A handed-in input or a new one clears it.
+   */
+  input_wake_unanswered?: { count: number; presented_at: number }
   /** Refused delivery waits for fresh attendance before scheduling another wake. */
   input_delivery_fenced?: { incarnation: string; generation: number }
   /** Exact Codex wake ownership, including detached reconciliation records. */
