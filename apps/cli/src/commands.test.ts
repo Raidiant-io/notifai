@@ -6519,6 +6519,32 @@ describe('init', () => {
     expect(await state()).toMatchObject({ status: 'ready' })
   })
 
+  it('reports Codex without a shared server as ready, and init leaves it alone', async () => {
+    const cwd = mkdtempSync(path.join(os.tmpdir(), 'doctor-codex-cards-'))
+    mkdirSync(path.join(cwd, '.codex'))
+    const io = new CapturedIo()
+    const base = setupReadyDeps(io, cwd, inertSkills, { submit: 0 })
+    let asked = 0
+    const deps: CommandDeps = { ...base, codexDaemonVersion: async () => { asked += 1; return 'not-running' } }
+    await initCommand(deps, { hooks: true, skills: false, codexCommands: false })
+    mkdirSync(deps.env.CODEX_HOME!, { recursive: true })
+    writeFileSync(path.join(deps.env.CODEX_HOME!, 'config.toml'), '[features]\ndaemon_auto_start = false\n')
+
+    io.outLines.length = 0
+    await doctorCommand(deps, { json: true })
+    const report = JSON.parse(io.outLines.join('\n')) as { states: { id: string; status: string; remedy: unknown; detail: string }[] }
+    const cards = report.states.find((candidate) => candidate.id === 'hooks-codex-shared-server')
+    expect(asked).toBeGreaterThan(0)
+    expect(cards).toMatchObject({ status: 'ready', remedy: null })
+    expect(cards?.detail).toMatch(/^questions work\. .*For cards, remove that line/)
+
+    io.outLines.length = 0
+    await initCommand(deps, { hooks: true, skills: false, codexCommands: false, json: true })
+    const after = JSON.parse(io.outLines.join('\n')) as { states: { id: string; status: string }[] }
+    expect(after.states.find((candidate) => candidate.id === 'hooks-codex-shared-server')).toMatchObject({ status: 'ready' })
+    expect(readFileSync(path.join(deps.env.CODEX_HOME!, 'config.toml'), 'utf8')).toBe('[features]\ndaemon_auto_start = false\n')
+  })
+
   it('grants Codex command approval only when asked, checks it with Codex, and removes it with the wiring', async () => {
     const cwd = mkdtempSync(path.join(os.tmpdir(), 'init-codex-commands-'))
     mkdirSync(path.join(cwd, '.codex'))

@@ -69,12 +69,13 @@ export async function codexSharedServerState(
   if (version === null) return null
   const running = version !== 'not-running' && version.status === 'running'
   if (!running) {
-    // An expected limit, not a fault: questions still work, as plain ones.
+    // An expected limit, not a fault: questions still work, as plain ones,
+    // so this reads as ready and nothing offers to change it.
     const disabled = autoStartDisabled(env)
     return {
       id: CODEX_SHARED_SERVER_STATE_ID,
       title: TITLE,
-      status: 'optional-gap',
+      status: 'ready',
       detail: 'questions work. ' + (disabled
         ? 'This Codex home turns off Codex\'s shared server (`daemon_auto_start = false` in its config.toml), so a question that goes to your phone is asked as a plain question instead of a card your phone can close. Nothing to fix. For cards, remove that line and start a new Codex session'
         : 'No shared Codex server is running for this Codex home, so a question that goes to your phone is asked as a plain question instead of a card your phone can close. Nothing to fix. For cards, start a new Codex session without `--no-daemon`'),
