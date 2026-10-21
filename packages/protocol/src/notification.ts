@@ -53,6 +53,20 @@ export const PROVIDERS = ['apns', 'fcm', 'stream'] as const
 export type Provider = (typeof PROVIDERS)[number]
 export const ProviderSchema = Type.Union(PROVIDERS.map((provider) => Type.Literal(provider)))
 
+/**
+ * One line of plain text, 1 to `maxLength` Unicode code points, not blank.
+ *
+ * TypeBox's in-process maxLength counts UTF-16 units, while the wire contract
+ * is Unicode code points. This pattern counts a valid surrogate pair as one
+ * and also excludes line/control characters mechanically.
+ */
+function plainTextLinePattern(maxLength: number): string {
+  return (
+    `^(?=.*\\S)(?:(?:[^\\u0000-\\u001F\\u007F-\\u009F\\u2028\\u2029\\uD800-\\uDFFF])|` +
+    `(?:[\\uD800-\\uDBFF][\\uDC00-\\uDFFF])){1,${maxLength}}$`
+  )
+}
+
 export const MediaItem = Type.Object(
   {
     media_id: Type.String({ pattern: '^med_[A-Za-z0-9_-]+$' }),
@@ -68,14 +82,7 @@ export const Presentation = Type.Object(
   {
     title: Type.String({ minLength: 1, maxLength: 512 }),
     /** Purpose-written plain text for native banners and notification lists. */
-    summary: Type.String({
-      // TypeBox's in-process maxLength counts UTF-16 units, while the wire
-      // contract is Unicode code points. This pattern counts a valid surrogate
-      // pair as one and also excludes line/control characters mechanically.
-      pattern:
-        `^(?=.*\\S)(?:(?:[^\\u0000-\\u001F\\u007F-\\u009F\\u2028\\u2029\\uD800-\\uDFFF])|` +
-        `(?:[\\uD800-\\uDBFF][\\uDC00-\\uDFFF])){1,${SUMMARY_MAX_LENGTH}}$`,
-    }),
+    summary: Type.String({ pattern: plainTextLinePattern(SUMMARY_MAX_LENGTH) }),
     /** Optional standalone focused content. Always interpreted as Markdown. */
     body: Type.Optional(
       Type.String({
@@ -142,6 +149,17 @@ export const DeliveryPolicy = Type.Object(
   { additionalProperties: false },
 )
 
+/** Longest choice label: it must fit a native notification action button. */
+export const CHOICE_LABEL_MAX_LENGTH = 40
+
+/**
+ * Longest choice description, in Unicode code points: one or two short
+ * sentences, two to four lines under the label on a phone. Measured against
+ * real harness question forms, where the median option description is about
+ * 100 characters.
+ */
+export const CHOICE_DESCRIPTION_MAX_LENGTH = 160
+
 /**
  * One answer in a closed question. The id is the agent-facing token — stable,
  * machine-checkable, and never shown to the user; the label is the human text
@@ -150,7 +168,17 @@ export const DeliveryPolicy = Type.Object(
 export const ReplyChoice = Type.Object(
   {
     id: Type.String({ minLength: 1, maxLength: 32, pattern: '^[a-z0-9][a-z0-9_-]*$' }),
-    label: Type.String({ minLength: 1, maxLength: 40 }),
+    label: Type.String({ minLength: 1, maxLength: CHOICE_LABEL_MAX_LENGTH }),
+    /**
+     * What choosing this means, as one line of plain text. Companion Apps show
+     * it under the label on the answer control; native notification action
+     * buttons keep the label alone.
+     */
+    description: Type.Optional(
+      Type.String({ pattern: plainTextLinePattern(CHOICE_DESCRIPTION_MAX_LENGTH) }),
+    ),
+    /** The asking agent recommends this answer. At most one choice per question. */
+    recommended: Type.Optional(Type.Literal(true)),
   },
   { additionalProperties: false },
 )
@@ -505,6 +533,8 @@ export const NOTIFICATION_CONTRACT_FINGERPRINT =
  */
 export const ACCEPTED_NOTIFICATION_CONTRACT_FINGERPRINTS: readonly string[] = [
   NOTIFICATION_CONTRACT_FINGERPRINT,
+  // Before choice descriptions and the recommended choice.
+  'notification-draft/ef9258bde264376c',
   // Before the Windows and Linux desktop platforms (CLI 11.x).
   'notification-draft/e39eb879c1426c91',
 ]

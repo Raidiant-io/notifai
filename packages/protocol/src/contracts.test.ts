@@ -8,11 +8,12 @@ import {
   ANDROID_CAPABILITIES_V1,
   BODY_MAX_LENGTH,
   BeginPairingRequest,
+  CHOICE_DESCRIPTION_MAX_LENGTH,
   CAPABILITIES_V1,
   CONTENT_TOKEN_LENGTH,
   PUSHED_BODY_HEADROOM_BYTES,
-  withPushedApnsBody,
-  withPushedFcmBody,
+  withPushedApnsContent,
+  withPushedFcmContent,
   DEFAULT_AGENT_ACKNOWLEDGEMENT_TEXT_ENABLED,
   defaultDeliveryPolicy,
   effectiveKind,
@@ -1055,6 +1056,8 @@ describe('validateDraft', () => {
   it('accepts the fingerprint of every earlier schema this one still accepts', () => {
     expect(ACCEPTED_NOTIFICATION_CONTRACT_FINGERPRINTS[0]).toBe(NOTIFICATION_CONTRACT_FINGERPRINT)
     expect(ACCEPTED_NOTIFICATION_CONTRACT_FINGERPRINTS).toContain('notification-draft/e39eb879c1426c91')
+    // Before choice descriptions and the recommended choice: those drafts all remain valid.
+    expect(ACCEPTED_NOTIFICATION_CONTRACT_FINGERPRINTS).toContain('notification-draft/ef9258bde264376c')
     expect(new Set(ACCEPTED_NOTIFICATION_CONTRACT_FINGERPRINTS).size).toBe(ACCEPTED_NOTIFICATION_CONTRACT_FINGERPRINTS.length)
   })
 
@@ -1937,7 +1940,7 @@ describe('Body in the push', () => {
     const rendered = buildApnsEnvelope(draft({ presentation: { title: 'Build', summary: 'Green.', body } }), ids, null)
     expect(notifaiOf(rendered.payload)['content_token']).toBe(ids.contentToken)
 
-    const pushed = withPushedApnsBody(rendered.payload, draft({ presentation: { title: 'Build', summary: 'Green.', body } }), LIMIT)
+    const pushed = withPushedApnsContent(rendered.payload, draft({ presentation: { title: 'Build', summary: 'Green.', body } }), LIMIT)
     expect(notifaiOf(pushed)).toMatchObject({ body, has_body: true })
     expect(notifaiOf(pushed)['content_token']).toBeUndefined()
     // Only the custom key changes; the banner still shows the Summary.
@@ -1947,23 +1950,23 @@ describe('Body in the push', () => {
   it('keeps the content token beside a pushed Body when the request has images to fetch', () => {
     const withMedia = draft({ presentation: { title: 'Shots', summary: 'Two screenshots.', body: 'Before and after.', media: [{ media_id: 'med_a' }, { media_id: 'med_b' }] } })
     const rendered = buildApnsEnvelope(withMedia, ids, 'https://x.invalid/preview.webp')
-    const pushed = withPushedApnsBody(rendered.payload, withMedia, LIMIT)
+    const pushed = withPushedApnsContent(rendered.payload, withMedia, LIMIT)
     expect(notifaiOf(pushed)).toMatchObject({ body: 'Before and after.', content_token: ids.contentToken, media_count: 2 })
   })
 
   it('omits a Body that would leave less than the headroom, and keeps has_body and the token', () => {
     const base = draft({ presentation: { title: 'Build', summary: 'Green.', body: 'x' } })
-    const baseBytes = bytes(withPushedApnsBody(buildApnsEnvelope(base, ids, null).payload, base, LIMIT))
+    const baseBytes = bytes(withPushedApnsContent(buildApnsEnvelope(base, ids, null).payload, base, LIMIT))
     // Grow the Body until the pushed payload sits exactly on the budget, then one byte past it.
     const fitting = 'x'.repeat(1 + LIMIT - PUSHED_BODY_HEADROOM_BYTES - baseBytes)
     const atBudget = draft({ presentation: { title: 'Build', summary: 'Green.', body: fitting } })
-    const pushedAtBudget = withPushedApnsBody(buildApnsEnvelope(atBudget, ids, null).payload, atBudget, LIMIT)
+    const pushedAtBudget = withPushedApnsContent(buildApnsEnvelope(atBudget, ids, null).payload, atBudget, LIMIT)
     expect(bytes(pushedAtBudget)).toBe(LIMIT - PUSHED_BODY_HEADROOM_BYTES)
     expect(notifaiOf(pushedAtBudget)['body']).toBe(fitting)
 
     const over = draft({ presentation: { title: 'Build', summary: 'Green.', body: `${fitting}x` } })
     const rendered = buildApnsEnvelope(over, ids, null)
-    const notPushed = withPushedApnsBody(rendered.payload, over, LIMIT)
+    const notPushed = withPushedApnsContent(rendered.payload, over, LIMIT)
     expect(notPushed).toBe(rendered.payload)
     expect(notifaiOf(notPushed)).toMatchObject({ has_body: true, content_token: ids.contentToken })
     expect(notifaiOf(notPushed)['body']).toBeUndefined()
@@ -1972,19 +1975,19 @@ describe('Body in the push', () => {
   it('never adds a Body to a silent retirement or to a request without one', () => {
     const retirement = draft({ lifecycle: { tier: 'done', state: 'answered', retires_request_id: 'req_original' } })
     const silent = buildApnsEnvelope(retirement, ids, null)
-    expect(withPushedApnsBody(silent.payload, retirement, LIMIT)).toBe(silent.payload)
+    expect(withPushedApnsContent(silent.payload, retirement, LIMIT)).toBe(silent.payload)
 
     const summaryOnly = draft({ presentation: { title: 'Build', summary: 'Green.', body: undefined } })
     const plain = buildApnsEnvelope(summaryOnly, ids, null)
     expect(notifaiOf(plain.payload)['content_token']).toBeUndefined()
-    expect(withPushedApnsBody(plain.payload, summaryOnly, LIMIT)).toBe(plain.payload)
+    expect(withPushedApnsContent(plain.payload, summaryOnly, LIMIT)).toBe(plain.payload)
   })
 
   it('carries a Body that fits inside the Android envelope, counting its escaping', () => {
     const body = 'Line one\n"quoted" — ünïcode'
     const android = draft({ presentation: { title: 'Build', summary: 'Green.', body } })
     const data = buildFcmDataEnvelope(android, ids, null).data
-    const pushed = withPushedFcmBody(data, android, LIMIT)
+    const pushed = withPushedFcmContent(data, android, LIMIT)
     const envelope = JSON.parse(pushed['notifai']!) as Record<string, unknown>
     expect(envelope).toMatchObject({ body, has_body: true })
     expect(envelope['content_token']).toBeUndefined()
@@ -1992,7 +1995,7 @@ describe('Body in the push', () => {
     const huge = draft({ presentation: { title: 'Build', summary: 'Green.', body: '"'.repeat(2000) } })
     const hugeData = buildFcmDataEnvelope(huge, ids, null).data
     // 2,000 quotes are 4,000 bytes once escaped inside the envelope string, and 8,000 inside the map.
-    expect(withPushedFcmBody(hugeData, huge, LIMIT)).toBe(hugeData)
+    expect(withPushedFcmContent(hugeData, huge, LIMIT)).toBe(hugeData)
   })
 
   it('reserves the content token in the estimate only for requests with a Body or media', () => {
@@ -2002,5 +2005,101 @@ describe('Body in the push', () => {
     expect(estimateApnsPayloadBytes(withBody) - estimateApnsPayloadBytes(withoutBody)).toBe(
       tokenBytes + bytes({ has_body: true }) - bytes({}) + 1,
     )
+  })
+})
+
+describe('choice descriptions and the recommended choice', () => {
+  const ids = {
+    requestId: 'req_00000000000000000000000000',
+    deliveryId: 'del_00000000000000000000000000',
+    receiptToken: '0'.repeat(RECEIPT_TOKEN_LENGTH),
+    contentToken: 'c'.repeat(CONTENT_TOKEN_LENGTH),
+    createdAt: new Date(0),
+  }
+  const LIMIT = 4096
+  const notifaiOf = (payload: Record<string, unknown>) => payload['notifai'] as Record<string, unknown>
+  const choices = [
+    { id: 'now', label: 'Deploy now', description: 'Ships 0007 to production; about two minutes of downtime.', recommended: true as const },
+    { id: 'later', label: 'Wait for off-peak', description: 'Deploys at 02:00 UTC with no visible downtime.' },
+    { id: 'hold', label: 'Hold' },
+  ]
+  const asking = (questionChoices: NonNullable<NotificationDraftT['reply']>['questions'][number]['choices'] = choices,
+    body?: string) =>
+    draft({
+      presentation: { title: 'Deploy 0007?', summary: 'Deploy migration 0007 to production?', body },
+      reply: { expires_in_seconds: 86400, questions: [{ id: 'deploy', text: 'Deploy migration 0007?', choices: questionChoices }] },
+    })
+
+  it('accepts one plain-text line per choice and at most one recommended choice', () => {
+    expect(validateDraft(asking())).toEqual({ ok: true, errors: [], warnings: [] })
+    const longest = 'é'.repeat(CHOICE_DESCRIPTION_MAX_LENGTH)
+    expect(validateDraft(asking([{ id: 'a', label: 'A', description: longest }, { id: 'b', label: 'B' }])).ok).toBe(true)
+    // Code points, not UTF-16 units: an astral character counts once.
+    expect(validateDraft(asking([{ id: 'a', label: 'A', description: '🚀'.repeat(CHOICE_DESCRIPTION_MAX_LENGTH) }, { id: 'b', label: 'B' }])).ok).toBe(true)
+    for (const description of [`${longest}x`, 'Two\nlines', '   ', '']) {
+      expect(validateDraft(asking([{ id: 'a', label: 'A', description }, { id: 'b', label: 'B' }])).ok).toBe(false)
+    }
+    expect(validateDraft(asking([{ id: 'a', label: 'A', recommended: false as never }, { id: 'b', label: 'B' }])).ok).toBe(false)
+    const twice = validateDraft(asking([{ id: 'a', label: 'A', recommended: true }, { id: 'b', label: 'B', recommended: true }]))
+    expect(twice.errors).toEqual([{ code: 'invalid_request', path: 'reply.questions.0.choices', message: 'Recommend at most one choice per question.' }])
+  })
+
+  it('pushes the recommended marker always and the descriptions only when they fit, before the Body', () => {
+    const asked = asking(choices, 'Context for the deploy.')
+    const rendered = buildApnsEnvelope(asked, ids, null)
+    const base = notifaiOf(rendered.payload)
+    expect(base['has_choice_descriptions']).toBe(true)
+    expect(base['questions']).toEqual([{ id: 'deploy', text: 'Deploy migration 0007?', choices: [
+      { id: 'now', label: 'Deploy now', recommended: true },
+      { id: 'later', label: 'Wait for off-peak' },
+      { id: 'hold', label: 'Hold' },
+    ] }])
+    expect(base['content_token']).toBe(ids.contentToken)
+
+    const pushed = notifaiOf(withPushedApnsContent(rendered.payload, asked, LIMIT))
+    expect(pushed['questions']).toEqual(asked.reply!.questions)
+    expect(pushed).toMatchObject({ body: 'Context for the deploy.', has_choice_descriptions: true })
+    // Everything arrived, so nothing is left to fetch.
+    expect(pushed['content_token']).toBeUndefined()
+  })
+
+  it('keeps the descriptions out of the size estimate, so they never make a question too large to send', () => {
+    const without = asking(choices.map(({ description: _d, ...choice }) => choice))
+    const flag = new TextEncoder().encode(',"has_choice_descriptions":true').length
+    const token = new TextEncoder().encode(`,"content_token":"${'0'.repeat(CONTENT_TOKEN_LENGTH)}"`).length
+    expect(estimateApnsPayloadBytes(asking()) - estimateApnsPayloadBytes(without)).toBe(flag + token)
+    expect(estimateFcmPayloadBytes(asking()) - estimateFcmPayloadBytes(without)).toBe(
+      new TextEncoder().encode(JSON.stringify(',"has_choice_descriptions":true')).length - 2,
+    )
+  })
+
+  it('leaves descriptions to the content fetch when they do not fit, keeping the token', () => {
+    const wordy = 'w'.repeat(CHOICE_DESCRIPTION_MAX_LENGTH)
+    const questions = Array.from({ length: 4 }, (_, index) => ({
+      id: `q${index}`,
+      text: `Question ${index}?`,
+      choices: Array.from({ length: 6 }, (_, position) => ({ id: `c${position}`, label: `Choice ${position}`, description: wordy })),
+    }))
+    const big = draft({ presentation: { title: 'Form', summary: 'Four questions.', body: 'Short.' },
+      reply: { expires_in_seconds: 86400, questions } })
+    expect(validateDraft(big).ok).toBe(true)
+    const rendered = buildApnsEnvelope(big, ids, null)
+    const pushed = notifaiOf(withPushedApnsContent(rendered.payload, big, LIMIT))
+    expect(JSON.stringify(pushed['questions'])).not.toContain(wordy)
+    // The Body still fits on its own, and the token stays for the descriptions.
+    expect(pushed).toMatchObject({ body: 'Short.', has_choice_descriptions: true, content_token: ids.contentToken })
+
+    const data = buildFcmDataEnvelope(big, ids, null).data
+    const envelope = JSON.parse(withPushedFcmContent(data, big, LIMIT)['notifai']!) as Record<string, unknown>
+    expect(JSON.stringify(envelope['questions'])).not.toContain(wordy)
+    expect(envelope).toMatchObject({ body: 'Short.', has_choice_descriptions: true })
+  })
+
+  it('carries descriptions that fit inside the Android envelope', () => {
+    const asked = asking()
+    const data = buildFcmDataEnvelope(asked, ids, null).data
+    expect(JSON.parse(data['notifai']!)['questions'][0].choices[0]).toEqual({ id: 'now', label: 'Deploy now', recommended: true })
+    const envelope = JSON.parse(withPushedFcmContent(data, asked, LIMIT)['notifai']!) as Record<string, unknown>
+    expect(envelope['questions']).toEqual(asked.reply!.questions)
   })
 })
