@@ -399,14 +399,20 @@ export function buildHookConfig(options: BuildOptions): HookConfig {
     }
   }
   if (installsSessionAttendant(options.harness, options.platform)) {
-    // A second handler in the same group, never folded into the first: the
-    // harness runs the activation handler's context back promptly and does
-    // not wait for an async handler. Claude Code does not time out a
-    // backgrounded hook, so its attendant declares none and ends itself with
-    // its session. Codex enforces every async timeout, and its 600-second
-    // default would kill the attendant: it declares the complete answer window
-    // and a later prompt or turn end re-arms it after that. Codex caps
-    // Interrupt at three seconds; that copy only records the turn's end.
+    // A second handler in the same group, never folded into the first. The
+    // harness waits for the synchronous handler, so the resident must be an
+    // async handler of its own. A process that a synchronous handler leaves
+    // behind cannot stand in for it (Codex 0.163.0 and Claude Code 2.1.305,
+    // macOS): it is reparented to init, so the hub refuses its registration
+    // as not the harness's child, and Codex, which ends a session by killing
+    // its async hooks (on exit, and when its shared server unloads a thread
+    // while the server runs on), never kills it. Claude Code kills neither
+    // and does not time out a backgrounded hook, so its attendant declares no
+    // timeout and ends itself with its session. Codex enforces every async
+    // timeout, and its 600-second default would kill the attendant: it
+    // declares the complete answer window and a later prompt or turn end
+    // re-arms it after that. Codex caps Interrupt at three seconds; that copy
+    // only records the turn's end.
     for (const event of attendDocumentEvents(options.harness)) {
       const attend: HookHandler = {
         type: 'command',
