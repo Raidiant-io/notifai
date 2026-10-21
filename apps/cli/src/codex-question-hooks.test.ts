@@ -185,13 +185,16 @@ it('binds every question of an allowed card to its actual tool call without a co
     pending.questions!.map(question => ({ question_id: question.id, choice_ids: [question.choices![0]!.id] })))).toEqual({ service: pending.service_identity })
 })
 
-it('does not register the same tool invocation twice while identical independent cards stay independent', async () => {
+it('registers one question for the same tool invocation, and for an identical card while that question is open', async () => {
   const h = setup()
   const run = (id: string) => hookRunCommand(h.deps, 'pre-tool-use',
     async () => JSON.stringify({ ...h.envelope, tool_use_id: id }), 'codex')
   await run('call_card')
   await run('call_card')
+  // The duplicate guard: an identical card asked while the first is still open
+  // is the same question, so the User is asked once.
   await run('call_other')
-  expect(readSessionState(SESSION, h.env).pending).toHaveLength(2)
+  const pending = readSessionState(SESSION, h.env).pending ?? []
+  expect(pending).toHaveLength(1)
   expect(h.output.map(line => JSON.parse(line).hookSpecificOutput.permissionDecision)).toEqual(['deny', 'deny', 'deny'])
 })

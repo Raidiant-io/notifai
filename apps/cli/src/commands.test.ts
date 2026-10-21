@@ -104,7 +104,8 @@ import {
 import { opencodePluginSource } from './opencode-plugin.js'
 import { writeProjectSession } from './hook-project-sessions.js'
 import { inspectQuestionState } from './hook-question-state.js'
-import { beginSessionIncarnation, lifecycleStamp, markSessionEnded, readSessionState, writeSessionState } from './hook-session-state.js'
+import { beginSessionIncarnation, lifecycleStamp, markSessionEnded, readSessionState, updateSessionState, writeSessionState } from './hook-session-state.js'
+import type { AnsweredPending } from './hook-types.js'
 import { currentProcessIdentity } from './process-identity.js'
 import { hostBinaryIdentity, recordCodexAttachResult } from './codex-attach-signal.js'
 import { recordTurnStart } from './session-attendant-state.js'
@@ -9334,50 +9335,85 @@ describe('asking before the hooks have ever run', () => {
     })
   })
 
-  it.each(['picker', 'no-handlers', 'free-text', 'too-many-choices'] as const)('refuses a question the Claude Code picker asks by itself, and registers the rest (%s)', async (mode) => {
-    const cwd = scratchDir('notifai-claude-picker-ask-')
+  it('registers a closed-choice question with a Body and an image in Claude Code once, with no picker, and uploads nothing for a repeat', async () => {
+    const cwd = scratchDir('notifai-claude-closed-choice-ask-')
     const io = new CapturedIo()
-    const env = { ...isolatedEnv(cwd), CLAUDECODE: '1', CLAUDE_CODE_SESSION_ID: 'claude-picker' }
-    const compatibility = vi.fn(async () => ({ server_capabilities: ['harness_answers'] }))
-    const deps = { ...makeDeps(io, { compatibility } as unknown as ApiClient), cwd, env, now: () => 42, spawnQuestionSettlement: vi.fn() }
+    const env = { ...isolatedEnv(cwd), CLAUDECODE: '1', CLAUDE_CODE_SESSION_ID: 'claude-closed' }
+    const image = path.join(cwd, 'proof.png')
+    writeFileSync(image, 'proof')
+    let grants = 0
+    const client = {
+      compatibility: vi.fn(async () => ({ server_capabilities: ['harness_answers'] })),
+      createMediaUpload: async () => {
+        grants += 1
+        return { media_id: `med_closed_${grants}`, upload_url: `https://upload.invalid/${grants}`, upload_headers: {},
+          expires_at: new Date(Date.now() + 60_000).toISOString() }
+      },
+      uploadMedia: async () => undefined,
+    } as unknown as ApiClient
+    const deps = { ...makeDeps(io, client), cwd, env, now: () => 42, spawnQuestionSettlement: vi.fn() }
     expect(hooksInstallCommand(deps, { harness: 'claude-code', execPath, scriptPath })).toBe(EXIT.ok)
-    if (mode === 'no-handlers') {
-      const settings = path.join(env.CLAUDE_CONFIG_DIR!, 'settings.json')
-      const document = JSON.parse(readFileSync(settings, 'utf8')) as { hooks: Record<string, unknown> }
-      delete document.hooks['PermissionRequest']
-      writeFileSync(settings, JSON.stringify(document))
-    }
-    beginSessionIncarnation('claude-picker', env, { stamp: lifecycleStamp(), harnessProcess: currentProcessIdentity()! })
-    writeSessionState('claude-picker', env, { harness: 'claude-code', last_prompt_at: 42, last_stop_at: 41 })
-    writeProjectSession(cwd, env, 'claude-picker', 42, 'claude-code')
+    beginSessionIncarnation('claude-closed', env, { stamp: lifecycleStamp(), harnessProcess: currentProcessIdentity()! })
+    writeSessionState('claude-closed', env, { harness: 'claude-code', last_prompt_at: 42, last_stop_at: 41 })
+    writeProjectSession(cwd, env, 'claude-closed', 42, 'claude-code')
     io.outLines = []
-    const flags = mode === 'free-text' ? { json: true }
-      : { choice: mode === 'too-many-choices' ? ['One', 'Two', 'Three', 'Four', 'Five'] : ['Staging', 'Production'], json: true }
-    const exit = await askCommand(deps, 'Where?', flags)
-    const output = JSON.parse(io.outLines.join('\n'))
-    expect(compatibility).not.toHaveBeenCalled()
-    if (mode !== 'picker') {
-      expect(exit).toBe(EXIT.ok)
-      expect(output.native_question).toBeUndefined()
-      expect(readSessionState('claude-picker', env).pending).toHaveLength(1)
-      expect(readSessionState('claude-picker', env).codex_question_bindings).toBeUndefined()
-      return
-    }
-    expect(exit).toBe(EXIT.usage)
-    expect(output).toMatchObject({
-      ok: false, registered: false, code: 'use_question_picker',
-      ask_user_question: { questions: [{ question: 'Where?', options: [{ label: 'Staging' }, { label: 'Production' }], multiSelect: false }] },
-    })
-    expect(output.message).toContain('AskUserQuestion')
-    expect(output.message).toContain('Nothing was registered')
-    expect(output.remedy).toContain('"question":"Where?"')
-    expect(readSessionState('claude-picker', env).pending).toBeUndefined()
-    expect(deps.spawnQuestionSettlement).not.toHaveBeenCalled()
+    const flags = { choice: ['Staging', 'Production'], body: 'The release window closes today. ![Proof](media:1)', image: [image], json: true }
+    expect(await askCommand(deps, 'Where?', flags)).toBe(EXIT.ok)
+    const first = JSON.parse(io.outLines.join('\n'))
+    expect(first).toMatchObject({ registered: true, questions: [{ text: 'Where?', choices: [{ label: 'Staging' }, { label: 'Production' }] }] })
+    expect(first).not.toHaveProperty('ask_user_question')
+    expect(first).not.toHaveProperty('native_question')
+    const pending = readSessionState('claude-closed', env).pending ?? []
+    expect(pending).toHaveLength(1)
+    expect(pending[0]).toMatchObject({ question_id: first.question_id, body: expect.stringContaining('release window'), media: [expect.objectContaining({ media_id: 'med_closed_1' })] })
+    expect(readSessionState('claude-closed', env).codex_question_bindings).toBeUndefined()
+    expect(grants).toBe(1)
+    expect(deps.spawnQuestionSettlement).toHaveBeenCalledTimes(1)
+
+    // The same question again, with a new Body and image: the duplicate guard
+    // links it to the open one before any upload, and reports success.
     io.outLines = []
-    expect(await askCommand(deps, 'Which checks?', { choice: ['Lint', 'Tests'], multi: true, json: true })).toBe(EXIT.usage)
-    expect(JSON.parse(io.outLines.join('\n')).ask_user_question).toEqual({
-      questions: [{ question: 'Which checks?', options: [{ label: 'Lint' }, { label: 'Tests' }], multiSelect: true }],
+    expect(await askCommand(deps, 'Where?', { ...flags, body: 'A new reason. ![Proof](media:1)' })).toBe(EXIT.ok)
+    const repeat = JSON.parse(io.outLines.join('\n'))
+    expect(repeat).toMatchObject({ registered: false, already_open: { question_id: first.question_id }, question_id: first.question_id,
+      close: `notifai close ${first.question_id}`, next: { end_turn: false } })
+    expect(repeat.message).toMatch(/already open[\s\S]*Body or images were not applied/)
+    expect(readSessionState('claude-closed', env).pending).toHaveLength(1)
+    expect(readSessionState('claude-closed', env).pending?.[0]?.body).toContain('release window')
+    expect(grants).toBe(1)
+    expect(deps.spawnQuestionSettlement).toHaveBeenCalledTimes(1)
+
+    // A multi-select version is a different question, so it registers its own.
+    io.outLines = []
+    expect(await askCommand(deps, 'Where?', { choice: ['Staging', 'Production'], multi: true, json: true })).toBe(EXIT.ok)
+    expect(JSON.parse(io.outLines.join('\n')).registered).toBe(true)
+    expect(readSessionState('claude-closed', env).pending).toHaveLength(2)
+  })
+
+  it('registers a question again once its earlier answer was handed to the agent', async () => {
+    const cwd = scratchDir('notifai-claude-consumed-ask-')
+    const io = new CapturedIo()
+    const env = { ...isolatedEnv(cwd), CLAUDECODE: '1', CLAUDE_CODE_SESSION_ID: 'claude-consumed' }
+    const deps = { ...makeDeps(io, {} as ApiClient), cwd, env, now: () => 42, spawnQuestionSettlement: vi.fn() }
+    expect(hooksInstallCommand(deps, { harness: 'claude-code', execPath, scriptPath })).toBe(EXIT.ok)
+    beginSessionIncarnation('claude-consumed', env, { stamp: lifecycleStamp(), harnessProcess: currentProcessIdentity()! })
+    writeSessionState('claude-consumed', env, { harness: 'claude-code', last_prompt_at: 42, last_stop_at: 41 })
+    writeProjectSession(cwd, env, 'claude-consumed', 42, 'claude-code')
+    io.outLines = []
+    expect(await askCommand(deps, 'Where?', { choice: ['Staging', 'Production'], json: true })).toBe(EXIT.ok)
+    const first = JSON.parse(io.outLines.join('\n')).question_id as string
+    // The device answered and the agent received the answer: the question is consumed.
+    updateSessionState('claude-consumed', env, (state) => {
+      const consumed = { pending: state.pending![0]!, reply: { reply_id: 'rpl_1', seq: 1 }, replies: [] } as unknown as AnsweredPending
+      return { ...state, pending: [], delivered_answers: [consumed],
+        accepted: { answers: [consumed], remaining: 0, recorded_at: 43, delivered_at: 44, delivery_committed_at: 44 } }
     })
+    io.outLines = []
+    expect(await askCommand(deps, 'Where?', { choice: ['Staging', 'Production'], json: true })).toBe(EXIT.ok)
+    const second = JSON.parse(io.outLines.join('\n'))
+    expect(second.registered).toBe(true)
+    expect(second.question_id).not.toBe(first)
+    expect(readSessionState('claude-consumed', env).pending).toHaveLength(1)
   })
 
   it('serves two checkouts from the one Machine Codex installation', async () => {

@@ -7307,12 +7307,12 @@ describe('Claude Code Stop wake route', () => {
     writeSessionState('claude-route', h.env, { harness: 'claude-code', last_prompt_at: AWAY })
     const service_identity = { base_url: 'https://test.notifai.invalid', machine_id: 'mac_test' }
     const questions = [{ id: 'target', text: 'Which environment?', choices: [{ id: 'staging', label: 'Staging' }, { id: 'production', label: 'Production' }] }]
-    const questionId = persistQuestion('claude-route', h.env, { question: 'Which environment?', summary: 'Which environment?', service_identity, questions }, NOW, {
+    const { question_id: questionId } = persistQuestion('claude-route', h.env, { question: 'Which environment?', summary: 'Which environment?', service_identity, questions }, NOW, {
       owner_key: 'key_picker', turn_id: CLAUDE_PICKER_TURN, service: service_identity,
       picker: [{ title: 'Which environment?', labels: { staging: 'Staging', production: 'Production' } }],
     })
     const service = claimingClient(h)
-    const ordinary = persistQuestion('claude-route', h.env, { question: 'Anything else?', summary: 'Anything else?', service_identity }, NOW)
+    const { question_id: ordinary } = persistQuestion('claude-route', h.env, { question: 'Anything else?', summary: 'Anything else?', service_identity }, NOW)
 
     await hookRunCommand(h.deps, 'question-settlement', stdin({ session_id: 'claude-route', cwd: '/tmp/claude-route' }), 'claude-code')
 

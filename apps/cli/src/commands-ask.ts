@@ -20,15 +20,14 @@ import {
 import { resolveDraftInvocation, uploadImage } from './commands-send-support.js'
 import { loadConfig, type CliConfig } from './config.js'
 import { HERMES_QUESTION_ROUTING_UNAVAILABLE, isHookInstallableHarness } from './harnesses.js'
-import { QuestionRegistrationChanged, registerQuestion } from './hook-lifecycle.js'
+import { QuestionRegistrationChanged, registerQuestion, type RegisteredQuestion } from './hook-lifecycle.js'
+import { captureCandidates, findOpenEqualQuestion } from './question-guard.js'
 import { readSessionIncarnation, readSessionState, sessionHasEnded } from './hook-session-state.js'
 import { processIdentityLiveness } from './process-identity.js'
 import { connectCodexAnswerControl, type CodexAnswerUnavailable } from './codex-answer-control.js'
 import { currentCodexQuestionContext, nativeQuestionTitle, type NativeQuestionAdmission } from './codex-question-bindings.js'
-import { askUserQuestionInput, claudePickerShape } from './claude-question-bindings.js'
-import { installsClaudePickerHooks } from './hook-events.js'
 import { hermesQuestionRouteReady } from './session-attendant-state.js'
-import { codexRoutingTrustProblems, findInstallations, handlerEvent } from './install-hooks.js'
+import { codexRoutingTrustProblems, findInstallations } from './install-hooks.js'
 import { CODEX_CARD_VERSION_FLOOR, codexCardHooksReady, codexCardToolOffered } from './codex-card-capability.js'
 import { activeOpenclawGeneration } from './openclaw-session-access.js'
 import { openclawGatewayReady } from './openclaw-gateway-readiness.js'
@@ -80,8 +79,6 @@ export interface AskFailure {
     action: string
     message: string
   }
-  /** The `AskUserQuestion` input that asks this instead, when the picker can. */
-  ask_user_question?: ReturnType<typeof askUserQuestionInput>
   request_user_input_async?: { questions: Array<{ title: string; options?: string[] }> }
 }
 
@@ -402,25 +399,6 @@ function nativeUnavailableDetail(unavailable: NativeUnavailable): string {
 }
 
 /**
- * Whether this Claude Code session's question picker asks these questions on
- * the User's devices by itself: both picker handlers are installed, the
- * session is live, and the picker can show every question. `ask` then refuses,
- * so a question is never asked twice.
- */
-function claudePickerOwner(deps: CommandDeps, sessionId: string, questions: BuiltQuestions['questions']): string | null {
-  if (readSessionState(sessionId, deps.env).harness !== 'claude-code' || !claudePickerShape(questions)) return null
-  const owner = readSessionIncarnation(sessionId, deps.env)
-  if (owner === null || sessionHasEnded(sessionId, deps.env) || owner.harness_process === undefined ||
-      processIdentityLiveness(owner.harness_process) !== 'alive') return null
-  const platform = deps.hookPlatform ?? process.platform
-  if (!installsClaudePickerHooks('claude-code', platform)) return null
-  const events = new Set(findInstallations(deps.env, deps.hookAdapterHome, deps.hookPlatform)
-    .filter(installation => installation.harness === 'claude-code')
-    .flatMap(installation => installation.handlers.map(handler => handlerEvent(handler.command))))
-  return events.has('permission-request') && events.has('post-tool-use') ? owner.key : null
-}
-
-/**
  * A trusted native card hook replaces the agent's registration/copy step:
  * any card this session opens registers itself, so `ask` never links one.
  */
@@ -442,6 +420,64 @@ function codexCardAsks(deps: CommandDeps, sessionId: string): boolean {
   return owner !== null && codexCardToolOffered(readSessionState(sessionId, deps.env), owner, sessionId, deps.env)
 }
 
+const KEEP_SESSION_OPEN = 'Keep this Agent Session open while the question waits: closing, clearing or switching it ends the question, so never suggest that.'
+
+const ROUTE_NEUTRAL = 'Never say where the answer must arrive; it returns by whatever route the harness supports.'
+
+const ON_ANSWER = 'Acknowledge it, then resume the committed work without asking the user to confirm again.'
+
+/**
+ * The duplicate guard found this question already open in this Agent Session,
+ * or answered with the answer not yet handed to the agent: nothing new was
+ * registered, and the earlier registration keeps its own Body and images. A
+ * duplicate is success, so an agent retrying after a crash is told nothing to
+ * fix; it asks in the conversation and carries on, as after any `ask`.
+ */
+function reportAlreadyOpen(
+  deps: CommandDeps,
+  sessionId: string,
+  built: BuiltQuestions,
+  questionId: string,
+  json: boolean,
+): number {
+  log(deps).info('ask.registered', { ok: true, session: sessionId, question_id: questionId, linked: true, questions: built.questions.length })
+  const open = captureCandidates(readSessionState(sessionId, deps.env)).find((pending) => pending.question_id === questionId)
+  const questions = open?.questions ?? built.questions
+  const message = `This question is already open in this Agent Session as ${questionId}: nothing new was registered, and a new Body or images were not applied. Its answer comes back into this Agent Session.`
+  const inThisTurn = 'Ask the question in the conversation and explain what each answer will change, then continue independent work; dependent work waits for the answer.'
+  const answeredOutside = `If they answer in the conversation instead, run \`notifai close ${questionId}\` to retire this question.`
+  if (json) {
+    deps.io.out(JSON.stringify({
+      registered: false,
+      already_open: { question_id: questionId },
+      question_id: questionId,
+      message,
+      questions: questions.map((entry) => ({
+        id: entry.id,
+        text: entry.text,
+        ...(entry.choices === undefined ? {} : { choices: entry.choices }),
+        ...(entry.multi === true ? { multi: true } : {}),
+      })),
+      status: `notifai status ${questionId}`,
+      close: `notifai close ${questionId}`,
+      next: {
+        end_turn: false,
+        in_this_turn: inThisTurn,
+        route_neutral: ROUTE_NEUTRAL,
+        keep_session_open: KEEP_SESSION_OPEN,
+        on_answer: ON_ANSWER,
+        answered_outside_notifai: answeredOutside,
+      },
+    }, null, 2))
+    return EXIT.ok
+  }
+  deps.io.out(message)
+  deps.io.out(`${inThisTurn} Inspect \`notifai status ${questionId}\` for submission evidence; never register a replacement to check this question.`)
+  deps.io.out(KEEP_SESSION_OPEN)
+  deps.io.out(answeredOutside)
+  return EXIT.ok
+}
+
 function persistRegisteredQuestion(
   deps: CommandDeps,
   sessionId: string,
@@ -453,7 +489,7 @@ function persistRegisteredQuestion(
   ownerKey?: string,
   nativeUnavailable?: NativeUnavailable,
 ): number {
-  let questionId: string
+  let registered: RegisteredQuestion
   const credential = deps.store.load()
   if (credential === null || credential.machineId !== service.machine_id || credential.baseUrl !== service.base_url) {
     return askFailure(deps, { json }, 'auth_required', 'credential',
@@ -461,7 +497,7 @@ function persistRegisteredQuestion(
       'retry the same ask from the intended signed-in machine', EXIT.auth)
   }
   try {
-    questionId = registerQuestion(
+    registered = registerQuestion(
       sessionId,
       deps.env,
       {
@@ -498,6 +534,8 @@ function persistRegisteredQuestion(
       EXIT.failed,
     )
   }
+  if (!registered.registered) return reportAlreadyOpen(deps, sessionId, built, registered.question_id, json)
+  const questionId = registered.question_id
   log(deps).info('ask.registered', {
     ok: true,
     session: sessionId,
@@ -521,7 +559,6 @@ function persistRegisteredQuestion(
     log(deps).error('cli.error', { kind: 'question_submission_launch', session: sessionId, question_id: questionId, outcome: submission,
       message: err instanceof Error ? err.message : String(err) })
   }
-  const keepSessionOpen = 'Keep this Agent Session open while the question waits: closing, clearing or switching it ends the question, so never suggest that.'
   const nextStep = submission === 'scheduled'
     ? 'Background submission is scheduled; this does not confirm submission or delivery, so check status before reporting either. Continue independent work: the answer comes back into this Agent Session.'
     : 'Background startup failed. Keep this registration; ordinary lifecycle hooks can recover it. Inspect status before relying on submission.'
@@ -566,11 +603,9 @@ function persistRegisteredQuestion(
             end_turn: false,
             in_this_turn:
               `Ask the question in the conversation and explain what each answer will change. ${nextStep}`,
-            route_neutral:
-              'Never say where the answer must arrive; it returns by whatever route the harness supports.',
-            keep_session_open: keepSessionOpen,
-            on_answer:
-              'Acknowledge it, then resume the committed work without asking the user to confirm again.',
+            route_neutral: ROUTE_NEUTRAL,
+            keep_session_open: KEEP_SESSION_OPEN,
+            on_answer: ON_ANSWER,
             answered_outside_notifai: native === undefined
               ? `If they answer in the conversation instead, run \`notifai close ${questionId}\` to retire this question.`
               : nativeInstruction,
@@ -600,7 +635,7 @@ function persistRegisteredQuestion(
   deps.io.out(
     `${nextStep} Inspect \`notifai status ${questionId}\` for submission evidence; never register a replacement to check this question.`,
   )
-  deps.io.out(keepSessionOpen)
+  deps.io.out(KEEP_SESSION_OPEN)
   deps.io.out('Ask in the conversation and explain what each answer will change:')
   for (const [index, entry] of built.questions.entries()) {
     const questionPrefix = built.questions.length > 1 ? `Question ${index + 1}, ` : ''
@@ -939,20 +974,6 @@ export function askCommand(
       'ask the way you would without Notifai: in the conversation, or in your own question form, which stays in the terminal; change the setting only if the User asks',
     )
   }
-  // In Claude Code the picker is the question: it reaches the User's devices
-  // by itself. Registering the same question here would ask it twice.
-  if (claudePickerOwner(deps, sessionId, built.questions) !== null) {
-    const picker = askUserQuestionInput(built.questions)
-    const these = built.questions.length > 1 ? 'these questions' : 'this question'
-    return reportAskFailure(deps, flags, {
-      code: 'use_question_picker',
-      check_id: 'question_picker',
-      exit_code: EXIT.usage,
-      message: `Nothing was registered. In Claude Code, ask ${these} with the AskUserQuestion tool: Notifai sends that picker to the user's devices by itself and returns whichever answer comes first, from a device or the terminal.`,
-      remedy: `call AskUserQuestion with ${JSON.stringify(picker)}, adding a short header to each question and a description to each option that lacks one. Put further context in the option descriptions or your message. Keep \`notifai ask\` for free-text questions.`,
-      ask_user_question: picker,
-    })
-  }
   // The card shows titles and option labels only; a question that carries
   // more keeps ordinary ask so nothing the agent wrote is lost.
   if (flags.body === undefined && flags.image === undefined && built.body === undefined &&
@@ -998,6 +1019,10 @@ export function askCommand(
   if (!preflight.ok) {
     return askFailure(deps, flags, 'invalid_draft', 'draft', preflight.error, 'fix the reported field and retry')
   }
+  // The duplicate guard runs before any upload, so a repeat of an open question
+  // costs no media round trip; registration repeats it under the session lock.
+  const open = findOpenEqualQuestion(readSessionState(sessionId, deps.env), built.questions)
+  if (open !== undefined) return reportAlreadyOpen(deps, sessionId, built, open.question_id!, flags.json === true)
   if ((flags.image?.length ?? 0) > 0) {
     return uploadAskMedia(
       deps,

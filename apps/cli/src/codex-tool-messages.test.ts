@@ -439,7 +439,7 @@ describe('Codex tool-boundary Session Messages', () => {
     await hookRunCommand(h.deps, 'post-tool-use', async () => JSON.stringify({ session_id: SESSION,
       cwd: h.deps.cwd, hook_event_name: 'PostToolUse', turn_id: 'turn-1', transcript_path: transcript }), 'codex')
     expect(codexToolHookReady(h.deps, SESSION)).toBe(true)
-    const questionId = registerQuestion(SESSION, h.env, {
+    const { question_id: questionId } = registerQuestion(SESSION, h.env, {
       question: 'First question?', questions: [{ id: 'q1', text: 'First question?' }],
       service_identity: { base_url: 'https://test.notifai.invalid', machine_id: 'mac_test' },
     }, Date.now(), { owner_key: h.incarnation.key, turn_id: 'turn-1',

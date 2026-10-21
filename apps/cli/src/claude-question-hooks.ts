@@ -2,8 +2,10 @@
  * The Claude Code hooks that make a question picker a device question.
  *
  * `PermissionRequest` runs while the picker is on screen. The handler
- * registers the picker's own questions for the User's devices, waits for the
- * device answer and returns it as the picker's own result; Claude Code then
+ * registers the picker's own questions for the User's devices, or links the
+ * picker to the equal question this session already has open (the duplicate
+ * guard in `question-guard.ts`), waits for the device answer and returns it as
+ * the picker's own result; Claude Code then
  * closes the picker and the agent reads the answer as the tool's output. If
  * the terminal answers first Claude Code takes that answer and discards
  * anything this handler returns later. When the picker cannot reach devices
@@ -47,7 +49,7 @@ import { loadConfig } from './config.js'
 import { projectBinding, projectDisabled } from './project-enablement.js'
 import type { ServiceIdentity } from './credentials.js'
 import { acknowledgementContext, answersContext } from './hook-acknowledgements.js'
-import { registerQuestion } from './hook-lifecycle.js'
+import { registerQuestion, type RegisteredQuestion } from './hook-lifecycle.js'
 import { dropPendingQuestion, questionSubmissionAttempted } from './hook-question-state.js'
 import { parkForRetirement, retireQueuedQuestions } from './hook-question-retirement.js'
 import {
@@ -264,9 +266,9 @@ function registerPickerQuestion(
   const draft = buildAskDraft(config, form, {}, source.invocation, [])
   if (!draft.ok) return { reason: 'invalid-draft', detail: { error: draft.error } }
   const presentation = draft.draft.presentation
-  let questionId: string
+  let registered: RegisteredQuestion
   try {
-    questionId = registerQuestion(
+    registered = registerQuestion(
       sessionId,
       deps.env,
       {
@@ -288,16 +290,18 @@ function registerPickerQuestion(
   } catch (err) {
     return { reason: 'registration-failed', detail: { error: err instanceof Error ? err.message : String(err) } }
   }
+  const questionId = registered.question_id
   // Registration and its picker binding are one transaction; check anyway,
-  // because an unbound device question would outlive the picker.
+  // because an unbound device question would outlive the picker. A picker
+  // linked to a question `ask` registered gets its binding the same way.
   if (registrationOf(readSessionState(sessionId, deps.env), questionId) === undefined) {
-    withdrawPickerQuestion(sessionId, deps.env, questionId)
+    if (registered.registered) withdrawPickerQuestion(sessionId, deps.env, questionId)
     return { reason: 'binding-missing' }
   }
   logger.info('ask.registered', {
     ok: true, origin: 'picker', session: sessionId, question_id: questionId, questions: form.questions.length,
     text_chars: form.questions[0]!.text.length, choices: form.questions[0]!.choices?.length ?? 0,
-    has_body: form.body !== undefined,
+    has_body: form.body !== undefined, ...(registered.registered ? {} : { linked: true }),
   })
   return { questionId }
 }
@@ -658,7 +662,7 @@ export function claudePostToolUse(deps: CommandDeps, envelope: HookEnvelope, log
       } else {
         // Claude Code took the terminal's answer instead; the device answer is still the User's.
         stage = 'app-answer-beside-terminal'
-        context = `${presented.context} The picker was answered in the terminal at the same moment. Both answers are the user's own; if they differ, ask which one governs before acting on either.`
+        context = `${presented.context} The picker was also answered in the terminal at the same moment. If the two answers differ, ask which one governs before acting on either.`
       }
       return next
     }

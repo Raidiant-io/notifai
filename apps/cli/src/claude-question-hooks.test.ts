@@ -5,9 +5,7 @@ import path from 'node:path'
 import type { ClaimDeliveryAttemptRequestT, RecordHarnessAnswerResponse, ReplyAnswerT } from '@raidiant/notifai-protocol'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
-  askUserQuestionInput,
   claudePickerAnswers,
-  claudePickerShape,
   claudeTerminalAnswers,
   pickerDigest,
   pickerForm,
@@ -31,6 +29,7 @@ import { ApiCallError, type ApiClient } from './client.js'
 import { hookRunCommand } from './commands-hook-run.js'
 import type { CommandDeps } from './commands-core.js'
 import { markNativeQuestionsDismissed, type CodexQuestionRegistration } from './codex-question-bindings.js'
+import { registerQuestion } from './hook-lifecycle.js'
 import { retirePendings } from './hook-question-retirement.js'
 import { acquireClaimFile } from './hook-question-lock.js'
 import { recordConfirmedNativeAnswerTarget } from './native-answer-operation.js'
@@ -252,21 +251,12 @@ describe('a Claude Code picker as a device question', () => {
     expect(pickerDigest(picker([{ question: REWORDED, labels: ['Staging', 'Canary'] }]))).not.toBe(pickerDigest(ENVIRONMENT))
   })
 
-  it('tells ask which questions the picker asks by itself', () => {
-    const choice = { id: 'q1', text: 'Where?', choices: [{ id: 'a', label: 'A' }, { id: 'b', label: 'B' }] }
-    expect(claudePickerShape([choice])).toBe(true)
-    expect(claudePickerShape([{ id: 'q1', text: 'Why?' }])).toBe(false)
-    expect(claudePickerShape([{ ...choice, choices: [1, 2, 3, 4, 5].map(n => ({ id: `c${n}`, label: `C${n}` })) }])).toBe(false)
-    expect(askUserQuestionInput([{ ...choice, multi: true }])).toEqual({
-      questions: [{ question: 'Where?', options: [{ label: 'A' }, { label: 'B' }], multiSelect: true }],
-    })
-    // What the agent already wrote carries over in the picker's own conventions,
-    // and the picker hook turns it back into the same device question.
-    const described = { ...choice, choices: [{ id: 'a', label: 'A', description: 'Ships A.', recommended: true as const }, { id: 'b', label: 'B' }] }
-    const input = askUserQuestionInput([described])
-    expect(input.questions[0]!.options).toEqual([{ label: 'A (Recommended)', description: 'Ships A.' }, { label: 'B' }])
-    const back = pickerForm(pickerQuestions({ questions: input.questions.map(q => ({ ...q, header: 'Where' })) })!) as PickerForm
-    expect(back.questions[0]!.choices).toEqual(described.choices)
+  it('reads the "(Recommended)" label suffix and the descriptions back as the device choice', () => {
+    // What an agent writes in the picker's own conventions becomes the same
+    // device question `ask` would register from --choice-description and --recommended.
+    const back = pickerForm(pickerQuestions({ questions: [{ question: 'Where?', header: 'Where',
+      options: [{ label: 'A (Recommended)', description: 'Ships A.' }, { label: 'B', description: '' }], multiSelect: false }] })!) as PickerForm
+    expect(back.questions[0]!.choices).toEqual([{ id: 'a', label: 'A', description: 'Ships A.', recommended: true }, { id: 'b', label: 'B' }])
   })
 })
 
@@ -329,35 +319,82 @@ describe('Claude Code picker hooks', () => {
         { question_id: 'which-checks-should-run-first', choice_ids: ['lint'] }])
   })
 
-  it('never lets an older open question with the same content stand in for a new picker', async () => {
+  it('links an identical picker to the equal question this session has open, and never to one whose answer was consumed', async () => {
     const h = setup()
-    // An earlier question with exactly this content is still open and bound:
-    // answered from a phone with free text, it was never closed.
     const form = pickerForm(pickerQuestions(ENVIRONMENT)!) as PickerForm
+    const binding = (questionId: string): CodexQuestionRegistration => ({ question_id: questionId, owner_key: h.incarnation.key,
+      registration_turn_id: 'claude-code-picker', transcript: { file: '', identity: 'claude-code-picker', registered_offset: 0 },
+      service_identity: SERVICE, confirmed_request_id: `req_${questionId}`,
+      questions: form.questions.map((question, index) => ({ question, picker: form.shown[index]!, verified: true as const,
+        native: { turn_id: 'claude-code-picker', call_id: 'picker', index } })) })
+    const pending = (questionId: string): PendingQuestion => ({ question_id: questionId, question: REWORDED, summary: REWORDED,
+      service_identity: SERVICE, request_id: `req_${questionId}`, collapse_key: questionId, device_ids: ['dev_test'], questions: form.questions })
+    // One equal question was answered and its answer already handed to the
+    // agent; another equal one is still open. Only the open one is this picker.
+    const consumed = { pending: pending('q_consumed'), reply: { reply_id: 'rpl_c', seq: 1 }, replies: [] } as unknown as AnsweredPending
     updateSessionState(SESSION, h.env, current => ({ ...current,
-      pending: [{ question_id: 'q_stale', question: REWORDED, summary: REWORDED, service_identity: SERVICE,
-        request_id: 'req_stale', collapse_key: 'stale', device_ids: ['dev_test'], questions: form.questions }],
-      codex_question_bindings: [{ question_id: 'q_stale', owner_key: h.incarnation.key, registration_turn_id: 'claude-code-picker',
-        transcript: { file: '', identity: 'claude-code-picker', registered_offset: 0 }, service_identity: SERVICE, confirmed_request_id: 'req_stale',
-        questions: form.questions.map((question, index) => ({ question, picker: form.shown[index]!, verified: true as const,
-          native: { turn_id: 'claude-code-picker', call_id: 'picker', index } })) }],
+      pending: [pending('q_open')],
+      delivered_answers: [consumed],
+      accepted: { answers: [consumed], remaining: 0, recorded_at: 1, delivered_at: 2, delivery_committed_at: 2 },
+      codex_question_bindings: [binding('q_consumed'), binding('q_open')],
     }))
-    let fresh: string | undefined
     const outcome = await claudePermissionRequest(h.deps, h.envelope(), h.logger, {
       sleep: async () => {
-        if (fresh !== undefined) return
-        fresh = h.held()
-        expect(fresh).not.toBe('q_stale')
-        h.confirm(fresh)
-        h.stage([{ question_id: h.registration(fresh).questions[0]!.question.id, choice_ids: ['staging'] }], fresh)
+        if (h.state().waiting_answers?.length) return
+        expect(h.held()).toBe('q_open')
+        h.stage([{ question_id: form.questions[0]!.id, choice_ids: ['staging'] }], 'q_open')
       },
     })
     expect(outcome).toBe('answered')
     expect(h.decision().hookSpecificOutput.decision.updatedInput.answers).toEqual({ [REWORDED]: 'Staging' })
-    expect(h.claims).toEqual([`req_${fresh}`])
-    // The earlier question is no business of this picker's: it stays as it was.
-    expect(h.pendingOf('q_stale')).toBeDefined()
-    expect(h.registration('q_stale').terminated).toBeUndefined()
+    expect(h.claims).toEqual(['req_q_open'])
+    expect(h.state().pending ?? []).toEqual([])
+    // Nothing new was registered: the open question is the picker's question.
+    expect(h.state().codex_question_bindings!.map(item => item.question_id)).toEqual(['q_consumed', 'q_open'])
+  })
+
+  it('links a picker to the question `ask` registered, and gives `ask` after a picker that picker\'s question', async () => {
+    const h = setup()
+    const form = pickerForm(pickerQuestions(ENVIRONMENT)!) as PickerForm
+    // `ask` registered this question with no picker: a plain device question.
+    const asked = registerQuestion(SESSION, h.env, { question: REWORDED, summary: REWORDED, service_identity: SERVICE, questions: form.questions, body: 'Why it matters.' })
+    expect(asked.registered).toBe(true)
+    const requestId = h.confirm(asked.question_id)
+    expect(h.state().codex_question_bindings).toBeUndefined()
+    const outcome = await claudePermissionRequest(h.deps, h.envelope(), h.logger, {
+      sleep: async () => {
+        if (h.state().waiting_answers?.length) return
+        h.stage([{ question_id: form.questions[0]!.id, choice_ids: ['production'] }], asked.question_id)
+      },
+    })
+    // The picker now carries the question `ask` registered, Body included, and
+    // its binding knows the request the submission confirmed.
+    expect(outcome).toBe('answered')
+    expect(h.registration(asked.question_id)).toMatchObject({ confirmed_request_id: requestId, owner_key: h.incarnation.key })
+    expect(h.decision().hookSpecificOutput.decision.updatedInput.answers).toEqual({ [REWORDED]: 'Production' })
+    expect(h.claims).toEqual([requestId])
+    expect(h.gates.filter(gate => gate['stage'] === 'picker-waiting')).toHaveLength(1)
+
+    // The other order: a picker opened first, then `ask` for the same question.
+    const again = setup()
+    let pickerQuestion = ''
+    await claudePermissionRequest(again.deps, again.envelope(), again.logger, {
+      sleep: async () => {
+        if (again.state().waiting_answers?.length) return
+        pickerQuestion = again.held()
+        const repeat = registerQuestion(SESSION, again.env, { question: REWORDED, summary: REWORDED, service_identity: SERVICE, questions: form.questions })
+        expect(repeat).toEqual({ question_id: pickerQuestion, registered: false })
+        again.confirm()
+        again.stage([{ question_id: form.questions[0]!.id, choice_ids: ['staging'] }])
+      },
+    })
+    expect(again.state().pending ?? []).toEqual([])
+    expect(again.state().codex_question_bindings!.map(item => item.question_id)).toEqual([pickerQuestion])
+    // A reworded picker is a different question, so it registers its own.
+    const other = registerQuestion(SESSION, again.env, { question: 'Where to?', summary: 'Where to?', service_identity: SERVICE,
+      questions: [{ ...form.questions[0]!, text: 'Where to?' }] })
+    expect(other.registered).toBe(true)
+    expect(other.question_id).not.toBe(pickerQuestion)
   })
 
   it('gives two similar pickers back to back a question each', async () => {

@@ -66,7 +66,8 @@ async function routeCard(deps: CommandDeps, envelope: HookEnvelope, logger: Logg
   if (accepted && !allow) return null
   const shown = raw.map((entry, index) => ({ title: entry.title,
     labels: Object.fromEntries((form.questions[index]!.choices ?? []).map((choice, position) => [choice.id, entry.options[position]])) }))
-  const questionId = registerQuestion(sessionId, deps.env, {
+  const { question_id: questionId } = registerQuestion(sessionId, deps.env, {
+    questions: form.questions, service_identity: service,
     question: form.questions[0]!.text, summary: draft.draft.presentation.summary, questions: form.questions, service_identity: service,
     ...(draft.draft.presentation.body === undefined ? {} : { body: draft.draft.presentation.body }),
     ...(draft.draft.project === undefined ? {} : { project: draft.draft.project }),
