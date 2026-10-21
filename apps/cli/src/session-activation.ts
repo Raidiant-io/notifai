@@ -74,17 +74,29 @@ export function userPromptContextOutput(
   return undefined
 }
 
+const CURSOR_FOLLOWUP_OPENING =
+  'Automatic Notifai activation, sent once for this conversation. It is not from the User, who may not see it.'
+
+const CURSOR_FOLLOWUP_CLOSING =
+  'Now apply this to the turn you just finished: if it warrants a Notification Request, send it. ' +
+  'Do not acknowledge or mention this activation. Some apps show your reply to this message in place of your previous reply, ' +
+  'so end your turn with your previous reply to the User repeated exactly, and nothing else.'
+
 /**
- * Cursor currently accepts sessionStart context without reliably delivering it
- * to the model. Its native post-Stop follow-up is the narrow fallback and is
- * claimed once per conversation by the hook-state layer.
+ * Cursor has no model-visible context channel that does not add a turn, so
+ * activation rides its native post-Stop follow-up, claimed once per
+ * conversation by the hook-state layer. Hosts such as T3 Code hide the
+ * follow-up and show only the reply to it, so the reply restates the answer
+ * the User asked for instead of acknowledging Notifai.
  */
 export function cursorStopActivationOutput(
   cwd: string = process.cwd(),
   env: NodeJS.ProcessEnv = process.env,
   notice?: string,
 ): string {
+  const frame = Buffer.byteLength(`${CURSOR_FOLLOWUP_OPENING}\n\n\n\n${CURSOR_FOLLOWUP_CLOSING}`, 'utf8')
+  const context = rootActivationContext(cwd, env, notice, GUIDANCE_CONTEXT_MAX_BYTES - frame)
   return JSON.stringify({
-    followup_message: rootActivationContext(cwd, env, notice),
+    followup_message: `${CURSOR_FOLLOWUP_OPENING}\n\n${context}\n\n${CURSOR_FOLLOWUP_CLOSING}`,
   })
 }

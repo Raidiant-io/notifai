@@ -377,10 +377,13 @@ classic CLI prompt. Its prompt budget can be smaller than the full guidance;
 the bounded fallback directs the agent to run `notifai guidance` before a
 Notification Request.
 Cursor currently drops the context it
-accepts at SessionStart, so after the first completed turn Notifai uses one
-bounded native Stop follow-up: Cursor shows a synthetic follow-up turn, the
-agent reads guidance and evaluates the just-finished Agent Event, and the next
-Stop confirms that activation arrived. Cancelled turns do not trigger that
+accepts at SessionStart and offers no other context channel that does not add a
+turn, so after the first completed turn Notifai uses one bounded native Stop
+follow-up: Cursor runs a synthetic follow-up turn in which the agent reads
+guidance, evaluates the just-finished Agent Event, and repeats its previous
+reply, so a host that shows only the latest reply still shows the answer you
+asked for. It is sent at most once per conversation, even on hosts that start
+and end a session around every turn. Cancelled turns do not trigger that
 follow-up; errored turns do, because failure is itself an Agent Event. A live
 question continuation takes priority. Delegated
 Cursor work stays under the parent Agent Session's explicit notification ownership

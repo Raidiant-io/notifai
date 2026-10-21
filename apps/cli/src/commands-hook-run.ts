@@ -44,13 +44,12 @@ import {
 import { drainRetirements } from './hook-question-retirement.js'
 import {
   claimCursorStopActivation,
-  confirmCursorStopActivation,
+  cursorStopActivationSent,
   lifecycleStamp,
   readSessionIncarnation,
   readSessionState,
   updateSessionState,
   recordSessionStart,
-  resetCursorStopActivation,
   sessionHasEnded,
   sessionStatePath,
 } from './hook-session-state.js'
@@ -702,17 +701,6 @@ export async function hookRunCommand(
       })
       return EXIT.ok
     }
-    if (event === 'session-start' && harness === 'cursor' && envelope.session_id !== undefined) {
-      try {
-        resetCursorStopActivation(envelope.session_id, deps.env)
-      } catch (err) {
-        logger.error('hook.end', {
-          hook: event,
-          outcome: 'reset-failed',
-          ...failureData(err),
-        })
-      }
-    }
     // Both notices are read from records written off the prompt path: the
     // update lookup by the detached daily maintenance, the integration
     // assessment at turn end and by the Session Attendant.
@@ -827,10 +815,14 @@ export async function hookRunCommand(
     startDueHubHandover()
   }
 
-  // Cursor has a confirmed host bug in which sessionStart.additional_context
-  // is accepted but never reaches the model. A native Stop follow-up is the
-  // host's guaranteed model-visible channel. Claim it once per conversation,
-  // before config/auth/network, and leave the ordinary Stop handler separate
+  // No Cursor channel adds model-visible context without a turn of its own:
+  // sessionStart.additional_context is accepted but dropped (always under the
+  // Cursor SDK), postToolUse.additional_context is dropped, and
+  // beforeSubmitPrompt has no context output. A native Stop follow-up is the
+  // host's one guaranteed model-visible channel, and it is a turn, so it is
+  // sent at most once per conversation, keyed by conversation id because the
+  // Cursor SDK starts and ends a session around every turn. It is claimed
+  // before config/auth/network, and the ordinary Stop handler stays separate
   // so question delivery is never displaced by activation.
   if (event === 'activation-stop') {
     start({ cwd, stop_hook_active: envelope.stop_hook_active ?? null })
@@ -865,25 +857,9 @@ export async function hookRunCommand(
       })
       return EXIT.ok
     }
-    if (
-      envelope.session_id !== undefined &&
-      typeof envelope.loop_count === 'number' &&
-      envelope.loop_count > 0
-    ) {
-      let activationOwned = false
-      try {
-        activationOwned = confirmCursorStopActivation(envelope.session_id, deps.env, now())
-      } catch (err) {
-        logger.error('hook.end', {
-          hook: event,
-          outcome: 'confirm-failed',
-          ...failureData(err),
-        })
-      }
-      if (activationOwned) {
-        logger.info('hook.end', { hook: event, outcome: 'confirmed', decided: false })
-        return EXIT.ok
-      }
+    if (cursorStopActivationSent(envelope.session_id, deps.env, now())) {
+      logger.info('hook.end', { hook: event, outcome: 'already-activated', decided: false })
+      return EXIT.ok
     }
     const cursorState = readSessionState(envelope.session_id, deps.env)
     if (
