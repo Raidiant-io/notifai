@@ -186,15 +186,40 @@ function setup(options: { signedIn?: boolean; enabled?: boolean; leased?: boolea
 describe('a Claude Code picker as a device question', () => {
   it('keeps short pickers as they are and maps every device id back to the picker', () => {
     const form = pickerForm(pickerQuestions(FORM)!) as PickerForm
+    const described = (id: string, label: string) => ({ id, label, description: `Choose ${label}` })
     expect(form.questions).toEqual([
-      { id: 'which-environment', text: 'Which environment?', choices: [{ id: 'staging', label: 'Staging' }, { id: 'production', label: 'Production' }] },
+      { id: 'which-environment', text: 'Which environment?', choices: [described('staging', 'Staging'), described('production', 'Production')] },
       { id: 'which-checks-should-run-first', text: 'Which checks should run first?', multi: true,
-        choices: [{ id: 'lint', label: 'Lint' }, { id: 'tests', label: 'Tests' }, { id: 'end-to-end', label: 'End to end' }] },
+        choices: [described('lint', 'Lint'), described('tests', 'Tests'), described('end-to-end', 'End to end')] },
     ])
     expect(form.summary).toBe('Target · Checks')
     expect(form.shown[1]).toEqual({ title: 'Which checks should run first?', labels: { lint: 'Lint', tests: 'Tests', 'end-to-end': 'End to end' } })
-    // Option descriptions are context the agent wrote for the User: the device shows them too.
-    expect(form.body).toContain('**End to end**: Choose End to end')
+    // Option descriptions ride on their choices, so nothing needed a Body.
+    expect(form.body).toBeUndefined()
+  })
+
+  it('turns the one "(Recommended)" option into the recommended choice and answers with the picker label', () => {
+    const form = pickerForm(pickerQuestions(picker([{ question: 'Ship it?', labels: ['Cut 13.1.0 now (Recommended)', 'Hold'] }]))!) as PickerForm
+    expect(form.questions[0]!.choices).toEqual([
+      { id: 'cut-13-1-0-now', label: 'Cut 13.1.0 now', description: 'Choose Cut 13.1.0 now (Recommended)', recommended: true },
+      { id: 'hold', label: 'Hold', description: 'Choose Hold' },
+    ])
+    expect(form.shown[0]!.labels['cut-13-1-0-now']).toBe('Cut 13.1.0 now (Recommended)')
+    // Two "recommended" options recommend nothing: the labels stay as written.
+    const twice = pickerForm(pickerQuestions(picker([{ question: 'Which?', labels: ['A (Recommended)', 'B (Recommended)'] }]))!) as PickerForm
+    expect(twice.questions[0]!.choices!.map((choice) => [choice.label, choice.recommended])).toEqual([
+      ['A (Recommended)', undefined], ['B (Recommended)', undefined],
+    ])
+  })
+
+  it('shortens a long option description on its choice and keeps the whole one in the body', () => {
+    const long = `Hold the release until the store review clears. ${'More context about the consequence. '.repeat(6)}`.trim()
+    const input = { questions: [{ question: 'Ship?', header: 'Ship', multiSelect: false,
+      options: [{ label: 'Hold', description: long }, { label: 'Ship', description: 'Ship now.' }] }] }
+    const form = pickerForm(pickerQuestions(input)!) as PickerForm
+    expect(form.questions[0]!.choices![0]!.description).toBe('Hold the release until the store review clears.')
+    expect(form.questions[0]!.choices![1]!.description).toBe('Ship now.')
+    expect(form.body).toContain(long)
   })
 
   it('shortens text the device cannot show and keeps the whole wording in the body', () => {
@@ -235,6 +260,13 @@ describe('a Claude Code picker as a device question', () => {
     expect(askUserQuestionInput([{ ...choice, multi: true }])).toEqual({
       questions: [{ question: 'Where?', options: [{ label: 'A' }, { label: 'B' }], multiSelect: true }],
     })
+    // What the agent already wrote carries over in the picker's own conventions,
+    // and the picker hook turns it back into the same device question.
+    const described = { ...choice, choices: [{ id: 'a', label: 'A', description: 'Ships A.', recommended: true as const }, { id: 'b', label: 'B' }] }
+    const input = askUserQuestionInput([described])
+    expect(input.questions[0]!.options).toEqual([{ label: 'A (Recommended)', description: 'Ships A.' }, { label: 'B' }])
+    const back = pickerForm(pickerQuestions({ questions: input.questions.map(q => ({ ...q, header: 'Where' })) })!) as PickerForm
+    expect(back.questions[0]!.choices).toEqual(described.choices)
   })
 })
 

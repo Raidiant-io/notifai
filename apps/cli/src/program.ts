@@ -44,7 +44,8 @@ import {
 } from './commands.js'
 import { packageVersion } from './release.js'
 import { HOOK_INSTALLABLE_HARNESSES } from './harnesses.js'
-import type { Platform } from '@raidiant/notifai-protocol'
+import { CHOICE_DESCRIPTION_MAX_LENGTH, type Platform } from '@raidiant/notifai-protocol'
+import type { ChoiceDescriptionInput } from './send.js'
 import type { SkillScope } from './native-skills.js'
 import { GROUP, SEND_GROUP, helpConfiguration, rootHelpFooter } from './ui/help.js'
 import { readStdinWithTimeout } from './hook-input.js'
@@ -144,6 +145,17 @@ const defaultRunners = {
     const { interactiveCommand } = await import('./interactive.js')
     return interactiveCommand(deps, versionString)
   },
+}
+
+
+/**
+ * How many `--choice` flags the command has parsed so far. Commander parses
+ * options in command-line order, so a `--choice-description` records the
+ * choice it follows; pairing never depends on counting positions afterwards.
+ */
+function choiceCount(command: Command): number {
+  const choices: unknown = command.getOptionValue('choice')
+  return Array.isArray(choices) ? choices.length : 0
 }
 
 export type ProgramRunners = typeof defaultRunners
@@ -575,7 +587,7 @@ export function buildProgram(deps: CommandDeps, options: BuildProgramOptions = {
       exit(await runners.capabilities(deps, opts))
     })
 
-  const send = program
+  const send: Command = program
     .command('send')
     .helpGroup(GROUP.agent)
     .summary('Send a notification')
@@ -628,6 +640,12 @@ export function buildProgram(deps: CommandDeps, options: BuildProgramOptions = {
       'with --reply, ask a closed question; repeat the flag once per answer (2-6)',
       (v: string, all: string[] = []) => [...all, v],
     )
+    .option(
+      '--choice-description <text>',
+      `what choosing the --choice just before it does: one line, at most ${CHOICE_DESCRIPTION_MAX_LENGTH} characters`,
+      (v: string, all: ChoiceDescriptionInput[] = []): ChoiceDescriptionInput[] => [...all, { after: choiceCount(send), text: v }],
+    )
+    .option('--recommended <label>', 'mark the --choice with this exact label as the answer you recommend', (v: string, all: string[] = []) => [...all, v])
     .option('--multi', 'with --choice, several answers may be selected')
     .optionsGroup(SEND_GROUP.advanced)
     .option(
@@ -654,7 +672,7 @@ export function buildProgram(deps: CommandDeps, options: BuildProgramOptions = {
       const wait = typeof opts['wait'] === 'number' ? opts['wait'] : undefined
       const sendOpts = { ...opts }
       // Commander collectors default to []; an empty list means "not passed".
-      for (const key of ['choice', 'image', 'imageAlt']) {
+      for (const key of ['choice', 'choiceDescription', 'recommended', 'image', 'imageAlt']) {
         if (Array.isArray(sendOpts[key]) && sendOpts[key].length === 0) delete sendOpts[key]
       }
       const bodyFile = sendOpts['bodyFile']
@@ -726,7 +744,7 @@ export function buildProgram(deps: CommandDeps, options: BuildProgramOptions = {
       exit(await runners.status(deps, requestId, opts))
     })
 
-  program
+  const ask: Command = program
     .command('ask [question]')
     .helpGroup(GROUP.agent)
     .summary('Ask now and continue independent work')
@@ -736,6 +754,12 @@ export function buildProgram(deps: CommandDeps, options: BuildProgramOptions = {
       'answers to offer instead of free text; repeat the flag once per answer (2-6)',
       (v: string, all: string[] = []) => [...all, v],
     )
+    .option(
+      '--choice-description <text>',
+      `what choosing the --choice just before it does: one line, at most ${CHOICE_DESCRIPTION_MAX_LENGTH} characters`,
+      (v: string, all: ChoiceDescriptionInput[] = []): ChoiceDescriptionInput[] => [...all, { after: choiceCount(ask), text: v }],
+    )
+    .option('--recommended <label>', 'mark the --choice with this exact label as the answer you recommend', (v: string, all: string[] = []) => [...all, v])
     .option('--multi', 'with --choice, several answers may be selected')
     .option('--json', 'machine-readable output')
     .option('--body <markdown>', 'standalone Markdown detail; images must use ![description](media:N) with --image')
@@ -762,6 +786,8 @@ export function buildProgram(deps: CommandDeps, options: BuildProgramOptions = {
     )
     .action(async (question: string | undefined, opts: {
       choice?: string[]
+      choiceDescription?: ChoiceDescriptionInput[]
+      recommended?: string[]
       multi?: boolean
       json?: boolean
       body?: string
@@ -807,6 +833,8 @@ export function buildProgram(deps: CommandDeps, options: BuildProgramOptions = {
       // Commander collectors default to []; an empty list means "not passed".
       const flags: Parameters<typeof askCommand>[2] = {
         ...(opts.choice?.length ? { choice: opts.choice } : {}),
+        ...(opts.choiceDescription?.length ? { choiceDescription: opts.choiceDescription } : {}),
+        ...(opts.recommended?.length ? { recommended: opts.recommended } : {}),
         ...(opts.multi ? { multi: true } : {}),
         ...(body !== undefined ? { body } : {}),
         ...(form !== undefined ? { form } : {}),

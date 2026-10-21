@@ -35,18 +35,23 @@ import { openclawGatewayReady } from './openclaw-gateway-readiness.js'
 import { enableProject, inferredProjectName, projectBinding } from './project-enablement.js'
 import { spawnQuestionSettlement } from './question-settlement-process.js'
 import {
-  CHOICE_USAGE,
   buildDraft,
   parseChoices,
   rejectAccidentalEscapedNewlines,
   slugify,
   validateMediaInputs,
+  type ChoiceDescriptionInput,
+  type ChoiceDetails,
   type DraftInvocation,
 } from './send.js'
 export interface AskFlags {
   /** Emit the registration and its turn obligation as one JSON object. */
   json?: boolean
   choice?: string[]
+  /** One-line consequence of each choice, attached to the `--choice` before it. */
+  choiceDescription?: ChoiceDescriptionInput[]
+  /** Exact label of the choice the agent recommends. */
+  recommended?: string[]
   /** The single question is multi-select: several answers may be chosen. */
   multi?: boolean
   /** Optional standalone Markdown Body for focused detail. */
@@ -121,12 +126,19 @@ function askFailure(
   })
 }
 
+/** One `--form` choice: a bare label, or a label with its consequence and recommendation. */
+type AskFormChoice = string | { label: string; description?: string; recommended?: boolean }
+
 /** The `--form` document: what an agent writes to ask several things at once. */
 interface AskFormQuestion {
   text: string
-  choices?: string[]
+  choices?: AskFormChoice[]
   multi?: boolean
 }
+
+const FORM_SHAPE =
+  '--form must be JSON: {"summary": "...", "questions": [{"text", "choices"?, "multi"?}], "body"?}; ' +
+  'a choice is a label or {"label", "description"?, "recommended"?}.'
 
 export interface BuiltQuestions {
   questions: QuestionT[]
@@ -145,17 +157,18 @@ export function buildQuestions(
   question: string | undefined,
 ): { ok: true; questions: QuestionT[]; summary: string; body?: string } | { ok: false; error: string } {
   if (flags.form !== undefined) {
-    if (question !== undefined || flags.choice?.length || flags.multi) {
-      return { ok: false, error: '--form replaces the positional question, --choice, and --multi.' }
+    if (question !== undefined || flags.choice?.length || flags.multi ||
+        flags.choiceDescription?.length || flags.recommended?.length) {
+      return {
+        ok: false,
+        error: '--form replaces the positional question, --choice, --choice-description, --recommended, and --multi.',
+      }
     }
     let parsed: unknown
     try {
       parsed = JSON.parse(flags.form)
     } catch {
-      return {
-        ok: false,
-        error: '--form must be JSON: {"summary": "...", "questions": [{"text", "choices"?, "multi"?}], "body"?}.',
-      }
+      return { ok: false, error: FORM_SHAPE }
     }
     if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
       return { ok: false, error: `--form needs a "questions" array (1-${REPLY_MAX_QUESTIONS} entries).` }
@@ -196,7 +209,9 @@ export function buildQuestions(
         return { ok: false, error: `Question ${index + 1} needs a "text" string.` }
       }
       const spec = entry as AskFormQuestion
-      const built = buildOneQuestion(spec.text, spec.choices, spec.multi === true, index, usedIds)
+      const choices = formChoices(spec.choices)
+      if ('error' in choices) return { ok: false, error: `Question ${index + 1}: ${choices.error}` }
+      const built = buildOneQuestion(spec.text, choices.labels, choices.details, spec.multi === true, index, usedIds)
       if ('error' in built) return { ok: false, error: `Question ${index + 1}: ${built.error}` }
       questions.push(built.question)
     }
@@ -212,7 +227,10 @@ export function buildQuestions(
   if (question === undefined || question.trim() === '') {
     return { ok: false, error: 'The question cannot be empty.' }
   }
-  const built = buildOneQuestion(question, flags.choice, flags.multi === true, 0, new Set())
+  const built = buildOneQuestion(question, flags.choice, {
+    ...(flags.choiceDescription !== undefined ? { descriptions: flags.choiceDescription } : {}),
+    ...(flags.recommended !== undefined ? { recommended: flags.recommended } : {}),
+  }, flags.multi === true, 0, new Set())
   if ('error' in built) return { ok: false, error: built.error }
   return {
     ok: true,
@@ -222,9 +240,38 @@ export function buildQuestions(
   }
 }
 
+/** `--form` choices as the same labels and details the flags produce. */
+function formChoices(
+  choices: unknown,
+): { labels: string[] | undefined; details: ChoiceDetails } | { error: string } {
+  if (choices === undefined) return { labels: undefined, details: {} }
+  if (!Array.isArray(choices)) return { error: FORM_SHAPE }
+  const labels: string[] = []
+  const descriptions: ChoiceDescriptionInput[] = []
+  const recommended: string[] = []
+  for (const [index, choice] of choices.entries()) {
+    if (typeof choice === 'string') {
+      labels.push(choice)
+      continue
+    }
+    if (typeof choice !== 'object' || choice === null || typeof (choice as { label?: unknown }).label !== 'string') {
+      return { error: FORM_SHAPE }
+    }
+    const { label, description, recommended: isRecommended, ...rest } = choice as Record<string, unknown>
+    if (Object.keys(rest).length > 0) return { error: `Unknown choice keys: ${Object.keys(rest).join(', ')}.` }
+    if (description !== undefined && typeof description !== 'string') return { error: 'A choice "description" must be a string.' }
+    if (isRecommended !== undefined && typeof isRecommended !== 'boolean') return { error: 'A choice "recommended" must be true or false.' }
+    labels.push(label as string)
+    if (description !== undefined) descriptions.push({ after: index + 1, text: description })
+    if (isRecommended === true) recommended.push(label as string)
+  }
+  return { labels, details: { descriptions, recommended } }
+}
+
 function buildOneQuestion(
   text: string,
   choiceLabels: string[] | undefined,
+  details: ChoiceDetails,
   multi: boolean,
   index: number,
   usedIds: Set<string>,
@@ -238,8 +285,9 @@ function buildOneQuestion(
         `${QUESTION_TEXT_MAX_LENGTH} characters and put the longer explanation in --body.`,
     }
   }
-  const choices = parseChoices(choiceLabels)
-  if (choices === 'invalid') return { error: CHOICE_USAGE }
+  const parsed = parseChoices(choiceLabels, details)
+  if (!parsed.ok) return { error: parsed.error }
+  const choices = parsed.choices
   if (multi && choices === null) {
     return { error: '--multi needs answers to select between; add --choice.' }
   }
@@ -537,7 +585,8 @@ function persistRegisteredQuestion(
     const prefix = built.questions.length > 1 ? `${index + 1}. ` : ''
     if (entry.choices !== undefined) {
       const kind = entry.multi === true ? 'answers offered (several may be chosen)' : 'answers offered'
-      deps.io.out(`${prefix}${entry.text} — ${kind}: ${entry.choices.map((choice) => choice.label).join(' / ')}`)
+      deps.io.out(`${prefix}${entry.text} — ${kind}: ${entry.choices
+        .map((choice) => choice.recommended === true ? `${choice.label} (recommended)` : choice.label).join(' / ')}`)
     } else if (built.questions.length > 1) {
       deps.io.out(`${prefix}${entry.text} — free text`)
     }
@@ -890,12 +939,15 @@ export function askCommand(
       check_id: 'question_picker',
       exit_code: EXIT.usage,
       message: `Nothing was registered. In Claude Code, ask ${these} with the AskUserQuestion tool: Notifai sends that picker to the user's devices by itself and returns whichever answer comes first, from a device or the terminal.`,
-      remedy: `call AskUserQuestion with ${JSON.stringify(picker)}, adding a short header to each question and a description to each option. Put further context in the option descriptions or your message. Keep \`notifai ask\` for free-text questions.`,
+      remedy: `call AskUserQuestion with ${JSON.stringify(picker)}, adding a short header to each question and a description to each option that lacks one. Put further context in the option descriptions or your message. Keep \`notifai ask\` for free-text questions.`,
       ask_user_question: picker,
     })
   }
+  // The card shows titles and option labels only; a question that carries
+  // more keeps ordinary ask so nothing the agent wrote is lost.
   if (flags.body === undefined && flags.image === undefined && built.body === undefined &&
-      built.questions.every(question => question.multi !== true) && codexCardAsks(deps, sessionId)) {
+      built.questions.every(question => question.multi !== true && (question.choices ?? []).every(choice =>
+        choice.description === undefined && choice.recommended !== true)) && codexCardAsks(deps, sessionId)) {
     const card = { questions: built.questions.map(question => ({ title: question.text,
       ...(question.choices === undefined ? {} : { options: question.choices.map(choice => choice.label) }) })) }
     return reportAskFailure(deps, flags, {

@@ -10,6 +10,12 @@ import {
   type IosOptionsT,
   type NotificationDraftT,
 } from './notification.js'
+import {
+  hasChoiceDescriptions,
+  pushedQuestions,
+  utf8Bytes,
+  withFittingContent,
+} from './pushed-content.js'
 
 export interface ApnsEnvelope {
   payload: Record<string, unknown>
@@ -72,47 +78,44 @@ export const RECEIPT_TOKEN_LENGTH = 22
 export const CONTENT_TOKEN_LENGTH = 22
 
 /**
- * Room an alert push keeps free below the provider ceiling after the Body is
- * added. The Body rides in the push only when the complete, destination-stamped
- * payload still leaves this much headroom; otherwise it is omitted and the
- * Companion App fetches it.
+ * Room an alert push keeps free below the provider ceiling after optional
+ * content is added. Choice descriptions and the Body ride in the push only
+ * when the complete, destination-stamped payload still leaves this much
+ * headroom; otherwise they are omitted and the Companion App fetches them.
  */
 export const PUSHED_BODY_HEADROOM_BYTES = 256
 
 /** True when a Companion App may need to fetch something the push does not carry. */
 export function hasFetchableContent(draft: NotificationDraftT): boolean {
-  return draft.presentation.body !== undefined || (draft.presentation.media?.length ?? 0) > 0
-}
-
-function utf8Bytes(value: unknown): number {
-  return new TextEncoder().encode(JSON.stringify(value)).length
+  return (
+    draft.presentation.body !== undefined ||
+    (draft.presentation.media?.length ?? 0) > 0 ||
+    hasChoiceDescriptions(draft)
+  )
 }
 
 /**
- * Adds the Markdown Body to a rendered APNs alert payload when the whole
- * payload, as it will be sent, stays within `limitBytes` less
- * {@link PUSHED_BODY_HEADROOM_BYTES}. Apply it last, after every other field
- * (including the destination stamp). `has_body` is unchanged either way, so a
- * push without `body` still tells the Companion App to fetch it. When the Body
- * fits and the request has no media, the content token is dropped: nothing is
- * left to fetch.
+ * Adds the optional content to a rendered APNs alert payload whenever the
+ * whole payload, as it will be sent, stays within `limitBytes` less
+ * {@link PUSHED_BODY_HEADROOM_BYTES}: first each choice's description, then
+ * the Markdown Body. Apply it last, after every other field (including the
+ * destination stamp). `has_body` and `has_choice_descriptions` are unchanged
+ * either way, so a push without them still tells the Companion App to fetch
+ * them. When nothing is left to fetch, the content token is dropped.
  */
-export function withPushedApnsBody(
+export function withPushedApnsContent(
   payload: Record<string, unknown>,
   draft: NotificationDraftT,
   limitBytes: number,
 ): Record<string, unknown> {
-  const body = draft.presentation.body
   const notifai = payload['notifai']
-  if (body === undefined || draft.lifecycle?.tier === 'done') return payload
   if (typeof notifai !== 'object' || notifai === null || Array.isArray(notifai)) return payload
-  const { content_token: contentToken, ...rest } = notifai as Record<string, unknown>
-  const keepsToken = contentToken !== undefined && (draft.presentation.media?.length ?? 0) > 0
-  const candidate = {
-    ...payload,
-    notifai: { ...rest, ...(keepsToken ? { content_token: contentToken } : {}), body },
-  }
-  return utf8Bytes(candidate) <= limitBytes - PUSHED_BODY_HEADROOM_BYTES ? candidate : payload
+  const key = withFittingContent(
+    notifai as Record<string, unknown>,
+    draft,
+    (candidate) => utf8Bytes({ ...payload, notifai: candidate }) <= limitBytes - PUSHED_BODY_HEADROOM_BYTES,
+  )
+  return key === null ? payload : { ...payload, notifai: key }
 }
 
 function replyUsesCard(draft: NotificationDraftT): boolean {
@@ -311,6 +314,7 @@ function notifaiKey(
           ...(agentAcknowledgementSync.replyId ? { agent_acknowledgement_reply_id: agentAcknowledgementSync.replyId } : {}),
         }
       : {}),
-    ...(draft.reply !== undefined ? { questions: draft.reply.questions } : {}),
+    ...(hasChoiceDescriptions(draft) ? { has_choice_descriptions: true } : {}),
+    ...(draft.reply !== undefined ? { questions: pushedQuestions(draft.reply.questions) } : {}),
   }
 }

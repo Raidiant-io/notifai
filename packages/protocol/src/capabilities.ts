@@ -91,7 +91,7 @@ export const IOS_CAPABILITIES_V1: CapabilityDocument = {
         default_window_seconds: 86400,
       },
       reason:
-        'Free-text reply is an inline action whose button and placeholder are fixed by the app. Closed-choice answers appear on the expanded notification; the banner never shows choice labels.',
+        'Free-text reply is an inline action whose button and placeholder are fixed by the app. Closed-choice answers appear on the expanded notification; the banner never shows choice labels. Choice descriptions and the recommended marker show on the answer controls, never on notification action buttons.',
     },
     {
       path: 'presentation.media',
@@ -509,6 +509,15 @@ export function validateDraft(
             break
           }
           seen.add(choice.id)
+        }
+        // A recommendation singles one answer out; two would be no
+        // recommendation at all.
+        if (question.choices.filter((choice) => choice.recommended === true).length > 1) {
+          errors.push({
+            code: 'invalid_request',
+            path: `${path}.choices`,
+            message: 'Recommend at most one choice per question.',
+          })
         }
       }
     }

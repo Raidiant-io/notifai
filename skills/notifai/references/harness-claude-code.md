@@ -66,9 +66,11 @@ code `use_question_picker` and the picker input to use. Keep `notifai ask` for
 free-text questions and questions with more than four choices.
 
 The picker's wording is yours. Put context in option descriptions or in your
-message. Devices show the question, shortened when it is over 240 characters
-with the whole wording in the notification body, plus every label and option
-description.
+message, and mark the option you recommend with Claude Code's own
+"(Recommended)" label suffix. Devices show the question, shortened when it is
+over 240 characters, each label with its description under it, and the
+recommended option marked. Wording too long for a device stays whole in the
+notification body.
 
 The picker takes whichever answer comes first and closes:
 

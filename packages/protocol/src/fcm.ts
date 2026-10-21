@@ -12,6 +12,12 @@ import {
   type ReplyMetadata,
   type RetirementAnswerContext,
 } from './apns.js'
+import {
+  hasChoiceDescriptions,
+  pushedQuestions,
+  utf8Bytes,
+  withFittingContent,
+} from './pushed-content.js'
 
 /** Application-owned Android envelope version inside FCM data.notifai. */
 export const ANDROID_ENVELOPE_SCHEMA_VERSION = 1
@@ -139,7 +145,8 @@ export function buildFcmDataEnvelope(
           ...(agentAcknowledgementSync.replyId ? { agent_acknowledgement_reply_id: agentAcknowledgementSync.replyId } : {}),
         }
       : {}),
-    ...(draft.reply !== undefined ? { questions: draft.reply.questions } : {}),
+    ...(hasChoiceDescriptions(draft) ? { has_choice_descriptions: true } : {}),
+    ...(draft.reply !== undefined ? { questions: pushedQuestions(draft.reply.questions) } : {}),
   }
 
   return {
@@ -149,18 +156,18 @@ export function buildFcmDataEnvelope(
 }
 
 /**
- * Adds the Markdown Body to a rendered FCM data map when the whole map, as it
- * will be sent (destination stamp included), stays within `limitBytes` less
- * {@link PUSHED_BODY_HEADROOM_BYTES}. Apply it last. `has_body` is unchanged
- * either way, so an envelope without `body` still tells the app to fetch it.
+ * Adds the optional content to a rendered FCM data map whenever the whole
+ * map, as it will be sent (destination stamp included), stays within
+ * `limitBytes` less {@link PUSHED_BODY_HEADROOM_BYTES}: first each choice's
+ * description, then the Markdown Body. Apply it last. `has_body` and
+ * `has_choice_descriptions` are unchanged either way, so an envelope without
+ * them still tells the app to fetch them.
  */
-export function withPushedFcmBody(
+export function withPushedFcmContent(
   data: Record<string, string>,
   draft: NotificationDraftT,
   limitBytes: number,
 ): Record<string, string> {
-  const body = draft.presentation.body
-  if (body === undefined || draft.lifecycle?.tier === 'done') return data
   let envelope: unknown
   try {
     envelope = JSON.parse(data['notifai'] ?? '')
@@ -168,7 +175,12 @@ export function withPushedFcmBody(
     return data
   }
   if (typeof envelope !== 'object' || envelope === null || Array.isArray(envelope)) return data
-  const candidate = { ...data, notifai: JSON.stringify({ ...envelope, body }) }
-  const bytes = new TextEncoder().encode(JSON.stringify(candidate)).length
-  return bytes <= limitBytes - PUSHED_BODY_HEADROOM_BYTES ? candidate : data
+  const key = withFittingContent(
+    envelope as Record<string, unknown>,
+    draft,
+    (candidate) =>
+      utf8Bytes({ ...data, notifai: JSON.stringify(candidate) }) <=
+      limitBytes - PUSHED_BODY_HEADROOM_BYTES,
+  )
+  return key === null ? data : { ...data, notifai: JSON.stringify(key) }
 }

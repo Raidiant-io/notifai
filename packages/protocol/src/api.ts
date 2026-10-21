@@ -13,6 +13,7 @@ import {
   SOUND_NAME_MAX_LENGTH,
   SESSION_LABEL_MAX_LENGTH,
   type NotificationMediaType,
+  type QuestionT,
   type Platform,
 } from './notification.js'
 import type {
@@ -867,6 +868,12 @@ export interface NotificationContentResponse {
   /** Standalone focused content, always interpreted as Markdown when present. */
   body: string | null
   media: NotificationContentMediaItem[]
+  /**
+   * The reply questions exactly as accepted, choice descriptions included,
+   * or empty for a request that asks nothing. A push leaves the descriptions
+   * out when they do not fit; this is where a Companion App gets them.
+   */
+  questions: QuestionT[]
 }
 
 /** Most requests one content batch may name; a Companion App splits a longer list. */
