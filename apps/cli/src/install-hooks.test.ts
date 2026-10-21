@@ -103,29 +103,61 @@ function ours(): HookConfig {
 }
 
 describe('choice labels', () => {
+  const choices = (value: string[] | undefined, details?: Parameters<typeof parseChoices>[1]) => {
+    const parsed = parseChoices(value, details)
+    return parsed.ok ? parsed.choices : 'invalid'
+  }
+
   it('treats a comma as an ordinary character, never a delimiter', () => {
     // Observed live 2026-08-02 under the old comma-split grammar:
     // "Yes, it worked,No, something broke" passed as one value silently
     // became four choices. The delimiter form is gone; one flag, one answer.
-    expect(parseChoices(['Yes, it worked', 'No, something broke'])).toEqual([
+    expect(choices(['Yes, it worked', 'No, something broke'])).toEqual([
       { id: 'yes-it-worked', label: 'Yes, it worked' },
       { id: 'no-something-broke', label: 'No, something broke' },
     ])
-    expect(parseChoices(['Staging,Production', 'Neither'])).toEqual([
+    expect(choices(['Staging,Production', 'Neither'])).toEqual([
       { id: 'staging-production', label: 'Staging,Production' },
       { id: 'neither', label: 'Neither' },
     ])
   })
 
   it('rejects a set that cannot become a valid closed question', () => {
-    expect(parseChoices(['Only one'])).toBe('invalid')
-    expect(parseChoices(['A', 'a'])).toBe('invalid')
-    expect(parseChoices(['1', '2', '3', '4', '5', '6', '7'])).toBe('invalid')
+    expect(choices(['Only one'])).toBe('invalid')
+    expect(choices(['A', 'a'])).toBe('invalid')
+    expect(choices(['1', '2', '3', '4', '5', '6', '7'])).toBe('invalid')
   })
 
   it('treats an unused repeatable flag as no choices at all', () => {
-    expect(parseChoices([])).toBeNull()
-    expect(parseChoices(undefined)).toBeNull()
+    expect(choices([])).toBeNull()
+    expect(choices(undefined)).toBeNull()
+  })
+
+  it('attaches each description to the choice written just before it, and names the recommended one by label', () => {
+    expect(choices(['Deploy now', 'Wait', 'Hold'], {
+      descriptions: [{ after: 1, text: 'Two minutes of\n downtime.' }, { after: 3, text: 'Nothing ships today.' }],
+      recommended: ['Wait'],
+    })).toEqual([
+      { id: 'deploy-now', label: 'Deploy now', description: 'Two minutes of downtime.' },
+      { id: 'wait', label: 'Wait', recommended: true },
+      { id: 'hold', label: 'Hold', description: 'Nothing ships today.' },
+    ])
+  })
+
+  it('refuses a description or recommendation that could land on the wrong choice', () => {
+    const fails = (details: Parameters<typeof parseChoices>[1], labels: string[] | undefined = ['A', 'B']) => {
+      const parsed = parseChoices(labels, details)
+      return parsed.ok ? null : parsed.error
+    }
+    // Before any choice, or a second one for the same choice.
+    expect(fails({ descriptions: [{ after: 0, text: 'x' }] })).toContain('right after the --choice')
+    expect(fails({ descriptions: [{ after: 2, text: 'x' }, { after: 2, text: 'y' }] })).toContain('right after the --choice')
+    expect(fails({ descriptions: [{ after: 1, text: 'x'.repeat(161) }] })).toContain('at most 160')
+    expect(fails({ descriptions: [{ after: 1, text: '   ' }] })).toContain('one line')
+    expect(fails({ recommended: ['C'] })).toContain('must repeat one --choice label exactly')
+    expect(fails({ recommended: ['A', 'B'] })).toContain('at most one')
+    expect(fails({ descriptions: [{ after: 1, text: 'x' }] }, [])).toContain('add the choices')
+    expect(fails({ recommended: ['A'] }, [])).toContain('add the choices')
   })
 })
 

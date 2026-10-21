@@ -151,9 +151,9 @@ rename an existing Notifai semantic label.
 
 Make the question answerable from the notification itself. The positional
 question is its Summary (under 240 characters) and title. Body adds standalone
-Markdown reasoning. Offer 2-6 closed choices, one flag each; commas are literal.
-Typed answers are always possible; closed choices appear after pressing and
-holding the notification.
+Markdown reasoning. Offer 2-6 closed [choices](references/send-details.md), one
+flag each; commas are literal. Typed answers are always possible; closed
+choices appear after pressing and holding the notification.
 
 For `ask` and `send --reply`, Summary is the exact question, never inferred or
 truncated from Body.
