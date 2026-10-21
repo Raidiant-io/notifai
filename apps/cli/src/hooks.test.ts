@@ -4224,18 +4224,22 @@ describe('session-start hook', () => {
     expect(JSON.parse(h.io.outLines.at(-1) ?? '{}')).toHaveProperty('followup_message')
   })
 
-  it('makes a Claude compatibility copy inside Cursor a no-op', async () => {
+  it.each([
+    ['cursor-agent', { CURSOR_PROJECT_DIR: '/work/project', CURSOR_VERSION: '2026.10.01-e373342' }],
+    ['the IDE with no folder open', { CURSOR_PROJECT_DIR: '', CURSOR_VERSION: '3.24.4' }],
+  ])('makes a Claude compatibility copy inside Cursor (%s) a no-op before reading stdin', async (_name, env) => {
     const h = harness()
-    h.deps.env['CURSOR_PROJECT_DIR'] = h.deps.cwd
+    Object.assign(h.deps.env, env)
 
-    await hookRunCommand(
-      h.deps,
-      'session-start',
-      stdin({ session_id: 'cursor-compat-copy', source: 'startup' }),
-      'claude-code',
-    )
+    for (const event of ['session-start', 'stop'] as const) {
+      const code = await hookRunCommand(h.deps, event, async () => {
+        throw new Error('compatibility copy read stdin')
+      }, 'claude-code')
+      expect(code).toBe(0)
+    }
 
     expect(h.io.outLines).toEqual([])
+    expect(h.io.errLines).toEqual([])
   })
 
   it.each(['claude-code', 'cursor'] as const)('ignores Grok\'s imported %s copy before reading stdin or writing state', async harnessName => {
