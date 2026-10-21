@@ -4,12 +4,13 @@ import {
   SESSION_MESSAGES_SYNC,
   type NotificationDraftT,
 } from './notification.js'
-import type {
-  AgentAcknowledgementSync,
-  EnvelopeIds,
-  ProjectIdentity,
-  ReplyMetadata,
-  RetirementAnswerContext,
+import {
+  PUSHED_BODY_HEADROOM_BYTES,
+  type AgentAcknowledgementSync,
+  type EnvelopeIds,
+  type ProjectIdentity,
+  type ReplyMetadata,
+  type RetirementAnswerContext,
 } from './apns.js'
 
 /** Application-owned Android envelope version inside FCM data.notifai. */
@@ -145,4 +146,29 @@ export function buildFcmDataEnvelope(
     data: { notifai: JSON.stringify(envelope) },
     priority: draft.lifecycle?.tier === 'done' ? 'NORMAL' : 'HIGH',
   }
+}
+
+/**
+ * Adds the Markdown Body to a rendered FCM data map when the whole map, as it
+ * will be sent (destination stamp included), stays within `limitBytes` less
+ * {@link PUSHED_BODY_HEADROOM_BYTES}. Apply it last. `has_body` is unchanged
+ * either way, so an envelope without `body` still tells the app to fetch it.
+ */
+export function withPushedFcmBody(
+  data: Record<string, string>,
+  draft: NotificationDraftT,
+  limitBytes: number,
+): Record<string, string> {
+  const body = draft.presentation.body
+  if (body === undefined || draft.lifecycle?.tier === 'done') return data
+  let envelope: unknown
+  try {
+    envelope = JSON.parse(data['notifai'] ?? '')
+  } catch {
+    return data
+  }
+  if (typeof envelope !== 'object' || envelope === null || Array.isArray(envelope)) return data
+  const candidate = { ...data, notifai: JSON.stringify({ ...envelope, body }) }
+  const bytes = new TextEncoder().encode(JSON.stringify(candidate)).length
+  return bytes <= limitBytes - PUSHED_BODY_HEADROOM_BYTES ? candidate : data
 }

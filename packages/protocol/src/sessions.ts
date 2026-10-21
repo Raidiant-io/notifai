@@ -31,6 +31,9 @@ import {
  *   Edits and holds them until it is reopened.
  * - `question_dismiss`: an open question can be dismissed
  *   (`POST /api/v1/notifications/:request_id/dismiss`).
+ * - `notification_content_batch`: the content of many requests in one
+ *   exchange (`POST /api/v1/notifications/content`). Without it, a Companion
+ *   App fetches each request's content on its own.
  */
 export const SERVER_FEATURES = [
   'session_notes',
@@ -38,6 +41,7 @@ export const SERVER_FEATURES = [
   'machine_approval',
   'session_stopped_hold',
   'question_dismiss',
+  'notification_content_batch',
 ] as const
 export type ServerFeature = (typeof SERVER_FEATURES)[number]
 

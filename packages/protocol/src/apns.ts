@@ -1,5 +1,4 @@
 import {
-  CLOSED_CHOICE_BANNER_AFFORDANCE,
   DEFAULT_NOTIFICATION_KIND,
   defaultSoundForKind,
   effectiveKind,
@@ -37,6 +36,14 @@ export interface EnvelopeIds {
   receiptToken?: string | null
   /** Server accept time of the Notification Request; companions order the stream by this, not APNs arrival. */
   createdAt?: Date | null
+  /**
+   * Per-Delivery capability to read this request's own content
+   * (`POST /api/v1/delivery-content`). APNs only: the Notification Service
+   * Extension holds no session, so it presents this to fetch a Body that did
+   * not fit and every image preview at arrival. Emitted only for a request
+   * with a Body or media.
+   */
+  contentToken?: string | null
 }
 
 /** Service-owned metadata for the original reply-enabled Notification Request. */
@@ -61,6 +68,52 @@ export interface RetirementAnswerContext {
 
 /** Encoded width of the per-Delivery receipt token. */
 export const RECEIPT_TOKEN_LENGTH = 22
+/** Encoded width of the per-Delivery content token; the same HMAC truncation as the receipt token. */
+export const CONTENT_TOKEN_LENGTH = 22
+
+/**
+ * Room an alert push keeps free below the provider ceiling after the Body is
+ * added. The Body rides in the push only when the complete, destination-stamped
+ * payload still leaves this much headroom; otherwise it is omitted and the
+ * Companion App fetches it.
+ */
+export const PUSHED_BODY_HEADROOM_BYTES = 256
+
+/** True when a Companion App may need to fetch something the push does not carry. */
+export function hasFetchableContent(draft: NotificationDraftT): boolean {
+  return draft.presentation.body !== undefined || (draft.presentation.media?.length ?? 0) > 0
+}
+
+function utf8Bytes(value: unknown): number {
+  return new TextEncoder().encode(JSON.stringify(value)).length
+}
+
+/**
+ * Adds the Markdown Body to a rendered APNs alert payload when the whole
+ * payload, as it will be sent, stays within `limitBytes` less
+ * {@link PUSHED_BODY_HEADROOM_BYTES}. Apply it last, after every other field
+ * (including the destination stamp). `has_body` is unchanged either way, so a
+ * push without `body` still tells the Companion App to fetch it. When the Body
+ * fits and the request has no media, the content token is dropped: nothing is
+ * left to fetch.
+ */
+export function withPushedApnsBody(
+  payload: Record<string, unknown>,
+  draft: NotificationDraftT,
+  limitBytes: number,
+): Record<string, unknown> {
+  const body = draft.presentation.body
+  const notifai = payload['notifai']
+  if (body === undefined || draft.lifecycle?.tier === 'done') return payload
+  if (typeof notifai !== 'object' || notifai === null || Array.isArray(notifai)) return payload
+  const { content_token: contentToken, ...rest } = notifai as Record<string, unknown>
+  const keepsToken = contentToken !== undefined && (draft.presentation.media?.length ?? 0) > 0
+  const candidate = {
+    ...payload,
+    notifai: { ...rest, ...(keepsToken ? { content_token: contentToken } : {}), body },
+  }
+  return utf8Bytes(candidate) <= limitBytes - PUSHED_BODY_HEADROOM_BYTES ? candidate : payload
+}
 
 function replyUsesCard(draft: NotificationDraftT): boolean {
   if (draft.reply === undefined) return false
@@ -68,27 +121,9 @@ function replyUsesCard(draft: NotificationDraftT): boolean {
   return draft.reply.questions.length > 1 || first?.choices !== undefined
 }
 
-/**
- * Visible collapsed-banner fields. Closed-choice iPhone notifications add a
- * press-and-hold hint so the answering card is discoverable; choice labels
- * stay off this surface.
- */
-export function collapsedChoiceAlert(
-  draft: NotificationDraftT,
-): { title: string; subtitle?: string; body: string } {
-  const alert: { title: string; subtitle?: string; body: string } = {
-    title: draft.presentation.title,
-    body: draft.presentation.summary,
-  }
-  if (!replyUsesCard(draft)) return alert
-
-  const alreadyVisible = [alert.title, alert.body].some((value) =>
-    value.includes(CLOSED_CHOICE_BANNER_AFFORDANCE),
-  )
-  if (alreadyVisible) return alert
-
-  alert.subtitle = CLOSED_CHOICE_BANNER_AFFORDANCE
-  return alert
+/** Visible banner fields: the Title and the purpose-written Summary. */
+export function bannerAlert(draft: NotificationDraftT): { title: string; body: string } {
+  return { title: draft.presentation.title, body: draft.presentation.summary }
 }
 
 /** Pure APNs payload assembly shared by rendering and client-side size estimation. */
@@ -126,7 +161,7 @@ export function buildApnsEnvelope(
   }
 
   const aps: Record<string, unknown> = {
-    alert: collapsedChoiceAlert(draft),
+    alert: bannerAlert(draft),
   }
   if (options?.sound !== null) {
     aps['sound'] = apnsSoundFilename(options?.sound ?? defaultSoundForKind(effectiveKind(draft)))
@@ -228,6 +263,9 @@ function notifaiKey(
     delivery_id: ids.deliveryId,
     ...(ids.receiptToken != null ? { receipt_token: ids.receiptToken } : {}),
     ...(ids.createdAt != null ? { created_at: ids.createdAt.toISOString() } : {}),
+    ...(ids.contentToken != null && hasFetchableContent(draft)
+      ? { content_token: ids.contentToken }
+      : {}),
     ...(kind !== DEFAULT_NOTIFICATION_KIND ? { kind } : {}),
     ...(draft.lifecycle !== undefined ? { lifecycle: draft.lifecycle } : {}),
     ...(draft.lifecycle?.tier === 'done' && draft.lifecycle.retires_request_id !== undefined
