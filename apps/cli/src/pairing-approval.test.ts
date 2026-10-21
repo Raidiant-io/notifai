@@ -58,8 +58,53 @@ function ceremony() {
       openUrl: (url) => opened.push(url) },
     store: { load: () => null, save: () => { saved += 1 }, clear: () => {}, describe: () => 'test store' },
   }
-  return { deps, lines, errors, opened, targeted, setStatus: (next: typeof status) => { status = next },
+  return { deps, client, lines, errors, opened, targeted, setStatus: (next: typeof status) => { status = next },
     begins: () => begins, saved: () => saved }
+}
+
+/** Settles, or fails the test instead of hanging the run. */
+async function settlesWithin<T>(work: Promise<T>, milliseconds = 3_000): Promise<T> {
+  let timer: NodeJS.Timeout | undefined
+  const hung = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject(new Error(`still waiting after ${milliseconds} ms`)), milliseconds)
+  })
+  try { return await Promise.race([work, hung]) } finally { clearTimeout(timer) }
+}
+
+/** A clock that moves only when the command sleeps, yielding to timers so a hang stays observable. */
+function fakeClock(deps: CommandDeps) {
+  let clock = 0
+  deps.now = () => clock
+  deps.sleep = (milliseconds) => { clock += milliseconds; return new Promise((resolve) => setImmediate(resolve)) }
+  return { now: () => clock }
+}
+
+/**
+ * A person at a real terminal who scans the QR and never touches the keyboard:
+ * an unanswered prompt stays open until something dismisses it, exactly like
+ * the terminal prompt library.
+ */
+function humanAtTerminal(deps: CommandDeps, answers: { select?: string; text?: string } = {}) {
+  const asked: string[] = []
+  let dismissed = 0
+  const ask = (message: string, answer: string | undefined, signal?: AbortSignal) => {
+    asked.push(message)
+    if (answer !== undefined) return Promise.resolve(answer)
+    return new Promise<string | null>((resolve) => {
+      signal?.addEventListener('abort', () => { dismissed += 1; resolve(null) }, { once: true })
+    })
+  }
+  const spinner = { message: () => {}, stop: () => {}, error: () => {} }
+  deps.io = {
+    ...deps.io,
+    interactive: true,
+    select: (message, _options, signal) => ask(message, answers.select, signal),
+    text: (message, signal) => ask(message, answers.text, signal),
+    note: async () => {},
+    outro: async () => {},
+    spinner: async () => spinner,
+  }
+  return { asked, get dismissed() { return dismissed } }
 }
 
 describe('QR-first computer approval', () => {
@@ -142,6 +187,145 @@ describe('QR-first computer approval', () => {
     expect(readPendingPairing(test.deps.env, 0)?.pairing_id).toBe(before.pairing_id)
     expect(test.begins()).toBe(1)
     expect(test.saved()).toBe(0)
+  })
+  it('ends the wait the moment approval lands while the route choice is still open', async () => {
+    const test = ceremony()
+    fakeClock(test.deps)
+    let polls = 0
+    test.deps.clientFactory = () => ({
+      ...test.client,
+      pollPairing: async () => (++polls >= 2 ? { status: 'approved', machine_id: 'mac_test' } : { status: 'pending' }),
+    }) as unknown as ApiClient
+    const prompts = humanAtTerminal(test.deps)
+    expect(await settlesWithin(loginCommand(test.deps, {}))).toBe(EXIT.ok)
+    expect(prompts.asked).toEqual(['Connect this computer'])
+    expect(prompts.dismissed).toBe(1)
+    expect(test.saved()).toBe(1)
+    expect(readPendingPairing(test.deps.env, 0)).toBeNull()
+  })
+  it('ends the wait when approval lands while the Account email is being asked for', async () => {
+    const test = ceremony()
+    fakeClock(test.deps)
+    let polls = 0
+    test.deps.clientFactory = () => ({
+      ...test.client,
+      pollPairing: async () => (++polls >= 2 ? { status: 'approved', machine_id: 'mac_test' } : { status: 'pending' }),
+    }) as unknown as ApiClient
+    const prompts = humanAtTerminal(test.deps, { select: 'notification' })
+    expect(await settlesWithin(loginCommand(test.deps, {}))).toBe(EXIT.ok)
+    expect(prompts.asked).toEqual(['Connect this computer', 'Account email'])
+    expect(test.targeted).toEqual([])
+    expect(test.saved()).toBe(1)
+  })
+  it('an unanswered route choice cannot outlive the approval', async () => {
+    const test = ceremony()
+    const clock = fakeClock(test.deps)
+    test.deps.clientFactory = () => ({
+      ...test.client,
+      pollPairing: async () => ({ status: clock.now() >= 600_000 ? 'expired' : 'pending' }),
+    }) as unknown as ApiClient
+    humanAtTerminal(test.deps)
+    expect(await settlesWithin(loginCommand(test.deps, {}))).toBe(EXIT.auth)
+    expect(test.errors.join('\n')).toContain('expired')
+    expect(test.saved()).toBe(0)
+  })
+  it.each(['denied', 'no_active_plan'] as const)('dismisses an unanswered prompt when approval ends with %s', async (status) => {
+    const test = ceremony()
+    fakeClock(test.deps)
+    let polls = 0
+    test.deps.clientFactory = () => ({
+      ...test.client,
+      pollPairing: async () => (++polls >= 2 ? { status } : { status: 'pending' }),
+    }) as unknown as ApiClient
+    const prompts = humanAtTerminal(test.deps)
+    const gaps: ReadinessState[] = []
+    expect(await settlesWithin(loginCommand(test.deps, {}, (gap) => gaps.push(gap)))).toBe(EXIT.auth)
+    expect(prompts.dismissed).toBe(1)
+    expect(test.saved()).toBe(0)
+    expect(readPendingPairing(test.deps.env, 0)).toBeNull()
+    expect(gaps.at(-1)?.id).toBe(status === 'denied' ? 'credential' : 'auth')
+  })
+  it('dismisses an unanswered prompt after a persistent network failure and preserves the approval', async () => {
+    const test = ceremony()
+    const clock = fakeClock(test.deps)
+    let polls = 0
+    test.deps.clientFactory = () => ({
+      ...test.client,
+      pollPairing: async () => {
+        if (++polls === 1) return { status: 'pending' }
+        throw new NetworkError('Offline')
+      },
+    }) as unknown as ApiClient
+    const prompts = humanAtTerminal(test.deps)
+    expect(await settlesWithin(loginCommand(test.deps, {}))).toBe(EXIT.network)
+    expect(prompts.dismissed).toBe(1)
+    expect(clock.now()).toBe(600_000)
+    expect(test.errors.join('\n')).toContain('notifai init')
+    expect(readPendingPairing(test.deps.env, 0)?.pairing_id).toBe('pair_1')
+    // Approval may have succeeded while its response was unreachable.
+    test.setStatus('approved')
+    test.deps.clientFactory = () => test.client
+    expect(await settlesWithin(loginCommand(test.deps, {}))).toBe(EXIT.ok)
+    expect(test.begins()).toBe(1)
+    expect(test.saved()).toBe(1)
+  })
+  it('a connection that never returns ends the wait at the approval deadline and keeps the approval resumable', async () => {
+    const test = ceremony()
+    fakeClock(test.deps)
+    let polls = 0
+    test.deps.clientFactory = () => ({
+      ...test.client,
+      pollPairing: async () => {
+        polls += 1
+        if (polls === 1) return { status: 'pending' }
+        if (polls > 5_000) throw new ApiCallError(400, 'test_runaway', 'the wait never ended')
+        throw new NetworkError('Offline')
+      },
+    }) as unknown as ApiClient
+    humanAtTerminal(test.deps, { select: 'qr' })
+    const gaps: ReadinessState[] = []
+    expect(await settlesWithin(loginCommand(test.deps, {}, (gap) => gaps.push(gap)))).toBe(EXIT.network)
+    expect(test.errors.join('\n')).toMatch(/notifai init/)
+    expect(gaps.at(-1)?.technical?.pairing_outcome).toBe('pending')
+    expect(readPendingPairing(test.deps.env, 0)?.pairing_id).toBe('pair_1')
+  })
+  it('a skewed clock cannot stretch an unreachable wait past the approval lifetime', async () => {
+    const test = ceremony()
+    fakeClock(test.deps)
+    let polls = 0
+    test.deps.clientFactory = () => ({
+      ...test.client,
+      // The service's clock is a day ahead of this computer's.
+      beginPairing: async () => ({ pairing_id: 'pair_1', code: 'ABC-234', approve_url: 'https://app.notifai.sh/approve?code=ABC-234',
+        expires_at: new Date(86_400_000 + 600_000).toISOString(), poll_interval_seconds: 3 }),
+      pollPairing: async () => {
+        polls += 1
+        if (polls === 1) return { status: 'pending' }
+        if (polls > 5_000) throw new ApiCallError(400, 'test_runaway', 'the wait never ended')
+        throw new NetworkError('Offline')
+      },
+    }) as unknown as ApiClient
+    humanAtTerminal(test.deps, { select: 'qr' })
+    expect(await settlesWithin(loginCommand(test.deps, {}))).toBe(EXIT.network)
+    expect(polls).toBeLessThan(1_000)
+  })
+  it('rides out a temporary service failure and collects the approval', async () => {
+    const test = ceremony()
+    fakeClock(test.deps)
+    let polls = 0
+    test.deps.clientFactory = () => ({
+      ...test.client,
+      pollPairing: async () => {
+        polls += 1
+        if (polls === 1) return { status: 'pending' }
+        if (polls === 2) throw new ApiCallError(503, 'internal_error', 'Request failed with status 503')
+        if (polls === 3) throw new ApiCallError(429, 'rate_limited', 'Polling too fast')
+        return { status: 'approved', machine_id: 'mac_test' }
+      },
+    }) as unknown as ApiClient
+    humanAtTerminal(test.deps, { select: 'qr' })
+    expect(await settlesWithin(loginCommand(test.deps, {}))).toBe(EXIT.ok)
+    expect(test.saved()).toBe(1)
   })
   it('logout removes both the pending proof and protected QR artifact', async () => {
     const test = ceremony(); await loginCommand(test.deps, {})
