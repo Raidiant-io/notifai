@@ -634,61 +634,42 @@ export function recordSessionStart(
   })
 }
 
-/** Atomically claim Cursor's first-Stop activation fallback once per conversation. */
-export function claimCursorStopActivation(
-  sessionId: string,
-  env: NodeJS.ProcessEnv,
-  now: number,
-): boolean {
-  const claimGuardMs = 30_000
-  let claimed = false
-  updateSessionState(sessionId, env, (current) => {
-    if (current.cursor_activation_confirmed_at !== undefined) return current
-    if (
-      current.cursor_activation_claimed_at !== undefined &&
-      now - current.cursor_activation_claimed_at < claimGuardMs
-    ) {
-      return current
-    }
-    claimed = true
-    return { ...current, cursor_activation_claimed_at: now }
-  })
-  return claimed
+/**
+ * Cursor's activation follow-up is owed once per conversation, and only the
+ * conversation id is stable: the Cursor SDK starts and ends a session around
+ * every turn of one conversation. The record therefore lives beside the
+ * session state, never in it, so neither SessionStart nor SessionEnd can
+ * re-arm it. The daily prune removes it once its conversation has been idle
+ * as long as abandoned session state is kept.
+ */
+function cursorActivationPath(conversationId: string, env: NodeJS.ProcessEnv): string {
+  return path.join(stateDir(env), 'sessions', `${sanitizeSessionId(conversationId)}.cursor-activation`)
 }
 
-/** Cursor's loop_count proves the previous Stop follow-up reached the host. */
-export function confirmCursorStopActivation(
-  sessionId: string,
-  env: NodeJS.ProcessEnv,
-  now: number,
-): boolean {
-  let owned = false
-  updateSessionState(sessionId, env, (current) => {
-    if (current.cursor_activation_confirmed_at !== undefined) {
-      owned = true
-      return current
-    }
-    if (current.cursor_activation_claimed_at === undefined) return current
-    owned = true
-    return { ...current, cursor_activation_confirmed_at: now }
-  })
-  return owned
+/** Atomically claim Cursor's Stop activation follow-up: true at most once per conversation. */
+export function claimCursorStopActivation(conversationId: string, env: NodeJS.ProcessEnv, now: number): boolean {
+  const file = cursorActivationPath(conversationId, env)
+  mkdirSync(path.dirname(file), { recursive: true })
+  try {
+    // Exclusive creation: of racing Stops, exactly one sends the follow-up.
+    writeFileSync(file, `${now}\n`, { mode: 0o600, flag: 'wx' })
+    return true
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === 'EEXIST') return false
+    throw err
+  }
 }
 
-/** A fresh/cleared Cursor lifecycle makes its next Stop the fallback owner again. */
-export function resetCursorStopActivation(sessionId: string, env: NodeJS.ProcessEnv): void {
-  updateSessionState(sessionId, env, (current) => {
-    if (
-      current.cursor_activation_claimed_at === undefined &&
-      current.cursor_activation_confirmed_at === undefined
-    ) {
-      return current
-    }
-    const next = { ...current }
-    delete next.cursor_activation_claimed_at
-    delete next.cursor_activation_confirmed_at
-    return next
-  })
+/** Whether this conversation already had its follow-up; a live conversation keeps the record from the prune. */
+export function cursorStopActivationSent(conversationId: string, env: NodeJS.ProcessEnv, now: number): boolean {
+  const file = cursorActivationPath(conversationId, env)
+  if (!existsSync(file)) return false
+  try {
+    utimesSync(file, now / 1000, now / 1000)
+  } catch {
+    // Refreshing the age is housekeeping; the record itself already answered.
+  }
+  return true
 }
 
 /**

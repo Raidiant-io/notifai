@@ -88,7 +88,9 @@ import {
 import { dropPendingQuestion, inspectQuestionState } from './hook-question-state.js'
 import {
   beginSessionIncarnation,
+  claimCursorStopActivation,
   clearSessionState,
+  cursorStopActivationSent,
   lifecycleStamp,
   pruneAbandonedSessions,
   readSessionEndMarker,
@@ -4101,9 +4103,11 @@ describe('session-start hook', () => {
     })
 
     await hookRunCommand(h.deps, 'activation-stop', input, 'cursor')
-    expect(JSON.parse(h.io.outLines.at(-1) ?? '{}')).toMatchObject({
-      followup_message: expect.stringMatching(/effective guidance.*when-to-notify/is),
-    })
+    const followup = String(JSON.parse(h.io.outLines.at(-1) ?? '{}').followup_message)
+    expect(followup).toMatch(/^Automatic Notifai activation, sent once for this conversation\. It is not from the User/)
+    expect(followup).toMatch(/effective guidance.*when-to-notify/is)
+    expect(followup).toMatch(/end your turn with your previous reply to the User repeated exactly, and nothing else\.$/)
+    expect(Buffer.byteLength(followup, 'utf8')).toBeLessThanOrEqual(10_000)
 
     h.io.outLines = []
     await hookRunCommand(
@@ -4116,18 +4120,27 @@ describe('session-start hook', () => {
       }),
       'cursor',
     )
-    expect(h.io.outLines).toEqual([])
-    expect(readSessionState('cursor-activation', h.env).cursor_activation_confirmed_at).toBe(NOW)
-
-    await hookRunCommand(
-      h.deps,
-      'session-start',
-      stdin({ conversation_id: 'cursor-activation', workspace_roots: [h.deps.cwd] }),
-      'cursor',
-    )
-    h.io.outLines = []
     await hookRunCommand(h.deps, 'activation-stop', input, 'cursor')
-    expect(JSON.parse(h.io.outLines.at(-1) ?? '{}')).toHaveProperty('followup_message')
+    expect(h.io.outLines).toEqual([])
+  })
+
+  it('sends one Cursor activation per conversation when the host starts and ends a session every turn', async () => {
+    const h = harness()
+    h.deps.store.load = () => null
+    const turn = async (conversation: string): Promise<number> => {
+      const envelope = { conversation_id: conversation, session_id: conversation, workspace_roots: [h.deps.cwd] }
+      await hookRunCommand(h.deps, 'session-start', stdin(envelope), 'cursor')
+      h.io.outLines = []
+      await hookRunCommand(h.deps, 'activation-stop', stdin({ ...envelope, status: 'completed', loop_count: 0 }), 'cursor')
+      const followups = h.io.outLines.filter((line) => line.includes('followup_message')).length
+      await hookRunCommand(h.deps, 'activation-stop', stdin({ ...envelope, status: 'completed', loop_count: 1 }), 'cursor')
+      await hookRunCommand(h.deps, 'session-end', stdin({ ...envelope, reason: 'completed' }), 'cursor')
+      h.advanceClock(60_000)
+      return followups
+    }
+
+    expect([await turn('cursor-per-turn'), await turn('cursor-per-turn'), await turn('cursor-per-turn')]).toEqual([1, 0, 0])
+    expect(await turn('cursor-per-turn-new')).toBe(1)
   })
 
   it('does not let Cursor activation override cancellation or a live question continuation', async () => {
@@ -4153,9 +4166,6 @@ describe('session-start hook', () => {
       stdin({ ...base, status: 'completed' }),
       'cursor',
     )
-    expect(h.io.outLines).toEqual([])
-    expect(readSessionState('cursor-coexistence', h.env).cursor_activation_claimed_at).toBeUndefined()
-
     await hookRunCommand(
       h.deps,
       'activation-stop',
@@ -4163,13 +4173,17 @@ describe('session-start hook', () => {
       'cursor',
     )
     expect(h.io.outLines).toEqual([])
-    expect(readSessionState('cursor-coexistence', h.env).cursor_activation_confirmed_at).toBeUndefined()
+
+    // Neither deferral spent the conversation's one activation.
+    clearSessionState('cursor-coexistence', h.env)
+    await hookRunCommand(h.deps, 'activation-stop', stdin({ ...base, status: 'completed' }), 'cursor')
+    expect(JSON.parse(h.io.outLines.at(-1) ?? '{}')).toHaveProperty('followup_message')
   })
 
-  it('retries an unconfirmed Cursor activation claim after the crash guard expires', async () => {
+  it('never repeats a Cursor activation claim, however long the conversation lasts', async () => {
     const h = harness()
     const input = stdin({
-      conversation_id: 'cursor-activation-retry',
+      conversation_id: 'cursor-activation-once',
       workspace_roots: [h.deps.cwd],
       status: 'completed',
       loop_count: 0,
@@ -4180,11 +4194,9 @@ describe('session-start hook', () => {
 
     h.io.outLines = []
     await hookRunCommand(h.deps, 'activation-stop', input, 'cursor')
-    expect(h.io.outLines).toEqual([])
-
-    h.advanceClock(30_001)
+    h.advanceClock(24 * 3600 * 1000)
     await hookRunCommand(h.deps, 'activation-stop', input, 'cursor')
-    expect(JSON.parse(h.io.outLines.at(-1) ?? '{}')).toHaveProperty('followup_message')
+    expect(h.io.outLines).toEqual([])
   })
 
   it('fails closed without a Cursor conversation id and still activates after an errored turn', async () => {
@@ -5533,6 +5545,23 @@ describe('pruning abandoned session state', () => {
 
     expect(pruneAbandonedSessions(h.env, REAL - 400 * 24 * 3600 * 1000)).toBe(0)
     expect(readSessionState('jumped', h.env).last_prompt_at).toBe(NOW)
+  })
+
+  it('keeps a live Cursor conversation\'s activation record and prunes an idle one', () => {
+    const h = harness()
+    expect(claimCursorStopActivation('cursor-live', h.env, REAL)).toBe(true)
+    expect(claimCursorStopActivation('cursor-idle', h.env, REAL)).toBe(true)
+    const old = new Date(REAL - 30 * 24 * 3600 * 1000)
+    for (const id of ['cursor-live', 'cursor-idle']) {
+      utimesSync(sessionFile(h, `${sanitizeSessionId(id)}.cursor-activation`), old, old)
+    }
+    // A Stop in the live conversation keeps its record young.
+    expect(cursorStopActivationSent('cursor-live', h.env, REAL)).toBe(true)
+
+    expect(pruneAbandonedSessions(h.env, REAL)).toBe(1)
+
+    expect(claimCursorStopActivation('cursor-live', h.env, REAL)).toBe(false)
+    expect(claimCursorStopActivation('cursor-idle', h.env, REAL)).toBe(true)
   })
 
   it('never fails a hook because housekeeping could not run', () => {

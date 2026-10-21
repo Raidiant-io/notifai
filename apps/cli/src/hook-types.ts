@@ -124,9 +124,6 @@ export interface SessionState {
   activation_cwd?: string
   /** Codex Stop definition observed when this exact Agent Session activated. */
   codex_stop_definition_fingerprint?: string
-  /** Cursor's documented session context path is lossy; bounded first-Stop fallback journal. */
-  cursor_activation_claimed_at?: number
-  cursor_activation_confirmed_at?: number
   /** Epoch ms of the user's last prompt in this session — our presence signal. */
   last_prompt_at?: number
   /** Epoch ms of the last observed Stop hook, distinct from prompt routing. */
