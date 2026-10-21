@@ -30,8 +30,68 @@ afterEach(() => {
 const python = 'python3'
 const pythonHasPty =
   process.platform !== 'win32' &&
-  spawnSync(python, ['-c', 'import pty'], { stdio: 'ignore' }).status === 0
+  spawnSync(python, ['-c', 'import os, pty; os.waitstatus_to_exitcode'], { stdio: 'ignore' }).status === 0
 const ptyIt = pythonHasPty ? it : it.skip
+
+/**
+ * Runs argv[1] on a fresh pty, relays the pty to stdout and stdin to the pty,
+ * and exits with the child's exit code as soon as the child exits.
+ *
+ * `pty.spawn` is not usable here. Before Python 3.10, its copy loop treats an
+ * end-of-file on the pty as "stop reading the pty" and keeps waiting on stdin,
+ * and macOS reports a closed pty that way. With the system Python 3.9 first on
+ * PATH, the CLI exits and the wrapper waits forever on the test's open stdin.
+ * Waiting on the child instead also covers a descendant that keeps the pty
+ * open after the CLI is gone.
+ *
+ * The pty is deliberately left unsized. SIGTERM takes the CLI down with the
+ * wrapper, so a timed-out run leaves nothing behind.
+ */
+const PTY_DRIVER = `import os, pty, select, signal, sys
+pid, fd = pty.fork()
+if pid == 0:
+    os.execv(sys.argv[1], [sys.argv[1]])
+
+def stop(signum, frame):
+    try:
+        os.kill(pid, signal.SIGKILL)
+    except ProcessLookupError:
+        pass
+    os._exit(128 + signum)
+
+signal.signal(signal.SIGTERM, stop)
+
+def relay(timeout):
+    if not select.select([fd], [], [], timeout)[0]:
+        return False
+    try:
+        data = os.read(fd, 65536)
+    except OSError:
+        return False
+    if data:
+        os.write(1, data)
+    return bool(data)
+
+stdin_open = True
+status = None
+while status is None:
+    watched = [fd, 0] if stdin_open else [fd]
+    ready = select.select(watched, [], [], 0.05)[0]
+    if fd in ready:
+        relay(0)
+    if 0 in ready:
+        data = os.read(0, 1024)
+        if data:
+            os.write(fd, data)
+        else:
+            stdin_open = False
+    done, result = os.waitpid(pid, os.WNOHANG)
+    if done:
+        status = result
+while relay(0.05):
+    pass
+sys.exit(os.waitstatus_to_exitcode(status))
+`
 
 function json(response: ServerResponse, value: unknown, status = 200): void {
   response.writeHead(status, { 'content-type': 'application/json' })
@@ -192,19 +252,11 @@ ptyIt('renders completed setup ahead of a transient evidence failure in a real P
     )
     env['NODE_OPTIONS'] = `--import=${pathToFileURL(fetchFixture).href}`
 
-    const child = spawn(
-      python,
-      [
-        '-c',
-        'import os, pty, sys; status = pty.spawn([sys.argv[1]]); sys.exit(os.waitstatus_to_exitcode(status))',
-        command,
-      ],
-      {
-        cwd,
-        env,
-        stdio: ['pipe', 'pipe', 'pipe'],
-      },
-    )
+    const child = spawn(python, ['-c', PTY_DRIVER, command], {
+      cwd,
+      env,
+      stdio: ['pipe', 'pipe', 'pipe'],
+    })
     let output = ''
     let stopped = false
     const collect = (chunk: Buffer) => {
@@ -225,7 +277,8 @@ ptyIt('renders completed setup ahead of a transient evidence failure in a real P
       new Promise<never>((_, reject) => {
         timeout = setTimeout(() => {
           child.kill('SIGTERM')
-          reject(new Error(`PTY CLI timed out. Output:\n${output}`))
+          const phase = stopped ? 'after Ctrl-C at the menu' : 'before the menu appeared'
+          reject(new Error(`PTY CLI timed out ${phase}. Output:\n${output}`))
         }, 15_000).unref()
       }),
     ])
