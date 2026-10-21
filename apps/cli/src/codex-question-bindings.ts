@@ -47,6 +47,8 @@ export interface CodexQuestionRegistration {
   ordinary_only?: true
   /** Explicit retirement/withdrawal cannot become native authority again. */
   terminated?: true
+  /** Withdrawn before it left this machine because every item was answered in the terminal. */
+  terminal_answered?: true
   /** The User dismissed the question on a device: no answer will come, so a form still showing it closes. */
   dismissed?: true
 }

@@ -471,17 +471,20 @@ describe('Notifai agent skill', () => {
     expect(loose(skill)).toMatch(/answered\s+in the conversation/i)
   })
 
-  it('keeps native answer reporting and the Codex card flow in their references', () => {
-    // Codex terminal answers are still reported by the agent, so the native
-    // questions reference stays; notes and edits are taught by their own text.
+  it('records Codex terminal answers itself and keeps the Codex card flow in its references', () => {
+    // Notifai records a Codex terminal answer, so no reference teaches a
+    // report command; the native questions reference stays for the marker
+    // fallback `ask` still returns. Notes and edits are taught by their own text.
     expect(existsSync(new URL('native-questions.md', referencesDir))).toBe(true)
     expect(existsSync(new URL('notes-and-edits.md', referencesDir))).toBe(false)
     expect(skill).toMatch(/native_question[\s\S]*references\/native-questions\.md/)
-    expect(nativeQuestionsReference).toMatch(/first command before work depending/)
-    expect(nativeQuestionsReference).toContain('notifai acknowledge q_')
-    expect(nativeQuestionsReference).toMatch(/Keep the original app answer watcher/)
+    expect(skill).not.toMatch(/native answers/i)
+    expect(loose(nativeQuestionsReference)).toMatch(/A terminal answer needs nothing from you: Notifai records it, so the devices stop asking/)
+    expect(nativeQuestionsReference).not.toMatch(/--native-answers|--operation-id|notifai acknowledge q_|operation ID|app answer watcher/)
     const codex = harnessFile('codex').replace(/\s+/g, ' ')
-    expect(codex).toMatch(/terminal answer\*\* you read from the card is reported with the `notifai acknowledge … --native-answers` command/i)
+    expect(codex).toMatch(/terminal answer\*\* needs nothing from you\. Notifai records it, so the devices stop asking/i)
+    expect(codex).toMatch(/A terminal answer needs nothing from you; handle the plain-question fallback as \[native questions\]\(native-questions\.md\) says/i)
+    expect(codex).not.toMatch(/--native-answers|report a terminal answer/i)
     expect(codex).toMatch(/device answer\*\* arrives in the card with its own `notifai acknowledge req_…` command/i)
     expect(codex).not.toMatch(/hands back|ask --wait/i)
     // Cards that stay in the terminal on purpose get their own outcome, never

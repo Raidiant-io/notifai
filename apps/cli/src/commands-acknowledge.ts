@@ -15,7 +15,14 @@ import {
 import type { ApiClient } from './client.js'
 import { clearAcknowledgementObligation } from './hook-acknowledgements.js'
 import { openclawOwnsMessage, openclawOwnsReply } from './openclaw-session-access.js'
-import { acknowledgeNativeAnswer, type NativeAcknowledgeFlags } from './commands-native-acknowledge.js'
+import { acknowledgeNativeAnswer } from './commands-native-acknowledge.js'
+export interface AcknowledgeFlags {
+  text?: string
+  json?: boolean
+  /** Older skills only: a terminal answer Notifai now records itself. */
+  operationId?: string
+  nativeAnswers?: string
+}
 
 /**
  * Record the one Agent Acknowledgement associated with a replied-to request
@@ -30,11 +37,15 @@ import { acknowledgeNativeAnswer, type NativeAcknowledgeFlags } from './commands
 export async function acknowledgeCommand(
   deps: CommandDeps,
   id: string,
-  flags: NativeAcknowledgeFlags,
+  flags: AcknowledgeFlags,
 ): Promise<number> {
   if (id.startsWith('q_')) return acknowledgeNativeAnswer(deps, id, flags)
   if (flags.operationId !== undefined || flags.nativeAnswers !== undefined) {
     deps.io.err('--operation-id and --native-answers require the exact local q_ question identity.')
+    return EXIT.usage
+  }
+  if (!/^(?:req|sm)_[A-Za-z0-9_-]+$/.test(id)) {
+    deps.io.err('Use the request or Session Message ID from the acknowledgement command Notifai delivered.')
     return EXIT.usage
   }
   const requestId = id

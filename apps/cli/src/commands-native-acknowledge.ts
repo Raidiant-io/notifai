@@ -1,4 +1,10 @@
-/** Report an answer actually read from an exactly bound native question. */
+/**
+ * The agent-written terminal-answer report an older skill still teaches.
+ * Notifai records a terminal answer itself now, and an agent session that
+ * started on an older CLI keeps sending this report after an update, so it
+ * stays accepted: an answer Notifai already recorded is an idempotent success,
+ * and anything it has not recorded is recorded exactly as before.
+ */
 import type { ReplyAnswerT } from '@raidiant/notifai-protocol'
 import { isDeepStrictEqual } from 'node:util'
 import { EXIT, authedClient, loadLoggedConfig, type CommandDeps } from './commands-core.js'
@@ -7,13 +13,20 @@ import { admitBoundNativeAnswer, observeCodexQuestions } from './codex-question-
 import { isClaudeRegistration } from './claude-question-bindings.js'
 import { readNativeQuestionSnapshot } from './codex-native-turn.js'
 import { findOwningSession, readSessionIncarnation, readSessionState, sessionHasEnded } from './hook-session-state.js'
-import { executeNativeAnswerOperation, prepareNativeAnswerOperation, resolveNativeAnswerOperation } from './native-answer-operation.js'
+import {
+  NativeAnswerAlreadyRecorded, answersRecordedElsewhere, executeNativeAnswerOperation, prepareNativeAnswerOperation,
+  resolveNativeAnswerOperation, type NativeAnswerOperation,
+} from './native-answer-operation.js'
 import { processIdentityLiveness } from './process-identity.js'
 import { spawnQuestionSettlement } from './question-settlement-process.js'
 
 export interface NativeAcknowledgeFlags { operationId?: string; nativeAnswers?: string; text?: string; json?: boolean }
 
+export const NATIVE_ANSWERS_DEPRECATION =
+  'notifai: `acknowledge q_… --native-answers` is no longer needed. Notifai records a terminal answer itself; run nothing for it.'
+
 export async function acknowledgeNativeAnswer(deps: CommandDeps, questionId: string, flags: NativeAcknowledgeFlags): Promise<number> {
+  deps.io.err(NATIVE_ANSWERS_DEPRECATION)
   let operationSaved = false
   const fail = (message: string, exit: number = EXIT.failed): number => {
     const retry = operationSaved && flags.operationId !== undefined && /^[A-Za-z0-9_-]{1,64}$/.test(flags.operationId) && /^q_[A-Za-z0-9_-]+$/.test(questionId)
@@ -49,17 +62,50 @@ export async function acknowledgeNativeAnswer(deps: CommandDeps, questionId: str
     }
     const answers: unknown = flags.nativeAnswers === undefined ? undefined : JSON.parse(flags.nativeAnswers)
     if (answers !== undefined && !Array.isArray(answers)) return fail('--native-answers must be an array of actual answers with registered question/choice IDs.', EXIT.usage)
-    let operation = prepareNativeAnswerOperation(owner, deps.env, {
-      questionId, operationId: flags.operationId,
-      ...(answers === undefined ? {} : { answers: answers as ReplyAnswerT[] }),
-      ...(flags.text === undefined ? {} : { text: flags.text }),
-    }, (state, actualAnswers) => admitBoundNativeAnswer(state, questionId, owner.key, owner.service, actualAnswers), state => {
-      const registration = state.codex_question_bindings?.find(item => item.question_id === questionId)
-      // A Claude Code picker was verified by the hook that received it; there is no transcript to reread.
-      if (harness === 'claude-code' || (registration !== undefined && isClaudeRegistration(registration))) return state
-      const snapshot = readNativeQuestionSnapshot(registration?.transcript.file, sessionId, deps.env)
-      return observeCodexQuestions(state, owner.key, snapshot)
-    })
+    const operationId = flags.operationId
+    const itemId = (answer: unknown): unknown => typeof answer === 'object' && answer !== null ? (answer as { question_id?: unknown }).question_id : undefined
+    // What Notifai has not recorded itself, or null when it recorded every reported item.
+    const unrecorded = (): unknown[] | undefined | null => {
+      const state = readSessionState(sessionId, deps.env)
+      if (state.native_answer_operations?.some(op => op.question_id === questionId && op.operation_id === operationId)) return answers
+      if (state.codex_question_bindings?.some(item => item.question_id === questionId && item.terminal_answered === true)) return null
+      const elsewhere = answersRecordedElsewhere(state, questionId, operationId)
+      if (elsewhere.size === 0) return answers
+      if (answers === undefined) return null
+      const remaining = answers.filter(answer => !elsewhere.has(itemId(answer) as string))
+      return remaining.length === 0 ? null : remaining
+    }
+    const alreadyRecorded = (): number => {
+      const next = 'Notifai already recorded this terminal answer, so the devices stop asking. Continue with the work it asks for; do not repeat work it already triggered.'
+      if (flags.json) deps.io.out(JSON.stringify({ ok: true, question_id: questionId, operation_id: operationId, already_recorded: true, next }, null, 2))
+      else { deps.io.out(`Notifai already recorded the terminal answer for ${questionId}.`); deps.io.out(next) }
+      return EXIT.ok
+    }
+    let operation: NativeAnswerOperation | undefined
+    for (let attempt = 0; operation === undefined; attempt++) {
+      const remaining = unrecorded()
+      if (remaining === null) return alreadyRecorded()
+      try {
+        operation = prepareNativeAnswerOperation(owner, deps.env, {
+          questionId, operationId,
+          ...(remaining === undefined ? {} : { answers: remaining as ReplyAnswerT[] }),
+          ...(flags.text === undefined ? {} : { text: flags.text }),
+        }, (state, actualAnswers) => {
+          const elsewhere = answersRecordedElsewhere(state, questionId, operationId)
+          if (actualAnswers.some(answer => elsewhere.has(answer.question_id))) throw new NativeAnswerAlreadyRecorded()
+          return admitBoundNativeAnswer(state, questionId, owner.key, owner.service, actualAnswers)
+        }, state => {
+          const registration = state.codex_question_bindings?.find(item => item.question_id === questionId)
+          // A Claude Code picker was verified by the hook that received it; there is no transcript to reread.
+          if (harness === 'claude-code' || (registration !== undefined && isClaudeRegistration(registration))) return state
+          const snapshot = readNativeQuestionSnapshot(registration?.transcript.file, sessionId, deps.env)
+          return observeCodexQuestions(state, owner.key, snapshot)
+        })
+      } catch (error) {
+        // Notifai recorded an item between the check and the locked admission.
+        if (!(error instanceof NativeAnswerAlreadyRecorded) || attempt >= 2) throw error
+      }
+    }
     operationSaved = true
     const completedBeforeInvocation = operation.acknowledgement !== undefined
     if (operation.request_id === undefined) {

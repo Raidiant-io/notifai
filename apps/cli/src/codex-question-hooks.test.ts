@@ -171,6 +171,10 @@ it('binds every question of an allowed card to its actual tool call without a co
   await hookRunCommand(h.deps, 'post-tool-use', async () => JSON.stringify({ ...post, tool_response: { accepted: false } }), 'codex')
   expect(h.launch).not.toHaveBeenCalled()
   await hookRunCommand(h.deps, 'post-tool-use', async () => JSON.stringify(post), 'codex')
+  const context = JSON.parse(h.output.at(-1)!).hookSpecificOutput.additionalContext
+  expect(context).toContain('Notifai records a terminal answer itself.')
+  expect(context).toContain('run it before dependent work')
+  expect(context).not.toMatch(/--native-answers|--operation-id/)
   const pending = readSessionState(SESSION, h.env).pending![0]!
   expect(pending.questions).toHaveLength(2)
   expect(readSessionState(SESSION, h.env).codex_question_bindings![0]!.questions.map(q => q.native)).toEqual([

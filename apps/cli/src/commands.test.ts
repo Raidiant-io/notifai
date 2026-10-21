@@ -8888,8 +8888,11 @@ describe('asking before the hooks have ever run', () => {
     expect(output.native_question).toMatchObject({ tool: 'request_user_input_async',
       questions: [{ question_id: output.questions[0].id, title: '[nf:001] Where?', options: ['Staging', 'Production'] }],
     })
-    expect(output.native_question.instructions).toContain(`notifai acknowledge ${output.question_id}`)
-    expect(output.native_question.instructions).toContain('first dependent command')
+    // Notifai records a terminal answer itself: the instruction names no
+    // report command, only the card to open and the close for a conversation answer.
+    expect(output.native_question.instructions).toMatch(/^Only if your tools include request_user_input_async: open it with these titles and options exactly, in this turn\. Notifai records a terminal answer itself; an answer from the User's devices arrives in the card with its own acknowledgement command\./)
+    expect(output.native_question.instructions).toContain(`notifai close ${output.question_id}`)
+    expect(output.native_question.instructions).not.toMatch(/--native-answers|--operation-id|notifai acknowledge/)
     expect(readSessionState(sessionId, env).codex_question_bindings?.[0]?.question_id).toBe(output.question_id)
     io.outLines = []
     expect(askCommand(deps, 'Combine?', { choice: ['One', 'Two'], multi: true, json: true })).toBe(EXIT.ok)

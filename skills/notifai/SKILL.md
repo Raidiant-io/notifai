@@ -146,9 +146,9 @@ question again.
 
 A question form you open yourself carries only its own fields, and reaches the
 User's devices only where Notifai links it; when its tool context says Notifai
-registered it, never also `ask` it. For native answers or a `native_question`
-from `ask`, read [native questions](references/native-questions.md). Never
-promise form closure.
+registered it, never also `ask` it. For a `native_question` from `ask`, read
+[native questions](references/native-questions.md). Never promise form
+closure.
 
 **Registering is not the end of the turn.** After `notifai ask`, ask in the
 conversation, say what each answer will make you do, and continue independent

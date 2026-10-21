@@ -29,8 +29,8 @@ When your tools include `request_user_input_async`, ask with that card: call
 it with the User's questions and follow its tool context. Codex offers it only
 with some models, in the terminal and the apps alike. The card hook registers
 the questions after Codex accepts the call; a separate `ask` would duplicate
-them. Report a terminal answer and handle the plain-question fallback as
-[native questions](native-questions.md) says.
+them. A terminal answer needs nothing from you; handle the plain-question
+fallback as [native questions](native-questions.md) says.
 
 Without that tool, use `notifai ask`: it registers an ordinary question.
 `request_user_input` (no `_async`) is not linked to Notifai: where Codex
@@ -49,8 +49,8 @@ The card closes on the first answer:
 
 - **A device answer** arrives in the card with its own
   `notifai acknowledge req_…` command; run it before dependent work.
-- **A terminal answer** you read from the card is reported with the
-  `notifai acknowledge … --native-answers` command its tool context names.
+- **A terminal answer** needs nothing from you. Notifai records it, so the
+  devices stop asking.
 - **A question that expired on the devices** closes the card unanswered:
   carry on without it.
 - **A card that cannot receive a device answer** never opens. Notifai

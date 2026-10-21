@@ -60,7 +60,7 @@ async function routeCard(deps: CommandDeps, envelope: HookEnvelope, logger: Logg
     // Do not publish before acceptance. A device answer must never race a
     // card's creation or a later foreign PreToolUse denial.
     deps.io.out(JSON.stringify({ hookSpecificOutput: { hookEventName: 'PreToolUse',
-      additionalContext: 'Notifai registers this card from its successful tool result. Do not call notifai ask for the same question. Read the registered question IDs and acknowledgement instruction in the tool context.' } }))
+      additionalContext: 'Notifai registers this card on the User\'s devices once Codex accepts it; never also notifai ask it.' } }))
     return null
   }
   if (accepted && !allow) return null
@@ -87,9 +87,8 @@ async function routeCard(deps: CommandDeps, envelope: HookEnvelope, logger: Logg
   }
   logger.info('ask.registered', { session: sessionId, question_id: questionId, origin: 'codex-card', questions: form.questions.length })
   if (registration.card_allowed === true) {
-    return `This card is registered as ${questionId} on the user's devices. Do not call notifai ask for it. ` +
-        `For a terminal answer you actually read, first run notifai acknowledge ${questionId} --operation-id native-1 --native-answers '<actual answers JSON>' --text '<concrete work caused by the answer>' --json. ` +
-        `Use these registered question and choice IDs: ${JSON.stringify(form.questions)}. Use a distinct operation ID per distinct submission; retry the same immutable operation after failure. An app answer carries its own acknowledgement command and must never be reported again as native. Keep the app watcher after a native answer.`
+    return `This card is registered as ${questionId} on the User's devices; never also notifai ask it. ` +
+        'Notifai records a terminal answer itself. An answer from a device arrives in the card with its own acknowledgement command; run it before dependent work.'
   }
   const questionText = raw.map(entry => [entry.title, ...(entry.options ?? []).map((option: string) => `- ${option}`)].join('\n')).join('\n\n')
   deps.io.out(JSON.stringify({ hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'deny',
