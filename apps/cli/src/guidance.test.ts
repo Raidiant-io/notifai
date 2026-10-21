@@ -122,9 +122,13 @@ describe('shipped guidance content', () => {
     expect(content).toMatch(/understandable alone/i)
     expect(content).toMatch(/40 characters/i)
     expect(content).toMatch(/kind and the Project travel as their own fields/i)
-    // `ask` takes no title yet: the question becomes it, so the topic teaches
-    // no question-title rule.
-    expect(content).not.toMatch(/question's title|form's title/i)
+    // A question's title is written by the agent: it names the decision and
+    // never repeats the question.
+    expect(content).toMatch(/question's title names the decision in a few words; it is never a question and never restates one/i)
+    expect(content).toMatch(/`Deploy the schema change to production` — the question restated/)
+    // A form's title names the whole set: one of its questions as the title
+    // reads as if the form asked only that.
+    expect(content).toMatch(/form's title names everything the form decides, never one of its questions/i)
     // Both example lists survive: good models the altitude, bad names the traps.
     expect(content).toMatch(/machinery/i)
     expect(content).toContain('Task complete')
@@ -442,9 +446,7 @@ describe('lifecycle guidance budget', () => {
       'Work finished', 'Work failed', 'A question with steps', 'Waiting on an outside change, Summary only', 'Too long (bad)',
     ])
     for (const example of examples) {
-      // A question's title is its question until `ask` takes one.
-      if (example.startsWith('A question')) expect(example).not.toMatch(/^Title:/m)
-      else expect(example).toMatch(/^Title: `[^`]+`$/m)
+      expect(example).toMatch(/^Title: `[^`]+`$/m)
       expect(example).toMatch(/^Summary[^:\n]*: `[^`]+`$/m)
     }
     const formatted = examples.filter((example) => /^Body:\n\n```markdown\n/m.test(example))

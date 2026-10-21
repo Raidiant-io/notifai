@@ -283,11 +283,12 @@ describe('program argv parsing', () => {
     }) as ProgramRunners['ask']
 
     await parse(
-      ['ask', 'Deploy where?', '--choice', 'Staging', '--choice', 'Production', '--session-label', 'release run', '--json'],
+      ['ask', 'Deploy where?', '--title', 'Deploy target', '--choice', 'Staging', '--choice', 'Production', '--session-label', 'release run', '--json'],
       { ask },
     )
     expect(seenQuestion).toBe('Deploy where?')
     expect(seenFlags).toEqual({
+      title: 'Deploy target',
       choice: ['Staging', 'Production'],
       sessionLabel: 'release run',
       json: true,
@@ -313,15 +314,6 @@ describe('program argv parsing', () => {
       choiceDescription: [{ after: 1, text: 'Two minutes of downtime.' }, { after: 3, text: 'Nothing ships today.' }],
       recommended: ['Wait'],
     })
-  })
-
-  it('rejects the removed ask --title flag instead of preserving a compatibility shim', async () => {
-    const { exitCode, deps } = await parse(
-      ['ask', 'Deploy where?', '--title', 'Choose a deployment target'],
-      { ask: (async () => 0) as ProgramRunners['ask'] },
-    )
-    expect(exitCode).toBe(2)
-    expect(deps.errLines).toHaveLength(0)
   })
 
   it('rejects --no-block as unknown: the flag is gone, not tombstoned', async () => {

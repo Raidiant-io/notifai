@@ -35,6 +35,7 @@ import {
   isClaudeRegistration,
   pickerDigest,
   pickerForm,
+  pickerHeading,
   pickerQuestions,
   type PickerQuestion,
 } from './claude-question-bindings.js'
@@ -257,8 +258,12 @@ function registerPickerQuestion(
     return { reason: 'config-invalid' }
   }
   if (!config.ask_notifications.value) return { reason: 'question-notifications-off' }
-  const form = pickerForm(picker)
-  if ('error' in form) return { reason: 'unsupported-picker', detail: { shape: form.error } }
+  const shape = pickerForm(picker)
+  if ('error' in shape) return { reason: 'unsupported-picker', detail: { shape: shape.error } }
+  // A self-opened picker is titled by its heading, else its headers; with
+  // neither, the draft takes the Agent Session name. Never the question.
+  const heading = pickerHeading(envelope.tool_input)
+  const form = heading === undefined ? shape : { ...shape, title: heading }
   // Hook stderr reaches nobody; a fallback-label heads-up has no reader here.
   const source = resolveDraftInvocation({ ...deps, cwd, io: { ...deps.io, err: () => undefined } }, {},
     { harness: 'claude-code', label: 'Claude Code', sessionId })
@@ -273,6 +278,7 @@ function registerPickerQuestion(
       deps.env,
       {
         question: form.questions[0]!.text,
+        title: presentation.title,
         summary: presentation.summary,
         service_identity: service,
         questions: form.questions,

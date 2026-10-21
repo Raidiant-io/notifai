@@ -44,6 +44,7 @@ import * as installHooksModule from './install-hooks.js'
 import * as atomicFileModule from './atomic-file.js'
 import { ApiCallError, NetworkError, type ApiClient } from './client.js'
 import type { ClaudeWakeAdapters } from './claude-wake.js'
+import { MISSING_TITLE_NOTE } from './commands-ask.js'
 import {
   acknowledgeCommand,
   askCommand as askAuthoredCommand,
@@ -161,7 +162,7 @@ it.each([
     })
   })
   try {
-    expect(await askCommand(deps, 'Continue?', { json })).toBe(EXIT.failed)
+    expect(await askCommand(deps, 'Continue?', { title: 'Decision', json })).toBe(EXIT.failed)
     if (json) {
       expect(JSON.parse(io.outLines.join('\n'))).toMatchObject({
         ok: false, registered: false,
@@ -1658,7 +1659,7 @@ describe('command contracts', () => {
     io.errLines = []
     const image = path.join(cwd, 'result.png')
     writeFileSync(image, 'fixture image')
-    const flags = { body: '![Result](attachment:1)', image: [image] }
+    const flags = { title: 'Result use', body: '![Result](attachment:1)', image: [image] }
     const result = command === 'send'
       ? await sendCommand(deps, { title: 'Result ready', kind: 'update', ...flags })
       : await askCommand(deps, 'Use this result?', flags)
@@ -8684,7 +8685,7 @@ describe('asking before the hooks have ever run', () => {
     expect(hooksInstallCommand(deps, { harness: 'opencode', execPath, scriptPath })).toBe(EXIT.ok)
     io.outLines = []
 
-    expect(askCommand(deps, 'Ship it?', {})).toBe(EXIT.usage)
+    expect(askCommand(deps, 'Ship it?', { title: 'Decision' })).toBe(EXIT.usage)
     const said = io.errLines.join(' ')
     expect(said).toMatch(/Codex hooks are not installed/i)
     expect(said).toContain('notifai init --json')
@@ -8710,7 +8711,7 @@ describe('asking before the hooks have ever run', () => {
     writeProjectSession(cwd, env, 'codex-other-thread', 42, 'codex')
     io.outLines = []
 
-    expect(askCommand(deps, 'Ship it?', { json: true })).toBe(EXIT.usage)
+    expect(askCommand(deps, 'Ship it?', { title: 'Decision', json: true })).toBe(EXIT.usage)
     expect(JSON.parse(io.outLines.at(-1)!)).toMatchObject({
       ok: false,
       registered: false,
@@ -8744,7 +8745,7 @@ describe('asking before the hooks have ever run', () => {
     expect(hooksInstallCommand(deps, { harness: 'openclaw', execPath, scriptPath })).toBe(EXIT.ok)
     io.outLines = []
 
-    expect(askCommand(deps, 'Ship it?', { json: true })).toBe(EXIT.usage)
+    expect(askCommand(deps, 'Ship it?', { title: 'Decision', json: true })).toBe(EXIT.usage)
     const refusal = JSON.parse(io.outLines.at(-1)!)
     expect(refusal).toMatchObject({
       code: 'openclaw_generation_stale', registered: false,
@@ -8819,7 +8820,7 @@ describe('asking before the hooks have ever run', () => {
     io.outLines = []
     const machineChanged = ['lost-machine', 'changed-machine', 'changed-service', 'machine-lost-in-lock'].includes(mode)
     const ownerChanged = ['ended', 'ended-unavailable', 'replaced-owner'].includes(mode)
-    expect(await askCommand(deps, 'Where?', { choice: ['Staging', 'Production'], json: true })).toBe(mode === 'card-hook' ? EXIT.usage : machineChanged ? EXIT.auth : ownerChanged ? EXIT.failed : EXIT.ok)
+    expect(await askCommand(deps, 'Where?', { title: 'Decision', choice: ['Staging', 'Production'], json: true })).toBe(mode === 'card-hook' ? EXIT.usage : machineChanged ? EXIT.auth : ownerChanged ? EXIT.failed : EXIT.ok)
     const output = JSON.parse(io.outLines.join('\n'))
     if (mode === 'card-hook') {
       expect(output.code).toBe('use_question_card')
@@ -8830,6 +8831,7 @@ describe('asking before the hooks have ever run', () => {
       // The card shows labels only; a described choice keeps ordinary ask.
       io.outLines = []
       expect(await askCommand(deps, 'Where?', {
+        title: 'Decision',
         choice: ['Staging', 'Production'], choiceDescription: [{ after: 2, text: 'Customers see it.' }], json: true,
       })).toBe(EXIT.ok)
       expect(JSON.parse(io.outLines.join('\n')).questions[0].choices[1]).toEqual({
@@ -8896,11 +8898,11 @@ describe('asking before the hooks have ever run', () => {
     expect(output.native_question.instructions).not.toMatch(/--native-answers|--operation-id|notifai acknowledge/)
     expect(readSessionState(sessionId, env).codex_question_bindings?.[0]?.question_id).toBe(output.question_id)
     io.outLines = []
-    expect(askCommand(deps, 'Combine?', { choice: ['One', 'Two'], multi: true, json: true })).toBe(EXIT.ok)
+    expect(askCommand(deps, 'Combine?', { title: 'Decision', choice: ['One', 'Two'], multi: true, json: true })).toBe(EXIT.ok)
     expect(JSON.parse(io.outLines.join('\n')).native_question).toBeUndefined()
     writeSessionState(sessionId, env, { ...readSessionState(sessionId, env), codex_tool_hook: undefined })
     io.outLines = []
-    expect(askCommand(deps, 'Ordinary?', { json: true })).toBe(EXIT.ok)
+    expect(askCommand(deps, 'Ordinary?', { title: 'Decision', json: true })).toBe(EXIT.ok)
     expect(JSON.parse(io.outLines.join('\n')).native_question).toBeUndefined()
     expect(compatibility).toHaveBeenCalledTimes(1)
   })
@@ -8944,7 +8946,7 @@ describe('asking before the hooks have ever run', () => {
     writeProjectSession(cwd, env, 'claude-concurrent', 43, 'claude-code')
     io.outLines = []
 
-    expect(askCommand(deps, 'Ship it?', {})).toBe(EXIT.ok)
+    expect(askCommand(deps, 'Ship it?', { title: 'Decision' })).toBe(EXIT.ok)
     expect(io.outLines.some((line) => line.startsWith('Question registered (q_'))).toBe(true)
     expect(readSessionState('codex-current-thread', env).pending?.[0]?.source).toMatchObject({
       session_id: 'codex-current-thread',
@@ -8956,6 +8958,12 @@ describe('asking before the hooks have ever run', () => {
     expect(
       readSessionState('codex-current-thread', env).pending?.[0]?.source?.session_label,
     ).toBe('Gentle Salmon')
+    expect(readSessionState('codex-current-thread', env).pending?.[0]?.title).toBe('Decision')
+    // An agent on an older skill passes no --title: the question still registers,
+    // titled by the Agent Session name, with one note naming --title.
+    expect(askCommand(deps, 'Ship it now?', {})).toBe(EXIT.ok)
+    expect(readSessionState('codex-current-thread', env).pending?.[1]?.title).toBe('Gentle Salmon')
+    expect(io.errLines).toContain(MISSING_TITLE_NOTE)
     expect(settingsFile('codex', env)).toBe(path.join(codexHome, 'hooks.json'))
     expect(existsSync(path.join(repo, '.codex'))).toBe(false)
     expect(existsSync(path.join(worktree, '.codex'))).toBe(false)
@@ -8970,7 +8978,7 @@ describe('asking before the hooks have ever run', () => {
       .question_routing_ready).toBe(true)
 
     io.outLines = []
-    expect(askCommand(deps, 'Wait?', { json: true })).toBe(EXIT.ok)
+    expect(askCommand(deps, 'Wait?', { title: 'Decision', json: true })).toBe(EXIT.ok)
     const registered = JSON.parse(io.outLines.join('\n')) as Record<string, unknown>
     expect(registered).toMatchObject({
       registered: true,
@@ -9023,7 +9031,7 @@ describe('asking before the hooks have ever run', () => {
     io.outLines = []
     io.errLines = []
 
-    expect(await askCommand(deps, 'Ship it?', { image: [image], json: true })).toBe(EXIT.usage)
+    expect(await askCommand(deps, 'Ship it?', { title: 'Decision', image: [image], json: true })).toBe(EXIT.usage)
     expect(JSON.parse(io.outLines.join('\n'))).toMatchObject({
       ok: false,
       registered: false,
@@ -9124,7 +9132,7 @@ describe('asking before the hooks have ever run', () => {
     io.outLines = []
     io.errLines = []
 
-    expect(askCommand(deps, 'Ship it?', { json: true })).toBe(EXIT.usage)
+    expect(askCommand(deps, 'Ship it?', { title: 'Decision', json: true })).toBe(EXIT.usage)
     expect(JSON.parse(io.outLines.join('\n'))).toMatchObject({
       code: 'codex_fresh_session_required',
       check_id: 'stop_hook',
@@ -9203,7 +9211,7 @@ describe('asking before the hooks have ever run', () => {
     writeProjectSession(cwd, env, 'codex-unproven-resume', 42, 'codex')
     io.outLines = []
     io.errLines = []
-    expect(askCommand(deps, 'Ship it?', { json: true })).toBe(EXIT.usage)
+    expect(askCommand(deps, 'Ship it?', { title: 'Decision', json: true })).toBe(EXIT.usage)
     expect(JSON.parse(io.outLines.join('\n'))).toMatchObject({
       code: 'codex_fresh_session_required',
       check_id: 'stop_hook',
@@ -9292,7 +9300,7 @@ describe('asking before the hooks have ever run', () => {
       io.outLines = []
       io.errLines = []
       expect(
-        await askCommand(deps, 'Ship it?', { image: [image], json: true }),
+        await askCommand(deps, 'Ship it?', { title: 'Decision', image: [image], json: true }),
       ).toBe(EXIT.usage)
       const failure = JSON.parse(io.outLines.join('\n')) as Record<string, unknown>
       expect(failure).toMatchObject({
@@ -9328,7 +9336,7 @@ describe('asking before the hooks have ever run', () => {
     writeProjectSession(cwd, env, 'claude-current', 42, 'claude-code')
     io.outLines = []
 
-    expect(askCommand(deps, 'Ship it?', {})).toBe(EXIT.ok)
+    expect(askCommand(deps, 'Ship it?', { title: 'Decision' })).toBe(EXIT.ok)
     expect(readSessionState('claude-current', env).pending?.[0]).toMatchObject({
       question: 'Ship it?',
       source: { harness: 'claude-code', session_id: 'claude-current' },
@@ -9357,7 +9365,7 @@ describe('asking before the hooks have ever run', () => {
     writeSessionState('claude-closed', env, { harness: 'claude-code', last_prompt_at: 42, last_stop_at: 41 })
     writeProjectSession(cwd, env, 'claude-closed', 42, 'claude-code')
     io.outLines = []
-    const flags = { choice: ['Staging', 'Production'], body: 'The release window closes today. ![Proof](media:1)', image: [image], json: true }
+    const flags = { title: 'Deploy target', choice: ['Staging', 'Production'], body: 'The release window closes today. ![Proof](media:1)', image: [image], json: true }
     expect(await askCommand(deps, 'Where?', flags)).toBe(EXIT.ok)
     const first = JSON.parse(io.outLines.join('\n'))
     expect(first).toMatchObject({ registered: true, questions: [{ text: 'Where?', choices: [{ label: 'Staging' }, { label: 'Production' }] }] })
@@ -9385,7 +9393,7 @@ describe('asking before the hooks have ever run', () => {
 
     // A multi-select version is a different question, so it registers its own.
     io.outLines = []
-    expect(await askCommand(deps, 'Where?', { choice: ['Staging', 'Production'], multi: true, json: true })).toBe(EXIT.ok)
+    expect(await askCommand(deps, 'Where?', { title: 'Deploy targets', choice: ['Staging', 'Production'], multi: true, json: true })).toBe(EXIT.ok)
     expect(JSON.parse(io.outLines.join('\n')).registered).toBe(true)
     expect(readSessionState('claude-closed', env).pending).toHaveLength(2)
   })
@@ -9400,7 +9408,7 @@ describe('asking before the hooks have ever run', () => {
     writeSessionState('claude-consumed', env, { harness: 'claude-code', last_prompt_at: 42, last_stop_at: 41 })
     writeProjectSession(cwd, env, 'claude-consumed', 42, 'claude-code')
     io.outLines = []
-    expect(await askCommand(deps, 'Where?', { choice: ['Staging', 'Production'], json: true })).toBe(EXIT.ok)
+    expect(await askCommand(deps, 'Where?', { title: 'Decision', choice: ['Staging', 'Production'], json: true })).toBe(EXIT.ok)
     const first = JSON.parse(io.outLines.join('\n')).question_id as string
     // The device answered and the agent received the answer: the question is consumed.
     updateSessionState('claude-consumed', env, (state) => {
@@ -9409,7 +9417,7 @@ describe('asking before the hooks have ever run', () => {
         accepted: { answers: [consumed], remaining: 0, recorded_at: 43, delivered_at: 44, delivery_committed_at: 44 } }
     })
     io.outLines = []
-    expect(await askCommand(deps, 'Where?', { choice: ['Staging', 'Production'], json: true })).toBe(EXIT.ok)
+    expect(await askCommand(deps, 'Where?', { title: 'Decision', choice: ['Staging', 'Production'], json: true })).toBe(EXIT.ok)
     const second = JSON.parse(io.outLines.join('\n'))
     expect(second.registered).toBe(true)
     expect(second.question_id).not.toBe(first)
@@ -9448,7 +9456,7 @@ describe('asking before the hooks have ever run', () => {
       settingsFile('codex', env),
     )
     expect(existsSync(path.join(second, '.codex'))).toBe(false)
-    expect(askCommand(secondDeps, 'Use the invocation Project?', {})).toBe(EXIT.ok)
+    expect(askCommand(secondDeps, 'Use the invocation Project?', { title: 'Decision' })).toBe(EXIT.ok)
     expect(readSessionState('codex-cross-checkout', env).pending?.[0]?.question).toBe(
       'Use the invocation Project?',
     )
@@ -9482,7 +9490,7 @@ describe('asking before the hooks have ever run', () => {
       readiness.states.find((state) => state.id === 'hooks-question-admission'),
     ).toBeUndefined()
 
-    expect(askCommand(deps, 'Ship it?', { json: true })).toBe(EXIT.usage)
+    expect(askCommand(deps, 'Ship it?', { title: 'Decision', json: true })).toBe(EXIT.usage)
     expect(JSON.parse(io.outLines.at(-1)!)).toMatchObject({
       code: 'hooks_not_installed',
       check_id: 'hook_installation',
@@ -9547,7 +9555,7 @@ describe('asking before the hooks have ever run', () => {
     const readiness = await assessReadiness(secondDeps)
     expect(readiness.states.find((state) => state.id === 'hooks-question-admission'))
       .toMatchObject({ status: 'ready' })
-    expect(askCommand(secondDeps, 'Continue after resume?', {})).toBe(EXIT.ok)
+    expect(askCommand(secondDeps, 'Continue after resume?', { title: 'Decision' })).toBe(EXIT.ok)
     expect(readSessionState(env.CODEX_THREAD_ID!, env).pending?.[0]?.question).toBe(
       'Continue after resume?',
     )
@@ -9579,7 +9587,7 @@ describe('asking before the hooks have ever run', () => {
     writeProjectSession(first, env, 'claude-cross-checkout', 42, 'claude-code')
     writeProjectSettings(second, env, 'project = "second-project"\nask_notifications = false\n')
     io.outLines = []
-    expect(askCommand({ ...firstDeps, cwd: second }, 'Use this checkout?', { json: true })).toBe(EXIT.usage)
+    expect(askCommand({ ...firstDeps, cwd: second }, 'Use this checkout?', { title: 'Decision', json: true })).toBe(EXIT.usage)
     expect(JSON.parse(io.outLines.join('\n'))).toMatchObject({
       registered: false,
       code: 'question_routing_disabled',
@@ -9592,7 +9600,7 @@ describe('asking before the hooks have ever run', () => {
     io.outLines = []
 
     const secondDeps = { ...firstDeps, cwd: second }
-    expect(askCommand(secondDeps, 'Use this checkout?', {})).toBe(EXIT.ok)
+    expect(askCommand(secondDeps, 'Use this checkout?', { title: 'Decision' })).toBe(EXIT.ok)
     const pending = readSessionState('claude-cross-checkout', env).pending?.[0]
     expect(pending?.project).toBe('second-project')
     expect(pending?.source).toMatchObject({
@@ -9644,6 +9652,7 @@ describe('asking before the hooks have ever run', () => {
 
     expect(
       await askCommand(deps, 'Which visual should I use?', {
+        title: 'Decision',
         body: 'Compare ![first](media:1) with ![second](media:2).',
         image: [first, second],
         imageAlt: ['First option', 'Second option'],
@@ -9686,7 +9695,7 @@ describe('asking before the hooks have ever run', () => {
     trustInstalledCodexHooks(cwd, env)
     writeCurrentCodexSessionState(cwd, env, env.CODEX_THREAD_ID, { last_prompt_at: 42, last_stop_at: 41 })
     writeProjectSession(cwd, env, env.CODEX_THREAD_ID, 42, 'codex')
-    const command = askCommand(deps, 'Use this image?', { image: [media], json: true })
+    const command = askCommand(deps, 'Use this image?', { title: 'Decision', image: [media], json: true })
     await uploadEntered
     expect(readSessionState(env.CODEX_THREAD_ID, env).pending).toBeUndefined()
     credential = transition === 'unpaired' ? null : { ...credential!, machineId: 'machine_b' }
@@ -9727,7 +9736,7 @@ describe('asking before the hooks have ever run', () => {
     writeProjectSession(cwd, env, 'codex-current-thread', 42, 'codex')
     io.outLines = []
 
-    expect(askCommand(deps, 'Ship it?', { json: true })).toBe(EXIT.usage)
+    expect(askCommand(deps, 'Ship it?', { title: 'Decision', json: true })).toBe(EXIT.usage)
     expect(JSON.parse(io.outLines[0]!).code).toBe('session_identity_ambiguous')
     expect(readSessionState('codex-current-thread', env).pending).toBeUndefined()
     expect(readSessionState('claude-orchestrator', env).pending).toBeUndefined()
@@ -9757,7 +9766,7 @@ describe('asking before the hooks have ever run', () => {
     writeProjectSession(cwd, env, 'claude-current', 42, 'claude-code')
     io.outLines = []
 
-    expect(askCommand(deps, 'Ship it?', { json: true })).toBe(EXIT.usage)
+    expect(askCommand(deps, 'Ship it?', { title: 'Decision', json: true })).toBe(EXIT.usage)
     expect(JSON.parse(io.outLines[0]!).code).toBe('session_identity_ambiguous')
     expect(readSessionState('claude-current', env).pending).toBeUndefined()
     expect(readSessionState('codex-orchestrator', env).pending).toBeUndefined()
@@ -9787,7 +9796,7 @@ describe('asking before the hooks have ever run', () => {
     writeProjectSession(cwd, env, 'orca-claude-question', 42, 'claude-code')
     io.outLines = []
 
-    expect(askCommand(deps, 'Ship the semantic resolver?', {})).toBe(EXIT.ok)
+    expect(askCommand(deps, 'Ship the semantic resolver?', { title: 'Decision' })).toBe(EXIT.ok)
     expect(readSessionState('orca-claude-question', env).pending?.[0]?.source).toMatchObject({
       session_id: 'orca-claude-question',
       harness: 'claude-code',
@@ -9850,7 +9859,7 @@ describe('asking before the hooks have ever run', () => {
     expect(fired?.detail).not.toMatch(/approve.*start/i)
 
     io.errLines = []
-    expect(askCommand(deps, 'Ship it?', {})).toBe(EXIT.usage)
+    expect(askCommand(deps, 'Ship it?', { title: 'Decision' })).toBe(EXIT.usage)
     expect(io.errLines.join(' ')).toMatch(/Several harness sessions could own this shell/i)
   })
 
@@ -9882,6 +9891,7 @@ describe('asking before the hooks have ever run', () => {
 
     expect(
       askCommand(deps, 'Which environment should I deploy to?', {
+        title: 'Decision',
         choice: ['Staging', 'Production', 'Cancel'],
       }),
     ).toBe(EXIT.ok)
@@ -9931,7 +9941,7 @@ describe('asking before the hooks have ever run', () => {
     writeProjectSession(cwd, env, 'codex-free-text-thread', 42, 'codex')
     io.outLines = []
 
-    expect(askCommand(deps, 'What rollout adjustment should I make?', {})).toBe(EXIT.ok)
+    expect(askCommand(deps, 'What rollout adjustment should I make?', { title: 'Decision' })).toBe(EXIT.ok)
     expect(io.outLines.join('\n')).toContain(
       'For the free-text answer: state how its content will determine the concrete work you resume.',
     )
@@ -9966,7 +9976,7 @@ describe('asking before the hooks have ever run', () => {
     writeProjectSession(cwd, env, 'codex-current-thread', 42, 'codex')
     io.outLines = []
 
-    expect(askCommand(deps, 'Ship it?', {})).toBe(EXIT.usage)
+    expect(askCommand(deps, 'Ship it?', { title: 'Decision' })).toBe(EXIT.usage)
     const hooksFile = findInstallations(env).find((installation) => installation.harness === 'codex')!.file
     const oneLine = `1 Notifai handler in ${hooksFile} is new or changed since Codex last approved it; open /hooks in Codex and approve Notifai's handlers`
     expect(io.errLines.join('\n')).toContain(oneLine)
@@ -10024,7 +10034,7 @@ describe('asking before the hooks have ever run', () => {
     io.outLines = []
     io.errLines = []
 
-    expect(askCommand(deps, 'Ship it?', { json: true })).toBe(EXIT.usage)
+    expect(askCommand(deps, 'Ship it?', { title: 'Decision', json: true })).toBe(EXIT.usage)
     expect(JSON.parse(io.outLines.join('\n'))).toMatchObject({
       ok: false,
       registered: false,
@@ -10088,7 +10098,7 @@ describe('asking before the hooks have ever run', () => {
     io.outLines = []
     io.errLines = []
 
-    askCommand(deps, 'Ship it?', { json: true })
+    askCommand(deps, 'Ship it?', { title: 'Decision', json: true })
     expect(JSON.parse(io.outLines.join('\n'))).toMatchObject({ registered: true })
     expect(readSessionState('codex-desktop-thread', env).pending).toHaveLength(1)
   })
@@ -10140,7 +10150,7 @@ describe('asking before the hooks have ever run', () => {
     writeProjectSession(cwd, env, 'claude-other', 42, 'claude-code')
     io.outLines = []
 
-    expect(askCommand(deps, 'Ship it?', {})).toBe(EXIT.usage)
+    expect(askCommand(deps, 'Ship it?', { title: 'Decision' })).toBe(EXIT.usage)
     expect(io.errLines.join(' ')).toMatch(/exact Claude Code session has not fired UserPromptSubmit/i)
   })
 
@@ -10163,7 +10173,7 @@ describe('asking before the hooks have ever run', () => {
     writeProjectSession(cwd, env, 'claude-parent-loop', 42, 'claude-code')
     io.outLines = []
 
-    expect(askCommand(deps, 'Ship it?', {})).toBe(EXIT.ok)
+    expect(askCommand(deps, 'Ship it?', { title: 'Decision' })).toBe(EXIT.ok)
     expect(readSessionState('claude-parent-loop', env).pending?.[0]?.question).toBe('Ship it?')
   })
 
@@ -10184,7 +10194,7 @@ describe('asking before the hooks have ever run', () => {
     writeProjectSession(cwd, env, 'claude-last-writer', 42, 'claude-code')
     io.outLines = []
 
-    expect(askCommand(deps, 'Ship it?', {})).toBe(EXIT.usage)
+    expect(askCommand(deps, 'Ship it?', { title: 'Decision' })).toBe(EXIT.usage)
     expect(io.errLines.join('\n')).toMatch(/does not expose an exact session id/i)
     expect(readSessionState('claude-last-writer', env).pending).toBeUndefined()
   })
@@ -10220,7 +10230,7 @@ describe('asking before the hooks have ever run', () => {
     writeProjectSession(cwd, env, 'codex-current-thread', 42, 'codex')
     io.outLines = []
 
-    expect(askCommand(deps, 'Ship it?', {})).toBe(EXIT.usage)
+    expect(askCommand(deps, 'Ship it?', { title: 'Decision' })).toBe(EXIT.usage)
     expect(io.errLines.join('\n')).toMatch(/2 Codex definitions are active/i)
     expect(io.errLines.join('\n')).toMatch(/reinstall so exactly one remains/i)
     expect(readSessionState('codex-current-thread', env).pending).toBeUndefined()
@@ -10251,7 +10261,7 @@ describe('asking before the hooks have ever run', () => {
     writeProjectSession(cwd, env, 'claude-current', 42, 'claude-code')
     io.outLines = []
 
-    expect(askCommand(deps, 'Ship it?', {})).toBe(EXIT.ok)
+    expect(askCommand(deps, 'Ship it?', { title: 'Decision' })).toBe(EXIT.ok)
     expect(readSessionState('claude-current', env).pending?.[0]?.question).toBe('Ship it?')
     expect(readSessionState('claude-current', env).pending?.[0]?.service_identity).toEqual({
       base_url: deps.store.load()!.baseUrl, machine_id: deps.store.load()!.machineId,
@@ -10280,7 +10290,7 @@ describe('asking before the hooks have ever run', () => {
     writeProjectSession(cwd, env, 'opencode-other', 42, 'opencode')
     io.outLines = []
 
-    expect(askCommand(deps, 'Ship it?', {})).toBe(EXIT.usage)
+    expect(askCommand(deps, 'Ship it?', { title: 'Decision' })).toBe(EXIT.usage)
     expect(io.errLines.join(' ')).toMatch(/no proven answer continuation/i)
   })
 
@@ -10300,7 +10310,7 @@ describe('asking before the hooks have ever run', () => {
     writeProjectSession(cwd, env, 'opencode-current', 42, 'opencode')
     io.outLines = []
 
-    expect(askCommand(deps, 'Ship it?', {})).toBe(EXIT.usage)
+    expect(askCommand(deps, 'Ship it?', { title: 'Decision' })).toBe(EXIT.usage)
     expect(io.errLines.join('\n')).toMatch(/no proven answer continuation/i)
     expect(readSessionState('opencode-current', env).pending).toBeUndefined()
   })
@@ -10322,7 +10332,7 @@ describe('asking before the hooks have ever run', () => {
     writeProjectSession(cwd, env, 'agent:main:main', 42, 'openclaw')
     io.outLines = []
 
-    expect(askCommand(deps, 'Ship it?', {})).toBe(EXIT.usage)
+    expect(askCommand(deps, 'Ship it?', { title: 'Decision' })).toBe(EXIT.usage)
     expect(io.errLines.join('\n')).toMatch(/generation|OpenClaw/i)
     expect(readSessionState('agent:main:main', env).pending).toBeUndefined()
   })
@@ -10343,7 +10353,7 @@ describe('asking before the hooks have ever run', () => {
     writeProjectSession(cwd, env, 'grok-current', 42, 'grok')
     io.outLines = []
 
-    expect(askCommand(deps, 'Ship it?', {})).toBe(EXIT.ok)
+    expect(askCommand(deps, 'Ship it?', { title: 'Decision' })).toBe(EXIT.ok)
     expect(readSessionState('grok-current', env).pending?.[0]?.question).toBe('Ship it?')
     const readiness = await assessReadiness(deps)
     expect(readiness.states.find((state) => state.id === 'hooks-answer-continuation'))
@@ -10353,7 +10363,7 @@ describe('asking before the hooks have ever run', () => {
     expect(readiness.states.find((state) => state.id === 'hooks-Grok-activation'))
       .toBeUndefined()
     env.GROK_SESSION_ID = 'another-grok-session'
-    expect(askCommand(deps, 'Second question?', {})).toBe(EXIT.usage)
+    expect(askCommand(deps, 'Second question?', { title: 'Decision' })).toBe(EXIT.usage)
     expect(readSessionState('another-grok-session', env).pending).toBeUndefined()
   })
 
@@ -10366,7 +10376,7 @@ describe('asking before the hooks have ever run', () => {
     }
     const deps = { ...makeDeps(io, {} as ApiClient), cwd, env, now: () => 42 }
 
-    expect(askCommand(deps, 'Ship it?', { json: true })).toBe(EXIT.usage)
+    expect(askCommand(deps, 'Ship it?', { title: 'Decision', json: true })).toBe(EXIT.usage)
     const payload = JSON.parse(io.outLines.join('\n')) as { code: string; message: string; remedy: string }
     expect(payload.code).toBe('hooks_not_installed')
     expect(payload.message).toMatch(/hooks are not installed/i)
@@ -10393,7 +10403,7 @@ describe('asking before the hooks have ever run', () => {
     io.outLines = []
     io.errLines = []
 
-    expect(askCommand(deps, 'Ship it?', { json: true })).toBe(EXIT.usage)
+    expect(askCommand(deps, 'Ship it?', { title: 'Decision', json: true })).toBe(EXIT.usage)
     const payload = JSON.parse(io.outLines.join('\n')) as { code: string; message: string }
     expect(payload.code).toBe('session_identity_ambiguous')
     expect(payload.message).toMatch(/Several harness sessions could own this shell/i)
@@ -10456,7 +10466,7 @@ describe('asking before the hooks have ever run', () => {
     writeProjectSession(cwd, env, 'cursor-live', 42, 'cursor')
     io.outLines = []
 
-    expect(askCommand(deps, 'Ship it?', {})).toBe(EXIT.usage)
+    expect(askCommand(deps, 'Ship it?', { title: 'Decision' })).toBe(EXIT.usage)
     expect(io.errLines.join('\n')).toMatch(/does not expose an exact session id/i)
     expect(readSessionState('cursor-live', env).pending).toBeUndefined()
   })
@@ -10827,7 +10837,7 @@ describe('asking before the hooks have ever run', () => {
     const io = new CapturedIo()
     const deps = { ...makeDeps(io, {} as ApiClient), cwd, env: { XDG_STATE_HOME: cwd } }
 
-    expect(askCommand(deps, 'Ship it?', { json: true })).toBe(EXIT.usage)
+    expect(askCommand(deps, 'Ship it?', { title: 'Decision', json: true })).toBe(EXIT.usage)
     expect(JSON.parse(io.outLines.at(-1) ?? '{}')).toMatchObject({
       ok: false,
       registered: false,
@@ -10850,7 +10860,7 @@ describe('asking before the hooks have ever run', () => {
     expect(hooksInstallCommand(deps, { harness: 'cursor', execPath, scriptPath })).toBe(EXIT.ok)
     io.outLines = []
 
-    expect(askCommand(deps, 'Ship it?', { json: true })).toBe(EXIT.usage)
+    expect(askCommand(deps, 'Ship it?', { title: 'Decision', json: true })).toBe(EXIT.usage)
     expect(JSON.parse(io.outLines.at(-1) ?? '{}')).toMatchObject({
       code: 'session_identity_missing',
       check_id: 'exact_session',
@@ -10872,7 +10882,7 @@ describe('asking before the hooks have ever run', () => {
     expect(hooksInstallCommand(deps, { harness: 'opencode', execPath, scriptPath })).toBe(EXIT.ok)
     io.outLines = []
 
-    expect(askCommand(deps, 'Ship it?', { json: true })).toBe(EXIT.usage)
+    expect(askCommand(deps, 'Ship it?', { title: 'Decision', json: true })).toBe(EXIT.usage)
     expect(JSON.parse(io.outLines.at(-1) ?? '{}')).toMatchObject({
       code: 'session_identity_missing',
       check_id: 'exact_session',
@@ -10894,7 +10904,7 @@ describe('asking before the hooks have ever run', () => {
       },
     }
 
-    expect(askCommand(deps, 'Ship it?', { json: true })).toBe(EXIT.usage)
+    expect(askCommand(deps, 'Ship it?', { title: 'Decision', json: true })).toBe(EXIT.usage)
     expect(JSON.parse(io.outLines.at(-1) ?? '{}')).toMatchObject({
       code: 'session_identity_missing',
       check_id: 'exact_session',
@@ -11168,10 +11178,46 @@ describe('question sets', () => {
     expect(submitted?.draft.reply?.questions[0]?.text).toBe('Which environment?')
   })
 
+  it('titles a question the agent left untitled by the Agent Session name, with a note to pass --title', () => {
+    // No route copies the question into the title. An agent session or script
+    // from before titles still registers its question; the note names the fix.
+    expect(buildQuestions({ choice: ['Staging', 'Production'] }, 'Where?')).toMatchObject({ ok: true, summary: 'Where?', notes: [MISSING_TITLE_NOTE] })
+    expect(buildQuestions({ choice: ['Staging', 'Production'] }, 'Where?')).not.toHaveProperty('title')
+    expect(MISSING_TITLE_NOTE).toMatch(/^notifai: pass --title .*names the decision.*Agent Session name\.$/)
+    expect(buildQuestions({ title: '  ' }, 'Where?')).toMatchObject({ ok: true, notes: [MISSING_TITLE_NOTE] })
+    expect(buildQuestions({ title: ' Deploy target ' }, 'Where?')).toMatchObject({ ok: true, title: 'Deploy target', summary: 'Where?' })
+    expect(buildQuestions({ title: 'Deploy target' }, 'Where?')).not.toHaveProperty('headers')
+    expect(buildQuestions({ title: 'Deploy target' }, 'Where?')).not.toHaveProperty('notes')
+    expect(buildQuestions({ form: JSON.stringify({ summary: 'Two decisions.', questions: [{ title: 'A', text: 'A?' }, { title: 'B', text: 'B?' }] }) }, undefined))
+      .toMatchObject({ ok: true, headers: ['A', 'B'], notes: [MISSING_TITLE_NOTE] })
+    // An untitled question of several is "Question N" until the agent names it.
+    const partial = buildQuestions({ form: JSON.stringify({ title: 'Release', summary: 'Three decisions.', questions: [{ title: 'A', text: 'A?' }, { text: 'B?' }, { title: ' ', text: 'C?' }] }) }, undefined)
+    expect(partial).toMatchObject({ ok: true, title: 'Release', headers: ['A', 'Question 2', 'Question 3'] })
+    expect(partial).toMatchObject({ notes: [expect.stringMatching(/^notifai: give each question of a form its own "title".*question 2, question 3 show as "Question N"/)] })
+    expect(buildQuestions({ form: JSON.stringify({ title: 'Release', summary: 'Two decisions.', questions: [{ title: 'A', text: 'A?' }, { title: 7, text: 'B?' }] }) }, undefined))
+      .toMatchObject({ ok: false, error: 'Question 2: "title" must be a string.' })
+    expect(buildQuestions({ form: JSON.stringify({ title: 3, summary: 'One decision.', questions: [{ text: 'A?' }] }) }, undefined))
+      .toMatchObject({ ok: false, error: expect.stringContaining('"title"') })
+    // The form's title names everything it decides; each question's own title is its header.
+    expect(buildQuestions({ form: JSON.stringify({ title: 'Release plan', summary: 'Two decisions.', questions: [{ title: 'Ship day', text: 'Friday?' }, { title: 'Notes', text: 'Add notes?' }] }) }, undefined))
+      .toMatchObject({ ok: true, title: 'Release plan', headers: ['Ship day', 'Notes'], summary: 'Two decisions.' })
+    // One question needs no header of its own.
+    expect(buildQuestions({ form: JSON.stringify({ title: 'Ship day', summary: 'One decision.', questions: [{ text: 'Friday?' }] }) }, undefined))
+      .toMatchObject({ ok: true, title: 'Ship day' })
+    // --title beside --form is a usage error: the form carries its own title.
+    expect(buildQuestions({ title: 'Twice', form: JSON.stringify({ title: 'Release', summary: 'One decision.', questions: [{ text: 'A?' }] }) }, undefined))
+      .toMatchObject({ ok: false, error: expect.stringContaining('--form replaces the positional question, --title') })
+    // A form a harness opened itself has no agent-written title: its hook titles it.
+    expect(buildQuestions({ form: JSON.stringify({ summary: 'A?', questions: [{ text: 'A?', choices: ['X', 'Y'] }, { text: 'B?' }] }) }, undefined, { selfOpened: true }))
+      .toMatchObject({ ok: true, summary: 'A?' })
+    expect(buildQuestions({ form: JSON.stringify({ summary: 'A?', questions: [{ text: 'A?' }] }) }, undefined, { selfOpened: true })).not.toHaveProperty('title')
+    expect(buildQuestions({ form: JSON.stringify({ summary: 'A?', questions: [{ text: 'A?' }, { text: 'B?' }] }) }, undefined, { selfOpened: true })).not.toHaveProperty('notes')
+  })
+
   it('keeps the authored Body separate from the question Summary', () => {
     expect(
       buildQuestions(
-        { body: '## Why\nThe release window closes today.' },
+        { title: 'Environment', body: '## Why\nThe release window closes today.' },
         'Which environment?',
       ),
     ).toMatchObject({
@@ -11183,17 +11229,18 @@ describe('question sets', () => {
   })
 
   it('omits the Body when the question Summary is sufficient', () => {
-    expect(buildQuestions({}, 'Which environment?')).toMatchObject({
+    expect(buildQuestions({ title: 'Environment' }, 'Which environment?')).toMatchObject({
       ok: true,
       summary: 'Which environment?',
     })
-    expect(buildQuestions({}, 'Which environment?')).not.toHaveProperty('body')
+    expect(buildQuestions({ title: 'Environment' }, 'Which environment?')).not.toHaveProperty('body')
     expect(
       buildQuestions(
         {
           form: JSON.stringify({
+            title: 'Deployment',
             summary: 'Choose deployment and monitoring details.',
-            questions: [{ text: 'Deploy where?' }, { text: 'What should I monitor?' }],
+            questions: [{ title: 'Target', text: 'Deploy where?' }, { title: 'Monitoring', text: 'What should I monitor?' }],
           }),
         },
         undefined,
@@ -11205,11 +11252,11 @@ describe('question sets', () => {
   })
 
   it('counts single-question length in Unicode code points', () => {
-    expect(buildQuestions({} as AskFlags, '😀'.repeat(QUESTION_TEXT_MAX_LENGTH))).toMatchObject({
+    expect(buildQuestions({ title: 'Emoji' } as AskFlags, '😀'.repeat(QUESTION_TEXT_MAX_LENGTH))).toMatchObject({
       ok: true,
     })
     expect(
-      buildQuestions({} as AskFlags, '😀'.repeat(QUESTION_TEXT_MAX_LENGTH + 1)),
+      buildQuestions({ title: 'Emoji' } as AskFlags, '😀'.repeat(QUESTION_TEXT_MAX_LENGTH + 1)),
     ).toMatchObject({ ok: false })
   })
 
@@ -11218,8 +11265,9 @@ describe('question sets', () => {
       buildQuestions(
         {
           form: JSON.stringify({
+            title: 'Deployment',
             summary: 'Choose deployment and monitoring details.',
-            questions: [{ text: 'Deploy where?' }, { text: 'What should I monitor?' }],
+            questions: [{ title: 'Target', text: 'Deploy where?' }, { title: 'Monitoring', text: 'What should I monitor?' }],
             body: '## Context\nTraffic is elevated.',
           }),
         },
@@ -11237,6 +11285,7 @@ describe('question sets', () => {
       buildQuestions(
         {
           form: JSON.stringify({
+            title: 'Deployment',
             summary: 'Choose whether to deploy.',
             questions: [{ text: 'Deploy?' }],
             detail: 'legacy context',
@@ -11254,8 +11303,9 @@ describe('question sets', () => {
     const built = buildQuestions(
       {
         form: JSON.stringify({
+          title: 'Readiness',
           summary: 'Say whether each item is ready.',
-          questions: [{ text: 'Ready?' }, { text: 'Ready?' }],
+          questions: [{ title: 'First', text: 'Ready?' }, { title: 'Second', text: 'Ready?' }],
         }),
       },
       undefined,
@@ -11270,7 +11320,7 @@ describe('question sets', () => {
     // The prose block is the densest guidance this CLI prints, but a choice id
     // cannot be read back out of prose.
     const built = buildQuestions(
-      { choice: ['Deploy now', 'Hold'] },
+      { title: 'Migration 0007', choice: ['Deploy now', 'Hold'] },
       'Deploy migration 0007 to production?',
     )
     if (!built.ok) throw new Error(built.error)
@@ -11280,14 +11330,15 @@ describe('question sets', () => {
   it('rejects forms outside the documented shape', () => {
     expect(buildQuestions({ form: 'not json' }, undefined)).toMatchObject({ ok: false })
     expect(
-      buildQuestions({ form: JSON.stringify({ summary: 'Empty form.', questions: [] }) }, undefined),
+      buildQuestions({ form: JSON.stringify({ title: 'Nothing', summary: 'Empty form.', questions: [] }) }, undefined),
     ).toMatchObject({ ok: false })
     expect(
       buildQuestions(
         {
           form: JSON.stringify({
+            title: 'Too many',
             summary: 'Answer this form.',
-            questions: Array.from({ length: REPLY_MAX_QUESTIONS + 1 }, (_, i) => ({ text: `Q${i}?` })),
+            questions: Array.from({ length: REPLY_MAX_QUESTIONS + 1 }, (_, i) => ({ title: `Q${i}`, text: `Q${i}?` })),
           }),
         },
         undefined,
@@ -11295,23 +11346,23 @@ describe('question sets', () => {
     ).toMatchObject({ ok: false, error: expect.stringContaining(`1-${REPLY_MAX_QUESTIONS}`) })
     expect(
       buildQuestions(
-        { form: JSON.stringify({ summary: 'Pick an option.', questions: [{ text: 'Pick?', multi: true }] }) },
+        { form: JSON.stringify({ title: 'Option', summary: 'Pick an option.', questions: [{ text: 'Pick?', multi: true }] }) },
         undefined,
       ),
     ).toMatchObject({ ok: false, error: expect.stringContaining('--choice') })
     // --form replaces the flag surface; mixing them is a usage error.
     expect(
-      buildQuestions({ form: JSON.stringify({ summary: 'Answer this.', questions: [{ text: 'Q?' }] }) }, 'Also a question?'),
+      buildQuestions({ form: JSON.stringify({ title: 'One', summary: 'Answer this.', questions: [{ text: 'Q?' }] }) }, 'Also a question?'),
     ).toMatchObject({ ok: false })
   })
 
   it('takes a form choice as a label or as a label with its description and recommendation', () => {
-    const built = buildQuestions({ form: JSON.stringify({ summary: 'Two release decisions.', questions: [
-      { text: 'Deploy migration 0007?', choices: [
+    const built = buildQuestions({ form: JSON.stringify({ title: 'Release', summary: 'Two release decisions.', questions: [
+      { title: 'Migration', text: 'Deploy migration 0007?', choices: [
         { label: 'Deploy now', description: 'Two minutes of downtime.', recommended: true },
         'Wait for off-peak',
       ] },
-      { text: 'Notify customers?', choices: ['Yes', { label: 'No', description: 'Nobody hears about it.' }] },
+      { title: 'Customers', text: 'Notify customers?', choices: ['Yes', { label: 'No', description: 'Nobody hears about it.' }] },
     ] }) }, undefined)
     expect(built).toMatchObject({ ok: true, questions: [
       { choices: [
@@ -11320,11 +11371,11 @@ describe('question sets', () => {
       ] },
       { choices: [{ id: 'yes', label: 'Yes' }, { id: 'no', label: 'No', description: 'Nobody hears about it.' }] },
     ] })
-    const twice = buildQuestions({ form: JSON.stringify({ summary: 'One decision.', questions: [
+    const twice = buildQuestions({ form: JSON.stringify({ title: 'Which', summary: 'One decision.', questions: [
       { text: 'Which?', choices: [{ label: 'A', recommended: true }, { label: 'B', recommended: true }] },
     ] }) }, undefined)
     expect(twice).toMatchObject({ ok: false, error: expect.stringContaining('at most one') })
-    const unknown = buildQuestions({ form: JSON.stringify({ summary: 'One decision.', questions: [
+    const unknown = buildQuestions({ form: JSON.stringify({ title: 'Which', summary: 'One decision.', questions: [
       { text: 'Which?', choices: [{ label: 'A', detail: 'x' }, 'B'] },
     ] }) }, undefined)
     expect(unknown).toMatchObject({ ok: false, error: expect.stringContaining('Unknown choice keys: detail') })
@@ -11332,6 +11383,7 @@ describe('question sets', () => {
 
   it('carries flag descriptions and the recommended choice onto the single question', () => {
     expect(buildQuestions({
+      title: 'Migration 0007',
       choice: ['Deploy now', 'Wait'],
       choiceDescription: [{ after: 2, text: 'Deploys at 02:00 UTC.' }],
       recommended: ['Wait'],

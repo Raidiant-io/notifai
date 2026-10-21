@@ -108,9 +108,22 @@ export function pickerDigest(toolInput: unknown): string | null {
 
 export interface PickerForm {
   questions: QuestionT[]
+  /** The picker's non-empty headers joined, when it has any: the title unless the picker carries a heading. */
+  title?: string
   summary: string
   body?: string
   shown: NativeQuestionShown[]
+}
+
+/**
+ * The heading a picker shows above its questions, in a host that enables the
+ * extended schema (`title`, "Optional single-line heading shown above the
+ * questions"). Plain terminal `claude` never carries one.
+ */
+export function pickerHeading(toolInput: unknown): string | undefined {
+  if (typeof toolInput !== 'object' || toolInput === null) return undefined
+  const heading = (toolInput as { title?: unknown }).title
+  return typeof heading === 'string' && heading.trim() !== '' ? oneLine(heading) : undefined
 }
 
 function chars(text: string): number {
@@ -173,8 +186,10 @@ function uniqueId(base: string, fallback: string, used: Set<string>): string {
  * its choice, and the one option labelled "(Recommended)" becomes the
  * recommended choice. Long question text, labels and descriptions are
  * shortened to fit, and only then does the picker's full wording go into the
- * body. An error names why the picker cannot be a device question at all; it
- * then stays in the terminal.
+ * body. The Summary is the first question; the headers, when the picker has
+ * any, become its title, so the question is never copied into the title. An
+ * error names why the picker cannot be a device question at all; it then
+ * stays in the terminal.
  */
 export function pickerForm(picker: readonly PickerQuestion[]): PickerForm | { error: string } {
   if (picker.length < 1 || picker.length > Math.min(PICKER_MAX_QUESTIONS, REPLY_MAX_QUESTIONS)) {
@@ -224,11 +239,10 @@ export function pickerForm(picker: readonly PickerQuestion[]): PickerForm | { er
     })
     shown.push({ title: entry.question, labels: byId })
   }
-  const headers = picker.map((question) => question.header === undefined ? '' : oneLine(question.header))
-  const summary = fit(questions.length > 1 && headers.every((header) => header !== '')
-    ? headers.join(' · ')
-    : questions[0]!.text, SUMMARY_MAX_LENGTH)
-  if (!detailed) return { questions, summary, shown }
+  const headers = picker.flatMap((question) => question.header === undefined || oneLine(question.header) === '' ? [] : [oneLine(question.header)])
+  const title = headers.length === 0 ? {} : { title: headers.join(' · ') }
+  const summary = fit(questions[0]!.text, SUMMARY_MAX_LENGTH)
+  if (!detailed) return { questions, ...title, summary, shown }
   const body = picker.map((entry) => [
     `**${oneLine(entry.question)}**`,
     '',
@@ -236,7 +250,7 @@ export function pickerForm(picker: readonly PickerQuestion[]): PickerForm | { er
       ? `- ${oneLine(option.label)}`
       : `- **${oneLine(option.label)}**: ${oneLine(option.description)}`),
   ].join('\n')).join('\n\n')
-  return { questions, summary, body, shown }
+  return { questions, ...title, summary, body, shown }
 }
 
 /**

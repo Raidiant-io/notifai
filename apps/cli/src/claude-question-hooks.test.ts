@@ -9,6 +9,7 @@ import {
   claudeTerminalAnswers,
   pickerDigest,
   pickerForm,
+  pickerHeading,
   pickerQuestions,
   type PickerForm,
 } from './claude-question-bindings.js'
@@ -191,7 +192,11 @@ describe('a Claude Code picker as a device question', () => {
       { id: 'which-checks-should-run-first', text: 'Which checks should run first?', multi: true,
         choices: [described('lint', 'Lint'), described('tests', 'Tests'), described('end-to-end', 'End to end')] },
     ])
-    expect(form.summary).toBe('Target · Checks')
+    // The Summary is the first question; the headers name the whole set as its title.
+    expect(form.summary).toBe('Which environment?')
+    expect(form.title).toBe('Target · Checks')
+    expect(pickerHeading({ ...FORM, title: ' Release checks ' })).toBe('Release checks')
+    expect(pickerHeading(FORM)).toBeUndefined()
     expect(form.shown[1]).toEqual({ title: 'Which checks should run first?', labels: { lint: 'Lint', tests: 'Tests', 'end-to-end': 'End to end' } })
     // Option descriptions ride on their choices, so nothing needed a Body.
     expect(form.body).toBeUndefined()
@@ -270,7 +275,8 @@ describe('Claude Code picker hooks', () => {
         if (slept > 1) return
         const registration = h.registration()
         expect(registration.questions[0]).toMatchObject({ verified: true, picker: { title: REWORDED } })
-        expect(h.pendingOf(h.held())).toMatchObject({ question: REWORDED, summary: REWORDED })
+        // The picker's header is its title; its question is the Summary, never the title.
+        expect(h.pendingOf(h.held())).toMatchObject({ question: REWORDED, summary: REWORDED, title: 'Deploy' })
         expect(h.launches).toEqual([{ envelope: { session_id: SESSION, cwd: h.root }, harness: 'claude-code', purpose: 'submission' }])
         h.confirm()
         h.stage([{ question_id: registration.questions[0]!.question.id, choice_ids: ['production'] }])

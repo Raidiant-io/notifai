@@ -39,6 +39,7 @@ import {
   rejectAccidentalEscapedNewlines,
   slugify,
   validateMediaInputs,
+  UNTITLED_FORM_TITLE,
   type ChoiceDescriptionInput,
   type ChoiceDetails,
   type DraftInvocation,
@@ -46,6 +47,8 @@ import {
 export interface AskFlags {
   /** Emit the registration and its turn obligation as one JSON object. */
   json?: boolean
+  /** The question's title: names the decision, as the `titles` guidance says. Always passed by current guidance. */
+  title?: string
   choice?: string[]
   /** One-line consequence of each choice, attached to the `--choice` before it. */
   choiceDescription?: ChoiceDescriptionInput[]
@@ -128,17 +131,37 @@ type AskFormChoice = string | { label: string; description?: string; recommended
 
 /** The `--form` document: what an agent writes to ask several things at once. */
 interface AskFormQuestion {
+  /** With several questions, a word or two naming this question's own decision: its header in a terminal form. */
+  title?: string
   text: string
   choices?: AskFormChoice[]
   multi?: boolean
 }
 
 const FORM_SHAPE =
-  '--form must be JSON: {"summary": "...", "questions": [{"text", "choices"?, "multi"?}], "body"?}; ' +
+  '--form must be JSON: {"title": "...", "summary": "...", "questions": [{"title"?, "text", "choices"?, "multi"?}], "body"?}; ' +
   'a choice is a label or {"label", "description"?, "recommended"?}.'
+
+const TITLE_GUIDANCE = 'it names the decision in a few words and is never the question itself (`notifai guidance titles`)'
+
+/** A title an older skill or script left out: the question still registers. */
+export const MISSING_TITLE_NOTE =
+  `notifai: pass --title (a form: its "title"); ${TITLE_GUIDANCE}. Until then the question is titled by the Agent Session name.`
+const missingQuestionTitlesNote = (numbers: number[]): string =>
+  `notifai: give each question of a form its own "title", a word or two naming its decision; ${numbers.map(n => `question ${n}`).join(', ')} ${numbers.length === 1 ? 'shows' : 'show'} as "Question N" until then.`
 
 export interface BuiltQuestions {
   questions: QuestionT[]
+  /**
+   * The agent's title for the question, or the form's title for everything it
+   * decides. Absent only for a form the agent opened itself, which is titled
+   * by its heading, its headers or the Agent Session name (`buildAskDraft`).
+   */
+  title?: string
+  /** With several questions, each question's own short title: its header in a terminal form. */
+  headers?: string[]
+  /** One line each for a title the agent left out, which current guidance always passes. */
+  notes?: string[]
   /** Purpose-written plain text for the collapsed banner and list surfaces. */
   summary: string
   /** Optional standalone Markdown Body for focused detail. */
@@ -148,17 +171,27 @@ export interface BuiltQuestions {
 /**
  * Turn ask input into questions plus authored presentation content. Everything is
  * validated at registration because a later hook failure is easy to miss.
+ *
+ * The guidance has `ask` always pass a title (`--title`, or the form's
+ * `"title"`), and a form with several questions a `"title"` per question. An
+ * agent session or script from before titles leaves them out, so a missing
+ * title is a note, not a usage error: the question takes the Agent Session
+ * name, the rule a self-opened form follows, and an untitled question of
+ * several is "Question N". A harness form the agent opened itself
+ * (`selfOpened`) has no agent-written title: its hook titles it, without a note.
  */
 export function buildQuestions(
   flags: AskFlags,
   question: string | undefined,
-): { ok: true; questions: QuestionT[]; summary: string; body?: string } | { ok: false; error: string } {
+  options: { selfOpened?: boolean } = {},
+): ({ ok: true } & BuiltQuestions) | { ok: false; error: string } {
+  const titled = options.selfOpened !== true
   if (flags.form !== undefined) {
     if (question !== undefined || flags.choice?.length || flags.multi ||
-        flags.choiceDescription?.length || flags.recommended?.length) {
+        flags.choiceDescription?.length || flags.recommended?.length || flags.title !== undefined) {
       return {
         ok: false,
-        error: '--form replaces the positional question, --choice, --choice-description, --recommended, and --multi.',
+        error: '--form replaces the positional question, --title, --choice, --choice-description, --recommended, and --multi; the form carries the title in its "title" key.',
       }
     }
     let parsed: unknown
@@ -172,7 +205,7 @@ export function buildQuestions(
     }
     const record = parsed as Record<string, unknown>
     const unknownKeys = Object.keys(record).filter(
-      (key) => key !== 'summary' && key !== 'questions' && key !== 'body',
+      (key) => key !== 'title' && key !== 'summary' && key !== 'questions' && key !== 'body',
     )
     if (unknownKeys.length > 0) {
       return {
@@ -185,6 +218,9 @@ export function buildQuestions(
     }
     if (typeof record['summary'] !== 'string' || record['summary'].trim() === '') {
       return { ok: false, error: '--form needs a non-empty one-line "summary" string.' }
+    }
+    if (record['title'] !== undefined && typeof record['title'] !== 'string') {
+      return { ok: false, error: '"title" must be a string.' }
     }
     const formQuestions = record['questions']
     if (formQuestions.length < 1 || formQuestions.length > REPLY_MAX_QUESTIONS) {
@@ -200,12 +236,22 @@ export function buildQuestions(
       return { ok: false, error: 'Pass the Markdown Body in either --body or the form "body" key, not both.' }
     }
     const questions: QuestionT[] = []
+    const headers: string[] = []
+    const untitled: number[] = []
     const usedIds = new Set<string>()
     for (const [index, entry] of formQuestions.entries()) {
       if (typeof entry !== 'object' || entry === null || typeof (entry as AskFormQuestion).text !== 'string') {
         return { ok: false, error: `Question ${index + 1} needs a "text" string.` }
       }
       const spec = entry as AskFormQuestion
+      if (spec.title !== undefined && typeof spec.title !== 'string') {
+        return { ok: false, error: `Question ${index + 1}: "title" must be a string.` }
+      }
+      if (spec.title !== undefined && spec.title.trim() !== '') headers.push(spec.title.trim())
+      else if (titled && formQuestions.length > 1) {
+        headers.push(`Question ${index + 1}`)
+        untitled.push(index + 1)
+      }
       const choices = formChoices(spec.choices)
       if ('error' in choices) return { ok: false, error: `Question ${index + 1}: ${choices.error}` }
       const built = buildOneQuestion(spec.text, choices.labels, choices.details, spec.multi === true, index, usedIds)
@@ -213,9 +259,17 @@ export function buildQuestions(
       questions.push(built.question)
     }
     const body = flags.body ?? (record['body'] as string | undefined)
+    const title = typeof record['title'] === 'string' ? record['title'].trim() : undefined
+    const notes = [
+      ...(titled && (title === undefined || title === '') ? [MISSING_TITLE_NOTE] : []),
+      ...(untitled.length > 0 ? [missingQuestionTitlesNote(untitled)] : []),
+    ]
     return {
       ok: true,
       questions,
+      ...(title !== undefined && title !== '' ? { title } : {}),
+      ...(headers.length === questions.length ? { headers } : {}),
+      ...(notes.length > 0 ? { notes } : {}),
       summary: record['summary'],
       ...(body !== undefined ? { body } : {}),
     }
@@ -232,6 +286,7 @@ export function buildQuestions(
   return {
     ok: true,
     questions: [built.question],
+    ...(flags.title !== undefined && flags.title.trim() !== '' ? { title: flags.title.trim() } : titled ? { notes: [MISSING_TITLE_NOTE] } : {}),
     summary: built.question.text,
     ...(flags.body !== undefined ? { body: flags.body } : {}),
   }
@@ -301,6 +356,12 @@ function buildOneQuestion(
   }
 }
 
+/**
+ * The draft of a registered question. A form the agent opened itself wrote no
+ * title: it is titled by its heading or headers (the caller's `built.title`),
+ * otherwise by the Agent Session name. No route copies the question into the
+ * title; the question is the Summary, shown once beneath it.
+ */
 export function buildAskDraft(
   config: CliConfig,
   built: BuiltQuestions,
@@ -311,7 +372,7 @@ export function buildAskDraft(
   const result = buildDraft(
     config,
     {
-      title: built.questions[0]!.text,
+      title: built.title ?? invocation.source?.session_label ?? UNTITLED_FORM_TITLE,
       summary: built.summary,
       ...(built.body !== undefined ? { body: built.body } : {}),
       ...(flags.project !== undefined ? { project: flags.project } : {}),
@@ -502,6 +563,7 @@ function persistRegisteredQuestion(
       deps.env,
       {
         question: built.questions[0]!.text,
+        title: draft.presentation.title,
         summary: draft.presentation.summary,
         service_identity: service,
         questions: built.questions,
@@ -747,6 +809,7 @@ export function askCommand(
   if (!built.ok) {
     return askFailure(deps, flags, 'invalid_input', 'questions', built.error, 'fix the question input and retry')
   }
+  for (const note of built.notes ?? []) deps.io.err(note)
   const mediaInputError = validateMediaInputs(flags.image, flags.imageAlt)
   if (mediaInputError !== null) {
     return askFailure(deps, flags, 'invalid_input', 'media', mediaInputError, 'fix the media flags and retry')

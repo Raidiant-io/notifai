@@ -362,6 +362,12 @@ export interface PendingQuestion {
   question_id?: string
   /** One-line summary: the single question's text, or the set's first. */
   question: string
+  /**
+   * The title the User's devices show above the question: the agent's
+   * `--title`, a form's `"title"`, or for a form the agent opened itself its
+   * heading, its headers or the Agent Session name. Never the question.
+   */
+  title?: string
   /** Purpose-written plain text for native banners and notification lists. */
   summary: string
   /**

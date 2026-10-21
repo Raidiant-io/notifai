@@ -128,7 +128,7 @@ import {
   QUESTION_SUBMISSION_COMPLETION_HEADROOM_SECONDS,
   QUESTION_WAITER_CEILING_SECONDS,
 } from './question-timing.js'
-import { buildDraft } from './send.js'
+import { buildDraft, UNTITLED_FORM_TITLE } from './send.js'
 
 /**
  * The wire contract's shortest reply window. A question submitted with less
@@ -211,6 +211,8 @@ const CLAIM_HANDOFF_POLL_MS = 1_000
 async function prepareQuestionSubmission(
   ctx: HookContext,
   options: {
+    /** The registered title; a question registered without one is titled by its Agent Session name. */
+    title?: string | undefined
     summary: string
     body?: string
     questions: QuestionT[]
@@ -233,7 +235,7 @@ async function prepareQuestionSubmission(
   const build = buildDraft(
     ctx.config,
     {
-      title: options.questions[0]!.text,
+      title: options.title ?? options.source?.session_label ?? UNTITLED_FORM_TITLE,
       summary: options.summary,
       ...(options.body !== undefined ? { body: options.body } : {}),
       lifecycle: { tier: 'needs_you' },
@@ -2043,6 +2045,7 @@ async function admitDueQuestions(
       let intent = entry.submission
       if (intent === undefined) {
         const prepared = await prepareQuestionSubmission(ctx, {
+          ...(entry.title !== undefined ? { title: entry.title } : {}),
           summary: entry.summary,
           ...(entry.body !== undefined ? { body: entry.body } : {}),
           questions,
@@ -2125,6 +2128,7 @@ async function admitDueQuestions(
               `question submission was rejected (${err.code}, HTTP ${err.status}); reminting the draft in the current contract instead of replaying the frozen one`,
             )
             const reminted = await prepareQuestionSubmission(ctx, {
+              ...(entry.title !== undefined ? { title: entry.title } : {}),
               summary: entry.summary,
               ...(entry.body !== undefined ? { body: entry.body } : {}),
               questions,

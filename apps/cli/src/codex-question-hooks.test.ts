@@ -196,5 +196,8 @@ it('registers one question for the same tool invocation, and for an identical ca
   await run('call_other')
   const pending = readSessionState(SESSION, h.env).pending ?? []
   expect(pending).toHaveLength(1)
+  // A card has no heading, so its title is the Agent Session name, never the card text.
+  expect(pending[0]!.title).toBeDefined()
+  expect(pending[0]!.title).not.toBe('Which environment?')
   expect(h.output.map(line => JSON.parse(line).hookSpecificOutput.permissionDecision)).toEqual(['deny', 'deny', 'deny'])
 })

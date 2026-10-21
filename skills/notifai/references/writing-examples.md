@@ -43,7 +43,9 @@ then ask me to deploy the new prices again.
 
 ## A question with steps
 
-Summary, which `notifai ask` also uses as the title: `Is the test phone connected and unlocked so I can install the new build?`
+Title: `Test phone readiness`
+
+Summary: `Is the test phone connected and unlocked so I can install the new build?`
 
 Choices: `Ready — install now` / `Not yet — wait`
 

@@ -154,6 +154,13 @@ function validateMediaManifest(media: readonly MediaItemT[]): string | null {
 export { rewriteMediaReferences } from '@raidiant/notifai-protocol'
 
 /** Merge flags over resolved config into a Notification Request draft. */
+/**
+ * The title of a question that reached registration without one and without an
+ * Agent Session name to take: only a harness form the agent opened itself in a
+ * session that carries no Source Context. It never copies the question.
+ */
+export const UNTITLED_FORM_TITLE = 'Question'
+
 export function buildDraft(
   config: CliConfig,
   flags: SendFlags,

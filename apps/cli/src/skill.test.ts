@@ -322,12 +322,20 @@ describe('Notifai agent skill', () => {
     expect(ask).toMatch(/work you own or coordinate.*User response.*`notifai ask` in\s+the same turn/is)
     expect(ask).toMatch(/conversation alone misses an\s+away User/i)
     const example = rawSection('## Ask a question').match(/```bash\n(notifai ask[\s\S]*?)```/)?.[1] ?? ''
-    // `ask` takes no title yet: the question is the Summary and the title.
-    expect(example).not.toMatch(/--title/)
-    expect(ask).toMatch(/positional question is the Summary and the title/i)
+    // The agent writes the title; the question is the Summary beneath it.
+    expect(example).toMatch(/--title "Production deploy"/)
+    expect(ask).toMatch(/positional question is the Summary: the exact question/i)
     expect(example).toMatch(/--choice-description "/)
     expect(example).toMatch(/--recommended "/)
     expect(ask).toMatch(/always type an answer/i)
+    // `--title` is required and the `titles` topic says what it carries; the
+    // skill never restates that, and the CLI never copies the question into it.
+    expect(ask).toMatch(/write `--title` as the `titles` guidance says for a question/i)
+    expect(ask).not.toMatch(/names the decision/i)
+    // A form carries its own title, and each question of several its own, shown as its tab.
+    expect(sendDetailsReference).toMatch(/"title": "Release plan"/)
+    expect(sendDetailsReference).toMatch(/"title": "Ship day", "text": "Ship on Friday\?"/)
+    expect(sendDetailsReference.replace(/\s+/g, ' ')).toMatch(/with several questions, each takes a `"title"` of a word or two naming its own decision; a terminal form shows it as that question's tab/i)
   })
 
   it('says a self-opened form reaches devices only where linked', () => {

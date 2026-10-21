@@ -39,8 +39,10 @@ async function routeCard(deps: CommandDeps, envelope: HookEnvelope, logger: Logg
   const raw = (envelope.tool_input as { questions?: unknown } | null)?.questions
   if (!Array.isArray(raw) || raw.length === 0 || !raw.every(entry => typeof entry?.title === 'string' &&
       (entry.options === undefined || (Array.isArray(entry.options) && entry.options.every((option: unknown) => typeof option === 'string'))))) return null
+  // A card has no heading and no headers, so the draft titles it by the Agent Session name.
   const form = buildQuestions({ form: JSON.stringify({ summary: raw[0].title,
-    questions: raw.map(entry => ({ text: entry.title, ...(entry.options === undefined ? {} : { choices: entry.options }) })) }) }, undefined)
+    questions: raw.map(entry => ({ text: entry.title, ...(entry.options === undefined ? {} : { choices: entry.options }) })) }) }, undefined,
+  { selfOpened: true })
   if (!form.ok) return null
   const source = resolveDraftInvocation({ ...deps, cwd }, {}, { harness: 'codex', label: 'Codex', sessionId })
   if (!source.ok) return null
@@ -67,8 +69,8 @@ async function routeCard(deps: CommandDeps, envelope: HookEnvelope, logger: Logg
   const shown = raw.map((entry, index) => ({ title: entry.title,
     labels: Object.fromEntries((form.questions[index]!.choices ?? []).map((choice, position) => [choice.id, entry.options[position]])) }))
   const { question_id: questionId } = registerQuestion(sessionId, deps.env, {
+    question: form.questions[0]!.text, title: draft.draft.presentation.title, summary: draft.draft.presentation.summary,
     questions: form.questions, service_identity: service,
-    question: form.questions[0]!.text, summary: draft.draft.presentation.summary, questions: form.questions, service_identity: service,
     ...(draft.draft.presentation.body === undefined ? {} : { body: draft.draft.presentation.body }),
     ...(draft.draft.project === undefined ? {} : { project: draft.draft.project }),
     ...(draft.draft.source === undefined ? {} : { source: draft.draft.source }),

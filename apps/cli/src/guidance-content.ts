@@ -65,7 +65,10 @@ const TITLES = `# Titles
 The User hired the outcome, not the pipeline. A title says what the work means
 to them (what is now finished, what went wrong, what needs them) in about 40
 characters, understandable alone. The kind and the Project travel as their own
-fields, so the title leaves both out.
+fields, so the title leaves both out. A question's title names the decision
+in a few words; it is never a question and never restates one. The question
+goes beneath it. A form's title names everything the form decides, never one
+of its questions.
 
 Good:
 
@@ -73,6 +76,8 @@ Good:
 - \`Password reset emails aren't sending\` — the failure as the User meets it
 - \`3 orders didn't import and need review\` — a count that earns its place
   because acting on it is theirs to do
+- \`Production deploy\` — names the decision; the question goes beneath it
+- \`Release plan\` — a form's title, covering everything it decides
 
 Bad:
 
@@ -81,6 +86,9 @@ Bad:
   they lost
 - \`Task complete\` / \`Build failed\` / \`Need input\` — no substance, and
   the kind restated
+- \`Should I deploy to production now?\` — the question as its title
+- \`Deploy the schema change to production\` — the question restated
+- \`Ship on Friday?\` — one of that form's questions used as its title
 `
 
 const CONTENT = `# Content

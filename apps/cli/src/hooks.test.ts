@@ -1145,7 +1145,7 @@ describe('pushing a registered question', () => {
     const h = harness([reply({ text: 'Yes' })])
     // Prompt 20s ago, exactly as a just-spawned agent has.
     writeSessionState('spawn1', h.env, { last_prompt_at: NOW - 20_000 })
-    registerQuestion('spawn1', h.env, { question: 'Ship it?' }, NOW)
+    registerQuestion('spawn1', h.env, { question: 'Ship it?', title: 'Release' }, NOW)
     expect(sessionNotified('spawn1', h.env)).toBe(false)
     await hookRunCommand(h.deps, 'stop', stdin({ session_id: 'spawn1' }))
     expect(h.recorder.submitted.length).toBeGreaterThan(0)
@@ -1156,7 +1156,7 @@ describe('pushing a registered question', () => {
       device_ids: ['dev_iphone', 'dev_mac'],
     })
     expect(h.recorder.submitted[0]?.draft.presentation).toMatchObject({
-      title: 'Ship it?',
+      title: 'Release',
       summary: 'Ship it?',
     })
     // Kind default sounds are resolved server-side; stamping one here would
@@ -1233,13 +1233,13 @@ describe('pushing a registered question', () => {
     registerQuestion(
       'project-title',
       h.env,
-      { question: 'Ship it?', project: 'notifai-cli' },
+      { question: 'Ship it?', title: 'Release', project: 'notifai-cli' },
       NOW,
     )
 
     await hookRunCommand(h.deps, 'stop', stdin({ session_id: 'project-title', cwd: h.deps.cwd }))
 
-    expect(h.recorder.submitted[0]?.draft.presentation.title).toBe('Ship it?')
+    expect(h.recorder.submitted[0]?.draft.presentation.title).toBe('Release')
     expect(h.recorder.submitted[0]?.draft.project).toBe('notifai-cli')
   })
 })
@@ -3041,10 +3041,11 @@ describe('several questions in flight', () => {
     writeSessionState('codex-form', h.env, { last_prompt_at: AWAY })
     const built = buildQuestions(
       { form: JSON.stringify({
+          title: 'Launch',
           summary: 'Choose launch ownership and region.',
           questions: [
-            { text: 'Start personally?', choices: ['Yes', 'No'] },
-            { text: 'Which region?', choices: ['US', 'EU'] },
+            { title: 'Owner', text: 'Start personally?', choices: ['Yes', 'No'] },
+            { title: 'Region', text: 'Which region?', choices: ['US', 'EU'] },
           ],
         }) },
       undefined,
@@ -3778,13 +3779,13 @@ describe('ask registration', () => {
     const h = harness()
     // Inside a hook, a rejection is only a stderr note the agent never reads —
     // so it would look registered and then silently never ask.
-    expect(askCommand(h.deps, 'Ship it?', { choice: ['Only one'], sessionId: 'a1' })).toBe(EXIT.usage)
+    expect(askCommand(h.deps, 'Ship it?', { title: 'Release', choice: ['Only one'], sessionId: 'a1' })).toBe(EXIT.usage)
     expect(readSessionState('a1', h.env).pending).toBeUndefined()
   })
 
   it('stores the validated question set, comma-bearing labels verbatim', () => {
     const h = harness()
-    const built = buildQuestions({ choice: ['Yes, ship it', 'No, hold'] }, 'Ship it?')
+    const built = buildQuestions({ title: 'Release', choice: ['Yes, ship it', 'No, hold'] }, 'Ship it?')
     expect(built.ok).toBe(true)
     if (!built.ok) return
     registerQuestion('a2', h.env, { question: built.questions[0]!.text, questions: built.questions })
@@ -3805,10 +3806,11 @@ describe('ask registration', () => {
     writeSessionState('form1', h.env, { last_prompt_at: AWAY })
     const built = buildQuestions(
       { form: JSON.stringify({
+          title: 'Deployment',
           summary: 'Choose deployment details.',
           questions: [
-            { text: 'Deploy where?', choices: ['Staging', 'Production'], multi: true },
-            { text: 'Anything to watch?' },
+            { title: 'Target', text: 'Deploy where?', choices: ['Staging', 'Production'], multi: true },
+            { title: 'Watch', text: 'Anything to watch?' },
           ],
           body: '## Context\nThe long story.',
         }) },
@@ -3818,6 +3820,7 @@ describe('ask registration', () => {
     if (!built.ok) return
     registerQuestion('form1', h.env, {
       question: built.questions[0]!.text,
+      title: built.title!,
       summary: built.summary,
       questions: built.questions,
       ...(built.body !== undefined ? { body: built.body } : {}),
@@ -3828,7 +3831,8 @@ describe('ask registration', () => {
 
     await hookRunCommand(h.deps, 'stop', stdin({ session_id: 'form1' }))
     const draft = h.recorder.submitted[0]?.draft
-    expect(draft?.presentation.title).toBe('Deploy where?')
+    // The form's title names everything it decides; the question is never copied into it.
+    expect(draft?.presentation.title).toBe('Deployment')
     expect(draft?.presentation.summary).toBe('Choose deployment details.')
     // Questions travel structured while Body remains standalone focused detail.
     expect(draft?.presentation.body).toBe('## Context\nThe long story.')
@@ -3857,7 +3861,7 @@ describe('ask registration', () => {
       900,
     )
     writeSessionState('framing1', h.env, { last_prompt_at: AWAY })
-    const built = buildQuestions({ choice: ['ALPHA', 'BETA'] }, 'Which rollout option?')
+    const built = buildQuestions({ title: 'Rollout', choice: ['ALPHA', 'BETA'] }, 'Which rollout option?')
     expect(built.ok).toBe(true)
     if (!built.ok) return
     registerQuestion('framing1', h.env, {
@@ -3890,7 +3894,7 @@ describe('ask registration', () => {
       900,
     )
     writeSessionState('latest1', h.env, { last_prompt_at: AWAY })
-    const built = buildQuestions({ choice: ['Yes', 'No'] }, 'Ship it?')
+    const built = buildQuestions({ title: 'Release', choice: ['Yes', 'No'] }, 'Ship it?')
     expect(built.ok).toBe(true)
     if (!built.ok) return
     registerQuestion('latest1', h.env, { question: 'Ship it?', questions: built.questions })
@@ -3928,14 +3932,14 @@ describe('ask registration', () => {
 
   it('does not let an explicit session bypass exact active-harness proof', () => {
     const h = harness()
-    expect(askCommand(h.deps, 'Ship it?', { sessionId: 'guessed' })).toBe(EXIT.usage)
+    expect(askCommand(h.deps, 'Ship it?', { title: 'Release', sessionId: 'guessed' })).toBe(EXIT.usage)
     expect(readSessionState('guessed', h.env).pending).toBeUndefined()
   })
 
   it('does not route from NOTIFAI_SESSION where no exact harness has spoken', () => {
     const h = harness()
     h.deps.env['NOTIFAI_SESSION'] = 'solo-session'
-    expect(askCommand(h.deps, 'Ship it?', {})).toBe(EXIT.usage)
+    expect(askCommand(h.deps, 'Ship it?', { title: 'Release' })).toBe(EXIT.usage)
     expect(readSessionState('solo-session', h.env).pending).toBeUndefined()
   })
 
@@ -6732,7 +6736,7 @@ describe('Claude Code Stop wake route', () => {
     const h = harness([reply({ text: 'BETA' })])
     writeGlobalConfig(h, 'ask_grace_seconds = 0\n')
     writeSessionState('claude-route', h.env, { last_prompt_at: AWAY })
-    const built = buildQuestions({ choice: ['ALPHA', 'BETA'] }, 'Which rollout option?')
+    const built = buildQuestions({ title: 'Rollout', choice: ['ALPHA', 'BETA'] }, 'Which rollout option?')
     expect(built.ok).toBe(true)
     if (!built.ok) return
     registerQuestion('claude-route', h.env, {
@@ -6765,7 +6769,7 @@ describe('Claude Code Stop wake route', () => {
     const h = harness([reply({ text: 'BETA' })])
     writeGlobalConfig(h, 'ask_grace_seconds = 0\n')
     writeSessionState('claude-route', h.env, { last_prompt_at: AWAY })
-    const built = buildQuestions({ choice: ['ALPHA', 'BETA'] }, 'Which rollout option?')
+    const built = buildQuestions({ title: 'Rollout', choice: ['ALPHA', 'BETA'] }, 'Which rollout option?')
     expect(built.ok).toBe(true)
     if (!built.ok) return
     registerQuestion('claude-route', h.env, { question: 'Which rollout option?', questions: built.questions })
@@ -7804,7 +7808,7 @@ describe('Codex Stop wake route', () => {
     const h = harness([reply({ text: 'BETA' })])
     writeGlobalConfig(h, 'ask_grace_seconds = 0\n')
     writeSessionState(CODEX_THREAD, h.env, { last_prompt_at: AWAY })
-    const built = buildQuestions({ choice: ['ALPHA', 'BETA'] }, 'Which rollout option?')
+    const built = buildQuestions({ title: 'Rollout', choice: ['ALPHA', 'BETA'] }, 'Which rollout option?')
     expect(built.ok).toBe(true)
     if (!built.ok) return
     registerQuestion(CODEX_THREAD, h.env, {
