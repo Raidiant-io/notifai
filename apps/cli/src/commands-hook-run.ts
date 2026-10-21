@@ -44,8 +44,6 @@ import {
 import { cursorHookEnvironment } from './cursor-imported-hook.js'
 import { drainRetirements } from './hook-question-retirement.js'
 import {
-  claimCursorStopActivation,
-  cursorStopActivationSent,
   lifecycleStamp,
   readSessionIncarnation,
   readSessionState,
@@ -73,7 +71,7 @@ import { projectBinding, projectEnabled } from './project-enablement.js'
 import { codexCardPostToolUse, codexPreToolUse } from './codex-question-hooks.js'
 import { spawnQuestionSettlement } from './question-settlement-process.js'
 import { QUESTION_WAITER_CEILING_SECONDS } from './question-timing.js'
-import { cursorStopActivationOutput, sessionActivationOutput, userPromptContextOutput } from './session-activation.js'
+import { sessionActivationOutput, userPromptContextOutput } from './session-activation.js'
 import { currentProcessIdentity } from './process-identity.js'
 import { attendantSupport } from './session-attendant-probe.js'
 import { grokAttendHook, startGrokAttendant } from './grok-attendant.js'
@@ -708,7 +706,7 @@ export async function hookRunCommand(
     // update lookup by the detached daily maintenance, the integration
     // assessment at turn end and by the Session Attendant.
     const updateNotice = event === 'session-start' &&
-      ['claude-code', 'codex', 'opencode', 'openclaw'].includes(harness ?? '')
+      ['claude-code', 'codex', 'cursor', 'opencode', 'openclaw'].includes(harness ?? '')
       ? cachedAgentUpdateNotice({ env: deps.env, now: now(), updateCommand: updateCliCommand(deps) })
       : undefined
     const faultNotice = event === 'session-start' && harness !== undefined && harness !== 'grok'
@@ -816,89 +814,6 @@ export async function hookRunCommand(
   if (event === 'user-prompt-submit' || event === 'stop') {
     observeIntegration()
     startDueHubHandover()
-  }
-
-  // No Cursor channel adds model-visible context without a turn of its own:
-  // sessionStart.additional_context is accepted but dropped (always under the
-  // Cursor SDK), postToolUse.additional_context is dropped, and
-  // beforeSubmitPrompt has no context output. A native Stop follow-up is the
-  // host's one guaranteed model-visible channel, and it is a turn, so it is
-  // sent at most once per conversation, keyed by conversation id because the
-  // Cursor SDK starts and ends a session around every turn. It is claimed
-  // before config/auth/network, and the ordinary Stop handler stays separate
-  // so question delivery is never displaced by activation.
-  if (event === 'activation-stop') {
-    start({ cwd, stop_hook_active: envelope.stop_hook_active ?? null })
-    if (harness !== 'cursor') {
-      logger.info('hook.end', { hook: event, outcome: 'unsupported-harness', decided: false })
-      return EXIT.ok
-    }
-    if (!lifecycleEnabled()) {
-      logger.info('hook.end', {
-        hook: event,
-        outcome: 'ignored',
-        reason: 'project-disabled',
-        decided: false,
-      })
-      return EXIT.ok
-    }
-    if (envelope.status === 'aborted') {
-      logger.info('hook.end', {
-        hook: event,
-        outcome: 'ignored',
-        reason: `turn-${envelope.status}`,
-        decided: false,
-      })
-      return EXIT.ok
-    }
-    if (envelope.session_id === undefined) {
-      logger.info('hook.end', {
-        hook: event,
-        outcome: 'ignored',
-        reason: 'missing-conversation-id',
-        decided: false,
-      })
-      return EXIT.ok
-    }
-    if (cursorStopActivationSent(envelope.session_id, deps.env, now())) {
-      logger.info('hook.end', { hook: event, outcome: 'already-activated', decided: false })
-      return EXIT.ok
-    }
-    const cursorState = readSessionState(envelope.session_id, deps.env)
-    if (
-      (cursorState.pending?.length ?? 0) > 0 ||
-        cursorState.accepted !== undefined ||
-        (cursorState.acknowledgement_due?.length ?? 0) > 0
-    ) {
-      logger.info('hook.end', {
-        hook: event,
-        outcome: 'deferred',
-        reason: 'question-continuation-owns-stop',
-        decided: false,
-      })
-      return EXIT.ok
-    }
-    let claimed = false
-    try {
-      claimed = claimCursorStopActivation(envelope.session_id, deps.env, now())
-    } catch (err) {
-      logger.error('hook.end', {
-        hook: event,
-        outcome: 'claim-failed',
-        ...failureData(err),
-      })
-    }
-    logger.info('hook.end', {
-      hook: event,
-      outcome: claimed ? 'followup-added' : 'already-activated',
-      decided: claimed,
-    })
-    if (claimed) {
-      const updateNotice = cachedAgentUpdateNotice({ env: deps.env, now: now(), updateCommand: updateCliCommand(deps) })
-      const notice = [updateNotice, cachedIntegrationFaultNotice({ ...deps, cwd }, 'cursor')].filter(Boolean).join('\n\n') || undefined
-      deps.io.out(cursorStopActivationOutput(cwd, deps.env, notice))
-    }
-    return EXIT.ok
   }
 
   let config: CliConfig | null = null

@@ -376,16 +376,16 @@ Hermes v0.21.5 freezes the root or delegated worker context into the local
 classic CLI prompt. Its prompt budget can be smaller than the full guidance;
 the bounded fallback directs the agent to run `notifai guidance` before a
 Notification Request.
-Cursor currently drops the context it
-accepts at SessionStart and offers no other context channel that does not add a
-turn, so after the first completed turn Notifai uses one bounded native Stop
-follow-up: Cursor runs a synthetic follow-up turn in which the agent reads
-guidance, evaluates the just-finished Agent Event, and repeats its previous
-reply, so a host that shows only the latest reply still shows the answer you
-asked for. It is sent at most once per conversation, even on hosts that start
-and end a session around every turn. Cancelled turns do not trigger that
-follow-up; errored turns do, because failure is itself an Agent Event. A live
-question continuation takes priority. Delegated
+Cursor activation adds no turn. The editor, the Agents Window and
+`cursor-agent` deliver SessionStart context. Hosts built on the Cursor SDK,
+such as T3 Code, discard it, so Cursor wiring also writes one short
+always-applied rule, `~/.cursor/skills/notifai-activation/SKILL.md`. The
+editor, the Agents Window and SDK hosts that load the `user` setting source
+apply it to every conversation. The rule cannot know
+whether this Project is enabled, so it tells the agent to follow SessionStart
+context when present and otherwise to check `notifai project status` before
+reading guidance. `notifai doctor` reports the rule missing or out of date, and
+`notifai hooks uninstall --harness cursor` removes it with the hooks. Delegated
 Cursor work stays under the parent Agent Session's explicit notification ownership
 rather than pretending the worker received context its host cannot deliver.
 

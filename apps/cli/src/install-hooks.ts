@@ -15,6 +15,7 @@ import { createHash } from 'node:crypto'
 import path from 'node:path'
 import { parse as parseToml, stringify as stringifyToml } from 'smol-toml'
 import { atomicWriteFileSync } from './atomic-file.js'
+import { cursorActivationRuleProblems } from './cursor-activation-rule.js'
 import { withTargetFileLock } from './file-lock.js'
 import {
   hookAdapterPath,
@@ -1996,7 +1997,12 @@ function collectInstallations(
       }
       const handlers = locateCursorHandlers(document)
       if (handlers.length > 0) {
-        const problems = harnessMarkerProblems(harness, handlers, adapterHome, commandOptions)
+        const problems = [
+          ...harnessMarkerProblems(harness, handlers, adapterHome, commandOptions),
+          // Only the Machine installation owns the activation rule; a legacy
+          // Project file is residue to remove, not wiring to complete.
+          ...(sameLocalPath(file, settingsFile('cursor', env, platform)) ? cursorActivationRuleProblems(env, platform) : []),
+        ]
         found.push({ harness, file, handlers, ...(problems.length > 0 ? { problems } : {}) })
       }
       continue

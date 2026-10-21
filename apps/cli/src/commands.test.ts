@@ -135,6 +135,7 @@ import { firstRequiredBlocker, readinessJson } from './readiness.js'
 import { readOrcaSessionTitle, type OrcaCommand } from './orca-session-title.js'
 import { recordClaudePermissionMode } from './claude-command-approval.js'
 import { reopenLine, reopenReport } from './session-reopen.js'
+import { renderCursorActivationRule } from './cursor-activation-rule.js'
 
 afterEach(() => {
   resetPublishedCliDistTagsForTest()
@@ -3690,14 +3691,18 @@ describe('Cursor hook commands', () => {
     expect(installed.hooks['beforeSubmitPrompt']?.[0]?.command).toContain(
       'hook user-prompt-submit --owner notifai --harness cursor',
     )
-    expect(installed.hooks['stop']?.[0]).toMatchObject({
-      command: expect.stringContaining('hook activation-stop --owner notifai --harness cursor'),
-      loop_limit: 1,
-    })
-    expect(installed.hooks['stop']?.[1]).toMatchObject({
+    expect(installed.hooks['stop']).toEqual([expect.objectContaining({
       command: expect.stringContaining('hook stop --owner notifai --harness cursor'),
       loop_limit: 3,
-    })
+    })])
+    // The hooks cannot reach a host built on the Cursor SDK; the always-applied rule can.
+    const rule = readFileSync(path.join(deps.env.HOME!, '.cursor', 'skills', 'notifai-activation', 'SKILL.md'), 'utf8')
+    expect(rule).toBe(renderCursorActivationRule())
+    expect(rule).toMatch(/^---\nname: notifai-activation\n[\s\S]*\nalwaysApply: true\n---\n/)
+
+    // Uninstall takes the rule with the hooks, and leaves no empty directory behind.
+    expect(hooksUninstallCommand(deps, { harness: 'cursor', scriptPath })).toBe(EXIT.ok)
+    expect(existsSync(path.join(deps.env.HOME!, '.cursor', 'skills', 'notifai-activation'))).toBe(false)
   })
 
   it('reports a native Cursor installation through doctor', async () => {

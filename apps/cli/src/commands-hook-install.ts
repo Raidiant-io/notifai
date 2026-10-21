@@ -82,6 +82,7 @@ import { CLI_PACKAGE_NAME, cliPackageSpec } from './cli-contract.js'
 import { activeNpmCli } from './npm-invocation.js'
 import { removeClaudeCommandRules } from './claude-command-approval.js'
 import { codexCommandRulesFile, removeCodexCommandRules } from './codex-command-rules.js'
+import { cursorActivationRuleFile, installCursorActivationRule, removeCursorActivationRule } from './cursor-activation-rule.js'
 export interface HooksInstallFlags {
   /** Internal maintenance path: preserve host enablement and loaded owners. */
   refreshOnly?: boolean
@@ -273,7 +274,9 @@ function installDocumentHooks(deps: CommandDeps, flags: HooksInstallFlags, harne
   // Codex is the one harness whose layer holds two candidate files, so its
   // transaction anchors on `config.toml` and the inspection names the target.
   const settingsTarget = codexPaths?.configToml ?? settingsFile(harness, deps.env, hookPlatform)
-  const comparedFiles = codexPaths === null ? [settingsTarget] : [codexPaths.configToml, codexPaths.hooksJson]
+  const comparedFiles = codexPaths !== null ? [codexPaths.configToml, codexPaths.hooksJson]
+    : harness === 'cursor' ? [settingsTarget, cursorActivationRuleFile(deps.env, hookPlatform)]
+    : [settingsTarget]
   const beforeInstall = installationBytes(comparedFiles)
 
   // OpenCode's adapter is a generated plugin module rather than a handler
@@ -334,6 +337,8 @@ function installDocumentHooks(deps: CommandDeps, flags: HooksInstallFlags, harne
         applyPlan(settingsTarget, result.document)
         return result
       })
+      // The hooks cannot reach a host built on the Cursor SDK; this rule does.
+      installCursorActivationRule(deps.env, hookPlatform)
     } catch (err) {
       deps.io.err(String(err))
       return EXIT.failed
@@ -853,6 +858,13 @@ export function hooksUninstallCommand(deps: CommandDeps, flags: HooksInstallFlag
         }
       } else {
         deps.io.out(`No Notifai hooks found in ${file}`)
+      }
+      // The activation rule was written with this wiring; it leaves with it.
+      const rule = removeCursorActivationRule(deps.env, deps.hookPlatform)
+      if (rule === 'removed') {
+        deps.io.out(`Removed the Notifai activation rule at ${cursorActivationRuleFile(deps.env, deps.hookPlatform)}`)
+      } else if (rule === 'foreign') {
+        deps.io.out(`Left ${cursorActivationRuleFile(deps.env, deps.hookPlatform)} alone: Notifai did not write it.`)
       }
     } else {
       const files = machineHookFiles(harness, deps.env, deps.hookPlatform)
