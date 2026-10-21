@@ -1,6 +1,7 @@
 /** Explicit question closure across remote and local lifecycle state. */
 import type { CloseRepliesResponse, ListRepliesResponse } from '@raidiant/notifai-protocol'
-import type { ApiClient } from './client.js'
+import { setTimeout as sleep } from 'node:timers/promises'
+import { DEFAULT_TIMEOUT_MS, type ApiClient } from './client.js'
 import { resolveCommandSession } from './command-session.js'
 import { terminateCodexQuestions } from './codex-question-bindings.js'
 import {
@@ -12,8 +13,9 @@ import {
 } from './commands-core.js'
 import { acknowledgementCommand, printAcknowledgementStatus } from './commands-send-support.js'
 import { parkForRetirement, retireQueuedQuestions } from './hook-question-retirement.js'
-import { dropPendingQuestion, inspectQuestionState } from './hook-question-state.js'
-import { readSessionState, updateSessionState } from './hook-session-state.js'
+import { acquireClaimFile, releaseClaimFile } from './hook-question-lock.js'
+import { dropPendingQuestion, inspectQuestionState, rememberQuestionState } from './hook-question-state.js'
+import { readSessionState, sessionStatePath, updateSessionState } from './hook-session-state.js'
 import { type PendingQuestion } from './hook-types.js'
 
 /**
@@ -28,6 +30,64 @@ async function retireReplies(client: ApiClient, requestId: string): Promise<List
   delete response.close_disposition
   delete response.delivered_reply_seq
   return response
+}
+
+/** Withdrawal stops future admission. This separate fence lets an attempt
+ * already admitted finish before we close its remote identity. The state lock
+ * must stay free while the submitter promotes its receipt and retires it.
+ */
+async function awaitSubmissionCompletion(sessionId: string, env: NodeJS.ProcessEnv): Promise<void> {
+  const file = `${sessionStatePath(sessionId, env)}.submission`
+  const deadline = Date.now() + 3 * DEFAULT_TIMEOUT_MS
+  for (;;) {
+    const token = acquireClaimFile(file, {}, Date.now())
+    if (token !== null) {
+      releaseClaimFile(file, token)
+      return
+    }
+    if (Date.now() >= deadline) throw new Error('Question submission is still in flight; retirement is saved. Retry close to confirm remote closure.')
+    await sleep(25)
+  }
+}
+
+function forgetRetirement(sessionId: string, env: NodeJS.ProcessEnv, requestId: string): void {
+  updateSessionState(sessionId, env, state => {
+    const retiring = (state.retiring ?? []).filter(entry => entry.request_id !== requestId)
+    let next = state
+    for (const question of state.question_history ?? []) {
+      if (question.frozen_request_id === requestId) {
+        next = rememberQuestionState(next, { question_id: question.question_id, request_id: requestId }, 'retired')
+      }
+    }
+    if (next === state && retiring.length === (state.retiring ?? []).length) return state
+    next = { ...next }
+    if (retiring.length > 0) next.retiring = retiring
+    else delete next.retiring
+    return next
+  })
+}
+
+async function closeAdmittedQuestions(
+  deps: CommandDeps,
+  sessionId: string,
+  requestIds: string[],
+): Promise<{ code: number; closed: string[] }> {
+  if (requestIds.length === 0) return { code: EXIT.ok, closed: [] }
+  try {
+    await awaitSubmissionCompletion(sessionId, deps.env)
+    const config = loadLoggedConfig(deps, { cwd: deps.cwd, env: deps.env, sessionId })
+    const authed = authedClient(deps, config)
+    if (!authed) return { code: EXIT.auth, closed: [] }
+    const closed: string[] = []
+    for (const requestId of requestIds) {
+      await retireReplies(authed.client, requestId)
+      forgetRetirement(sessionId, deps.env, requestId)
+      closed.push(requestId)
+    }
+    return { code: EXIT.ok, closed }
+  } catch (err) {
+    return { code: reportError(deps, err), closed: [] }
+  }
 }
 
 /** Retire a question so a late answer is rejected rather than silently lost. */
@@ -85,6 +145,10 @@ export async function closeCommand(
       deps.io.err(`Question ${questionId} has no remote request identity; inspect its status before retrying.`)
       return EXIT.failed
     }
+    if (question.frozen_request_id !== null) {
+      try { await awaitSubmissionCompletion(lookup.session_id, deps.env) }
+      catch (err) { return reportError(deps, err) }
+    }
     requestId = resolved
   }
 
@@ -99,6 +163,7 @@ export async function closeCommand(
   try {
     const response = await retireReplies(authed.client, requestId!)
     forgetClosedQuestion(deps, requestId!)
+    if (lifecycleSession !== null) forgetRetirement(lifecycleSession.sessionId, deps.env, requestId!)
     if (flags.json) {
       deps.io.out(
         JSON.stringify(
@@ -139,8 +204,9 @@ async function closePendingQuestions(deps: CommandDeps, json: boolean): Promise<
     return EXIT.noReply
   }
   const sessionId = lifecycleSession.sessionId
-  const pending = readSessionState(sessionId, deps.env).pending ?? []
-  if (pending.length === 0) {
+  const initial = readSessionState(sessionId, deps.env)
+  const pending = initial.pending ?? []
+  if (pending.length === 0 && (initial.retiring ?? []).length === 0) {
     if (json) {
       deps.io.out(
         JSON.stringify({ session_id: sessionId, withdrawn: [], closed: [] }, null, 2),
@@ -152,6 +218,9 @@ async function closePendingQuestions(deps: CommandDeps, json: boolean): Promise<
   }
 
   const { withdrawn, retiring } = retireQueuedQuestions(sessionId, deps.env)
+  const admitted = await closeAdmittedQuestions(deps, sessionId,
+    [...new Set([...(initial.retiring ?? []), ...retiring].map(entry => entry.request_id))])
+  if (admitted.code !== EXIT.ok) return admitted.code
   let live: (PendingQuestion & { request_id: string })[] = []
   updateSessionState(sessionId, deps.env, state => {
     live = (state.pending ?? []).filter((entry): entry is PendingQuestion & { request_id: string } => entry.request_id !== undefined)
@@ -159,7 +228,7 @@ async function closePendingQuestions(deps: CommandDeps, json: boolean): Promise<
       entry.question_id === undefined ? [entry.request_id] : [entry.question_id, entry.request_id])))
   })
 
-  const closed: string[] = []
+  const closed: string[] = [...admitted.closed]
   if (live.length > 0) {
     const config = loadLoggedConfig(deps, { cwd: deps.cwd, env: deps.env, sessionId })
     const authed = authedClient(deps, config)
@@ -183,7 +252,6 @@ async function closePendingQuestions(deps: CommandDeps, json: boolean): Promise<
       ...(entry.question_id === undefined ? {} : { question_id: entry.question_id }),
     })),
     closed,
-    ...(retiring.length === 0 ? {} : { retiring: retiring.map((entry) => entry.request_id) }),
   }
   if (json) deps.io.out(JSON.stringify(output, null, 2))
   else {
@@ -196,9 +264,6 @@ async function closePendingQuestions(deps: CommandDeps, json: boolean): Promise<
     }
     for (const requestId of closed) {
       deps.io.out(`Closed the reply window for ${requestId}.`)
-    }
-    if (retiring.length > 0) {
-      deps.io.out('Submission had already started; stopped local retries and queued retirement of the reserved request identities.')
     }
   }
   return EXIT.ok
@@ -249,13 +314,15 @@ async function closeLocalQuestion(
         ...(item.question_id === undefined ? {} : { question_id: item.question_id }),
       })),
       closed: [] as string[],
-      ...(retiring.length === 0 ? {} : { retiring: retiring.map((item) => item.request_id) }),
     }
+    const admitted = await closeAdmittedQuestions(deps, sessionId, retiring.map(item => item.request_id))
+    if (admitted.code !== EXIT.ok) return admitted.code
+    output.closed = admitted.closed
     if (json) deps.io.out(JSON.stringify(output, null, 2))
     else {
       deps.io.out(
         retiring.length > 0
-          ? 'Submission had already started; stopped local retries and queued retirement of the reserved request identity.'
+          ? `Closed the reply window for ${admitted.closed.join(', ')}.`
           : `Withdrew unpushed question ${entry.question_id ?? id} so a later Stop will not send it.`,
       )
     }

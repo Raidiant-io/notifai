@@ -6171,98 +6171,128 @@ describe('conversational close racing lifecycle retry', () => {
 })
 
 describe('serialized question admission and withdrawal', () => {
-  it('orders a competing close after admission even when it arrives immediately after the eligibility read', async () => {
+  it.each(['pending', 'question'] as const)('retries close %s retirement after an ambiguous submit and failed remote close', async (target) => {
+    const h = harness([])
+    const sessionId = 'close-retry'
+    writeSessionState(sessionId, h.env, { harness: 'codex' })
+    registerQuestion(sessionId, h.env, { question: 'Continue?', question_id: 'q_retry_close' }, NOW)
+    writeProjectSession(h.deps.cwd, h.env, sessionId, NOW, 'codex')
+    h.recorder.failSubmits = true
+    await hookRunCommand(h.deps, 'question-submission', stdin({ session_id: sessionId, cwd: h.deps.cwd }), 'codex')
+    const requestId = readSessionState(sessionId, h.env).pending![0]!.submission!.request_id
+    h.recorder.failCloses = true
+    const id = target === 'question' ? 'q_retry_close' : undefined
+    const flags = { pending: target === 'pending', json: true }
+    expect(await closeCommand(h.deps, id, flags)).not.toBe(EXIT.ok)
+    expect(readSessionState(sessionId, h.env).retiring).toEqual([expect.objectContaining({ request_id: requestId })])
+    h.recorder.failCloses = false
+    expect(await closeCommand(h.deps, id, flags)).toBe(EXIT.ok)
+    expect(h.recorder.closed).toContain(requestId)
+    expect(readSessionState(sessionId, h.env).retiring).toBeUndefined()
+    expect(readSessionState(sessionId, h.env).pending).toBeUndefined()
+  })
+
+  it.each(['pending', 'question'] as const)('close %s cannot report success while an admitted submission can still arrive', async (target) => {
+    const h = harness([])
+    const sessionId = 'close-in-flight'
+    writeSessionState(sessionId, h.env, { harness: 'codex' })
+    registerQuestion(sessionId, h.env, { question: 'Continue?', question_id: 'q_in_flight' }, NOW)
+    writeProjectSession(h.deps.cwd, h.env, sessionId, NOW, 'codex')
+    const factory = h.deps.clientFactory!
+    let entered!: () => void
+    const submitting = new Promise<void>(resolve => { entered = resolve })
+    let release!: () => void
+    const response = new Promise<void>(resolve => { release = resolve })
+    h.deps.clientFactory = (...args) => {
+      const client = factory(...args)
+      return { ...client, submit: async (body, wait) => {
+        entered()
+        await response
+        return client.submit(body, wait)
+      } }
+    }
+    const submission = hookRunCommand(h.deps, 'question-submission', stdin({ session_id: sessionId, cwd: h.deps.cwd }), 'codex')
+    await submitting
+    let result: number | undefined
+    const closing = closeCommand(h.deps, target === 'question' ? 'q_in_flight' : undefined,
+      { pending: target === 'pending', json: true }).then(code => { result = code })
+    try {
+      await new Promise<void>(resolve => setImmediate(resolve))
+      expect(result, 'an in-flight request must be settled before close succeeds').toBeUndefined()
+    } finally {
+      release()
+      await Promise.all([submission, closing])
+    }
+    expect(result).toBe(EXIT.ok)
+    expect(h.recorder.submitted.filter(isQuestionSubmit)).toHaveLength(1)
+    expect(h.recorder.closed).toContain(h.recorder.submitted.find(isQuestionSubmit)!.request_id)
+    expect(readSessionState(sessionId, h.env).pending).toBeUndefined()
+  })
+
+  it('waits for an admitted submission before a competing close in another process succeeds', async () => {
     const h = harness([])
     const sessionId = 'admission-close-process'
-    writeSessionState(sessionId, h.env, { last_prompt_at: AWAY })
+    writeSessionState(sessionId, h.env, { harness: 'codex' })
     registerQuestion(sessionId, h.env, { question: 'Ship it?', question_id: 'q_admission' }, NOW)
     writeProjectSession(h.deps.cwd, h.env, sessionId, NOW, 'codex')
-    const lock = `${sessionStatePath(sessionId, h.env)}.lock`
     const resultFile = path.join(h.deps.cwd, 'competing-close.json')
     const factory = h.deps.clientFactory!
-    let releaseSubmit!: () => void
-    const heldSubmit = new Promise<void>((resolve) => { releaseSubmit = resolve })
+    let entered!: () => void
+    const submitting = new Promise<void>(resolve => { entered = resolve })
+    let release!: () => void
+    const response = new Promise<void>(resolve => { release = resolve })
     let attemptedId: string | undefined
     h.deps.clientFactory = (...args) => {
       const client = factory(...args)
-      return { ...client, submit: async (body, waitSeconds) => {
+      return { ...client, submit: async (body, wait) => {
         attemptedId = body.request_id
-        expect(readSessionState(sessionId, h.env).pending?.[0]?.submission).toMatchObject({
-          request_id: body.request_id, admitted_at: NOW,
-        })
-        await heldSubmit
-        return client.submit(body, waitSeconds)
+        entered()
+        await response
+        return client.submit(body, wait)
       } }
     }
-    let child: ChildProcess | undefined
-    let childDone: Promise<void> | undefined
-    let markSpawned!: () => void
-    const spawned = new Promise<void>((resolve) => { markSpawned = resolve })
-    const realRead = sessionStateModule.readSessionState
-    const spy = vi.spyOn(sessionStateModule, 'readSessionState').mockImplementation((id, env) => {
-      const snapshot = realRead(id, env)
-      const stack = new Error().stack ?? ''
-      if (child === undefined && id === sessionId && snapshot.pending?.[0]?.submission !== undefined &&
-          (stack.includes('admitQueuedQuestion') || stack.includes('queuedQuestionStillEligible'))) {
-        const program = `
-          import { writeFileSync } from 'node:fs';
-          const { closeCommand } = await import(process.argv[1]);
-          const env = JSON.parse(process.argv[2]);
-          const out = [], errors = [];
-          const deps = { env, cwd: process.argv[3],
-            io: { out: line => out.push(line), err: line => errors.push(line) },
-            store: { load: () => null } };
-          const code = await closeCommand(deps, undefined, { pending: true, json: true });
-          writeFileSync(process.argv[4], JSON.stringify({ code, out, errors }));
-        `
-        child = spawn(process.execPath, ['--input-type=module', '--eval', program,
-          new URL('../dist/commands-close.js', import.meta.url).href,
-          JSON.stringify(h.env), h.deps.cwd, resultFile,
-        ], { env: process.env, stdio: ['ignore', 'pipe', 'pipe'] })
-        const worker = child
-        let stderr = ''
-        worker.stderr!.on('data', (chunk: Buffer) => { stderr += chunk.toString() })
-        childDone = new Promise<void>((resolve, reject) => {
-          worker.once('error', reject)
-          worker.once('exit', (code) => code === 0 ? resolve() : reject(new Error(`close worker exited ${code}: ${stderr}`)))
-        })
-        // Let the second OS process reach the exact contended state lock.
-        // On the unfenced implementation it instead completes withdrawal here.
-        const deadline = Date.now() + 3_000
-        const pause = new Int32Array(new SharedArrayBuffer(4))
-        while (!existsSync(resultFile)) {
-          if (existsSync(lock) && readdirSync(lock).some((name) => name.includes(`-${worker.pid}-`))) break
-          if (Date.now() >= deadline) throw new Error('close worker never reached admission boundary')
-          Atomics.wait(pause, 0, 0, 5)
-        }
-        markSpawned()
-      }
-      return snapshot
+    const submission = hookRunCommand(h.deps, 'question-submission', stdin({ session_id: sessionId, cwd: h.deps.cwd }), 'codex')
+    await submitting
+    const program = `
+      import { writeFileSync } from 'node:fs';
+      const { closeCommand } = await import(process.argv[1]);
+      const env = JSON.parse(process.argv[2]);
+      const out = [], errors = [];
+      const deps = { env, cwd: process.argv[3],
+        io: { out: line => out.push(line), err: line => errors.push(line) },
+        store: { load: () => ({ machineId: 'test', secret: 'test-secret', baseUrl: 'https://example.test' }) },
+        clientFactory: () => ({ closeReplies: async request_id => ({ request_id, replies: [] }) }) };
+      const code = await closeCommand(deps, undefined, { pending: true, json: true });
+      writeFileSync(process.argv[4], JSON.stringify({ code, out, errors }));
+    `
+    const child = spawn(process.execPath, ['--input-type=module', '--eval', program,
+      new URL('../dist/commands-close.js', import.meta.url).href,
+      JSON.stringify(h.env), h.deps.cwd, resultFile,
+    ], { env: process.env, stdio: ['ignore', 'ignore', 'pipe'] })
+    let stderr = ''
+    child.stderr!.on('data', (chunk: Buffer) => { stderr += chunk.toString() })
+    const childDone = new Promise<void>((resolve, reject) => {
+      child.once('error', reject)
+      child.once('exit', code => code === 0 ? resolve() : reject(new Error(`close worker exited ${code}: ${stderr}`)))
     })
-    const settlement = hookRunCommand(h.deps, 'question-settlement', stdin({ session_id: sessionId, cwd: h.deps.cwd }), 'codex')
     try {
-      await spawned
-      await childDone
+      await vi.waitFor(() => expect(inspectQuestionState('q_admission', h.env)).toMatchObject({
+        question: { state: 'retired', submitted: null, frozen_request_id: attemptedId },
+      }))
+      expect(existsSync(resultFile)).toBe(false)
+      release()
+      await Promise.all([submission, childDone])
       const result = JSON.parse(readFileSync(resultFile, 'utf8'))
       expect(result.code).toBe(EXIT.ok)
-      const output = JSON.parse(result.out[0])
-      expect(output.withdrawn).toEqual([])
-      expect(output.retiring).toEqual([attemptedId])
-      expect(inspectQuestionState('q_admission', h.env)).toMatchObject({
-        question: { state: 'retired', submitted: null, request_id: null, frozen_request_id: attemptedId },
-      })
-      releaseSubmit()
-      await settlement
+      expect(JSON.parse(result.out[0])).toMatchObject({ withdrawn: [], closed: [attemptedId] })
       expect(h.recorder.submitted.filter(isQuestionSubmit)).toHaveLength(1)
-      expect(h.recorder.closed).toContain(attemptedId)
       expect(readSessionState(sessionId, h.env).pending).toBeUndefined()
-      await hookRunCommand(h.deps, 'question-settlement', stdin({ session_id: sessionId, cwd: h.deps.cwd }), 'codex')
+      await hookRunCommand(h.deps, 'question-submission', stdin({ session_id: sessionId, cwd: h.deps.cwd }), 'codex')
       expect(h.recorder.submitted.filter(isQuestionSubmit)).toHaveLength(1)
     } finally {
-      spy.mockRestore()
-      releaseSubmit()
-      child?.kill()
-      await settlement
+      release()
+      child.kill()
+      await Promise.allSettled([submission, childDone])
     }
   })
 
@@ -6411,23 +6441,25 @@ describe('serialized question admission and withdrawal', () => {
     await hookRunCommand(h.deps, 'question-settlement', stdin({ session_id: sessionId, cwd: h.deps.cwd }), 'codex')
     expect(readSessionState(sessionId, h.env).pending?.[0]?.submission?.admitted_at).toBe(NOW)
     let attempts = 0
+    let closing: Promise<number> | undefined
     h.deps.clientFactory = (...args) => {
       const client = factory(...args)
       return { ...client,
         submit: async () => { attempts += 1; throw new ApiCallError(422, 'invalid_request', 'Rejected frozen draft.') },
         listDevices: async () => {
-          expect(await closeCommand(h.deps, 'q_remint', { json: true })).toBe(EXIT.ok)
+          closing = closeCommand(h.deps, 'q_remint', { json: true })
           return client.listDevices()
         },
       }
     }
     await hookRunCommand(h.deps, 'question-settlement', stdin({ session_id: sessionId, cwd: h.deps.cwd }), 'codex')
+    expect(await closing).toBe(EXIT.ok)
     expect(attempts).toBe(1)
     // This identity crossed admission before recovery. Closing it keeps the
-    // frozen remote identity and retirement debt instead of asserting it was
-    // never submitted, even when this retry receives a definite refusal.
+    // remote identity instead of asserting it was never submitted, even when
+    // this retry receives a definite refusal.
     expect(inspectQuestionState('q_remint', h.env)).toMatchObject({
-      question: { state: 'retired', submitted: null, frozen_request_id: expect.any(String) },
+      question: { state: 'retired', submitted: true, request_id: expect.any(String) },
     })
     h.deps.clientFactory = factory
     await hookRunCommand(h.deps, 'question-settlement', stdin({ session_id: sessionId, cwd: h.deps.cwd }), 'codex')
@@ -6448,9 +6480,10 @@ describe('serialized question admission and withdrawal', () => {
     }, replies: async () => { throw new ApiCallError(404, 'not_found', 'Not observed yet.') },
     closeReplies: async () => { throw new ApiCallError(404, 'not_found', 'Not observed yet.') } })
     await hookRunCommand(h.deps, 'question-settlement', stdin({ session_id: sessionId, cwd: h.deps.cwd }), 'codex')
-    expect(await closeCommand(h.deps, 'q_retry', { json: true })).toBe(EXIT.ok)
+    expect(await closeCommand(h.deps, 'q_retry', { json: true })).toBe(EXIT.failed)
     expect(inspectQuestionState('q_retry', h.env)).toMatchObject({ question: { state: 'retired', submitted: null } })
     h.deps.clientFactory = factory
+    expect(await closeCommand(h.deps, 'q_retry', { json: true })).toBe(EXIT.ok)
     await hookRunCommand(h.deps, 'question-settlement', stdin({ session_id: sessionId, cwd: h.deps.cwd }), 'codex')
     expect(h.recorder.submitted.filter(isQuestionSubmit)).toEqual([])
     expect(h.recorder.closed).toContain(attemptedId)
