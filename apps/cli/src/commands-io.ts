@@ -48,16 +48,16 @@ export function realIo(env: NodeJS.ProcessEnv = process.env): CommandIo {
       // as the safe answer rather than letting a Symbol escape into logic.
       return p.isCancel(answer) ? false : answer
     },
-    select: async (message, options) => {
+    select: async (message, options, signal) => {
       if (!interactive()) return null
       const p = await clack()
-      const answer = await p.select({ message, options })
+      const answer = await p.select({ message, options, ...(signal ? { signal } : {}) })
       return p.isCancel(answer) ? null : (answer as string)
     },
-    text: async (message) => {
+    text: async (message, signal) => {
       if (!interactive()) return null
       const p = await clack()
-      const answer = await p.text({ message })
+      const answer = await p.text({ message, ...(signal ? { signal } : {}) })
       return p.isCancel(answer) ? null : answer
     },
     multiselect: async (message, options, initial) => {

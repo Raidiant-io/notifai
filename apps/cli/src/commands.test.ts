@@ -5378,9 +5378,8 @@ describe('interactive command UX', () => {
     const deps: CommandDeps = {
       ...makeDeps(io, client),
       now: () => now,
-      sleep: async (milliseconds) => {
-        now += milliseconds
-      },
+      // Like a real timer: time passes, and other work runs, before it resolves.
+      sleep: (milliseconds) => new Promise((resolve) => setImmediate(() => { now += milliseconds; resolve() })),
       store: {
         load: () => null,
         save: (credential) => {

@@ -47,8 +47,17 @@ export interface CommandIo {
    * Test fakes leave all of this undefined and exercise the plain paths.
    */
   interactive?: boolean
-  text?(message: string): Promise<string | null>
-  select?(message: string, options: { value: string; label: string; hint?: string }[]): Promise<string | null>
+  /**
+   * `signal` dismisses an open prompt, which then resolves null: a prompt
+   * waits on the keyboard for ever, so anything that can settle without the
+   * keyboard (an approval given on a phone) must be able to close it.
+   */
+  text?(message: string, signal?: AbortSignal): Promise<string | null>
+  select?(
+    message: string,
+    options: { value: string; label: string; hint?: string }[],
+    signal?: AbortSignal,
+  ): Promise<string | null>
   /** Interactive multi-select. `initial` are pre-selected values. */
   multiselect?(
     message: string,
