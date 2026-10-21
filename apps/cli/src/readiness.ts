@@ -149,8 +149,20 @@ const SEND_PREREQUISITES = new Set([
   'devices',
 ])
 
+/**
+ * The User disabled Notifai for this Project, so `send` and `ask` refuse here.
+ * Recorded on the `project-enablement` state, which stays an optional gap
+ * because it is the User's legitimate choice.
+ */
+export function projectDisabledHere(readiness: Readiness): boolean {
+  const state = readiness.states.find((candidate) => candidate.id === 'project-enablement')
+  return typeof state?.technical === 'object' && state.technical !== null &&
+    'project_disabled' in state.technical && state.technical.project_disabled === true
+}
+
 /** Baseline Notification Requests can be submitted in the final assessed state. */
 export function canSend(readiness: Readiness): boolean {
+  if (projectDisabledHere(readiness)) return false
   return [...SEND_PREREQUISITES].every((id) => {
     const state = readiness.states.find((candidate) => candidate.id === id)
     return state?.status === 'ready' || state?.status === 'optional-gap'
@@ -169,6 +181,7 @@ export function canSend(readiness: Readiness): boolean {
  * reaches the agent, and only the terminal's question form stays open.
  */
 export function questionRoutingReady(readiness: Readiness): boolean {
+  if (projectDisabledHere(readiness)) return false
   const relevant = readiness.states.filter(
     (state) =>
       appliesHere(readiness, state) &&

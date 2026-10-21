@@ -115,8 +115,9 @@ If a companion device is missing, ask the user to open a supported companion
 build, sign in, and grant notification permission. Do not emulate that, and do
 not treat Provider Acceptance as Companion Receipt proof.
 
-To turn Notifai's guidance off in one project while leaving other projects
-wired, run `notifai project disable`.
+To turn Notifai off in one project while leaving other projects wired, run
+`notifai project disable`: nothing from that project reaches the User's
+devices until `notifai project enable`.
 `notifai hooks uninstall` removes the machine's lifecycle wiring for every
 project; pass `--harness <name>` to name one when several are wired. Uninstall
 also clears any Project-scoped hook file an older Notifai left in this

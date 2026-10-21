@@ -18,6 +18,7 @@ import {
   firstRequiredBlocker,
   isOptionalAutomation,
   isOptionalSetup,
+  projectDisabledHere,
   questionRoutingReady,
   readinessJson,
   type Readiness,
@@ -52,7 +53,7 @@ import {
   writeSetupProof,
 } from './commands-setup-proof.js'
 import { skillInventory } from './commands-skill.js'
-import { enableProject, projectBinding } from './project-enablement.js'
+import { enableProjectUnlessDisabled, projectBinding, projectEnablementState } from './project-enablement.js'
 import { inspectCliInstallations } from './cli-bin.js'
 import { hookAdapterTargetsArtifact, inspectHookAdapter, installHookAdapter } from './hook-adapter.js'
 import {
@@ -146,8 +147,7 @@ async function closeGap(
     const config = loadLoggedConfig(deps, { cwd: deps.cwd, env: deps.env })
     const binding = projectBinding(deps.cwd, deps.env, config.project.value)
     if (binding === null) return 'failed'
-    enableProject(binding)
-    return 'closed'
+    return enableProjectUnlessDisabled(binding) === 'enabled' ? 'closed' : 'failed'
   }
 
   if (state.id === 'hooks') {
@@ -494,6 +494,14 @@ async function submitSetupProof(
  */
 async function runSetupProof(deps: CommandDeps): Promise<GapCloseResult> {
   const config = loadLoggedConfig(deps, { cwd: deps.cwd, env: deps.env })
+  // Readiness already reports the proof as skipped here; this guard keeps the
+  // promise even if a gap reaches this closer: nothing is sent from a Project
+  // the User disabled, the one-time delivery proof included.
+  const binding = projectBinding(deps.cwd, deps.env, config.project.value)
+  if (binding !== null && projectEnablementState(binding) === 'disabled') {
+    deps.io.out(`Skipping the delivery proof: Notifai is disabled for Project "${binding.project}", so nothing is sent from here.`)
+    return 'pending'
+  }
   const authed = authedClient(deps, config)
   if (!authed) return 'failed'
 
@@ -994,6 +1002,8 @@ function leftoverOptionals(readiness: Readiness, flags: InitFlags): ReadinessSta
     // Not an install anyone declined, so "Optional, not set up" would misread
     // it; it gets its own line below.
     if (state.id === 'cli-bin') return false
+    // The User's own choice; the closing line names it and its command.
+    if ((state.id === 'project-enablement' || state.id === 'proof') && projectDisabledHere(readiness)) return false
     if (state.id === 'skill' && flags.skills === false) return false
     return true
   })
@@ -1045,19 +1055,17 @@ async function printInitClose(
 
   if (deps.io.interactive === true) {
     if (blocker === null) {
-      const lines = [
-        canSend ? 'You can send notifications.' : 'You are signed in.',
-        questions
-          ? 'Questions will reach your devices.'
-          : 'Questions are terminal-only until Question Routing is ready.',
-      ]
+      const lines = projectDisabledHere(readiness)
+        ? ['You are signed in.', 'Nothing from this project reaches your devices.']
+        : [
+            canSend ? 'You can send notifications.' : 'You are signed in.',
+            questions
+              ? 'Questions will reach your devices.'
+              : 'Questions are terminal-only until Question Routing is ready.',
+          ]
       await deps.io.note?.(lines.join('\n'), 'Ready')
       printOptionalLeftovers(deps, leftovers)
-      deps.io.out(
-      questions
-        ? 'All set. Agents in this project can notify you and ask you questions.'
-        : 'All set. Agents in this project can notify you. Questions are terminal-only until Question Routing is ready.',
-    )
+      deps.io.out(allSetLine(readiness, questions))
       await deps.io.outro?.('All set ✨')
       return
     }
@@ -1075,11 +1083,7 @@ async function printInitClose(
 
   if (blocker === null) {
     printOptionalLeftovers(deps, leftovers)
-    deps.io.out(
-      questions
-        ? 'All set. Agents in this project can notify you and ask you questions.'
-        : 'All set. Agents in this project can notify you. Questions are terminal-only until Question Routing is ready.',
-    )
+    deps.io.out(allSetLine(readiness, questions))
     return
   }
   deps.io.out(`Next: ${blocker.title} — ${blocker.detail}`)
@@ -1087,6 +1091,24 @@ async function printInitClose(
   if (shouldRestateInit(blocker)) {
     deps.io.out(`  Then re-run \`${SETUP_COMMAND}\` and it will pick up from here.`)
   }
+}
+
+/**
+ * The closing line of a finished setup, which in a disabled Project says
+ * nothing reaches the devices, and that the delivery proof was not sent
+ * unless an earlier one already proved this machine.
+ */
+function allSetLine(readiness: Readiness, questions: boolean): string {
+  const disabled = readiness.states.find((state) => state.id === 'project-enablement')
+  if (disabled !== undefined && projectDisabledHere(readiness)) {
+    const proof = readiness.states.find((state) => state.id === 'proof')
+    const unproven = proof !== undefined && proof.status !== 'ready'
+    return `Set up${unproven ? ' without the delivery proof' : ''}, but ${disabled.detail}. ` +
+      `If the User asked for Notifai here, run \`notifai project enable\`${unproven ? ', then `notifai init` to prove delivery' : ''}.`
+  }
+  return questions
+    ? 'All set. Agents in this project can notify you and ask you questions.'
+    : 'All set. Agents in this project can notify you. Questions are terminal-only until Question Routing is ready.'
 }
 
 function shouldRestateInit(blocker: ReadinessState): boolean {

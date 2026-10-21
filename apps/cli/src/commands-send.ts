@@ -16,7 +16,7 @@ import { inspectQuestionState, type QuestionStateView } from './hook-question-st
 import { selectedForClaimedDelivery } from './hook-question-retirement.js'
 import { readSessionState, recordSessionNotified } from './hook-session-state.js'
 import { questionsAwaitingAnswer } from './native-answer-operation.js'
-import { enableProject, projectBinding } from './project-enablement.js'
+import { enableProjectUnlessDisabled, projectBinding } from './project-enablement.js'
 import {
   buildDraft,
   formatReceipt,
@@ -220,7 +220,14 @@ export async function sendCommand(
   }
   if (semanticBuild.draft.project !== undefined) {
     const binding = projectBinding(deps.cwd, deps.env, semanticBuild.draft.project)
-    if (binding !== null) enableProject(binding)
+    if (binding !== null && enableProjectUnlessDisabled(binding) === 'disabled') {
+      deps.io.err(
+        `project_disabled: Notifai is disabled for Project "${binding.project}": nothing from it reaches the User's devices. ` +
+          'Nothing was sent.\n' +
+          'If the User asked for Notifai here, run `notifai project enable`, then run this send again; otherwise do not notify them.',
+      )
+      return EXIT.usage
+    }
   }
   const authed = authedClient(deps, config)
   if (!authed) return EXIT.auth

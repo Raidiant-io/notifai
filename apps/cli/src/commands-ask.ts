@@ -32,7 +32,7 @@ import { codexRoutingTrustProblems, findInstallations, handlerEvent } from './in
 import { CODEX_CARD_VERSION_FLOOR, codexCardHooksReady, codexCardToolOffered } from './codex-card-capability.js'
 import { activeOpenclawGeneration } from './openclaw-session-access.js'
 import { openclawGatewayReady } from './openclaw-gateway-readiness.js'
-import { enableProject, inferredProjectName, projectBinding } from './project-enablement.js'
+import { enableProjectUnlessDisabled, inferredProjectName, projectBinding } from './project-enablement.js'
 import { spawnQuestionSettlement } from './question-settlement-process.js'
 import {
   buildDraft,
@@ -725,11 +725,10 @@ export function askCommand(
   }
   const explicitProject = flags.project ?? explicitUseConfig.project.value ?? inferredProjectName(deps.cwd, deps.env)
   const explicitBinding = explicitProject === null ? null : projectBinding(deps.cwd, deps.env, explicitProject)
-  // A disabled OpenClaw Project stays disabled until the User enables it; the
-  // exact-generation route cannot infer consent.
-  if (explicitBinding !== null && deps.env['NOTIFAI_ACTIVE_HARNESS'] !== 'openclaw') {
+  if (explicitBinding !== null) {
+    let decision: 'enabled' | 'disabled'
     try {
-      enableProject(explicitBinding)
+      decision = enableProjectUnlessDisabled(explicitBinding)
     } catch (err) {
       return askFailure(
         deps,
@@ -739,6 +738,16 @@ export function askCommand(
         `Project Enablement could not be saved: ${String(err)}`,
         'check filesystem permissions or sandbox access for the Notifai state directory, then retry the same ask',
         EXIT.failed,
+      )
+    }
+    if (decision === 'disabled') {
+      return askFailure(
+        deps,
+        flags,
+        'project_disabled',
+        'project_enablement',
+        `Notifai is disabled for Project "${explicitBinding.project}": nothing from it reaches the User's devices. Nothing was registered.`,
+        'if the User asked for Notifai here, run `notifai project enable`, then ask again; otherwise ask in the conversation, as you would without Notifai',
       )
     }
   }

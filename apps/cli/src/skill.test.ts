@@ -636,10 +636,9 @@ describe('Notifai agent skill', () => {
     expect(loose(harnessFile('openclaw'))).toMatch(/This needs a local Gateway/)
     // Claude Code gives subagents no picker, so none is named.
     expect(harnessFile('claude-code').replace(/\s+/g, ' ')).not.toMatch(/picker belongs to a subagent/i)
-    // `project disable` switches the guidance today; nothing yet stops a
-    // request from enabling the Project again.
-    expect(loose(harnessSetupReference)).toMatch(/To turn Notifai's guidance off in one project while leaving other projects wired, run `notifai project disable`\./)
-    expect(loose(harnessSetupReference)).not.toMatch(/nothing from that project reaches/i)
+    // Nothing reaches the User's devices from a Project the User disabled, so
+    // disabling turns Notifai off there.
+    expect(loose(harnessSetupReference)).toMatch(/To turn Notifai off in one project while leaving other projects wired, run `notifai project disable`: nothing from that project reaches the User's devices until `notifai project enable`/)
     // Each setting's meaning lives in `notifai config explain`; harness setup
     // keeps only what the agent does with questions off.
     expect(harnessSetupReference).not.toMatch(/ask_grace_seconds|reply_window_seconds/)

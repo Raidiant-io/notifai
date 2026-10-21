@@ -130,7 +130,8 @@ import { resetPublishedCliDistTagsForTest } from './cli-release.js'
 import { activeLogPath, createLogger, logsDiskUsage, readLogRecords } from './logging.js'
 import { hookAdapterPath, inspectHookAdapter, installHookAdapter } from './hook-adapter.js'
 import type { Tone } from './ui/theme.js'
-import { enableProject, projectBinding, projectEnabled } from './project-enablement.js'
+import { disableProject, enableProject, projectBinding, projectEnabled, projectEnablementState } from './project-enablement.js'
+import { projectDisableCommand, projectEnableCommand, projectStatusCommand } from './commands-project.js'
 import { firstRequiredBlocker, readinessJson } from './readiness.js'
 import { readOrcaSessionTitle, type OrcaCommand } from './orca-session-title.js'
 import { recordClaudePermissionMode } from './claude-command-approval.js'
@@ -601,6 +602,58 @@ describe('command contracts', () => {
     }
     expect(await sendCommand(deps, { title: 'Ready', body: 'Ready.', kind: 'done' })).toBe(EXIT.auth)
     expect(projectEnabled(projectBinding(cwd, env))).toBe(true)
+  })
+
+  it('sends nothing from a Project the User disabled until they enable it again', async () => {
+    const cwd = mkdtempSync(path.join(os.tmpdir(), 'notifai-disabled-send-'))
+    execFileSync('git', ['init', '--quiet', cwd])
+    const io = new CapturedIo()
+    const env = isolatedEnv(cwd)
+    let submissions = 0
+    const client = { submit: async () => ((submissions += 1), receipt) } as unknown as ApiClient
+    const deps = { ...makeDeps(io, client), cwd, env }
+    expect(projectDisableCommand(deps)).toBe(EXIT.ok)
+    expect(io.outLines.at(-1)).toMatch(/^Notifai is disabled for Project ".+": nothing from it reaches the User's devices until `notifai project enable`\.$/)
+
+    expect(await sendCommand(deps, { title: 'Ready', body: 'Ready.', kind: 'done' })).toBe(EXIT.usage)
+    expect(io.errLines.join('\n')).toMatch(/^project_disabled: Notifai is disabled for Project ".+": nothing from it reaches the User's devices\. Nothing was sent\.$/m)
+    expect(io.errLines.join('\n')).toContain('If the User asked for Notifai here, run `notifai project enable`, then run this send again; otherwise do not notify them.')
+    expect(submissions).toBe(0)
+    expect(projectEnablementState(projectBinding(cwd, env))).toBe('disabled')
+
+    io.outLines = []
+    expect(projectStatusCommand(deps, true)).toBe(EXIT.ok)
+    expect(JSON.parse(io.outLines.at(-1)!)).toMatchObject({ enabled: false, disabled: true })
+
+    expect(projectEnableCommand(deps)).toBe(EXIT.ok)
+    expect(io.outLines.at(-1)).toMatch(/^Notifai is enabled for Project ".+": its notifications and questions reach the User's devices/)
+    expect(await sendCommand(deps, { title: 'Ready', body: 'Ready.', kind: 'done' })).toBe(EXIT.ok)
+    expect(submissions).toBe(1)
+  })
+
+  it.each([false, true])('registers no question in a Project the User disabled (json: %s)', (json) => {
+    const cwd = mkdtempSync(path.join(os.tmpdir(), 'notifai-disabled-ask-'))
+    writeProjectSettings(cwd, isolatedEnv(cwd), 'project = "disabled-ask"\n')
+    const io = new CapturedIo()
+    const env = { ...isolatedEnv(cwd), CODEX_THREAD_ID: 'disabled-ask-thread' }
+    const deps = { ...makeDeps(io, {} as ApiClient), cwd, env }
+    const binding = projectBinding(cwd, env, 'disabled-ask')!
+    disableProject(binding)
+
+    expect(askCommand(deps, 'Ship it?', { json })).toBe(EXIT.usage)
+    const remedy = 'if the User asked for Notifai here, run `notifai project enable`, then ask again; otherwise ask in the conversation, as you would without Notifai'
+    if (json) {
+      expect(JSON.parse(io.outLines.at(-1)!)).toMatchObject({
+        ok: false, registered: false, code: 'project_disabled', check_id: 'project_enablement', exit_code: EXIT.usage,
+        message: 'Notifai is disabled for Project "disabled-ask": nothing from it reaches the User\'s devices. Nothing was registered.',
+        remedy,
+      })
+    } else {
+      expect(io.errLines.join('\n')).toContain('Notifai is disabled for Project "disabled-ask"')
+      expect(io.errLines.join('\n')).toContain(remedy)
+    }
+    expect(readSessionState(env.CODEX_THREAD_ID, env).pending).toBeUndefined()
+    expect(projectEnablementState(binding)).toBe('disabled')
   })
 
   it('sends deliberately Projectless without enabling the inferred Project', async () => {
@@ -6668,6 +6721,71 @@ describe('init', () => {
     expect(io.errLines.join('\n')).not.toMatch(/scope/i)
   })
 
+  it('sets up a Project the User disabled without enabling it or sending the delivery proof, and names the command that would', async () => {
+    const cwd = mkdtempSync(path.join(os.tmpdir(), 'init-disabled-project-'))
+    execFileSync('git', ['init', '--quiet', cwd])
+    const io = new CapturedIo()
+    const calls = { submit: 0 }
+    const deps = setupReadyDeps(io, cwd, inertSkills, calls)
+    const binding = projectBinding(cwd, deps.env)!
+    disableProject(binding)
+
+    expect(await initCommand(deps, { hooks: false, skills: false })).toBe(EXIT.ok)
+    // "If disabled, it should NOT notify you": the one-time proof is a
+    // notification too, so nothing is sent and the close says so.
+    expect(calls.submit).toBe(0)
+    expect(io.outLines.join('\n')).not.toContain('Verification notification sent')
+    expect(io.outLines.join('\n')).not.toContain('Optional, not set up')
+    expect(io.outLines).toContain(
+      `Set up without the delivery proof, but Notifai is disabled for Project "${binding.project}": nothing from it reaches the User's devices. If the User asked for Notifai here, run \`notifai project enable\`, then \`notifai init\` to prove delivery.`,
+    )
+    expect(io.outLines.join('\n')).not.toContain('All set.')
+    expect(projectEnablementState(binding)).toBe('disabled')
+
+    io.outLines = []
+    expect(await initCommand(deps, { json: true, hooks: false, skills: false })).toBe(EXIT.ok)
+    const verdict = JSON.parse(io.outLines[0] ?? '{}') as { can_send: boolean; question_routing_ready: boolean }
+    expect(verdict).toMatchObject({ can_send: false, question_routing_ready: false })
+    expect(projectEnablementState(binding)).toBe('disabled')
+
+    const doctorIo = new CapturedIo()
+    await doctorCommand({ ...deps, io: doctorIo }, { json: true })
+    expect(JSON.parse(doctorIo.outLines[0] ?? '{}')).toMatchObject({
+      can_send: false,
+      states: expect.arrayContaining([expect.objectContaining({
+        id: 'project-enablement',
+        status: 'optional-gap',
+        detail: `Notifai is disabled for Project "${binding.project}": nothing from it reaches the User's devices`,
+        remedy: { by: 'user-here', summary: 'if the User asked for Notifai here, enable it', command: 'notifai project enable' },
+      }), expect.objectContaining({
+        id: 'proof',
+        status: 'optional-gap',
+        detail: `not sent: Notifai is disabled for Project "${binding.project}", so setup sends nothing from here`,
+        technical: { project_disabled: true },
+        remedy: { by: 'user-here', summary: 'if the User asked for Notifai here, enable it, then run setup again to prove delivery', command: 'notifai project enable' },
+      })]),
+    })
+    expect(calls.submit).toBe(0)
+
+    // A machine an earlier setup already proved keeps that proof: only the
+    // send is skipped, so the close names the User's choice alone.
+    const proven = mkdtempSync(path.join(os.tmpdir(), 'init-disabled-project-proven-'))
+    execFileSync('git', ['init', '--quiet', proven])
+    const provenIo = new CapturedIo()
+    const provenCalls = { submit: 0 }
+    const provenDeps = setupReadyDeps(provenIo, proven, inertSkills, provenCalls)
+    expect(await initCommand(provenDeps, { hooks: false, skills: false })).toBe(EXIT.ok)
+    expect(provenCalls.submit).toBe(1)
+    expect(provenIo.outLines.join('\n')).toContain('All set.')
+    disableProject(projectBinding(proven, provenDeps.env)!)
+    provenIo.outLines = []
+    expect(await initCommand(provenDeps, { hooks: false, skills: false })).toBe(EXIT.ok)
+    expect(provenCalls.submit).toBe(1)
+    expect(provenIo.outLines).toContain(
+      `Set up, but Notifai is disabled for Project "${projectBinding(proven, provenDeps.env)!.project}": nothing from it reaches the User's devices. If the User asked for Notifai here, run \`notifai project enable\`.`,
+    )
+  })
+
   it('grants Claude Code command approval only when asked, and reports it without blocking setup', async () => {
     const cwd = mkdtempSync(path.join(os.tmpdir(), 'init-claude-commands-'))
     mkdirSync(path.join(cwd, '.claude'))
@@ -8631,7 +8749,8 @@ describe('asking before the hooks have ever run', () => {
       code: 'openclaw_generation_stale', registered: false,
       remedy: 'run the question from a current OpenClaw turn after the Notifai plugin has recorded it',
     })
-    expect(projectEnabled(binding!)).toBe(enabled)
+    // An OpenClaw ask enables a Project with no decision, like any other ask.
+    expect(projectEnabled(binding!)).toBe(true)
   })
 
   it.each(['card-hook', 'card-hook-unproven', 'card-hook-other-model', 'supported', 'no-transport', 'old-codex', 'missing', 'malformed', 'unavailable', 'changed-turn', 'lost-machine', 'changed-machine', 'changed-service', 'machine-lost-in-lock', 'ended', 'ended-unavailable', 'replaced-owner'] as const)('gates native registration on service support and answer transport: %s', async mode => {
@@ -10167,7 +10286,6 @@ describe('asking before the hooks have ever run', () => {
     expect(askCommand(deps, 'Ship it?', {})).toBe(EXIT.usage)
     expect(io.errLines.join('\n')).toMatch(/generation|OpenClaw/i)
     expect(readSessionState('agent:main:main', env).pending).toBeUndefined()
-    expect(projectEnabled(projectBinding(cwd, env))).toBe(false)
   })
 
   it('admits Grok ask only for the exact active Agent Session', async () => {

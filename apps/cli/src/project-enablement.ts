@@ -87,14 +87,13 @@ export function projectDisabled(binding: ProjectBinding | null): boolean {
 }
 
 /**
- * Record that the User enabled this Project.
+ * Record that the User enabled this Project: `notifai project enable`, the
+ * only way back from disabled.
  *
- * Every send and ask reaches here, often from several Agent Sessions at the
- * same instant. The record carries a decision, not a heartbeat, so a Project
- * that is already enabled is left untouched: concurrent senders then only read
- * it. The first enablement, and any racing disable, is serialized under the
- * record's lock, so a sibling's write is never mistaken for a foreign
- * replacement by the atomic write's guard.
+ * The record carries a decision, not a heartbeat, so a Project that is
+ * already enabled is left untouched. A write, and any racing disable, is
+ * serialized under the record's lock, so a sibling's write is never mistaken
+ * for a foreign replacement by the atomic write's guard.
  */
 export function enableProject(binding: ProjectBinding, now: Date = new Date()): void {
   if (projectEnabled(binding)) return
@@ -102,6 +101,28 @@ export function enableProject(binding: ProjectBinding, now: Date = new Date()): 
     if (projectEnabled(binding)) return
     writeMarker(binding, true, now)
   })
+}
+
+/**
+ * An explicit request for Notifai in this Project (`send`, `ask`, `init`):
+ * enable a Project with no record; never change the User's disable.
+ *
+ * Every send and ask reaches here, often from several Agent Sessions at the
+ * same instant; once a decision is recorded they only read it.
+ */
+export function enableProjectUnlessDisabled(binding: ProjectBinding, now: Date = new Date()): 'enabled' | 'disabled' {
+  const state = projectEnablementState(binding)
+  if (state !== 'unset') return state
+  let decided: 'enabled' | 'disabled' = 'enabled'
+  withEnablementLock(binding, () => {
+    const current = projectEnablementState(binding)
+    if (current !== 'unset') {
+      decided = current
+      return
+    }
+    writeMarker(binding, true, now)
+  })
+  return decided
 }
 
 /** Record that the User disabled this Project; only `enableProject` lifts it. */
