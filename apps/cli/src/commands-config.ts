@@ -1,6 +1,5 @@
 import {
   existsSync,
-  mkdirSync,
   readFileSync,
   rmSync,
   writeFileSync,
@@ -16,13 +15,10 @@ import {
   ON_OFF_CONFIG_KEYS,
   NUMERIC_CONFIG_KEYS,
   ORIGIN_LIST_CONFIG_KEYS,
-  USER_OWNED_CONFIG_KEYS,
   configBounds,
   configDefaultValue,
   globalConfigPath,
   personalProjectConfigPath,
-  sharedProjectConfigPath,
-  SHARED_PROJECT_CONFIG_REFUSAL,
   sessionConfigPath,
   type ConfigKey,
 } from './config.js'
@@ -164,7 +160,7 @@ export async function configSetCommand(
   deps: CommandDeps,
   key: string,
   rawValue: string,
-  flags: { project?: boolean; local?: boolean; session?: string; yes?: boolean },
+  flags: ConfigMutationFlags,
 ): Promise<number> {
   const configKey = configMutationKey(deps, key)
   if (configKey === null) return EXIT.usage
@@ -219,13 +215,8 @@ export async function configSetCommand(
   }
 
   if (machineOnlyRefused(deps, configKey, flags)) return EXIT.usage
-  // A trust key is refused for the shared layer before that layer's file is
-  // looked for, so the User hears why wherever they run it.
-  const explicitlyShared = flags.project === true && flags.local !== true && !flags.session
-  if (explicitlyShared && userOwnedKeyRefused(deps, configKey)) return EXIT.usage
   const target = await configMutationTarget(deps, flags, configKey)
   if (target === null) return EXIT.usage
-  if (target.layer === 'project' && userOwnedKeyRefused(deps, configKey)) return EXIT.usage
   if (target.layer === 'global' && Object.is(value, configDefaultValue(configKey))) {
     deps.io.err(`${key} is already the shipped default (${JSON.stringify(value)}).`)
     deps.io.err(
@@ -247,21 +238,10 @@ export async function configSetCommand(
     : {}
   forgetNestedSpelling(existing, configKey)
   existing[key] = value
-  if (target.layer === 'project') mkdirSync(path.dirname(target.path), { recursive: true })
-  else ensurePrivateDirectory(path.dirname(target.path))
+  ensurePrivateDirectory(path.dirname(target.path))
   writeFileSync(target.path, `${stringifyToml(existing)}\n`)
   deps.io.out(`Wrote ${key} to ${target.path}`)
   return EXIT.ok
-}
-
-/** Refuse a key that widens this machine's trust for the repository's shared config. */
-function userOwnedKeyRefused(deps: CommandDeps, key: ConfigKey): boolean {
-  if (!USER_OWNED_CONFIG_KEYS.includes(key)) return false
-  deps.io.err(
-    `${key} widens which origins this machine trusts, so it is never read from the repository's shared config — a cloned repository must not be able to set it.`,
-  )
-  deps.io.err('Store it on this machine (no flag) or for this project personally (--local).')
-  return true
 }
 
 function configMutationKey(deps: CommandDeps, key: string): ConfigKey | null {
@@ -276,7 +256,7 @@ function configMutationKey(deps: CommandDeps, key: string): ConfigKey | null {
   return key as ConfigKey
 }
 
-type ConfigMutationFlags = { project?: boolean; local?: boolean; session?: string; yes?: boolean }
+type ConfigMutationFlags = { local?: boolean; session?: string; yes?: boolean }
 
 /**
  * A dotted key can also be written by hand as a table (`[updates]` holding
@@ -300,55 +280,44 @@ function forgetNestedSpelling(document: Record<string, unknown>, key: ConfigKey)
 
 /** A machine-wide key has exactly one home; refuse every narrower layer up front. */
 function machineOnlyRefused(deps: CommandDeps, key: ConfigKey, flags: ConfigMutationFlags): boolean {
-  if (!MACHINE_ONLY_CONFIG_KEYS.includes(key) || (flags.project !== true && flags.local !== true && flags.session === undefined)) return false
+  if (!MACHINE_ONLY_CONFIG_KEYS.includes(key) || (flags.local !== true && flags.session === undefined)) return false
   deps.io.err(`${key} applies to this whole machine, so it is never read from a project or a session — every project here runs the same Notifai.`)
   deps.io.err(`Set it for this machine instead: notifai config set ${key} <value> --yes`)
   return true
 }
-type ConfigMutationLayer = 'global' | 'project' | 'local' | 'session'
+type ConfigMutationLayer = 'global' | 'local' | 'session'
 
 async function configMutationTarget(
   deps: CommandDeps,
   flags: ConfigMutationFlags,
   key: ConfigKey,
 ): Promise<{ path: string; layer: ConfigMutationLayer } | null> {
-  let layer = flags.local ? 'local' : flags.project ? 'project' : 'global'
+  let layer: 'global' | 'local' = flags.local ? 'local' : 'global'
   if (
     !MACHINE_ONLY_CONFIG_KEYS.includes(key) &&
     flags.session === undefined &&
     flags.local !== true &&
-    flags.project !== true &&
     flags.yes !== true &&
     deps.io.interactive === true &&
     deps.io.select
   ) {
     const selected = await deps.io.select('Where should this setting live?', [
       { value: 'global', label: 'This machine', hint: 'applies across projects' },
-      { value: 'project', label: 'This project (shared)', hint: '.notifai/config.toml' },
-      { value: 'local', label: 'This project (personal)', hint: 'stored on this machine, not in the repo' },
+      { value: 'local', label: 'This project', hint: 'stored on this machine, not in the repo' },
     ])
     if (selected === null) {
       deps.io.err('No configuration layer selected.')
       return null
     }
-    layer = selected
+    layer = selected === 'local' ? 'local' : 'global'
   }
 
   const targetPath = flags.session
     ? sessionConfigPath(flags.session, deps.env)
     : layer === 'local'
       ? personalProjectConfigPath(deps.cwd, deps.env)
-      : layer === 'project'
-        ? sharedProjectConfigPath(deps.cwd, deps.env)
-        : globalConfigPath(deps.env)
-  if (targetPath === null) {
-    deps.io.err(SHARED_PROJECT_CONFIG_REFUSAL)
-    return null
-  }
-  return {
-    path: targetPath,
-    layer: flags.session ? 'session' : (layer as Exclude<ConfigMutationLayer, 'session'>),
-  }
+      : globalConfigPath(deps.env)
+  return { path: targetPath, layer: flags.session ? 'session' : layer }
 }
 
 export async function configUnsetCommand(

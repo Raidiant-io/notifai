@@ -15,7 +15,7 @@ import { normalizeOrigin } from './url-policy.js'
 /**
  * Layered configuration with provenance. Most specific wins:
  *
- *   flag > session > project-local > project > machine-global > default
+ *   flag > session > project-local > machine-global > default
  *
  * `session` holds what the user told the agent in conversation ("stop
  * notifying me for now"). It lives on disk keyed by harness session id rather
@@ -23,8 +23,9 @@ import { normalizeOrigin } from './url-policy.js'
  * preference that evaporates mid-session is worse than none.
  *
  * `project-local` is a personal file under the user's config directory, keyed
- * by the Project root so a checkout does not have to gitignore anything. Shared
- * `.notifai/config.toml` stays in the tree for committed Project identity.
+ * by the Project root so a checkout does not have to gitignore anything. Every
+ * layer belongs to the User: a repository cannot supply configuration, so
+ * nothing committed to a checkout is read.
  *
  * `config show --explain` surfaces the winning layer per key.
  */
@@ -34,7 +35,6 @@ export type ConfigSource =
   | 'env'
   | `session:${string}`
   | `project-local:${string}`
-  | `project:${string}`
   | `global:${string}`
   | 'default'
 
@@ -61,12 +61,12 @@ export interface CliConfig {
   devices: ResolvedValue<string[] | null>
   sound: ResolvedValue<string | null>
   interruption_level: ResolvedValue<CliInterruptionLevel | null>
-  /** Project identifier stamped on sends; inferred unless explicitly shared in .notifai/config.toml. */
+  /** Project identifier stamped on sends; inferred unless the User configured one. */
   project: ResolvedValue<string | null>
   /** Whether a registered agent question may reach companion devices at all. */
   ask_notifications: ResolvedValue<boolean>
   /**
-   * Terminal-first grace window, measured from the moment the question was
+   * Terminal-first delay, measured from the moment the question was
    * sent: the agent asks in the terminal and starts a timer, and only once it
    * elapses does the question reach companion devices.
    *
@@ -97,13 +97,12 @@ export interface CliConfig {
   log_max_files: ResolvedValue<number>
   /**
    * Extra origins remote `--image` URLs may use beyond the default public
-   * HTTPS policy — the self-host and intranet escape hatch. User-owned: the
-   * repository layer cannot supply it (see `USER_OWNED_CONFIG_KEYS`).
+   * HTTPS policy — the self-host and intranet escape hatch.
    */
   media_origins: ResolvedValue<string[]>
   /**
    * Extra dashboard origins a pairing approval URL may open, for self-hosts
-   * whose dashboard lives on a different origin than the API. User-owned.
+   * whose dashboard lives on a different origin than the API.
    */
   approve_origins: ResolvedValue<string[]>
   /**
@@ -165,20 +164,11 @@ export const CONFIG_KEYS = [
 export type ConfigKey = (typeof CONFIG_KEYS)[number]
 
 /**
- * Keys only the User may set. The shared `.notifai/config.toml` arrives with
- * a clone, so for most keys an unwanted value is at worst a clamped nuisance —
- * but these keys widen which network destinations this machine will touch,
- * and a hostile repository must not be able to widen them. Resolution skips
- * the repository layer for them entirely.
- */
-export const USER_OWNED_CONFIG_KEYS: readonly ConfigKey[] = ['media_origins', 'approve_origins']
-
-/**
  * Keys that belong to the machine rather than to any Project or Agent Session.
  * Only the machine-global file is read for them, and `config set` refuses the
- * Project, personal-project and session layers. The Notifai runtime is shared
- * by every Project on the machine, so no repository and no single conversation
- * may decide what runs on it.
+ * personal-project and session layers. The Notifai runtime is shared by every
+ * Project on the machine, so no single Project or conversation may decide what
+ * runs on it.
  */
 export const MACHINE_ONLY_CONFIG_KEYS: readonly ConfigKey[] = ['updates.automatic', 'reopen.automatic', 'reopen.terminal', 'reopen.codex_app',
   'reopen.terminal_app', 'reopen.terminal_command', 'reopen.focus', 'reopen.permission_mode']
@@ -205,9 +195,9 @@ export const NUMERIC_CONFIG_KEYS: readonly ConfigKey[] = [
 /**
  * Keys whose value must be one of a fixed set.
  *
- * Config is readable from a repository, so an unrecognised value is untrusted
- * input rather than a typo — `coerce` drops it and the layer below wins, which
- * is the same discipline the numeric bounds follow.
+ * An unrecognised value is dropped by `coerce` and the layer below wins, the
+ * same discipline the numeric bounds follow: a hand-edited typo never reaches a
+ * send.
  */
 export const ENUM_CONFIG_VALUES: Partial<Record<ConfigKey, readonly string[]>> = {
   interruption_level: INTERRUPTION_LEVELS,
@@ -248,7 +238,7 @@ const DEFAULTS = {
   log_max_files: 3,
   // Empty by default: remote images use public HTTPS and pairing approval
   // uses the canonical dashboard, the pairing origin, or loopback. Entries
-  // here are the User widening that, never a repository.
+  // here are the User widening that.
   media_origins: [],
   approve_origins: [],
   // On by default ("Fully automatic, toggleable", 2026-10-19). The
@@ -365,16 +355,11 @@ function canonicalHome(env: NodeJS.ProcessEnv): string | null {
 
 /**
  * Which Project a folder belongs to: the one answer Project identity,
- * shared configuration, personal configuration and Project Enablement all use.
+ * personal configuration and Project Enablement all use.
  *
- * - The nearest `.notifai/config.toml` names the Project root, so a submodule,
- *   nested clone or worktree submodule under a configured repository is part of
- *   that repository's Project. Above the folder's own checkout a file counts
- *   only in a directory that is itself a checkout (it has a `.git`), so a
- *   loose file in a plain parent such as `~/Code` cannot swallow every
- *   repository below it.
- * - Otherwise the folder's Git checkout is the root, and outside Git the folder
- *   itself is.
+ * - The folder's nearest Git checkout (a clone, linked worktree or submodule)
+ *   is the root, and outside Git the folder itself is. Nothing committed to a
+ *   checkout can move the root: a repository does not configure Notifai.
  * - The home folder is never a Project root: `~/.notifai` is where Notifai
  *   installs itself, and a Project there would contain every other folder.
  *
@@ -383,9 +368,7 @@ function canonicalHome(env: NodeJS.ProcessEnv): string | null {
 export interface ProjectLocation {
   /** The directory the Project is identified and keyed by. */
   root: string
-  /** The shared `.notifai/config.toml` that names this root, when there is one. */
-  configPath: string | null
-  /** Whether the root is inside a Git checkout, where a shared file can be committed. */
+  /** Whether the root is a Git checkout, whose linked worktrees share one Project. */
   checkout: boolean
 }
 
@@ -398,48 +381,9 @@ export function projectLocation(cwd: string, env: NodeJS.ProcessEnv = process.en
   }
   const home = canonicalHome(env)
   const checkoutRoot = findGitRoot(start)
-  const ownCheckout = checkoutRoot !== null && checkoutRoot !== home ? checkoutRoot : null
-  let dir = start
-  for (;;) {
-    if (dir === home) break
-    const candidate = path.join(dir, '.notifai', 'config.toml')
-    const aboveOwnCheckout = ownCheckout !== null && !isWithinDir(ownCheckout, dir)
-    if (existsSync(candidate) && (!aboveOwnCheckout || existsSync(path.join(dir, '.git')))) {
-      return { root: dir, configPath: candidate, checkout: checkoutRoot !== null }
-    }
-    const parent = path.dirname(dir)
-    if (parent === dir) break
-    dir = parent
-  }
-  if (checkoutRoot !== null) return ownCheckout === null ? null : { root: ownCheckout, configPath: null, checkout: true }
-  return start === home ? null : { root: start, configPath: null, checkout: false }
+  if (checkoutRoot !== null) return checkoutRoot === home ? null : { root: checkoutRoot, checkout: true }
+  return start === home ? null : { root: start, checkout: false }
 }
-
-function isWithinDir(root: string, candidate: string): boolean {
-  const relative = path.relative(root, candidate)
-  return relative === '' || (!path.isAbsolute(relative) && relative !== '..' && !relative.startsWith(`..${path.sep}`))
-}
-
-/** The shared `.notifai/config.toml` that applies here, or null. */
-export function findProjectConfigPath(startDir: string, env: NodeJS.ProcessEnv = process.env): string | null {
-  return projectLocation(startDir, env)?.configPath ?? null
-}
-
-/**
- * Where `--project` settings are written: the Project's existing shared file,
- * or a new one at its checkout root. Null where no shared file can belong to a
- * Project: outside a Git checkout, and in the home folder.
- */
-export function sharedProjectConfigPath(cwd: string, env: NodeJS.ProcessEnv = process.env): string | null {
-  const location = projectLocation(cwd, env)
-  if (location === null) return null
-  if (location.configPath !== null) return location.configPath
-  return location.checkout ? path.join(location.root, '.notifai', 'config.toml') : null
-}
-
-/** What a `--project` write outside any checkout is told. */
-export const SHARED_PROJECT_CONFIG_REFUSAL =
-  'Shared Project settings live in a Git checkout, and this folder is not in one (your home folder never counts as a Project). Run this from inside the Project\'s repository, or use `--local` to keep it on this machine only.'
 
 /**
  * The Git common directory a Project's personal records are keyed by, so
@@ -478,8 +422,8 @@ export function findProjectLocalConfigPath(
 }
 
 /**
- * Ranges every layer is clamped to. Config is readable from a repository, so an
- * out-of-range value is attacker input, not a typo.
+ * Ranges every layer is clamped to, so a hand-edited value out of range can
+ * never reach a send.
  */
 const NUMERIC_BOUNDS: Partial<Record<ConfigKey, { min: number; max: number }>> = {
   wait_seconds: { min: 0, max: 300 },
@@ -618,8 +562,6 @@ export function loadConfig(options: {
   const globalPath = globalConfigPath(env)
   const globalRaw = existsSync(globalPath) ? readTomlFile(globalPath) : {}
   const cwd = options.cwd ?? process.cwd()
-  const projectPath = findProjectConfigPath(cwd, env)
-  const projectRaw = projectPath ? readTomlFile(projectPath) : {}
   const projectLocalPath = findProjectLocalConfigPath(cwd, env)
   const projectLocalRaw = projectLocalPath ? readTomlFile(projectLocalPath) : {}
   const sessionId = options.sessionId ?? env['NOTIFAI_SESSION_ID']
@@ -627,16 +569,12 @@ export function loadConfig(options: {
   const sessionRaw = sessionPath && existsSync(sessionPath) ? readTomlFile(sessionPath) : {}
 
   function resolve<K extends ConfigKey>(key: K): ResolvedValue<never> {
-    // The shared project file arrives with a clone, so keys that widen
-    // network trust never read from it — whatever a repository writes there.
-    const repositoryLayerReadable = !USER_OWNED_CONFIG_KEYS.includes(key)
     // Machine-only keys read nothing but this machine's own file.
     const scopedLayersReadable = !MACHINE_ONLY_CONFIG_KEYS.includes(key)
     const layers: [unknown, ConfigSource][] = [
       [scopedLayersReadable ? (flags as Record<string, unknown>)[key] : undefined, 'flag'],
       [sessionPath && scopedLayersReadable ? rawLayerValue(sessionRaw, key) : undefined, `session:${sessionPath ?? ''}`],
       [projectLocalPath && scopedLayersReadable ? rawLayerValue(projectLocalRaw, key) : undefined, `project-local:${projectLocalPath ?? ''}`],
-      [projectPath && repositoryLayerReadable && scopedLayersReadable ? rawLayerValue(projectRaw, key) : undefined, `project:${projectPath ?? ''}`],
       [rawLayerValue(globalRaw, key), `global:${globalPath}`],
     ]
     for (const [raw, source] of layers) {

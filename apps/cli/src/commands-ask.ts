@@ -32,7 +32,7 @@ import { codexRoutingTrustProblems, findInstallations, handlerEvent } from './in
 import { CODEX_CARD_VERSION_FLOOR, codexCardHooksReady, codexCardToolOffered } from './codex-card-capability.js'
 import { activeOpenclawGeneration } from './openclaw-session-access.js'
 import { openclawGatewayReady } from './openclaw-gateway-readiness.js'
-import { enableProject, inferredProjectName, projectBinding } from './project-enablement.js'
+import { enableProject, inferredProjectName, projectBinding, projectEnabled } from './project-enablement.js'
 import { spawnQuestionSettlement } from './question-settlement-process.js'
 import {
   buildDraft,
@@ -521,8 +521,9 @@ function persistRegisteredQuestion(
     log(deps).error('cli.error', { kind: 'question_submission_launch', session: sessionId, question_id: questionId, outcome: submission,
       message: err instanceof Error ? err.message : String(err) })
   }
+  const keepSessionOpen = 'Keep this Agent Session open while the question waits: closing, clearing or switching it ends the question, so never suggest that.'
   const nextStep = submission === 'scheduled'
-    ? 'Background submission is scheduled; this registration does not confirm submission or delivery. Inspect status to verify submission. Continue independent work while Question Routing owns the answer return path.'
+    ? 'Background submission is scheduled; this does not confirm submission or delivery, so check status before reporting either. Continue independent work: the answer comes back into this Agent Session.'
     : 'Background startup failed. Keep this registration; ordinary lifecycle hooks can recover it. Inspect status before relying on submission.'
   const native = readSessionState(sessionId, deps.env).codex_question_bindings?.find(binding =>
     binding.question_id === questionId && binding.owner_key === readSessionIncarnation(sessionId, deps.env)?.key)
@@ -568,6 +569,7 @@ function persistRegisteredQuestion(
               `Ask the question in the conversation and explain what each answer will change. ${nextStep}`,
             route_neutral:
               'Never say where the answer must arrive; it returns by whatever route the harness supports.',
+            keep_session_open: keepSessionOpen,
             on_answer:
               'Acknowledge it, then resume the committed work without asking the user to confirm again.',
             answered_outside_notifai: native === undefined
@@ -599,6 +601,7 @@ function persistRegisteredQuestion(
   deps.io.out(
     `${nextStep} Inspect \`notifai status ${questionId}\` for submission evidence; never register a replacement to check this question.`,
   )
+  deps.io.out(keepSessionOpen)
   deps.io.out('Ask in the conversation and explain what each answer will change:')
   for (const [index, entry] of built.questions.entries()) {
     const questionPrefix = built.questions.length > 1 ? `Question ${index + 1}, ` : ''
@@ -721,24 +724,22 @@ export function askCommand(
     return askFailure(deps, flags, 'config_invalid', 'configuration', `Question routing configuration is invalid: ${String(err)}`, 'fix the reported Notifai configuration and retry')
   }
   const explicitProject = flags.project ?? explicitUseConfig.project.value ?? inferredProjectName(deps.cwd, deps.env)
-  if (explicitProject !== null) {
-    const binding = projectBinding(deps.cwd, deps.env, explicitProject)
-    // A disabled OpenClaw Project must remain disabled until the User or agent
-    // explicitly enables it; the exact-generation route cannot infer consent.
-    if (binding !== null && deps.env['NOTIFAI_ACTIVE_HARNESS'] !== 'openclaw') {
-      try {
-        enableProject(binding)
-      } catch (err) {
-        return askFailure(
-          deps,
-          flags,
-          'project_enablement_failed',
-          'project_enablement',
-          `Project Enablement could not be saved: ${String(err)}`,
-          'check filesystem permissions or sandbox access for the Notifai state directory, then retry the same ask',
-          EXIT.failed,
-        )
-      }
+  const explicitBinding = explicitProject === null ? null : projectBinding(deps.cwd, deps.env, explicitProject)
+  // A disabled OpenClaw Project stays disabled until the User enables it; the
+  // exact-generation route cannot infer consent.
+  if (explicitBinding !== null && deps.env['NOTIFAI_ACTIVE_HARNESS'] !== 'openclaw') {
+    try {
+      enableProject(explicitBinding)
+    } catch (err) {
+      return askFailure(
+        deps,
+        flags,
+        'project_enablement_failed',
+        'project_enablement',
+        `Project Enablement could not be saved: ${String(err)}`,
+        'check filesystem permissions or sandbox access for the Notifai state directory, then retry the same ask',
+        EXIT.failed,
+      )
     }
   }
   const credential = deps.store.load()
@@ -860,10 +861,15 @@ export function askCommand(
     const state = readSessionState(active.sessionId, deps.env)
     if (active.harness === 'openclaw' &&
         activeOpenclawGeneration(active.sessionId, deps.env, deps.cwd) === null) {
+      // Only an enabled Project activates a generation. Whether to enable it is
+      // the User's word, which only the agent can tell from the conversation.
+      const projectOff = explicitBinding !== null && !projectEnabled(explicitBinding)
       return askFailure(
         deps, flags, 'openclaw_generation_stale', 'exact_session',
         'This OpenClaw tool subprocess cannot prove the current enabled Gateway session generation.',
-        'enable the Project if needed, then run the question from a current OpenClaw turn after the Notifai plugin has activated',
+        projectOff
+          ? 'enable the Project with `notifai project enable` only when the User asked for Notifai here, then run the question from a current OpenClaw turn after the Notifai plugin has activated; otherwise ask in the conversation'
+          : 'run the question from a current OpenClaw turn after the Notifai plugin has activated',
       )
     }
     if (active.harness === 'openclaw' && !openclawGatewayReady(deps.env)) {

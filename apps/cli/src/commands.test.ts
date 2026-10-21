@@ -148,8 +148,7 @@ it.each([
   { json: true, syscall: 'open' },
 ])('reports Project Enablement permission failures before question registration (json=$json, syscall=$syscall)', async ({ json, syscall }) => {
   const cwd = mkdtempSync(path.join(os.tmpdir(), 'notifai-ask-permissions-'))
-  mkdirSync(path.join(cwd, '.notifai'))
-  writeFileSync(path.join(cwd, '.notifai', 'config.toml'), 'project = "permission-fixture"\n')
+  writeProjectSettings(cwd, isolatedEnv(cwd), 'project = "permission-fixture"\n')
   const io = new CapturedIo()
   const env = { ...isolatedEnv(cwd), CODEX_THREAD_ID: 'permission-fixture-thread' }
   const deps = { ...makeDeps(io, {} as ApiClient), cwd, env }
@@ -505,6 +504,13 @@ const inertSkills: NativeSkills = {
   place: async () => 0,
   refresh: async () => ({ ok: true, changed: [] }),
   remove: async () => 0,
+}
+
+/** The User's own settings for the Project at `cwd`, stored outside the checkout. */
+function writeProjectSettings(cwd: string, env: NodeJS.ProcessEnv, toml: string): void {
+  const file = personalProjectConfigPath(cwd, env)
+  mkdirSync(path.dirname(file), { recursive: true })
+  writeFileSync(file, toml)
 }
 
 function isolatedEnv(cwd: string): NodeJS.ProcessEnv {
@@ -1837,7 +1843,7 @@ describe('command contracts', () => {
 
     expect(await sendCommand(makeDeps(io, client), flags)).toBe(EXIT.ok)
     expect(io.errLines).toEqual([
-      'Heads up: this notification ends with a question but has no reply action. Add --reply (and optionally --choice) so it can be answered from the notification.',
+      'Heads up: this notification ends with a question, but it cannot be answered. Use `notifai ask` for a question the User should answer.',
     ])
   })
 
@@ -4421,11 +4427,13 @@ describe('harness activation guidance', () => {
     expect(io.outLines.join('\n')).toContain('update --check --json')
   })
 
-  it.each(['cursor', 'opencode', 'openclaw'] as const)('keeps supported %s update readiness separate from unavailable async questions', async harness => {
+  it.each([
+    ['cursor', 'darwin'], ['opencode', 'darwin'], ['openclaw', 'linux'],
+  ] as const)('keeps supported %s update readiness on %s separate from unavailable async questions', async (harness, hookPlatform) => {
     const cwd = mkdtempSync(path.join(os.tmpdir(), 'notifai-blocking-update-'))
     const io = new CapturedIo()
     const env = { ...isolatedEnv(cwd), ...(harness === 'cursor' ? { CURSOR_AGENT: '1' } : { NOTIFAI_ACTIVE_HARNESS: harness, NOTIFAI_ACTIVE_SESSION_ID: 'current-session' }) }
-    const deps = { ...makeDeps(io, {} as ApiClient), cwd, env }
+    const deps = { ...makeDeps(io, {} as ApiClient), cwd, env, hookPlatform }
     expect(hooksInstallCommand(deps, { harness, execPath, scriptPath })).toBe(EXIT.ok)
     const now = Date.now()
     writeProjectSession(cwd, env, 'current-session', now, harness)
@@ -4437,6 +4445,25 @@ describe('harness activation guidance', () => {
     for (const check of report.session.diagnostics.filter((s: { id: string }) => ['hooks-question-admission', 'hooks-answer-continuation'].includes(s.id))) {
       expect(check).not.toHaveProperty('remedy')
     }
+  })
+
+  it('keeps a repairable async-question gap after an update where the harness supports async ask', async () => {
+    // OpenClaw supports asynchronous ask on macOS through its Gateway, so an
+    // unverified Gateway is a gap to repair, not a capability limit.
+    const cwd = mkdtempSync(path.join(os.tmpdir(), 'notifai-async-update-'))
+    const io = new CapturedIo()
+    const env = { ...isolatedEnv(cwd), NOTIFAI_ACTIVE_HARNESS: 'openclaw', NOTIFAI_ACTIVE_SESSION_ID: 'current-session' }
+    const deps = { ...makeDeps(io, {} as ApiClient), cwd, env, hookPlatform: 'darwin' as const }
+    expect(hooksInstallCommand(deps, { harness: 'openclaw', execPath, scriptPath })).toBe(EXIT.ok)
+    const now = Date.now()
+    writeProjectSession(cwd, env, 'current-session', now, 'openclaw')
+    writeSessionState('current-session', env, { harness: 'openclaw', last_prompt_at: now })
+    io.outLines = []
+    expect(await cliUpdateCheckCommand(deps, { json: true })).toBe(EXIT.ok)
+    const session = JSON.parse(io.outLines[0]!).session
+    expect(session).toMatchObject({ harness: 'openclaw', assessment: 'needs_attention' })
+    expect(session.diagnostics.find((s: { id: string }) => s.id === 'hooks-answer-continuation'))
+      .toMatchObject({ status: 'gap', remedy: expect.any(Object) })
   })
 
   it('does not call an unactivated Claude session safe to continue', async () => {
@@ -4729,8 +4756,7 @@ describe('stable hook installation', () => {
     ).toBe(EXIT.ok)
     const firstDefinition = readFileSync(machine, 'utf8')
     const firstAdapter = readFileSync(hookAdapterPath(deps.hookAdapterHome), 'utf8')
-    mkdirSync(path.join(cwd, '.notifai'), { recursive: true })
-    writeFileSync(path.join(cwd, '.notifai', 'config.local.toml'), 'ask_grace_seconds = 300\n')
+    writeProjectSettings(cwd, env, 'ask_grace_seconds = 300\n')
     env.XDG_CONFIG_HOME = path.join(cwd, 'different-config')
     env.XDG_STATE_HOME = path.join(cwd, 'different-state')
 
@@ -5070,8 +5096,7 @@ describe('logs', () => {
   it('scopes to this project unless told otherwise', () => {
     const io = new CapturedIo()
     const deps = logDeps(io)
-    mkdirSync(path.join(deps.cwd, '.notifai'), { recursive: true })
-    writeFileSync(path.join(deps.cwd, '.notifai', 'config.toml'), 'project = "mine"\n')
+    writeProjectSettings(deps.cwd, deps.env, 'project = "mine"\n')
     seed(deps, 'mine')
     seed(deps, 'someone-elses')
 
@@ -5126,8 +5151,7 @@ describe('logs', () => {
     // is actually a setting.
     const io = new CapturedIo()
     const deps = logDeps(io)
-    mkdirSync(path.join(deps.cwd, '.notifai'), { recursive: true })
-    writeFileSync(path.join(deps.cwd, '.notifai', 'config.toml'), 'log_level = "off"\n')
+    writeProjectSettings(deps.cwd, deps.env, 'log_level = "off"\n')
     expect(logsCommand(deps, {})).toBe(EXIT.ok)
     expect(io.errLines.join('\n')).toContain('log_level is off')
     expect(io.errLines.join('\n')).toContain('config set log_level info')
@@ -5251,12 +5275,11 @@ describe('config surfaces', () => {
     const io = new CapturedIo()
     const deps = configDeps(io)
     const configFile = path.join(deps.env['XDG_CONFIG_HOME']!, 'notifai', 'config.toml')
-    for (const flags of [{ project: true }, { local: true }, { session: 'sess' }]) {
+    for (const flags of [{ local: true }, { session: 'sess' }]) {
       expect(await configSetCommand(deps, 'updates.automatic', 'off', { yes: true, ...flags })).toBe(EXIT.usage)
       expect(await configUnsetCommand(deps, 'updates.automatic', { yes: true, ...flags })).toBe(EXIT.usage)
     }
     expect(io.errLines.join('\n')).toContain('applies to this whole machine')
-    expect(existsSync(path.join(deps.cwd, '.notifai', 'config.toml'))).toBe(false)
     expect(await configSetCommand(deps, 'updates.automatic', 'maybe', { yes: true })).toBe(EXIT.usage)
     expect(await configSetCommand(deps, 'updates.automatic', 'off', { yes: true })).toBe(EXIT.ok)
     expect(loadConfig({ cwd: deps.cwd, env: deps.env })['updates.automatic']).toEqual({ value: false, source: `global:${configFile}` })
@@ -5272,7 +5295,7 @@ describe('config surfaces', () => {
   it('keeps reopening a machine-wide setting: on/off for the switch, a fixed choice per place', async () => {
     const io = new CapturedIo()
     const deps = configDeps(io)
-    for (const flags of [{ project: true }, { local: true }, { session: 'sess' }]) {
+    for (const flags of [{ local: true }, { session: 'sess' }]) {
       expect(await configSetCommand(deps, 'reopen.terminal', 'off', { yes: true, ...flags })).toBe(EXIT.usage)
     }
     expect(await configSetCommand(deps, 'reopen.automatic', 'off', { yes: true })).toBe(EXIT.ok)
@@ -5352,19 +5375,18 @@ describe('config surfaces', () => {
     const globalFile = path.join(deps.env['XDG_CONFIG_HOME']!, 'notifai', 'config.toml')
     mkdirSync(path.dirname(globalFile), { recursive: true })
     writeFileSync(globalFile, 'wait_seconds = 20\n')
-    // Shared Project settings live in a checkout.
     execFileSync('git', ['-C', deps.cwd, 'init'], { stdio: 'ignore' })
 
-    expect(await configSetCommand(deps, 'wait_seconds', '10', { project: true, yes: true })).toBe(
+    expect(await configSetCommand(deps, 'wait_seconds', '10', { local: true, yes: true })).toBe(
       EXIT.ok,
     )
     expect(loadConfig({ cwd: deps.cwd, env: deps.env }).wait_seconds).toMatchObject({
       value: 10,
-      source: expect.stringMatching(/^project:/),
+      source: expect.stringMatching(/^project-local:/),
     })
   })
 
-  it('writes an explicit shared override at the Git root from a nested directory', async () => {
+  it('writes one Project Override from anywhere in the checkout, and nothing into the checkout', async () => {
     const io = new CapturedIo()
     const deps = configDeps(io)
     execFileSync('git', ['-C', deps.cwd, 'init'], { stdio: 'ignore' })
@@ -5373,15 +5395,17 @@ describe('config surfaces', () => {
 
     expect(
       await configSetCommand({ ...deps, cwd: nested }, 'wait_seconds', '20', {
-        project: true,
+        local: true,
         yes: true,
       }),
     ).toBe(EXIT.ok)
 
-    expect(readFileSync(path.join(deps.cwd, '.notifai', 'config.toml'), 'utf8')).toContain(
-      'wait_seconds = 20',
-    )
-    expect(existsSync(path.join(nested, '.notifai', 'config.toml'))).toBe(false)
+    expect(loadConfig({ cwd: deps.cwd, env: deps.env }).wait_seconds).toMatchObject({
+      value: 20,
+      source: `project-local:${personalProjectConfigPath(deps.cwd, deps.env)}`,
+    })
+    expect(existsSync(path.join(deps.cwd, '.notifai'))).toBe(false)
+    expect(existsSync(path.join(nested, '.notifai'))).toBe(false)
   })
 })
 
@@ -6004,8 +6028,7 @@ describe('compatibility-first update guidance', () => {
     writeFileSync(file, '"reopen.automatic" = false\n')
     expect(await run('darwin')).toEqual(['Reopen: off; every stopped conversation waits for you'])
     // A project cannot change it.
-    mkdirSync(path.join(cwd, '.notifai'), { recursive: true })
-    writeFileSync(path.join(cwd, '.notifai', 'config.toml'), '"reopen.automatic" = true\n')
+    writeProjectSettings(cwd, env, '"reopen.automatic" = true\n')
     expect(await run('darwin')).toEqual(['Reopen: off; every stopped conversation waits for you'])
     const jsonIo = new CapturedIo()
     await doctorCommand({ ...makeDeps(jsonIo, {} as ApiClient), cwd, env, hookPlatform: 'darwin' }, { json: true }, { readiness: { states: [] }, updatesRunHere: false })
@@ -6415,12 +6438,11 @@ describe('init', () => {
     expect(out.match(/^Next:/gm)).toHaveLength(1)
   })
 
-  it('honors an explicit --project-id', async () => {
+  it('honors an explicit --project-id as the User\'s own Project setting, outside the checkout', async () => {
     const cwd = mkdtempSync(path.join(os.tmpdir(), 'init-explicit-'))
-    // An explicit id is a shared override, written in the Project's checkout.
     execFileSync('git', ['-C', cwd, 'init'], { stdio: 'ignore' })
     const io = new CapturedIo()
-    const deps = { ...makeDeps(io, {} as ApiClient), cwd }
+    const deps = { ...makeDeps(io, {} as ApiClient), cwd, env: isolatedEnv(cwd) }
 
     expect(
       await initCommand(deps, {
@@ -6428,9 +6450,20 @@ describe('init', () => {
         skills: false,
       }),
     ).toBe(EXIT.failed)
-    expect(readFileSync(path.join(cwd, '.notifai', 'config.toml'), 'utf8')).toContain(
-      'project = "custom-name"',
-    )
+    const file = personalProjectConfigPath(cwd, deps.env)
+    expect(readFileSync(file, 'utf8')).toContain('project = "custom-name"')
+    expect(loadConfig({ cwd, env: deps.env }).project).toEqual({ value: 'custom-name', source: `project-local:${file}` })
+    expect(existsSync(path.join(cwd, '.notifai'))).toBe(false)
+  })
+
+  it('refuses an explicit --project-id in the home folder, which is never a Project', async () => {
+    const cwd = mkdtempSync(path.join(os.tmpdir(), 'init-explicit-home-'))
+    const io = new CapturedIo()
+    const deps = { ...makeDeps(io, {} as ApiClient), cwd, env: { ...isolatedEnv(cwd), HOME: cwd, USERPROFILE: cwd } }
+
+    expect(await initCommand(deps, { projectId: 'anything', skills: false })).toBe(EXIT.usage)
+    expect(io.errLines.join('\n')).toContain('never a Project')
+    expect(existsSync(personalProjectConfigPath(cwd, deps.env))).toBe(false)
   })
 
   it('accepts inferred Project identity when no scope was passed, and writes nothing', async () => {
@@ -7213,8 +7246,7 @@ describe('init', () => {
 
   it('keeps completed setup ready when the saved Companion Receipt cannot be re-read transiently', async () => {
     const cwd = mkdtempSync(path.join(os.tmpdir(), 'init-proof-transient-read-'))
-    mkdirSync(path.join(cwd, '.notifai'), { recursive: true })
-    writeFileSync(path.join(cwd, '.notifai', 'config.toml'), 'project = "durable-proof"\n')
+    writeProjectSettings(cwd, isolatedEnv(cwd), 'project = "durable-proof"\n')
     const io = new CapturedIo()
     let evidenceAvailable = true
     let submitCalls = 0
@@ -7313,8 +7345,7 @@ describe('init', () => {
     'reports an observed receipt whose local persistence fails without sending a replacement',
     async () => {
       const cwd = mkdtempSync(path.join(os.tmpdir(), 'init-proof-persist-failure-'))
-      mkdirSync(path.join(cwd, '.notifai'), { recursive: true })
-      writeFileSync(path.join(cwd, '.notifai', 'config.toml'), 'project = "persist-failure"\n')
+      writeProjectSettings(cwd, isolatedEnv(cwd), 'project = "persist-failure"\n')
       const io = new CapturedIo()
       let evidenceCalls = 0
       let submitCalls = 0
@@ -7591,8 +7622,7 @@ describe('init', () => {
         ),
     } as unknown as ApiClient
     const now = Date.parse('2026-08-25T00:00:00.000Z')
-    mkdirSync(path.join(cwd, '.notifai'), { recursive: true })
-    writeFileSync(path.join(cwd, '.notifai', 'config.toml'), 'project = "stale-proof"\n')
+    writeProjectSettings(cwd, isolatedEnv(cwd), 'project = "stale-proof"\n')
     const deps: CommandDeps = {
       ...makeDeps(io, client),
       cwd,
@@ -7617,8 +7647,7 @@ describe('init', () => {
     ['service failure', new ApiCallError(503, 'internal_error', 'temporary service failure')],
   ])('retains an older setup proof through %s and resumes its existing receipt', async (_label, failure) => {
     const cwd = mkdtempSync(path.join(os.tmpdir(), 'init-proof-stale-unavailable-'))
-    mkdirSync(path.join(cwd, '.notifai'), { recursive: true })
-    writeFileSync(path.join(cwd, '.notifai', 'config.toml'), 'project = "stale-unavailable"\n')
+    writeProjectSettings(cwd, isolatedEnv(cwd), 'project = "stale-unavailable"\n')
     const io = new CapturedIo()
     let now = Date.parse('2026-09-05T12:00:00.000Z')
     let unavailable = true
@@ -7711,8 +7740,7 @@ describe('init', () => {
 
   it('announces the machine that finished setup, not the Project or the check', async () => {
     const cwd = mkdtempSync(path.join(os.tmpdir(), 'init-proof-copy-'))
-    mkdirSync(path.join(cwd, '.notifai'), { recursive: true })
-    writeFileSync(path.join(cwd, '.notifai', 'config.toml'), 'project = "orders-api"\n')
+    writeProjectSettings(cwd, isolatedEnv(cwd), 'project = "orders-api"\n')
     const io = new CapturedIo()
     let submitted: SubmitNotificationRequestT | null = null
     const client = {
@@ -7796,11 +7824,7 @@ describe('init', () => {
 
   it('treats Android as active Companion readiness and sends a platform-correct proof', async () => {
     const cwd = mkdtempSync(path.join(os.tmpdir(), 'init-android-proof-'))
-    mkdirSync(path.join(cwd, '.notifai'), { recursive: true })
-    writeFileSync(
-      path.join(cwd, '.notifai', 'config.toml'),
-      'project = "android-project"\ninterruption_level = "passive"\n',
-    )
+    writeProjectSettings(cwd, isolatedEnv(cwd), 'project = "android-project"\ninterruption_level = "passive"\n')
     const io = new CapturedIo()
     let submitted: SubmitNotificationRequestT | null = null
     const client = {
@@ -8237,8 +8261,7 @@ describe('init', () => {
           latency_ms: 1_000,
         }),
     } as unknown as ApiClient
-    mkdirSync(path.join(cwd, '.notifai'), { recursive: true })
-    writeFileSync(path.join(cwd, '.notifai', 'config.toml'), 'project = "json-ready"\n')
+    writeProjectSettings(cwd, isolatedEnv(cwd), 'project = "json-ready"\n')
     const deps = { ...makeDeps(io, client), cwd, env: isolatedEnv(cwd) }
     writeSetupProof(deps, {
       request_id: 'req_json_ready',
@@ -8569,6 +8592,32 @@ describe('asking before the hooks have ever run', () => {
     )
   })
 
+  it.each([
+    ['not enabled', false, 'enable the Project with `notifai project enable` only when the User asked for Notifai here, then'],
+    ['already enabled', true, 'run the question from a current OpenClaw turn'],
+  ] as const)('words the OpenClaw generation refusal for a Project that is %s', (_label, enabled, remedyStart) => {
+    const cwd = scratchDir('notifai-openclaw-generation-remedy-')
+    const io = new CapturedIo()
+    const env = { ...isolatedEnv(cwd), NOTIFAI_ACTIVE_HARNESS: 'openclaw', NOTIFAI_ACTIVE_SESSION_ID: 'agent:main:remedy' }
+    const deps = { ...makeDeps(io, {} as ApiClient), cwd, env, hookPlatform: 'darwin' as const }
+    writeProjectSettings(cwd, env, 'project = "openclaw-remedy"\n')
+    const binding = projectBinding(cwd, env, 'openclaw-remedy')
+    expect(binding).not.toBeNull()
+    if (enabled) enableProject(binding!)
+    expect(hooksInstallCommand(deps, { harness: 'openclaw', execPath, scriptPath })).toBe(EXIT.ok)
+    io.outLines = []
+
+    expect(askCommand(deps, 'Ship it?', { json: true })).toBe(EXIT.usage)
+    const refusal = JSON.parse(io.outLines.at(-1)!)
+    expect(refusal).toMatchObject({ code: 'openclaw_generation_stale', registered: false })
+    expect(refusal.remedy.startsWith(remedyStart), refusal.remedy).toBe(true)
+    if (enabled) expect(refusal.remedy).not.toContain('project enable')
+    // Without the User's request the agent still has a route.
+    else expect(refusal.remedy.endsWith('; otherwise ask in the conversation'), refusal.remedy).toBe(true)
+    // A refused OpenClaw ask never enables the Project itself.
+    expect(projectEnabled(binding!)).toBe(enabled)
+  })
+
   it.each(['card-hook', 'card-hook-unproven', 'card-hook-other-model', 'supported', 'no-transport', 'old-codex', 'missing', 'malformed', 'unavailable', 'changed-turn', 'lost-machine', 'changed-machine', 'changed-service', 'machine-lost-in-lock', 'ended', 'ended-unavailable', 'replaced-owner'] as const)('gates native registration on service support and answer transport: %s', async mode => {
     const cwd = scratchDir('notifai-native-ask-output-')
     const sessionId = '019ff69d-a07f-7161-ab6e-bd06b3b93c8e'
@@ -8604,8 +8653,7 @@ describe('asking before the hooks have ever run', () => {
       return { namespace: 'codex', threadId: sessionId, currentTurn: async () => true, steer: async () => {}, close }
     })
     const deps = { ...makeDeps(io, { compatibility } as unknown as ApiClient), cwd, env, now: () => 42, spawnQuestionSettlement: spawn, codexAnswerControl }
-    mkdirSync(path.join(cwd, '.notifai'))
-    writeFileSync(path.join(cwd, '.notifai', 'config.toml'), 'project = "native-ask-test"\n')
+    writeProjectSettings(cwd, env, 'project = "native-ask-test"\n')
     expect(hooksInstallCommand(deps, { harness: 'codex', execPath, scriptPath })).toBe(EXIT.ok)
     const cardHooks = mode.startsWith('card-hook')
     if (!cardHooks) {
@@ -8732,11 +8780,6 @@ describe('asking before the hooks have ever run', () => {
     git('add', 'file')
     git('commit', '-m', 'fixture')
     git('worktree', 'add', worktree, '-b', 'feature/first-turn-ask')
-    mkdirSync(path.join(worktree, '.notifai'), { recursive: true })
-    writeFileSync(
-      path.join(worktree, '.notifai', 'config.toml'),
-      'project = "linked-first-turn"\n',
-    )
     const cwd = path.join(worktree, 'nested')
     mkdirSync(cwd)
     const io = new CapturedIo()
@@ -8750,6 +8793,7 @@ describe('asking before the hooks have ever run', () => {
       CODEX_THREAD_ID: 'codex-current-thread',
     }
     const deps = { ...makeDeps(io, {} as ApiClient), cwd, env, now: () => 42 }
+    writeProjectSettings(worktree, env, 'project = "linked-first-turn"\n')
 
     expect(hooksInstallCommand(deps, { harness: 'codex', execPath, scriptPath })).toBe(EXIT.ok)
     trustInstalledCodexHooks(cwd, env)
@@ -8884,8 +8928,7 @@ describe('asking before the hooks have ever run', () => {
       CODEX_THREAD_ID: 'codex-changed-definition',
     }
     const deps = { ...makeDeps(io, {} as ApiClient), cwd, env, now: () => 42 }
-    mkdirSync(path.join(cwd, '.notifai'), { recursive: true })
-    writeFileSync(path.join(cwd, '.notifai', 'config.toml'), 'project = "changed-definition"\n')
+    writeProjectSettings(cwd, env, 'project = "changed-definition"\n')
     const binding = projectBinding(cwd, env, 'changed-definition')
     expect(binding).not.toBeNull()
     enableProject(binding!)
@@ -8958,8 +9001,7 @@ describe('asking before the hooks have ever run', () => {
       CODEX_THREAD_ID: 'codex-unproven-resume',
     }
     const deps = { ...makeDeps(io, {} as ApiClient), cwd, env, now: () => 42 }
-    mkdirSync(path.join(cwd, '.notifai'), { recursive: true })
-    writeFileSync(path.join(cwd, '.notifai', 'config.toml'), 'project = "unproven-resume"\n')
+    writeProjectSettings(cwd, env, 'project = "unproven-resume"\n')
     const binding = projectBinding(cwd, env, 'unproven-resume')
     expect(binding).not.toBeNull()
     enableProject(binding!)
@@ -9049,11 +9091,7 @@ describe('asking before the hooks have ever run', () => {
         },
       } as unknown as ApiClient
       const deps = { ...makeDeps(io, client), cwd, env, now: () => 42 }
-      mkdirSync(path.join(cwd, '.notifai'), { recursive: true })
-      writeFileSync(
-        path.join(cwd, '.notifai', 'config.toml'),
-        `project = "${shape}-stop-handlers"\n`,
-      )
+      writeProjectSettings(cwd, env, `project = "${shape}-stop-handlers"\n`)
       const binding = projectBinding(cwd, env, `${shape}-stop-handlers`)
       expect(binding).not.toBeNull()
       enableProject(binding!)
@@ -9288,8 +9326,7 @@ describe('asking before the hooks have ever run', () => {
     }
     const firstDeps = { ...makeDeps(io, {} as ApiClient), cwd: first, env, now: () => 42 }
     const secondDeps = { ...firstDeps, cwd: second }
-    mkdirSync(path.join(second, '.notifai'), { recursive: true })
-    writeFileSync(path.join(second, '.notifai', 'config.toml'), 'project = "resume-second"\n')
+    writeProjectSettings(second, env, 'project = "resume-second"\n')
     const secondBinding = projectBinding(second, env, 'resume-second')
     expect(secondBinding).not.toBeNull()
     enableProject(secondBinding!)
@@ -9366,11 +9403,15 @@ describe('asking before the hooks have ever run', () => {
       last_stop_at: 41,
     })
     writeProjectSession(first, env, 'claude-cross-checkout', 42, 'claude-code')
-    mkdirSync(path.join(second, '.notifai'), { recursive: true })
-    writeFileSync(
-      path.join(second, '.notifai', 'config.toml'),
-      'project = "second-project"\nask_notifications = false\n',
-    )
+    writeProjectSettings(second, env, 'project = "second-project"\nask_notifications = false\n')
+    io.outLines = []
+    expect(askCommand({ ...firstDeps, cwd: second }, 'Use this checkout?', { json: true })).toBe(EXIT.usage)
+    expect(JSON.parse(io.outLines.join('\n'))).toMatchObject({
+      registered: false,
+      code: 'question_routing_disabled',
+      remedy: expect.stringMatching(/^enable question routing or use a blocking `notifai send --reply` question/),
+    })
+    expect(readSessionState('claude-cross-checkout', env).pending).toBeUndefined()
     mkdirSync(path.dirname(sessionConfigPath('claude-cross-checkout', env)), { recursive: true })
     writeFileSync(sessionConfigPath('claude-cross-checkout', env), 'ask_notifications = true\n')
     io.outLines = []
@@ -10329,8 +10370,7 @@ describe('asking before the hooks have ever run', () => {
     expect(hooksInstallCommand(deps, { harness: 'claude-code', execPath, scriptPath })).toBe(
       EXIT.ok,
     )
-    mkdirSync(path.join(cwd, '.notifai'), { recursive: true })
-    writeFileSync(path.join(cwd, '.notifai', 'config.local.toml'), 'ask_grace_seconds = 300\n')
+    writeProjectSettings(cwd, deps.env, 'ask_grace_seconds = 300\n')
     io.outLines = []
 
     await doctorCommand(deps, {})
@@ -10620,7 +10660,7 @@ describe('asking before the hooks have ever run', () => {
       code: 'session_identity_missing',
       check_id: 'exact_session',
       exit_code: EXIT.usage,
-      remedy: expect.stringMatching(/exact session|blocking/i),
+      remedy: expect.stringMatching(/exact Agent Session|send --reply/i),
     })
   })
 

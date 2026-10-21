@@ -59,6 +59,7 @@ import {
   sessionConfigPath,
   stateDir,
 } from './config.js'
+import { personalProjectGuidanceDir } from './guidance.js'
 import {
   handleSessionEnd,
   runEscalationWaiter,
@@ -366,6 +367,13 @@ interface Harness {
 }
 
 const NOW = 1_800_000_000_000
+
+/** The User's own settings for the Project at `cwd`, stored outside the checkout. */
+function writeProjectSettings(cwd: string, env: NodeJS.ProcessEnv, toml: string): void {
+  const file = personalProjectConfigPath(cwd, env)
+  mkdirSync(path.dirname(file), { recursive: true })
+  writeFileSync(file, toml)
+}
 
 function harness(replies: ReplyView[] = []): Harness {
   const root = mkdtempSync(path.join(os.tmpdir(), 'notifai-hooks-'))
@@ -1266,7 +1274,7 @@ describe('what the hook leaves behind', () => {
     expect(h.recorder.submitted).toHaveLength(0)
     // Nothing was printed, and the log is the only account of it.
     expect(h.io.errLines.join('\n')).not.toContain('notifications')
-    expect(gates(h).map((record) => record.data?.['reason'])).toContain('notifications-off')
+    expect(gates(h).map((record) => record.data?.['reason'])).toContain('question-notifications-off')
   })
 
   it('records a turn with no question at all, so "did the hook run" is answerable', async () => {
@@ -1284,11 +1292,8 @@ describe('what the hook leaves behind', () => {
     const startup = path.join(h.deps.cwd, 'startup')
     const project = path.join(h.deps.cwd, 'project')
     mkdirSync(startup, { recursive: true })
-    mkdirSync(path.join(project, '.notifai'), { recursive: true })
-    writeFileSync(
-      path.join(project, '.notifai', 'config.toml'),
-      'project = "hook-project"\nlog_level = "debug"\n',
-    )
+    mkdirSync(project, { recursive: true })
+    writeProjectSettings(project, h.env, 'project = "hook-project"\nlog_level = "debug"\n')
     const deps = { ...h.deps, cwd: startup, logger: bootstrapLogger({ env: h.env, cwd: startup }) }
 
     await hookRunCommand(deps, 'stop', stdin({ session_id: 'reenabled', cwd: project }))
@@ -1368,8 +1373,7 @@ describe('what the hook leaves behind', () => {
 
   it('records a config parse failure as a complete fail-open lifecycle', async () => {
     const h = harness()
-    mkdirSync(path.join(h.deps.cwd, '.notifai'), { recursive: true })
-    writeFileSync(path.join(h.deps.cwd, '.notifai', 'config.toml'), 'not valid = [toml')
+    writeProjectSettings(h.deps.cwd, h.env, 'not valid = [toml')
 
     await hookRunCommand(
       { ...h.deps, logger: createLogger({ env: h.env }) },
@@ -3719,10 +3723,9 @@ describe('hostile input', () => {
   it('clamps an out-of-range grace window instead of trusting it', () => {
     const h = harness()
     const project = mkdtempSync(path.join(os.tmpdir(), 'notifai-bounds-'))
-    mkdirSync(path.join(project, '.notifai'), { recursive: true })
-    writeFileSync(path.join(project, '.notifai', 'config.toml'), 'ask_grace_seconds = 99999\n')
+    writeProjectSettings(project, h.env, 'ask_grace_seconds = 99999\n')
     const config = loadConfig({ cwd: project, env: h.env })
-    // A committed repository file must not be able to replace the supported
+    // A hand-edited value must not be able to replace the supported
     // terminal-first preference with an arbitrary multi-hour hold.
     expect(config.ask_grace_seconds.value).toBeLessThanOrEqual(360)
   })
@@ -3975,6 +3978,22 @@ describe('session-start hook', () => {
     expect(lookup).toHaveBeenCalledTimes(1)
   })
 
+  it('leaves notices due when an OpenClaw prompt finds its session already activated', async () => {
+    const h = harness()
+    h.deps.fetchImpl = vi.fn(async () => new Response('{"latest":"99.0.0"}'))
+    const envelope = { session_id: 'agent:main:notice-probe', cwd: h.deps.cwd, openclaw_session_id: 'transcript-a' }
+    // Activated before any notice was due.
+    await hookRunCommand(h.deps, 'session-start', stdin(envelope), 'openclaw')
+    expect(h.io.outLines.join('\n')).toContain('Notifai is enabled for this Project')
+    await hookRunCommand(h.deps, 'maintenance', stdin({}))
+    h.io.outLines = []
+    await hookRunCommand(h.deps, 'session-start', stdin(envelope), 'openclaw')
+    expect(h.io.outLines).toEqual([])
+    // The notice the already-activated prompt read reaches the next activation.
+    await hookRunCommand(h.deps, 'session-start', stdin({ session_id: 'next-root' }), 'codex')
+    expect(h.io.outLines.join('\n')).toContain('A newer Notifai is available.')
+  })
+
   it('is completely silent when the Project is disabled', async () => {
     const h = harness()
     const binding = projectBinding(h.deps.cwd, h.env)
@@ -4021,10 +4040,10 @@ describe('session-start hook', () => {
       expect(first.hookSpecificOutput?.additionalContext).toMatch(/Notifai.*enabled.*Project/i)
       const context = first.hookSpecificOutput?.additionalContext ?? ''
       // Root activation must reach owners before they discover or load the skill.
-      expect(context).toMatch(/you own Notification Requests.*unless.*assigned elsewhere/i)
+      expect(context).toMatch(/you own Notification Requests unless your assignment delegates them elsewhere/i)
       expect(context).toMatch(/load the Notifai skill before your first Notification Request/i)
       expect(context).toMatch(/`notifai ask`.*same turn/i)
-      expect(context).toMatch(/safe setup or readiness, never for credentials/i)
+      expect(context).toMatch(/ask for readiness, never for a credential/i)
       expect(first.hookSpecificOutput?.additionalContext).toContain('# How to read this guidance')
       expect(first.hookSpecificOutput?.additionalContext).toContain(
         '<!-- notifai:guidance topic=when-to-notify from=shipped default -->',
@@ -4036,10 +4055,10 @@ describe('session-start hook', () => {
 
   it('caps the total root lifecycle context and falls back without partial guidance', async () => {
     const h = harness()
-    const guidance = path.join(h.deps.cwd, '.notifai', 'guidance')
+    const guidance = personalProjectGuidanceDir(h.deps.cwd, h.env)
     mkdirSync(guidance, { recursive: true })
-    writeFileSync(path.join(guidance, 'titles.md'), `private-start-${'x'.repeat(16_000)}`)
-    writeFileSync(path.join(guidance, 'content.md'), `private-end-${'y'.repeat(16_000)}`)
+    writeFileSync(path.join(guidance, 'when-to-notify.md'), `private-start-${'x'.repeat(16_000)}`)
+    writeFileSync(path.join(guidance, 'questions.md'), `private-end-${'y'.repeat(16_000)}`)
 
     await hookRunCommand(
       h.deps,
@@ -4052,8 +4071,9 @@ describe('session-start hook', () => {
     }
     const context = output.hookSpecificOutput?.additionalContext ?? ''
     expect(Buffer.byteLength(context, 'utf8')).toBeLessThanOrEqual(GUIDANCE_CONTEXT_MAX_BYTES)
-    expect(context).toContain('above the')
     expect(context).toContain('run `notifai guidance` once')
+    expect(context).not.toContain('<!-- notifai:guidance topic=')
+    expect(context).not.toMatch(/\bbytes?\b/)
     expect(context).not.toContain('private-start-')
     expect(context).not.toContain('private-end-')
   })
@@ -4083,7 +4103,7 @@ describe('session-start hook', () => {
       hookSpecificOutput: {
         hookEventName: 'SubagentStart',
         additionalContext: expect.stringMatching(
-          /report Agent Events to the parent.*do not send.*unless the parent explicitly delegated/i,
+          /report Agent Events[^.]*to your parent.*Send no Notification Request yourself unless your assignment delegates them to you/i,
         ),
       },
     })
@@ -4099,7 +4119,7 @@ describe('session-start hook', () => {
     await hookRunCommand(h.deps, 'session-start', stdin(envelope), 'cursor')
     const context = String(JSON.parse(h.io.outLines.at(-1) ?? '{}').additional_context)
     expect(context).toMatch(/^Notifai is enabled for this Project\./)
-    expect(context).toMatch(/effective guidance.*when-to-notify/is)
+    expect(context).toMatch(/The guidance below governs.*when-to-notify/is)
     expect(Buffer.byteLength(context, 'utf8')).toBeLessThanOrEqual(10_000)
 
     h.io.outLines = []
@@ -4185,7 +4205,7 @@ describe('Grok native lifecycle', () => {
     const input = { sessionId: 'grok-worker', cwd: h.deps.cwd, promptId: 'worker-turn', subagentType: 'explore' }
     await hookRunCommand(h.deps, 'post-tool-use', stdin(input), 'grok')
     const context = JSON.parse(h.io.outLines[0] ?? '{}').hookSpecificOutput.additionalContext
-    expect(context).toContain('Report Agent Events to the parent')
+    expect(context).toMatch(/report Agent Events[^.]*to your parent/i)
     expect(context).not.toContain('You own Notification Requests')
     disableProject(projectBinding(h.deps.cwd, h.env)!)
     await hookRunCommand(h.deps, 'post-tool-use', stdin({ ...input, promptId: 'disabled-turn' }), 'grok')

@@ -7,7 +7,8 @@ import { discoverCliUpdate, shouldConsultCliRegistry } from './cli-release.js'
 import { CLI_UPDATE_AVAILABLE } from './cli-contract.js'
 import { packageVersion } from './release.js'
 import { compareReleasePrecedence, isSemVer } from './version.js'
-import { automaticActivationNotice, automaticUpdatesRunHere, heldAutomaticUpdate } from './automatic-update.js'
+import { automaticUpdatesRunHere, heldAutomaticUpdate, pendingAutomaticActivationNotice } from './automatic-update.js'
+import { claimNow, type PendingNotice } from './pending-notice.js'
 import { automaticUpdatesSetting } from './config.js'
 
 const CHECK_INTERVAL_MS = 24 * 60 * 60 * 1000
@@ -96,15 +97,15 @@ export async function refreshAgentUpdateState(options: {
 
 /**
  * The machine-wide update notice, read from what the last lookup recorded.
- * No network and no wait: it reads one small file, and takes the notice lock
- * only on the rare call that emits the notice.
+ * No network and no wait: it reads one small file. The notice is spent only
+ * when the caller claims it, which takes the notice lock and checks again.
  *
  * With automatic updates on (and an updater on this machine), there is no
  * weekly offer: agents hear once after Notifai updated itself, and are asked
  * to offer only an update the updater cannot install by itself (for example a
  * hook change the User must approve) or one held back for a week.
  */
-export function cachedAgentUpdateNotice(options: {
+export function pendingAgentUpdateNotice(options: {
   env: NodeJS.ProcessEnv
   now: number
   updateCommand: string
@@ -112,11 +113,11 @@ export function cachedAgentUpdateNotice(options: {
   currentVersion?: string | null
   /** Test seam; production asks whether this machine has an automatic updater. */
   automaticRunsHere?: boolean
-}): string | undefined {
+}): PendingNotice | undefined {
   if (!shouldConsultCliRegistry({ env: options.env })) return undefined
   const file = noticeFile(options.env)
   if ((options.automaticRunsHere ?? automaticUpdatesRunHere()) && automaticUpdatesSetting(options.env).enabled) {
-    return automaticActivationNotice(options.env, options.now) ?? heldUpdateNotice(options, file)
+    return pendingAutomaticActivationNotice(options.env, options.now) ?? pendingHeldUpdateNotice(options, file)
   }
   try {
     const owed = (state: NoticeState): boolean => {
@@ -126,20 +127,34 @@ export function cachedAgentUpdateNotice(options: {
       return current === null || compareReleasePrecedence(state.available, current) === 'after'
     }
     if (!owed(readState(file))) return undefined
-    const notify = withFileLock(`${file}.lock`, () => {
-      const state = readState(file)
-      if (!owed(state)) return false
-      save(file, { ...state, notified_at: options.now })
-      return true
-    }, { waitMs: 50 })
-    if (!notify) return undefined
-    return `${CLI_UPDATE_AVAILABLE} Run \`notifai update --check --json\`, read the release notes, and briefly offer to perform the update at a natural pause. ` +
-      `When authorized, use \`${options.updateCommand}\` and follow the new CLI guidance and session handoff. ` +
-      'Follow the User\'s instructions about updating; keep working if deferred. ' +
-      'Do not send a Notification Request just for this notice. It appears at most once every seven days on this machine.'
+    return {
+      text: `${CLI_UPDATE_AVAILABLE} Run \`notifai update --check --json\`, read the release notes, and briefly offer to perform the update at a natural pause. ` +
+        `When authorized, use \`${options.updateCommand}\` and follow the new CLI guidance and session handoff. ` +
+        'Follow the User\'s instructions about updating; keep working if deferred. ' +
+        'Do not send a Notification Request just for this notice. It appears at most once every seven days on this machine.',
+      claim: () => claimNotice(file, options.now, owed),
+    }
   } catch {
     // An unreadable record never interrupts lifecycle guidance or routing.
     return undefined
+  }
+}
+
+/** The update notice for a caller that prints whatever it reads. */
+export function cachedAgentUpdateNotice(options: Parameters<typeof pendingAgentUpdateNotice>[0]): string | undefined {
+  return claimNow(pendingAgentUpdateNotice(options))
+}
+
+function claimNotice(file: string, now: number, owed: (state: NoticeState) => boolean): boolean {
+  try {
+    return withFileLock(`${file}.lock`, () => {
+      const state = readState(file)
+      if (!owed(state)) return false
+      save(file, { ...state, notified_at: now })
+      return true
+    }, { waitMs: 50 }) === true
+  } catch {
+    return false
   }
 }
 
@@ -151,25 +166,23 @@ const HELD_REASONS: Record<string, string> = {
 }
 
 /** The weekly offer for a staged update the automatic updater is holding back. */
-function heldUpdateNotice(options: { env: NodeJS.ProcessEnv; now: number; updateCommand: string }, file: string): string | undefined {
+function pendingHeldUpdateNotice(options: { env: NodeJS.ProcessEnv; now: number; updateCommand: string }, file: string): PendingNotice | undefined {
   try {
     const held = heldAutomaticUpdate(options.env, options.now)
     if (held === null) return undefined
-    const notify = withFileLock(`${file}.lock`, () => {
-      const state = readState(file)
-      if (recent(state.notified_at, options.now, NOTICE_INTERVAL_MS)) return false
-      save(file, { ...state, notified_at: options.now })
-      return true
-    }, { waitMs: 50 })
-    if (!notify) return undefined
+    const owed = (state: NoticeState): boolean => !recent(state.notified_at, options.now, NOTICE_INTERVAL_MS)
+    if (!owed(readState(file))) return undefined
     const why = held.reason === 'starved'
       ? 'questions or answers have kept it waiting on this machine for a week'
       : held.waiting_for.filter(reason => HELD_REASONS[reason] !== undefined).map(reason => HELD_REASONS[reason]).join('; ')
-    return `${CLI_UPDATE_AVAILABLE} Notifai ${held.version} is downloaded but automatic updates are holding it back: ${why}. ` +
-      'Run `notifai update --check --json`, read the release notes and its `waiting_for` and `hook_changes`, and briefly offer to perform the update at a natural pause, saying exactly what the User will need to approve. ' +
-      `When authorized, use \`${options.updateCommand}\` and follow the new CLI guidance and session handoff. ` +
-      'Follow the User\'s instructions about updating; keep working if deferred. ' +
-      'Do not send a Notification Request just for this notice. It appears at most once every seven days on this machine.'
+    return {
+      text: `${CLI_UPDATE_AVAILABLE} Notifai ${held.version} is downloaded but automatic updates are holding it back: ${why}. ` +
+        'Run `notifai update --check --json`, read the release notes and its `waiting_for` and `hook_changes`, and briefly offer to perform the update at a natural pause, saying exactly what the User will need to approve. ' +
+        `When authorized, use \`${options.updateCommand}\` and follow the new CLI guidance and session handoff. ` +
+        'Follow the User\'s instructions about updating; keep working if deferred. ' +
+        'Do not send a Notification Request just for this notice. It appears at most once every seven days on this machine.',
+      claim: () => claimNotice(file, options.now, owed),
+    }
   } catch {
     return undefined
   }

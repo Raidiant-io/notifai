@@ -641,6 +641,23 @@ describe('Codex tool-boundary Session Messages', () => {
     expect(h.output).toHaveLength(presentations)
   })
 
+  it('ends a wake-started turn on an empty inbox and never tells an idle agent to resume finished work', async () => {
+    const h = setup()
+    h.env['CODEX_THREAD_ID'] = SESSION
+    expect(await receiveCommand(h.deps)).toBe(0)
+    const empty = h.output.at(-1)!
+    expect(empty).toContain('No user input is pending')
+    // The one rule: a wake that started the turn ends it; a turn already working carries on.
+    expect(empty).toMatch(/wake started this turn, end the turn/)
+    expect(empty).toMatch(/already working, carry on/)
+    // The wake defers to what receive prints rather than prescribing its own outcome.
+    for (const wake of [sessionInputWake(), sessionInputWake('1a55ec5f-0fd4-4158-b1e2-6efe6b2256cf')]) {
+      expect(wake).toContain('`notifai receive`')
+      expect(wake).toMatch(/follow what it prints/)
+      expect(wake).not.toMatch(/continue|resume/i)
+    }
+  })
+
   it('reports queued input instead of an empty inbox when an earlier answer blocks a claim', async () => {
     const h = setup()
     h.env['CODEX_THREAD_ID'] = SESSION

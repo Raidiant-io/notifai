@@ -7,8 +7,9 @@
  * settle a visible card is its owning app-server: `turn/steer` into the
  * card's own turn with the reply envelope naming the card's exact question
  * items, the same route a device answer takes (`codex-answer-presentation.ts`).
- * It carries no answer, only the plain note that the User dismissed it, so the
- * agent carries on without one, as a Claude Code picker does.
+ * It carries no answer, only the plain note that the question expired (the
+ * agent learns nothing more about a dismissal), so the agent carries on
+ * without one, as a Claude Code picker does.
  *
  * It happens only where that is safe, at a trusted tool callback of the
  * card's own turn, from the session's owner holding its lease:
@@ -33,7 +34,7 @@ import type { Logger } from './logging.js'
 /** What the agent reads in place of an answer: the same words a Claude Code picker gives. */
 export const CODEX_CARD_DISMISSED = CLAUDE_PICKER_DISMISSED
 /** The card's answer field: it holds no answer. */
-export const CODEX_CARD_DISMISSED_ANSWER = 'No answer: the user dismissed this question on their device.'
+export const CODEX_CARD_DISMISSED_ANSWER = 'No answer: this question has expired.'
 
 /** A dismissed card of this owner's current turn, bound to exact native items, not yet settled. */
 export function dismissedCards(state: SessionState, ownerKey: string, turnId: string): CodexQuestionRegistration[] {
@@ -52,7 +53,7 @@ export function dismissalEnvelope(registration: CodexQuestionRegistration): stri
     questionItemId: JSON.stringify(['request_user_input_async', binding.native!.call_id, binding.native!.index]),
     question: nativeQuestionTitle(binding),
     answer: CODEX_CARD_DISMISSED_ANSWER,
-    notifai: { origin: 'companion', question_id: registration.question_id, dismissed: true, instruction: CODEX_CARD_DISMISSED },
+    notifai: { origin: 'companion', question_id: registration.question_id, expired: true, instruction: CODEX_CARD_DISMISSED },
   }))) + '\n</send_user_message_question_reply>'
 }
 

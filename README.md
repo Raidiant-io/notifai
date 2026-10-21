@@ -273,10 +273,10 @@ Session's activation checkout when available, otherwise from Git at the current
 directory. A directory outside Git does not create an inferred Project; explicit
 configuration and Project overrides still apply. Ordinary setup writes nothing
 into the repository.
-Machine settings live in the user's configuration directory; personal Project
-Overrides live there too and are shared across linked worktrees. A repository
-`.notifai/config.toml` is only an explicit, tracked shared override and is
-authored in the active checkout so it can be reviewed and merged normally.
+Machine settings live in the user's configuration directory; Project
+Overrides live there too and are shared across linked worktrees. Only the
+user's own settings and guidance customize Notifai: a repository cannot supply
+either, and nothing committed to a checkout is read as configuration.
 Harness hooks have no scope to ask about: they are installed once per harness
 for this machine. Installing the skill does place files elsewhere, so at a
 human terminal that — and only that — asks once whether it is for this project
@@ -361,7 +361,9 @@ a rule the installed Codex rejects, and an organization rule that forbids it,
 each as per-command approval rather than a fault.
 
 **SessionStart** (`session-start`) gives the main owner the small model-visible
-activation context that makes it evaluate Notifai proactively. **SubagentStart**
+activation context that makes it evaluate Notifai proactively. It carries the
+`when-to-notify` and `questions` guidance topics and names the wording topics
+the owner reads with `notifai guidance` before its first Notification Request. **SubagentStart**
 (`subagent-start`) gives ordinary Claude and Codex workers a reporting-only
 context instead. The parent owns User-visible Notification Requests unless it
 explicitly delegates that ownership in text; a delegated worker then loads the
@@ -373,9 +375,8 @@ Sessions worker context; missing or unusable relationship data fails safe as
 worker. OpenClaw uses the `sessionKey` the same way: a `:subagent:` or ACP
 nested key is a worker, and missing identity fails safe as worker.
 Hermes v0.21.5 freezes the root or delegated worker context into the local
-classic CLI prompt. Its prompt budget can be smaller than the full guidance;
-the bounded fallback directs the agent to run `notifai guidance` before a
-Notification Request.
+classic CLI prompt. Its prompt budget holds no guidance topic, so it directs
+the agent to run `notifai guidance` before deciding whether or how to notify.
 Cursor activation adds no turn. The editor, the Agents Window and
 `cursor-agent` deliver SessionStart context. Hosts built on the Cursor SDK,
 such as T3 Code, discard it, so Cursor wiring also writes one short

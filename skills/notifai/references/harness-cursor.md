@@ -5,8 +5,8 @@ harness shares.
 
 ## Activation
 
-**Cursor:** activation adds no turn. Cursor wiring is the lifecycle hooks plus
-one always-applied rule, `~/.cursor/skills/notifai-activation/SKILL.md`, which
+Activation adds no turn. Cursor wiring is the lifecycle hooks plus one
+always-applied rule, `~/.cursor/skills/notifai-activation/SKILL.md`, which
 `notifai hooks install --harness cursor` writes and `notifai doctor` checks.
 
 - The editor, the Agents Window and `cursor-agent` deliver SessionStart context,
@@ -21,8 +21,19 @@ one always-applied rule, `~/.cursor/skills/notifai-activation/SKILL.md`, which
   ACP host (no lifecycle hooks) or a cloud agent (no machine configuration).
 
 Start one fresh conversation and send one prompt, then run `notifai doctor`.
-The agent shell does not create a separately activated context for delegated
-work: it remains under the parent Agent Session and its explicit Notification
-Request ownership. It does not expose the exact conversation id needed to prove
-which concurrent Agent Session invoked `notifai ask`, so asynchronous ask fails
-closed. Use blocking `notifai send --reply` for questions.
+
+## Questions
+
+Delegated work stays under the parent Agent Session and its Notification
+Request ownership; Cursor starts no separately activated context for it.
+Cursor does not tell Notifai which conversation ran a command, so no answer
+can come back later and `notifai ask` fails closed. Ask with a blocking
+`notifai send --reply` in the foreground, as the skill's "Bounded foreground
+wait" says.
+
+## After a Notifai update
+
+The hooks call the updated CLI, and refreshing the hooks also rewrites the
+activation rule; reread guidance in the current conversation. A changed hook command
+counts as loaded once a hook call in this conversation shows it. Changed
+SessionStart context and a changed rule load when a new conversation starts.

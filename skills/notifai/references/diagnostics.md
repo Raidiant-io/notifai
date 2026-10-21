@@ -24,49 +24,32 @@ hook never ran. Question outcomes (`ask.registered`, `hook.gate`, `hook.pushed`,
 slower-rotating file, so `notifai logs --event hook.gate --since 2d` still
 finds them days later.
 
-`hook.gate` records carry a fixed `reason` — `notifications-off`,
+`hook.gate` records carry a fixed `reason` — `question-notifications-off`,
 `claimed-elsewhere`, `no-question`, `no-session`, `answered`,
 `acknowledgement-required`, `acknowledgement-abandoned`, `harness-cannot-continue`,
 `delivery-limit`, `proceeding` —
-so filter on that, never on the wording of a message. `notifications-off` is
-the one the user deliberately never sees, which is why it is worth ruling out
-before concluding anything is broken.
+so filter on that, never on the wording of a message. A Claude Code picker or
+OpenCode form that stayed in the terminal logs the stage `picker-terminal-only`
+or `form-terminal-only` with a `reason` of its own, such as `not-signed-in`.
+`question-notifications-off` is the one the user deliberately never sees, which
+is why it is worth ruling out before concluding anything is broken.
 
 There is no limit on successive answered questions. A `delivery-limit` gate
 bounds repeated delivery attempts for the same answer, not the number of
 decisions the User can make in a conversation.
 
 On macOS and Linux one shared hub attends every Agent Session on the machine.
-`notifai doctor` shows whether it runs and what it attends; not running is
-normal when no session is open. `notifai logs --event hub.session` and
-`--event hub.exchange` show sessions registering, ending, and the hub's
-service traffic; `--event update.automatic` shows automatic updates being
-staged, held back and why, or activated; `--event hub.handover` shows a hub on
-an earlier build handing over to the active build, or the one thing it still
-finishes first, and doctor's hub line says the same. A restart loses nothing:
-`--event hub.session` shows the next hub adopting Codex conversations no child
-brings back. For a Codex terminal on Codex's shared server, doctor's wake
-route says whether answers can start a turn there or wait for the next turn,
-and its JSON (`shared_server_check`) names the step a failed check stopped at; `--event hub.session` shows the
-check (`codex-check-…`), a held wake (`wake-held`) and a terminal seen closed
-(`terminal-closed`). `--event hub.reopen` shows a stopped conversation being
-reopened in a new terminal window or continued in the Codex app, or why it was
-left waiting (reopening off, an Orca pane, open elsewhere, its folder gone, no
-desktop session, the Codex app not running, how it started or its permissions
-not known exactly); while the machine shuts down it reopens nothing until the
-next start. Doctor's `Reopen:` line says what happens by default, and its JSON
-`reopen` lists each recent outcome; `stalled` is a reopened conversation that
-came back but has not taken its answer, most likely at a prompt in its
-window, and doctor says so. While it runs, the hub also answers
-the frequent hooks of quiet sessions; any other hook starts the runtime as
-before, and doctor's JSON counts both and says why a hook went to the runtime.
-A hub that crashed three times in ten minutes stops
-restarting for the rest of that window and doctor says so. Doctor's
-`claude code hook form` check says whether Claude Code's hooks run in exec or
-shell form and why; a failure there is repaired by
-`notifai hooks install --harness claude-code`. Shell form kept "while an older
-Notifai still attends a Claude Code session" is expected and needs nothing: the
-hub switches to exec form once that session's next hook hands it over.
+These doctor lines and log events explain what it did:
+
+| Doctor line or log event | What it tells you | What to do |
+| --- | --- | --- |
+| Doctor's hub line | Whether the hub runs and what it attends; whether an older hub is still handing over, or has stopped restarting after three crashes in ten minutes | Not running is normal with no session open. A handover needs nothing; never end sessions for it |
+| `--event hub.session`, `--event hub.exchange` | Sessions registering and ending, and the hub's service traffic | Read before concluding a session was lost; a restarted hub takes its sessions back |
+| `--event hub.handover` | An older hub handing over to the current build, or the one thing it finishes first | Nothing |
+| `--event update.automatic` | Automatic updates staged, held back and why, or activated | Follow [Updating Notifai](updates.md) |
+| Doctor's wake route; JSON `shared_server_check`; `hub.session` records `codex-check-…`, `wake-held`, `terminal-closed` | For a Codex terminal on Codex's shared server: whether an answer can start a turn or waits for the next prompt, and where a failed check stopped | Tell the User when answers will wait for their next prompt |
+| Doctor's `Reopen:` line; JSON `reopen`; `--event hub.reopen` | Whether a stopped conversation was reopened in a new terminal window or continued in the Codex app, or the reason it was left waiting. While the machine shuts down nothing reopens until the next start | `stalled` means it came back but has not taken its answer, most likely held at a prompt in its window: tell the User |
+| Doctor's `claude code hook form` check | Whether Claude Code's hooks run in exec or shell form, and why | On failure run `notifai hooks install --harness claude-code`. Shell form kept "while an older Notifai still attends a Claude Code session" needs nothing |
 
 When sign-in looks fine but nothing sends, `notifai auth status --json` and
 `notifai auth access --json` separate a pairing problem from an account without
@@ -75,3 +58,17 @@ failure.
 
 The log never leaves the machine, and it contains the user's own answers. Treat
 it like any other private file of theirs.
+
+## Log filters
+
+`notifai logs` narrows several ways, and they compose:
+
+- `--request <id>` · `--run <id>` · `--session <id>` — one notification, one
+  invocation, one Agent Session
+- `--event <name>` (repeatable) · `--grep <text>` · `--level error`
+- `--since 10m|2h|1d|<ISO 8601>` · `-n <count>` · `--all` · `--project <id>` ·
+  `--all-projects`
+- `--json` for one record per line, `--path` for where the files are
+
+`--clear` deletes the user's local record. It is theirs, and nothing else keeps
+a copy — do not run it to tidy up.

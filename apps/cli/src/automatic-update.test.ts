@@ -9,6 +9,7 @@ import { ensurePrivateDirectory } from './atomic-file.js'
 import {
   attemptAutomaticUpdate,
   automaticActivationNotice,
+  pendingAutomaticActivationNotice,
   automaticUpdateReport,
   heldAutomaticUpdate,
   parseActivationPlan,
@@ -289,9 +290,23 @@ describe('automatic updates', () => {
     expect(read(NOW + 1)).toBeUndefined()
     expect(read(NOW + 8 * DAY)).toBeUndefined()
     expect(automaticActivationNotice(f.env, NOW + 9 * DAY)).toBeUndefined()
+    expect(pendingAutomaticActivationNotice(f.env, NOW + 9 * DAY)).toBeUndefined()
     // With automatic updates off, the weekly offer is back.
     setAutomatic(f, '"updates.automatic" = false\n')
     expect(read(NOW + 9 * DAY)).toContain('offer to perform the update')
+  })
+
+  it('keeps the activation notice due until a reader claims it', async () => {
+    const f = fixture()
+    await f.publish('1.0.0'); await f.install('1.0.0', 'stable')
+    await f.publish('1.1.0'); f.point('stable', '1.1.0')
+    await attemptAutomaticUpdate(host(f).host)
+    const unshown = pendingAutomaticActivationNotice(f.env, NOW)
+    expect(unshown?.text).toContain('Notifai updated itself from 1.0.0 to 1.1.0')
+    const shown = pendingAutomaticActivationNotice(f.env, NOW)
+    expect(shown!.claim()).toBe(true)
+    expect(unshown!.claim()).toBe(false)
+    expect(pendingAutomaticActivationNotice(f.env, NOW + 1)).toBeUndefined()
   })
 
   it('offers a staged update that has waited a week', async () => {

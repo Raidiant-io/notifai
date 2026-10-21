@@ -15,6 +15,7 @@ import {
 } from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
+import { personalProjectConfigPath } from './config.js'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { afterEach, expect, it } from 'vitest'
 import type { CommandDeps } from './commands-core.js'
@@ -132,9 +133,11 @@ ptyIt('renders completed setup ahead of a transient evidence failure in a real P
   delete env['FORCE_COLOR']
   delete env['NODE_DISABLE_COLORS']
   delete env['NOTIFAI_NO_INPUT']
-  mkdirSync(path.join(cwd, '.notifai'), { recursive: true })
+  mkdirSync(cwd, { recursive: true })
   mkdirSync(bin, { recursive: true })
-  writeFileSync(path.join(cwd, '.notifai', 'config.toml'), 'project = "pty-proof"\n')
+  const settings = personalProjectConfigPath(cwd, env)
+  mkdirSync(path.dirname(settings), { recursive: true })
+  writeFileSync(settings, 'project = "pty-proof"\n')
 
   let evidenceCalls = 0
   const server = createServer((request, response) => {

@@ -20,7 +20,7 @@ import {
 } from './codex-command-rules.js'
 
 const skill = readFileSync(new URL('../../../skills/notifai/SKILL.md', import.meta.url), 'utf8')
-const references = ['harness-codex', 'harness-setup', 'send-details', 'native-questions', 'notes-and-edits', 'diagnostics', 'updates', 'installation']
+const references = ['harness-codex', 'harness-setup', 'send-details', 'writing-examples', 'diagnostics', 'updates', 'installation', 'npm-migration', 'hermes-publication-recovery']
   .map((name) => readFileSync(new URL(`../../../skills/notifai/references/${name}.md`, import.meta.url), 'utf8'))
   .join('\n')
 

@@ -130,18 +130,33 @@ export function acknowledgementContext(answered: AnsweredPending[]): string {
       ACKNOWLEDGEMENT_SCOPE
     )
   }
-  const anyTextRequired = due.some((entry) => entry.agent_acknowledgement_text_required !== false)
-  const commands = due
-    .map((entry) => {
-      const requestId = entry.pending.request_id!
-      return `- ${requestId}: \`${acknowledgementCommand(requestId, entry.agent_acknowledgement_text_required !== false)}\``
-    })
-    .join('\n')
   return (
-    ` Agent Acknowledgement is required for ${due.length} requests. Immediately, before doing the resumed work or ending this turn, run every command below${acknowledgementDemand(anyTextRequired)}:\n` +
-    commands +
-    ACKNOWLEDGEMENT_SCOPE
+    acknowledgementList(
+      ` Agent Acknowledgement is required for ${due.length} requests. Immediately, before doing the resumed work or ending this turn, run every command below`,
+      due.map((entry) => ({ id: entry.pending.request_id!, textRequired: entry.agent_acknowledgement_text_required !== false, cause: 'reply' })),
+      'reply',
+    ) + ACKNOWLEDGEMENT_SCOPE.trimStart()
   )
+}
+
+interface ListedAcknowledgement {
+  id: string
+  textRequired: boolean
+  cause: 'reply' | 'message'
+}
+
+/**
+ * Several owed acknowledgements as a list. When every command needs the same
+ * text, one demand leads the list; otherwise each command carries its own, so
+ * no command is paired with a demand that does not fit it. The list ends with
+ * a line break, so whatever follows starts on its own line.
+ */
+function acknowledgementList(lead: string, owed: readonly ListedAcknowledgement[], cause: 'reply' | 'message'): string {
+  const uniform = owed.every((entry) => entry.textRequired === owed[0]!.textRequired)
+  const lines = owed.map((entry) =>
+    `- ${entry.id}: \`${acknowledgementCommand(entry.id, entry.textRequired)}\`` +
+    (uniform ? '' : acknowledgementDemand(entry.textRequired, entry.cause)))
+  return `${lead}${uniform ? acknowledgementDemand(owed[0]!.textRequired, cause) : ''}:\n${lines.join('\n')}\n`
 }
 
 /**
@@ -169,7 +184,7 @@ export function answersContext(answered: AnsweredPending[], remaining: number): 
     const identity = ids.length === 0 ? '' : `question_id${ids.length === 1 ? '' : 's'} ${ids.join(', ')}: `
     return `- ${identity}${quoted(pending.question)} → ${answer}`
   })
-  return `Notifai — the user answered ${answered.length} questions:\n${lines.join('\n')}${tail}${guidance}`
+  return `Notifai — the user answered ${answered.length} questions:\n${lines.join('\n')}\n${(tail + guidance).trimStart()}`
 }
 
 export function stopAnswerOutput(context: string): string {
@@ -390,13 +405,6 @@ function clearMessageAcknowledgement(sessionId: string, env: NodeJS.ProcessEnv, 
 }
 
 export function acknowledgementBlockContext(due: readonly OwedAcknowledgement[]): string {
-  const anyTextRequired = due.some((entry) => entry.text_required !== false)
-  const commands = due
-    .map((entry) => {
-      const id = owedAcknowledgementId(entry)
-      return `- ${id}: \`${acknowledgementCommand(id, entry.text_required !== false)}\``
-    })
-    .join('\n')
   const requests = due.filter((entry): entry is AcknowledgementDue => !('message_id' in entry))
   const messages = due.filter((entry): entry is MessageAcknowledgementDue => 'message_id' in entry)
   const subjects = [
@@ -409,9 +417,13 @@ export function acknowledgementBlockContext(due: readonly OwedAcknowledgement[])
   ].join(' and ')
   const cause = requests.length === 0 ? 'message' : 'reply'
   return (
-    `Notifai — required Agent Acknowledgement${due.length === 1 ? '' : 's'} still missing for ${subjects}. ` +
-    `Before doing more resumed work or ending this turn, run ${due.length === 1 ? 'this command' : 'every command'}${acknowledgementDemand(anyTextRequired, cause)}:\n${commands}` +
-    ACKNOWLEDGEMENT_SCOPE
+    acknowledgementList(
+      `Notifai — required Agent Acknowledgement${due.length === 1 ? '' : 's'} still missing for ${subjects}. ` +
+        `Before doing more resumed work or ending this turn, run ${due.length === 1 ? 'this command' : 'every command'}`,
+      due.map((entry) => ({ id: owedAcknowledgementId(entry), textRequired: entry.text_required !== false,
+        cause: 'message_id' in entry ? 'message' : 'reply' })),
+      cause,
+    ) + ACKNOWLEDGEMENT_SCOPE.trimStart()
   )
 }
 

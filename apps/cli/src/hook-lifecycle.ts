@@ -1954,7 +1954,7 @@ export async function submitSessionQuestions(
   const sessionId = envelope.session_id
   if (sessionId === undefined || sessionHasEnded(sessionId, ctx.env)) return []
   if (!ctx.config.ask_notifications.value) {
-    gate(ctx, 'held', 'notifications-off', { source: ctx.config.ask_notifications.source })
+    gate(ctx, 'held', 'question-notifications-off', { source: ctx.config.ask_notifications.source })
     return []
   }
   const lock = `${sessionStatePath(sessionId, ctx.env)}.submission`

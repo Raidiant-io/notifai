@@ -93,7 +93,7 @@ async function routeCard(deps: CommandDeps, envelope: HookEnvelope, logger: Logg
   }
   const questionText = raw.map(entry => [entry.title, ...(entry.options ?? []).map((option: string) => `- ${option}`)].join('\n')).join('\n\n')
   deps.io.out(JSON.stringify({ hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'deny',
-    permissionDecisionReason: `The question is registered as ${questionId} for the user's devices. Restate it in plain conversation text with these same choices and continue independent work; dependent work waits for the answer. Do not call notifai ask again. If the user answers in the conversation, run notifai close ${questionId}; this retires the device question without inventing a native answer.\n\n${questionText}` } }))
+    permissionDecisionReason: `The question is registered as ${questionId} on the User's devices instead of this card. Ask it in plain conversation text with these same choices and continue independent work; dependent work waits for the answer. Do not register it again with notifai ask. If the User answers in the conversation, run notifai close ${questionId} to retire the device question.\n\n${questionText}` } }))
   return null
 }
 

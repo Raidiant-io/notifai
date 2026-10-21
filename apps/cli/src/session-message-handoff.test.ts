@@ -9,7 +9,7 @@ import path from 'node:path'
 import { describe, expect, it, vi } from 'vitest'
 import { ApiCallError, type ApiClient } from './client.js'
 import { readSessionState } from './hook-session-state.js'
-import { answersContext, observeQueuedMessagePrompt, owedAcknowledgements } from './hook-acknowledgements.js'
+import { acknowledgementBlockContext, answersContext, observeQueuedMessagePrompt, owedAcknowledgements } from './hook-acknowledgements.js'
 import type { AnsweredPending } from './hook-types.js'
 import { TRANSPORT_LIMIT, quoted, sessionMessageContext } from './injection-render.js'
 import type { ProcessIdentity } from './process-identity.js'
@@ -438,6 +438,64 @@ describe('structured injection of User text', () => {
       expect(context).not.toContain('\u202E')
       expect(context).toContain('Yes\\u202E')
     }
+  })
+
+  describe('lists of answers and owed acknowledgements', () => {
+    const answer = (question: string, requestId: string, textRequired: boolean) => ({
+      pending: { question, request_id: requestId },
+      reply: { text: 'Yes', answers: [{ question_id: `q_${requestId}`, choice_ids: [], text: 'Yes' }] },
+      replies: [{ text: 'Yes', answers: [{ question_id: `q_${requestId}`, choice_ids: [], text: 'Yes' }] }],
+      agent_acknowledgement_text_required: textRequired,
+    }) as unknown as AnsweredPending
+    const bullets = (context: string) => context.split('\n').filter((line) => line.startsWith('- '))
+
+    // A bullet holds one item; prose after a list starts on its own line.
+    const expectOneItemPerBullet = (context: string) => {
+      for (const line of bullets(context)) {
+        expect(line).not.toMatch(/Agent Acknowledgement|Once a|The quoted text|still waiting/)
+        expect(line.match(/notifai acknowledge |→/g) ?? []).toHaveLength(1)
+      }
+    }
+
+    // Each command carries only the demand that fits it.
+    const expectFittingDemands = (context: string) => {
+      const lines = context.split('\n')
+      for (const line of lines) {
+        if (!line.includes('`notifai acknowledge ')) continue
+        if (line.includes('--text <text>')) expect(line).not.toContain('exactly as shown')
+        else expect(line).not.toContain('non-empty text')
+      }
+      const lead = lines.find((line) => /run (every|this) command/.test(line))!
+      expect(lead.includes('non-empty text') && lead.includes('exactly as shown')).toBe(false)
+    }
+
+    it('puts what follows several answers on its own line', () => {
+      const context = answersContext([answer('Deploy now?', 'req_a', true), answer('And staging?', 'req_b', true)], 1)
+      expect(bullets(context)).toHaveLength(4)
+      expectOneItemPerBullet(context)
+      expectFittingDemands(context)
+    })
+
+    it('gives each command its own demand when only some acknowledgements need text', () => {
+      const context = answersContext([answer('Deploy now?', 'req_a', true), answer('And staging?', 'req_b', false)], 0)
+      expectOneItemPerBullet(context)
+      expectFittingDemands(context)
+      expect(context).toMatch(/- req_a: `notifai acknowledge req_a --text <text>` with non-empty text/)
+      expect(context).toMatch(/- req_b: `notifai acknowledge req_b` exactly as shown/)
+    })
+
+    it('keeps the missing-acknowledgement reminder one command per line, each with a fitting demand', () => {
+      for (const due of [
+        [{ request_id: 'req_a', recorded_at: 1, text_required: true }, { message_id: 'sm_b', recorded_at: 1, text_required: true }],
+        [{ request_id: 'req_a', recorded_at: 1, text_required: true }, { message_id: 'sm_b', recorded_at: 1, text_required: false }],
+        [{ request_id: 'req_a', recorded_at: 1, text_required: false }],
+      ]) {
+        const context = acknowledgementBlockContext(due)
+        expect(bullets(context)).toHaveLength(due.length)
+        expectOneItemPerBullet(context)
+        expectFittingDemands(context)
+      }
+    })
   })
 
   it('renders an Answer Edit with its identifiers outside the quoted answer and the no-undo caveat', () => {

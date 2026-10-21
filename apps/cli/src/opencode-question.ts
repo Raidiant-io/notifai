@@ -358,7 +358,7 @@ async function registerForm(deps: CommandDeps, ask: AskFrame, logger: Logger): P
   }
   // Project Enablement is the User's opt-in: forms elsewhere stay in OpenCode.
   if (!projectEnabled(projectBinding(cwd, deps.env, config.project.value))) return { reason: 'project-not-enabled' }
-  if (!config.ask_notifications.value) return { reason: 'question-routing-off' }
+  if (!config.ask_notifications.value) return { reason: 'question-notifications-off' }
   const form = pickerForm(opencodePickerQuestions(request))
   if ('error' in form) return { reason: 'unsupported-form', detail: { shape: form.error } }
   const credential = deps.store.load()

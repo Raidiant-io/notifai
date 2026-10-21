@@ -51,7 +51,7 @@ export const CONFIG_GROUPS: { id: ConfigGroup; title: string; blurb: string }[] 
   {
     id: 'project',
     title: 'This project',
-    blurb: 'How work in this directory identifies itself. House rules for agents live in `notifai guidance`.',
+    blurb: 'How work in this directory identifies itself. How agents write notifications lives in `notifai guidance`.',
   },
   {
     id: 'trust',
@@ -119,7 +119,7 @@ const INFO: Record<ConfigKey, Omit<ConfigKeyInfo, 'key'>> = {
     example: 'true',
   },
   ask_grace_seconds: {
-    label: 'Terminal-first grace',
+    label: 'Terminal-first delay',
     group: 'questions',
     kind: 'integer',
     unit: 's',
@@ -220,7 +220,7 @@ const INFO: Record<ConfigKey, Omit<ConfigKeyInfo, 'key'>> = {
     kind: 'string',
     summary: 'The name this project reports itself as',
     detail:
-      'Stamped on every notification sent from this directory, and how the companion apps group and filter what arrives. When unset, the CLI infers a stable identifier from Git (shared across linked worktrees) or the current directory. Set it in `.notifai/config.toml` only when that inferred name is not the identity you want.',
+      'Stamped on every notification sent from this directory, and how the companion apps group and filter what arrives. When unset, the CLI infers a stable identifier from Git (shared across linked worktrees) or the current directory. Set it for this project with `notifai config set project <id> --local` only when that inferred name is not the identity you want.',
     unsetMeans: 'inferred from Git or the current directory',
     example: 'my-app',
   },
@@ -230,7 +230,7 @@ const INFO: Record<ConfigKey, Omit<ConfigKeyInfo, 'key'>> = {
     kind: 'list',
     summary: 'Origins remote --image URLs may use beyond public HTTPS',
     detail:
-      'By default a remote `--image` URL must be HTTPS to a publicly routable host, and every redirect hop is held to the same rule — an agent given a hostile URL cannot be used to reach this machine\'s local network. List an exact origin (`scheme://host[:port]`) here to allow a self-hosted or intranet image server, including plain-http ones.\n\nThis key is yours alone: it is read from your machine and personal-project configuration and ignored in the repository\'s shared `.notifai/config.toml`, so a cloned repository can never widen it.',
+      'By default a remote `--image` URL must be HTTPS to a publicly routable host, and every redirect hop is held to the same rule — an agent given a hostile URL cannot be used to reach this machine\'s local network. List an exact origin (`scheme://host[:port]`) here to allow a self-hosted or intranet image server, including plain-http ones.',
     unsetMeans: 'public HTTPS only',
     example: 'http://imgs.intranet.example:8080',
     advanced: true,
@@ -241,7 +241,7 @@ const INFO: Record<ConfigKey, Omit<ConfigKeyInfo, 'key'>> = {
     kind: 'list',
     summary: 'Dashboard origins a pairing approval link may open',
     detail:
-      'During `notifai login` the server names the browser page where you approve this machine. The CLI opens that link only when it is the Notifai dashboard, the origin you are pairing with, or loopback. If you self-host with the dashboard on its own origin, list that exact origin (`scheme://host[:port]`) here.\n\nThis key is yours alone: it is read from your machine and personal-project configuration and ignored in the repository\'s shared `.notifai/config.toml`, so a cloned repository can never widen it.',
+      'During `notifai login` the server names the browser page where you approve this machine. The CLI opens that link only when it is the Notifai dashboard, the origin you are pairing with, or loopback. If you self-host with the dashboard on its own origin, list that exact origin (`scheme://host[:port]`) here.',
     unsetMeans: 'the Notifai dashboard, the pairing origin, and loopback',
     example: 'https://dash.selfhost.example',
     advanced: true,
@@ -470,8 +470,7 @@ export function describeSource(source: string): { label: string; path: string | 
   const filePath = source.slice(separator + 1)
   const labels: Record<string, string> = {
     session: 'this session',
-    'project-local': 'this project (personal)',
-    project: 'this project (shared)',
+    'project-local': 'this project',
     global: 'this machine',
   }
   return { label: labels[layer] ?? layer, path: filePath === '' ? null : filePath }

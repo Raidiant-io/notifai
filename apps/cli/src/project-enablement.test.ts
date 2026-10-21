@@ -3,7 +3,7 @@ import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { describe, expect, it } from 'vitest'
-import { loadConfig, projectLocation, sharedProjectConfigPath } from './config.js'
+import { loadConfig, personalProjectConfigPath, projectLocation } from './config.js'
 import {
   disableProject,
   enableProject,
@@ -31,34 +31,18 @@ describe('Project enablement', () => {
     expect(projectEnabled(binding)).toBe(false)
   })
 
-  it('covers a nested directory of a non-Git Project the User enabled at its root', () => {
-    const root = mkdtempSync(path.join(os.tmpdir(), 'notifai-enablement-nested-'))
-    const project = path.join(root, 'workspace')
-    const nested = path.join(project, 'apps', 'cli')
-    mkdirSync(path.join(project, '.notifai'), { recursive: true })
-    mkdirSync(nested, { recursive: true })
-    writeFileSync(path.join(project, '.notifai', 'config.toml'), 'project = "workspace"\n')
-    const env = { XDG_CONFIG_HOME: path.join(root, 'config') }
-
-    const atRoot = projectBinding(project, env, 'workspace')
-    expect(atRoot).not.toBeNull()
-    enableProject(atRoot!, new Date('2026-09-02T00:00:00.000Z'))
-
-    // The hook fires wherever the agent happens to be standing.
-    expect(projectEnabled(projectBinding(nested, env, 'workspace'))).toBe(true)
-  })
-
-  it('does not extend that decision to an unrelated directory', () => {
+  it('does not extend a decision for an explicit Project outside Git to an unrelated directory', () => {
     const root = mkdtempSync(path.join(os.tmpdir(), 'notifai-enablement-unrelated-'))
     const project = path.join(root, 'workspace')
     const unrelated = path.join(root, 'elsewhere')
-    mkdirSync(path.join(project, '.notifai'), { recursive: true })
+    mkdirSync(project, { recursive: true })
     mkdirSync(unrelated, { recursive: true })
-    writeFileSync(path.join(project, '.notifai', 'config.toml'), 'project = "workspace"\n')
     const env = { XDG_CONFIG_HOME: path.join(root, 'config') }
 
     enableProject(projectBinding(project, env, 'workspace')!, new Date('2026-09-02T00:00:00.000Z'))
 
+    expect(projectEnabled(projectBinding(project, env, 'workspace'))).toBe(true)
+    expect(projectEnabled(projectBinding(unrelated, env, 'workspace'))).toBe(false)
     expect(projectEnabled(projectBinding(unrelated, env))).toBe(false)
   })
 
@@ -125,23 +109,44 @@ describe('Project enablement', () => {
     git(cwd, 'commit', '-m', 'fixture')
   }
 
-  it('gives a submodule of a configured repository that repository\'s name, config and enablement', () => {
+  it('treats a submodule as its own Project, whatever the superproject commits', () => {
     const root = mkdtempSync(path.join(os.tmpdir(), 'notifai-enablement-submodule-'))
     const library = path.join(root, 'library')
     const superproject = path.join(root, 'Super')
     committedRepo(library)
     committedRepo(superproject)
+    // A committed file no longer names a Project root or configures anything.
     mkdirSync(path.join(superproject, '.notifai'))
-    writeFileSync(path.join(superproject, '.notifai', 'config.toml'), 'sound = "default"\n')
+    writeFileSync(path.join(superproject, '.notifai', 'config.toml'), 'project = "planted"\nsound = "default"\n')
     execFileSync('git', ['-C', superproject, '-c', 'protocol.file.allow=always', 'submodule', 'add', library, 'public/sub'], { stdio: 'ignore' })
     const submodule = path.join(superproject, 'public', 'sub')
     const env = { XDG_CONFIG_HOME: path.join(root, 'config') }
 
-    expect(inferredProjectName(submodule, env)).toBe('super')
-    expect(loadConfig({ cwd: submodule, env }).sound.source).toBe(`project:${projectLocation(superproject, env)!.configPath}`)
-    enableProject(projectBinding(superproject, env)!, new Date('2026-10-20T00:00:00.000Z'))
-    expect(projectBinding(submodule, env)).toEqual(projectBinding(superproject, env))
-    expect(projectEnabled(projectBinding(submodule, env))).toBe(true)
+    expect(inferredProjectName(superproject, env)).toBe('super')
+    expect(inferredProjectName(submodule, env)).toBe('sub')
+    expect(loadConfig({ cwd: submodule, env }).sound.source).toBe('default')
+    expect(loadConfig({ cwd: superproject, env }).project.source).toBe('default')
+    // Name and enablement key come from the same root, so they never disagree.
+    const superBinding = projectBinding(superproject, env)!
+    const subBinding = projectBinding(submodule, env)!
+    expect(subBinding.project).toBe('sub')
+    expect(subBinding.markerPath).not.toBe(superBinding.markerPath)
+    enableProject(subBinding, new Date('2026-10-21T00:00:00.000Z'))
+    expect(projectEnabled(projectBinding(path.join(submodule, '.'), env))).toBe(true)
+    expect(projectEnabled(superBinding)).toBe(false)
+  })
+
+  it('lets the User name a Project from a file outside the repository', () => {
+    const root = mkdtempSync(path.join(os.tmpdir(), 'notifai-enablement-personal-'))
+    const repo = path.join(root, 'app')
+    committedRepo(repo)
+    const env = { XDG_CONFIG_HOME: path.join(root, 'config') }
+    const file = personalProjectConfigPath(repo, env)
+    mkdirSync(path.dirname(file), { recursive: true })
+    writeFileSync(file, 'project = "my-app"\n')
+    const nested = path.join(repo, 'src')
+    mkdirSync(nested)
+    expect(loadConfig({ cwd: nested, env }).project).toEqual({ value: 'my-app', source: `project-local:${file}` })
   })
 
   it('never makes the home folder, or a plain folder above a checkout, a Project', () => {
@@ -157,10 +162,9 @@ describe('Project enablement', () => {
     const env = { HOME: home, XDG_CONFIG_HOME: path.join(root, 'config') }
 
     expect(projectLocation(home, env)).toBeNull()
-    expect(sharedProjectConfigPath(home, env)).toBeNull()
     expect(projectBinding(home, env, 'explicit')).toBeNull()
     expect(loadConfig({ cwd: repo, env }).project.value).toBeNull()
     expect(projectBinding(repo, env)?.project).toBe('app')
-    expect(sharedProjectConfigPath(repo, env)).toBe(path.join(projectLocation(repo, env)!.root, '.notifai', 'config.toml'))
+    expect(path.basename(projectLocation(repo, env)!.root)).toBe('app')
   })
 })

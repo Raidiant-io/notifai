@@ -119,10 +119,10 @@ describe('describeSource', () => {
       label: 'this machine',
       path: '/home/me/.config/notifai/config.toml',
     })
-    expect(describeSource('project:/repo/.notifai/config.toml').label).toBe('this project (shared)')
-    expect(describeSource('project-local:/repo/.notifai/config.local.toml').label).toBe(
-      'this project (personal)',
-    )
+    expect(describeSource('project-local:/home/me/.config/notifai/projects/abc.toml')).toEqual({
+      label: 'this project',
+      path: '/home/me/.config/notifai/projects/abc.toml',
+    })
   })
 
   it('does not invent a label for an unrecognised layer', () => {

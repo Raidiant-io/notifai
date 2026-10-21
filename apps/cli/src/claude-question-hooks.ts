@@ -213,9 +213,13 @@ export const CLAUDE_PICKER_ANSWER_FOLLOWS =
   'Notifai — the user answered this question on their device instead. That answer could not come back through the picker, ' +
   'so it reaches you as your next message. End your turn now and act on the answer when it arrives.'
 
-/** Context the agent reads beside a picker result of "no answer" when the User dismissed the question on a device. */
+/**
+ * Context the agent reads beside a picker result of "no answer" when the User
+ * dismissed the question on a device. It says only that the question expired:
+ * the agent learns nothing more about a dismissal.
+ */
 export const CLAUDE_PICKER_DISMISSED =
-  'Notifai — the user dismissed this question on their device, so it will not be answered. Carry on without an answer to it.'
+  'Notifai — this question has expired, so it will not be answered. Carry on without an answer to it.'
 
 /**
  * Close the picker with no answer of its own. Claude Code reports that the
@@ -250,7 +254,7 @@ function registerPickerQuestion(
   } catch {
     return { reason: 'config-invalid' }
   }
-  if (!config.ask_notifications.value) return { reason: 'question-routing-off' }
+  if (!config.ask_notifications.value) return { reason: 'question-notifications-off' }
   const form = pickerForm(picker)
   if ('error' in form) return { reason: 'unsupported-picker', detail: { shape: form.error } }
   // Hook stderr reaches nobody; a fallback-label heads-up has no reader here.
@@ -504,7 +508,7 @@ export async function claudePermissionRequest(
   let stagedSince: number | null = null
   for (;;) {
     // Esc, a session ending, or this handler's own timeout: the picker has no answer to wait for.
-    if (stopped) return leave('picker-dismissed', true)
+    if (stopped) return leave('picker-cancelled', true)
     if (sessionHasEnded(sessionId, deps.env) || !parentAlive()) return leave('session-ended', true)
     const state = readSessionState(sessionId, deps.env)
     // Another hook resolved the picker: the terminal answered, the turn moved on, or a newer picker opened.
@@ -514,7 +518,7 @@ export async function claudePermissionRequest(
     }
     const registration = registrationOf(state, questionId)
     // The User dismissed the question on a device: nobody will answer it there, so the session must not wait on it.
-    if (registration?.dismissed === true && !answerOnItsWay(state)) return close(CLAUDE_PICKER_DISMISSED, 'dismissed', 'question-dismissed')
+    if (registration?.dismissed === true && !answerOnItsWay(state)) return close(CLAUDE_PICKER_DISMISSED, 'expired', 'question-expired')
     if (registration === undefined || registration.terminated === true || registration.ordinary_only === true) {
       return answerOnItsWay(state) ? closeForAnswer('question-closed') : leave('question-closed')
     }

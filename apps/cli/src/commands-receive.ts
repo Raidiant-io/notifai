@@ -54,7 +54,9 @@ export async function receiveCommand(deps: CommandDeps): Promise<number> {
     const pending = hasSessionInputs(current.sessionId, deps.env, readAttendantLease(current.sessionId, deps.env))
     deps.io.out(pending
       ? 'User input is pending but could not be handed over yet. It remains queued. Inspect notifai logs for the claim or delivery failure; do not treat this as an empty inbox or acknowledge unseen input.'
-      : 'No user input is pending in the local inbox for this session. Continue your work.')
+      // A wake that started an idle turn asks for nothing: end that turn rather
+      // than resume finished work. A wake seen mid-turn leaves the work running.
+      : 'No user input is pending in the local inbox for this session. If a Notifai wake started this turn, end the turn; if you were already working, carry on with that work.')
   }
   return EXIT.ok
 }
