@@ -355,8 +355,10 @@ describe('Notifai agent skill', () => {
     expect(approval).toMatch(/wait/i)
     expect(approval).toMatch(/never\s+bypass Question Routing with `send --reply`/i)
     expect(loose(harnessSetupReference)).toMatch(/Never bypass that gap with `notifai send --reply`/)
-    expect(disabled).toMatch(/deliberately/i)
-    expect(disabled).toMatch(/send --reply/i)
+    // "Send questions to my devices" off keeps every question off the devices,
+    // on every route: the skill names the setting and teaches no workaround.
+    expect(loose(disabled)).toMatch(/“Send questions to my devices” \(`ask_notifications`\) is off, the User keeps questions off their devices: ask in the conversation, or in your own question form, which stays in the terminal\. `send --reply` refuses there too\./)
+    expect(disabled).not.toMatch(/deliberately|does not gate/i)
     expect(skill).not.toContain('/hooks')
     expect(harnessReference).toContain('/hooks')
   })
@@ -529,7 +531,7 @@ describe('Notifai agent skill', () => {
     // The hooks decision says what hooks do; keeping questions in the
     // terminal is its own setting, not "no hooks".
     expect(setup.replace(/\s+/g, ' ')).toMatch(/hooks[\s\S]*in the projects where it is on, questions reach their devices and answers come back/i)
-    expect(setup).not.toMatch(/`ask_notifications`/)
+    expect(setup).toMatch(/terminal[\s\S]*`ask_notifications`/i)
     expect(setup).not.toMatch(/whether Question Routing sends questions/i)
     // Lifecycle wiring has one place to go, so the only scope left is the
     // skill's, and the per-project switch is enablement.
@@ -633,8 +635,10 @@ describe('Notifai agent skill', () => {
     // request from enabling the Project again.
     expect(loose(harnessSetupReference)).toMatch(/To turn Notifai's guidance off in one project while leaving other projects wired, run `notifai project disable`\./)
     expect(loose(harnessSetupReference)).not.toMatch(/nothing from that project reaches/i)
-    // Each setting's meaning lives in `notifai config explain`.
+    // Each setting's meaning lives in `notifai config explain`; harness setup
+    // keeps only what the agent does with questions off.
     expect(harnessSetupReference).not.toMatch(/ask_grace_seconds|reply_window_seconds/)
+    expect(loose(harnessSetupReference)).toMatch(/`ask_notifications`\) off, ask in the conversation, or in your own question form/i)
     expect(loose(harnessSetupReference)).not.toMatch(/still reach the User/i)
     const setup = loose(section('## Set Notifai up'))
     expect(setup).toMatch(/“Notifai me” or “use notifai” authorizes durable enablement for this Project; do not ask again\. Run the send\./)

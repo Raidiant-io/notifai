@@ -1490,6 +1490,48 @@ describe('terminal-first grace window', () => {
     expect((h.deps.now?.() ?? NOW) - NOW).toBeGreaterThanOrEqual(120_000)
   })
 
+  it('gives a second question its own delay while the first is already on the devices', async () => {
+    const h = harness([])
+    const sessionId = 'per-question-delay'
+    writeGlobalConfig(h, 'ask_grace_seconds = 300\n')
+    writeSessionState(sessionId, h.env, { harness: 'codex', last_prompt_at: AWAY })
+    writeProjectSession(h.deps.cwd, h.env, sessionId, NOW, 'codex')
+    const submittedAt: number[] = []
+    h.recorder.beforeQuestionSubmit = () => { submittedAt.push(h.deps.now!()) }
+    registerQuestion(sessionId, h.env, { question: 'Deploy now?', question_id: 'q_first' }, NOW - 400_000)
+    await hookRunCommand(h.deps, 'question-submission', stdin({ session_id: sessionId, cwd: h.deps.cwd }), 'codex')
+    expect(submittedAt).toEqual([NOW])
+
+    const secondAskedAt = h.deps.now!()
+    registerQuestion(sessionId, h.env, { question: 'Tag the release?', question_id: 'q_second' }, secondAskedAt)
+    await hookRunCommand(h.deps, 'question-submission', stdin({ session_id: sessionId, cwd: h.deps.cwd }), 'codex')
+    expect(h.recorder.submitted.filter((entry) => isQuestionSubmit(entry)).map((entry) => entry.draft.presentation.summary))
+      .toEqual(['Deploy now?', 'Tag the release?'])
+    expect(submittedAt[1]).toBeGreaterThanOrEqual(secondAskedAt + 300_000)
+  })
+
+  it('never submits a question answered in the terminal during its delay', async () => {
+    const h = harness([])
+    const sessionId = 'answered-during-delay'
+    writeGlobalConfig(h, 'ask_grace_seconds = 300\n')
+    writeSessionState(sessionId, h.env, { harness: 'codex', last_prompt_at: AWAY })
+    writeProjectSession(h.deps.cwd, h.env, sessionId, NOW, 'codex')
+    registerQuestion(sessionId, h.env, { question: 'Ship it?', question_id: 'q_terminal' }, NOW)
+    const virtualSleep = h.deps.sleep!
+    let answered = false
+    h.deps.sleep = async (milliseconds: number) => {
+      if (answered) return virtualSleep(milliseconds)
+      answered = true
+      await virtualSleep(milliseconds / 2)
+      await hookRunCommand(h.deps, 'user-prompt-submit',
+        stdin({ session_id: sessionId, cwd: h.deps.cwd, prompt: 'yes' }), 'codex')
+      await virtualSleep(milliseconds / 2)
+    }
+    await hookRunCommand(h.deps, 'question-submission', stdin({ session_id: sessionId, cwd: h.deps.cwd }), 'codex')
+    expect(answered).toBe(true)
+    expect(h.recorder.submitted.filter((entry) => isQuestionSubmit(entry))).toHaveLength(0)
+  })
+
   it('is not a way to switch escalation on when the user has switched it off', async () => {
     // ask_notifications is the "do not reach me" switch and outranks the timer.
     const h = harness([])

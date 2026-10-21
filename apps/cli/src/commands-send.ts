@@ -183,6 +183,15 @@ export async function sendCommand(
     env: deps.env,
     flags: { base_url: flags.baseUrl, wait_seconds: flags.wait } as FlagOverrides,
   })
+  if (flags.reply && !config.ask_notifications.value) {
+    deps.io.err(
+      'question_routing_disabled: The User keeps questions off their devices: "Send questions to my devices" is off ' +
+        '(ask_notifications=false). Nothing was sent.\n' +
+        'Ask the way you would without Notifai: in the conversation, or in your own question form, which stays in the terminal; ' +
+        'change the setting only if the User asks.',
+    )
+    return EXIT.usage
+  }
   const activeSession = sourceContextHarnessSession(deps.env, deps.cwd, (deps.now ?? Date.now)())
   const source = resolveDraftInvocation(
     deps,

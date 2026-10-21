@@ -926,13 +926,14 @@ export function askCommand(
     )
   }
   if (!routingConfig.ask_notifications.value) {
+    // The code is the shipped one; scripts match it.
     return askFailure(
       deps,
       flags,
       'question_routing_disabled',
       'ask_notifications',
-      'Question routing is disabled by ask_notifications=false.',
-      'enable question routing or use a blocking `notifai send --reply` question',
+      'The User keeps questions off their devices: "Send questions to my devices" is off (ask_notifications=false). Nothing was registered.',
+      'ask the way you would without Notifai: in the conversation, or in your own question form, which stays in the terminal; change the setting only if the User asks',
     )
   }
   // In Claude Code the picker is the question: it reaches the User's devices

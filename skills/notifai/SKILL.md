@@ -176,10 +176,10 @@ If `ask` reports a User-owned trust or permission gap, relay its exact
 `remedy`, say the hooks need the User's trust or approval, and wait; never
 bypass Question Routing with `send --reply`.
 
-If `ask` refuses because `ask_notifications` is off, the User has deliberately
-turned question routing off for this scope. Tell them; use the terminal, or a
-blocking `send --reply` (which that setting does not gate) when an answer
-cannot wait for their return.
+If `ask` refuses because “Send questions to my devices” (`ask_notifications`)
+is off, the User keeps questions off their devices: ask in the conversation,
+or in your own question form, which stays in the terminal. `send --reply`
+refuses there too.
 
 ### Bounded foreground wait
 
@@ -260,7 +260,8 @@ Two independent decisions remain, both the User's; ask both together:
 
 - **Hooks.** With them, Notifai activates in their Agent Sessions in the
   projects where it is on, questions reach their devices and answers come
-  back.
+  back. To keep questions in the terminal, they turn off “Send questions to
+  my devices” (`ask_notifications`) instead.
 - **Skill scope:** this project or every project here.
 
 Lifecycle wiring has no scope: one install per harness for this machine;

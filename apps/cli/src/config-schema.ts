@@ -115,7 +115,7 @@ const INFO: Record<ConfigKey, Omit<ConfigKeyInfo, 'key'>> = {
     kind: 'boolean',
     summary: 'Whether a registered question may reach your Companion devices at all',
     detail:
-      'Controls registered-question routing. When off, `notifai ask` refuses new registrations and Question Routing does not submit pending local registrations. It does not disable ordinary sends or the separate blocking `send --reply` flow, and it does not withdraw questions already submitted. Turn it off to pause question routing without uninstalling harness hooks.',
+      'When off, no question reaches your devices, however an agent asks it: `notifai ask` refuses and tells the agent to ask the way it would without Notifai, in the conversation or in its own question form, which stays in the terminal. It does not disable ordinary notifications or withdraw questions already sent. Turn it off to keep questions in the terminal without uninstalling harness hooks.',
     example: 'true',
   },
   ask_grace_seconds: {

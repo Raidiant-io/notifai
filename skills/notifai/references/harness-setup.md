@@ -151,6 +151,9 @@ With no scope flag, `notifai config set` writes Machine-Global Configuration.
 one local Git checkout and all its linked worktrees resolve to the same file.
 Nothing in the repository configures Notifai.
 
+With “Send questions to my devices” (`ask_notifications`) off, ask in the
+conversation, or in your own question form, which stays in the terminal.
+
 `NOTIFAI_NO_INPUT=1` guarantees no command will ever prompt, which is what you
 want in CI or any shell with nobody at it. `NOTIFAI_CREDENTIALS=file` stores the
 machine credential in a plaintext file rather than the OS keychain — only when

@@ -1829,6 +1829,24 @@ describe('command contracts', () => {
     expect(io.errLines.join('\n')).toContain('notifai ask')
   })
 
+  it('sends no question while the User keeps questions off their devices', async () => {
+    const io = new CapturedIo()
+    let submitCalls = 0
+    const client = {
+      submit: async () => {
+        submitCalls += 1
+        return receipt
+      },
+    } as unknown as ApiClient
+    const cwd = mkdtempSync(path.join(os.tmpdir(), 'notifai-send-questions-off-'))
+    const deps = { ...makeDeps(io, client), cwd, env: isolatedEnv(cwd) }
+    writeProjectSettings(cwd, deps.env, 'ask_notifications = false\n')
+
+    expect(await sendCommand(deps, { title: 'Question', body: 'Deploy?', reply: true })).toBe(EXIT.usage)
+    expect(submitCalls).toBe(0)
+    expect(io.errLines.join('\n')).toContain('question_routing_disabled: The User keeps questions off their devices')
+  })
+
   it.each([
     { kind: 'update', title: 'Deploy?   ', summary: 'Ready.', body: 'Ready.' },
     {
@@ -9409,7 +9427,8 @@ describe('asking before the hooks have ever run', () => {
     expect(JSON.parse(io.outLines.join('\n'))).toMatchObject({
       registered: false,
       code: 'question_routing_disabled',
-      remedy: expect.stringMatching(/^enable question routing or use a blocking `notifai send --reply` question/),
+      message: expect.stringContaining('"Send questions to my devices" is off'),
+      remedy: expect.stringMatching(/^ask the way you would without Notifai: in the conversation, or in your own question form, which stays in the terminal/),
     })
     expect(readSessionState('claude-cross-checkout', env).pending).toBeUndefined()
     mkdirSync(path.dirname(sessionConfigPath('claude-cross-checkout', env)), { recursive: true })
