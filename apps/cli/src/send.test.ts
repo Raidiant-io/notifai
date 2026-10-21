@@ -3,7 +3,39 @@ import {
   accidentalEscapedNewlineMessage,
   hasAccidentalEscapedNewlines,
   rejectAccidentalEscapedNewlines,
+  rewriteMediaReferences,
 } from './send.js'
+
+describe('Body image references', () => {
+  it.each(['attachment:1', 'file:///tmp/result.png', './result.png', 'https://images.example/result(a(b)).png', 'http://images.example/result.png', 'data:image/png;base64,AA'])('rejects an unresolvable image target %s', (target) => {
+    expect(rewriteMediaReferences(`![Result](${target})`, ['med_attached'])).toMatchObject({
+      ok: false,
+      error: expect.stringContaining(target),
+    })
+    expect(rewriteMediaReferences(`![Result](${target})`, ['med_attached'])).toMatchObject({
+      error: expect.stringContaining('media:1'),
+    })
+  })
+
+  it('rejects angle-wrapped and reference-style image destinations', () => {
+    expect(rewriteMediaReferences('![Result](<attachment:1> "Caption")', [])).toMatchObject({
+      ok: false, error: expect.stringContaining('attachment:1'),
+    })
+    expect(rewriteMediaReferences('![Result][capture]\n\n[capture]: https://images.example/result.png', [])).toMatchObject({
+      ok: false, error: expect.stringContaining('media:1'),
+    })
+  })
+
+  it('preserves ordinary remote links and escaped image syntax', () => {
+    const body = '[Result](https://images.example/result.png) and \\![literal](attachment:1)'
+    expect(rewriteMediaReferences(body, [])).toEqual({ ok: true, body })
+  })
+
+  it('keeps invalid-reference examples literal in code', () => {
+    const body = '`![example](attachment:1)`\n\n```md\n![example](file:///tmp/example.png)\n```'
+    expect(rewriteMediaReferences(body, [])).toEqual({ ok: true, body })
+  })
+})
 
 describe('accidental escaped newlines', () => {
   it('catches a shell-quoted backslash-n body', () => {

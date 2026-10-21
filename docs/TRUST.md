@@ -39,6 +39,13 @@ protect that separate public source-history identity.
 
 ## Remote image URLs
 
+Body images must reference an attached image as `![description](media:N)` in
+`--image` order, or use an attached `media:med_...` id. Companion Apps do not
+fetch remote Markdown images. The CLI and service reject other Body image
+targets, including `attachment:1`, file paths and HTTP(S) URLs. Pass a URL or
+file with `--image`, then refer to it as `media:N`. Ordinary Markdown links to
+remote URLs remain allowed; literal image syntax can be shown inside code.
+
 `notifai send --image` and question media accept a remote URL under this
 policy:
 

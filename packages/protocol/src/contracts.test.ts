@@ -669,25 +669,23 @@ describe('validateDraft', () => {
     ).toBe(false)
   })
 
-  it('warns when an inline canonical media reference is not attached', () => {
-    const report = validateDraft(
-      draft({
-        presentation: {
-          title: 'Comparison',
-          body: '![diff](media:med_missing)',
-          media: [{ media_id: 'med_attached' }],
-        },
-      }),
-    )
-    expect(report).toMatchObject({
-      ok: true,
-      warnings: [
-        expect.objectContaining({
-          path: 'presentation.body',
-          message: expect.stringContaining('media:med_missing'),
-        }),
-      ],
-    })
+  it.each(['attachment:1', 'https://images.example/result.png', 'media:1'])(
+    'rejects an unresolved wire Body image target %s', (target) => {
+      const report = validateDraft(draft({
+        presentation: { title: 'Result', body: `![Result](${target})` },
+      }))
+      expect(report).toMatchObject({
+        ok: false,
+        errors: [expect.objectContaining({ path: 'presentation.body', message: expect.stringContaining(target) })],
+      })
+    },
+  )
+
+  it('accepts remote links and literal image examples in a wire Body', () => {
+    expect(validateDraft(draft({ presentation: {
+      title: 'Result',
+      body: '[Open the result](https://images.example/result.png) and `![sample](attachment:1)`',
+    } })).ok).toBe(true)
   })
 
   it('rejects the deleted detail, singular image, and top-level session shapes', () => {
@@ -1804,7 +1802,7 @@ describe('unified content and Source Context schema', () => {
     })
   })
 
-  it('warns for unattached canonical media references and accepts attached ones', () => {
+  it('rejects unattached canonical media references and accepts attached ones', () => {
     const unattached = validateDraft(
       draft({
         presentation: {
@@ -1814,8 +1812,8 @@ describe('unified content and Source Context schema', () => {
         },
       }),
     )
-    expect(unattached.ok).toBe(true)
-    expect(unattached.warnings).toEqual([
+    expect(unattached.ok).toBe(false)
+    expect(unattached.errors).toEqual([
       expect.objectContaining({
         path: 'presentation.body',
         message: expect.stringContaining('med_missing'),

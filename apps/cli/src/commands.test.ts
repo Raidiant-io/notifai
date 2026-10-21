@@ -1582,6 +1582,35 @@ describe('command contracts', () => {
     expect(submitted?.draft.source?.session_id).toBeUndefined()
   })
 
+  it.each(['send', 'ask'] as const)('rejects broken Body images before %s uploads or registers a request', async (command) => {
+    const cwd = mkdtempSync(path.join(os.tmpdir(), 'notifai-invalid-body-image-'))
+    const io = new CapturedIo()
+    const env = { ...isolatedEnv(cwd), CODEX_THREAD_ID: 'codex-invalid-image' }
+    const createMediaUpload = vi.fn()
+    const uploadMedia = vi.fn()
+    const submit = vi.fn()
+    const client = { createMediaUpload, uploadMedia, submit } as unknown as ApiClient
+    const deps = { ...makeDeps(io, client), cwd, env, now: () => 42 }
+    expect(hooksInstallCommand(deps, { harness: 'codex', execPath: process.execPath, scriptPath: fileURLToPath(import.meta.url) })).toBe(EXIT.ok)
+    trustInstalledCodexHooks(cwd, env)
+    writeCurrentCodexSessionState(cwd, env, 'codex-invalid-image', { last_prompt_at: 42, last_stop_at: 41 })
+    writeProjectSession(cwd, env, 'codex-invalid-image', 42, 'codex')
+    io.errLines = []
+    const image = path.join(cwd, 'result.png')
+    writeFileSync(image, 'fixture image')
+    const flags = { body: '![Result](attachment:1)', image: [image] }
+    const result = command === 'send'
+      ? await sendCommand(deps, { title: 'Result ready', kind: 'update', ...flags })
+      : await askCommand(deps, 'Use this result?', flags)
+    expect(result).toBe(EXIT.usage)
+    expect(io.errLines.join('\n')).toContain('attachment:1')
+    expect(io.errLines.join('\n')).toContain('media:1')
+    expect(createMediaUpload).not.toHaveBeenCalled()
+    expect(uploadMedia).not.toHaveBeenCalled()
+    expect(submit).not.toHaveBeenCalled()
+    expect(readSessionState('codex-invalid-image', env).pending ?? []).toEqual([])
+  })
+
   it('uploads repeatable images in order and sends only canonical media references', async () => {
     const root = mkdtempSync(path.join(os.tmpdir(), 'notifai-media-order-'))
     const first = path.join(root, 'first.png')
