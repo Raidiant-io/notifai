@@ -583,7 +583,7 @@ export function buildProgram(deps: CommandDeps, options: BuildProgramOptions = {
     .optionsGroup(SEND_GROUP.content)
     .requiredOption('--title <title>', 'brief title whose substance is immediately understandable')
     .requiredOption('--summary <text>', 'short one-line plain-text summary for banners and lists')
-    .option('--body <markdown>', 'optional standalone Markdown body for focused detail')
+    .option('--body <markdown>', 'standalone Markdown detail; images must use ![description](media:N) with --image')
     .option('--body-file <path>', 'read the optional standalone Markdown body from a file (use - for stdin)')
     .option(
       '--literal-backslash-n',
@@ -591,7 +591,7 @@ export function buildProgram(deps: CommandDeps, options: BuildProgramOptions = {
     )
     .option(
       '--image <path|url|media_id>',
-      'upload or attach an image in collection order (repeatable, maximum 8)',
+      'upload or attach an image; reference it in Body as media:N (repeatable, maximum 8)',
       (v: string, all: string[] = []) => [...all, v],
     )
     .option(
@@ -738,7 +738,7 @@ export function buildProgram(deps: CommandDeps, options: BuildProgramOptions = {
     )
     .option('--multi', 'with --choice, several answers may be selected')
     .option('--json', 'machine-readable output')
-    .option('--body <markdown>', 'optional standalone Markdown body for focused detail')
+    .option('--body <markdown>', 'standalone Markdown detail; images must use ![description](media:N) with --image')
     .option('--body-file <path>', 'read the optional standalone Markdown body from a file (use - for stdin)')
     .option(
       '--literal-backslash-n',
@@ -747,7 +747,7 @@ export function buildProgram(deps: CommandDeps, options: BuildProgramOptions = {
     .option('--form <path>', 'ask several questions as one form; JSON file (use - for stdin)')
     .option(
       '--image <path|url|media_id>',
-      'upload or attach an image in collection order (repeatable, maximum 8)',
+      'upload or attach an image; reference it in Body as media:N (repeatable, maximum 8)',
       (v: string, all: string[] = []) => [...all, v],
     )
     .option(

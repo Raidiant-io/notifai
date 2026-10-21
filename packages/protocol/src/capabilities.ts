@@ -1,4 +1,5 @@
 import { Value } from '@sinclair/typebox/value'
+import { rewriteMediaReferences } from './body-images.js'
 import {
   NotificationDraft,
   type NotificationDraftT,
@@ -554,18 +555,14 @@ export function validateDraft(
     })
   }
 
-  const attachedMedia = new Set(typed.presentation.media?.map((item) => item.media_id) ?? [])
-  const referencedMedia = new Set(
-    [...(typed.presentation.body ?? '').matchAll(/media:(med_[A-Za-z0-9_-]+)/g)].map(
-      (match) => match[1]!,
-    ),
-  )
-  for (const mediaId of referencedMedia) {
-    if (!attachedMedia.has(mediaId)) {
-      warnings.push({
-        path: 'presentation.body',
-        message: `Inline media reference media:${mediaId} has no matching presentation.media item; companions will show its fallback text.`,
-      })
+  if (typed.presentation.body !== undefined) {
+    const body = rewriteMediaReferences(
+      typed.presentation.body,
+      typed.presentation.media?.map((item) => item.media_id) ?? [],
+      { allowPositions: false },
+    )
+    if (!body.ok) {
+      errors.push({ code: 'invalid_request', path: 'presentation.body', message: body.error })
     }
   }
 
