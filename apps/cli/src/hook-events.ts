@@ -66,15 +66,6 @@ export const HOOK_EVENT_TABLE = [
     timeoutSeconds: 5,
   },
   {
-    notifai: 'activation-stop',
-    document: null,
-    cursor: 'stop',
-    openclaw: false,
-    opencodeDiscovery: false,
-    timeoutSeconds: 5,
-    cursorLoopLimit: 1,
-  },
-  {
     notifai: 'user-prompt-submit',
     document: 'UserPromptSubmit',
     cursor: 'beforeSubmitPrompt',

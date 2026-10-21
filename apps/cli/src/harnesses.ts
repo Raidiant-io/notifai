@@ -80,6 +80,14 @@ const CODEX_CAPABILITY: HarnessCapability = {
     "the Stop hook returns at once and waits out of band through the complete answer window, then queues the answer into this same thread's durable inbox; an idle session consumes it within seconds and a busy one at its next turn boundary; closing the session ends its questions, while its app unloading or idling it out, Orca losing its pane's terminal or the machine shutting down keeps them and the answer waits in the thread until it comes back",
 }
 
+/**
+ * Cursor activation ceilings (see `cursor-activation-rule.ts`): SessionStart
+ * context reaches the editor, the Agents Window and `cursor-agent`; the
+ * always-applied rule reaches the editor, the Agents Window and Cursor SDK
+ * hosts that load the `user` setting source. An SDK host without that source,
+ * an ACP host (no lifecycle hooks) and a cloud agent (no machine
+ * configuration) receive neither.
+ */
 const CURSOR_CAPABILITY: HarnessCapability = {
   stopContinuation: 'unsupported',
   deliveryRoutes: ['unsupported'],

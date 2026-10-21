@@ -177,10 +177,10 @@ describe('hook config', () => {
       command: expect.stringContaining(hookCommand(ADAPTER, 'subagent-start', 'codex') + " --integration-revision "),
     })
     expect(cursor['subagentStart']).toBeUndefined()
-    expect(cursor['stop']?.[0]).toMatchObject({
-      command: expect.stringContaining(hookCommand(ADAPTER, 'activation-stop', 'cursor') + " --integration-revision "),
-      loop_limit: 1,
-    })
+    expect(cursor['stop']).toEqual([expect.objectContaining({
+      command: expect.stringContaining(hookCommand(ADAPTER, 'stop', 'cursor') + " --integration-revision "),
+      loop_limit: 3,
+    })])
   })
 
   it('builds native Grok lifecycle hooks with a complete-window held Stop and no attendant', () => {
@@ -329,7 +329,6 @@ describe('hook config', () => {
     ])
     expect(requiredHookEvents('cursor')).toEqual([
       'session-start',
-      'activation-stop',
       'user-prompt-submit',
       'stop',
       'session-end',
@@ -370,10 +369,7 @@ describe('hook config', () => {
       'stop',
     ])
     const cursorStop = buildCursorHookConfig({ adapterPath: ADAPTER })['stop'] ?? []
-    expect(cursorStop.map((handler) => handlerEvent(handler.command))).toEqual([
-      'activation-stop',
-      'stop',
-    ])
+    expect(cursorStop.map((handler) => handlerEvent(handler.command))).toEqual(['stop'])
   })
 
   it('installs the session child handler as a second async handler for Claude Code everywhere and Codex on POSIX only', () => {

@@ -635,44 +635,6 @@ export function recordSessionStart(
 }
 
 /**
- * Cursor's activation follow-up is owed once per conversation, and only the
- * conversation id is stable: the Cursor SDK starts and ends a session around
- * every turn of one conversation. The record therefore lives beside the
- * session state, never in it, so neither SessionStart nor SessionEnd can
- * re-arm it. The daily prune removes it once its conversation has been idle
- * as long as abandoned session state is kept.
- */
-function cursorActivationPath(conversationId: string, env: NodeJS.ProcessEnv): string {
-  return path.join(stateDir(env), 'sessions', `${sanitizeSessionId(conversationId)}.cursor-activation`)
-}
-
-/** Atomically claim Cursor's Stop activation follow-up: true at most once per conversation. */
-export function claimCursorStopActivation(conversationId: string, env: NodeJS.ProcessEnv, now: number): boolean {
-  const file = cursorActivationPath(conversationId, env)
-  mkdirSync(path.dirname(file), { recursive: true })
-  try {
-    // Exclusive creation: of racing Stops, exactly one sends the follow-up.
-    writeFileSync(file, `${now}\n`, { mode: 0o600, flag: 'wx' })
-    return true
-  } catch (err) {
-    if ((err as NodeJS.ErrnoException).code === 'EEXIST') return false
-    throw err
-  }
-}
-
-/** Whether this conversation already had its follow-up; a live conversation keeps the record from the prune. */
-export function cursorStopActivationSent(conversationId: string, env: NodeJS.ProcessEnv, now: number): boolean {
-  const file = cursorActivationPath(conversationId, env)
-  if (!existsSync(file)) return false
-  try {
-    utimesSync(file, now / 1000, now / 1000)
-  } catch {
-    // Refreshing the age is housekeeping; the record itself already answered.
-  }
-  return true
-}
-
-/**
  * Session state a crashed harness left behind.
  *
  * `SessionEnd` removes session state and leaves a short-lived cancellation

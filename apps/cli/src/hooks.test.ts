@@ -88,9 +88,7 @@ import {
 import { dropPendingQuestion, inspectQuestionState } from './hook-question-state.js'
 import {
   beginSessionIncarnation,
-  claimCursorStopActivation,
   clearSessionState,
-  cursorStopActivationSent,
   lifecycleStamp,
   pruneAbandonedSessions,
   readSessionEndMarker,
@@ -3964,16 +3962,16 @@ describe('session-start hook', () => {
     expect(h.recorder.submitted).toEqual([])
   })
 
-  it('does not spend the notice on workers or Cursor context the model cannot see', async () => {
+  it('puts the notice in Cursor\'s session context and never spends it on workers', async () => {
     const h = harness()
     const lookup = vi.fn(async () => new Response('{"latest":"99.0.0"}'))
     h.deps.fetchImpl = lookup
     await hookRunCommand(h.deps, 'maintenance', stdin({}))
     await hookRunCommand(h.deps, 'subagent-start', stdin({ session_id: 'worker' }), 'codex')
-    await hookRunCommand(h.deps, 'session-start', stdin({ conversation_id: 'cursor' }), 'cursor')
+    expect(h.io.outLines.join('\n')).not.toContain('offer to perform the update')
     h.io.outLines = []
-    await hookRunCommand(h.deps, 'activation-stop', stdin({ conversation_id: 'cursor', loop_count: 0, status: 'completed' }), 'cursor')
-    expect(h.io.outLines.join('\n')).toContain('offer to perform the update')
+    await hookRunCommand(h.deps, 'session-start', stdin({ conversation_id: 'cursor', workspace_roots: [h.deps.cwd] }), 'cursor')
+    expect(String(JSON.parse(h.io.outLines.at(-1) ?? '{}').additional_context)).toContain('offer to perform the update')
     expect(lookup).toHaveBeenCalledTimes(1)
   })
 
@@ -3986,7 +3984,7 @@ describe('session-start hook', () => {
     for (const [event, hookHarness] of [
       ['session-start', 'claude-code'],
       ['subagent-start', 'codex'],
-      ['activation-stop', 'cursor'],
+      ['session-start', 'cursor'],
     ] as const) {
       h.io.outLines = []
       await hookRunCommand(
@@ -4093,135 +4091,20 @@ describe('session-start hook', () => {
     expect(h.io.outLines.at(-1)).not.toContain('topic=content')
   })
 
-  it('uses Cursor native Stop follow-up once when its SessionStart context is lossy', async () => {
+  it('activates Cursor through session context, never through an extra Stop turn', async () => {
     const h = harness()
     h.deps.store.load = () => null
-    const input = stdin({
-      conversation_id: 'cursor-activation',
-      workspace_roots: [h.deps.cwd],
-      loop_count: 0,
-    })
+    const envelope = { conversation_id: 'cursor-activation', workspace_roots: [h.deps.cwd] }
 
-    await hookRunCommand(h.deps, 'activation-stop', input, 'cursor')
-    const followup = String(JSON.parse(h.io.outLines.at(-1) ?? '{}').followup_message)
-    expect(followup).toMatch(/^Automatic Notifai activation, sent once for this conversation\. It is not from the User/)
-    expect(followup).toMatch(/effective guidance.*when-to-notify/is)
-    expect(followup).toMatch(/end your turn with your previous reply to the User repeated exactly, and nothing else\.$/)
-    expect(Buffer.byteLength(followup, 'utf8')).toBeLessThanOrEqual(10_000)
+    await hookRunCommand(h.deps, 'session-start', stdin(envelope), 'cursor')
+    const context = String(JSON.parse(h.io.outLines.at(-1) ?? '{}').additional_context)
+    expect(context).toMatch(/^Notifai is enabled for this Project\./)
+    expect(context).toMatch(/effective guidance.*when-to-notify/is)
+    expect(Buffer.byteLength(context, 'utf8')).toBeLessThanOrEqual(10_000)
 
     h.io.outLines = []
-    await hookRunCommand(
-      h.deps,
-      'activation-stop',
-      stdin({
-        conversation_id: 'cursor-activation',
-        workspace_roots: [h.deps.cwd],
-        loop_count: 1,
-      }),
-      'cursor',
-    )
-    await hookRunCommand(h.deps, 'activation-stop', input, 'cursor')
-    expect(h.io.outLines).toEqual([])
-  })
-
-  it('sends one Cursor activation per conversation when the host starts and ends a session every turn', async () => {
-    const h = harness()
-    h.deps.store.load = () => null
-    const turn = async (conversation: string): Promise<number> => {
-      const envelope = { conversation_id: conversation, session_id: conversation, workspace_roots: [h.deps.cwd] }
-      await hookRunCommand(h.deps, 'session-start', stdin(envelope), 'cursor')
-      h.io.outLines = []
-      await hookRunCommand(h.deps, 'activation-stop', stdin({ ...envelope, status: 'completed', loop_count: 0 }), 'cursor')
-      const followups = h.io.outLines.filter((line) => line.includes('followup_message')).length
-      await hookRunCommand(h.deps, 'activation-stop', stdin({ ...envelope, status: 'completed', loop_count: 1 }), 'cursor')
-      await hookRunCommand(h.deps, 'session-end', stdin({ ...envelope, reason: 'completed' }), 'cursor')
-      h.advanceClock(60_000)
-      return followups
-    }
-
-    expect([await turn('cursor-per-turn'), await turn('cursor-per-turn'), await turn('cursor-per-turn')]).toEqual([1, 0, 0])
-    expect(await turn('cursor-per-turn-new')).toBe(1)
-  })
-
-  it('does not let Cursor activation override cancellation or a live question continuation', async () => {
-    const h = harness()
-    const base = {
-      conversation_id: 'cursor-coexistence',
-      workspace_roots: [h.deps.cwd],
-      loop_count: 0,
-    }
-
-    await hookRunCommand(
-      h.deps,
-      'activation-stop',
-      stdin({ ...base, status: 'aborted' }),
-      'cursor',
-    )
-    expect(h.io.outLines).toEqual([])
-
-    registerQuestion('cursor-coexistence', h.env, { question: 'Choose a path?' })
-    await hookRunCommand(
-      h.deps,
-      'activation-stop',
-      stdin({ ...base, status: 'completed' }),
-      'cursor',
-    )
-    await hookRunCommand(
-      h.deps,
-      'activation-stop',
-      stdin({ ...base, status: 'completed', loop_count: 1 }),
-      'cursor',
-    )
-    expect(h.io.outLines).toEqual([])
-
-    // Neither deferral spent the conversation's one activation.
-    clearSessionState('cursor-coexistence', h.env)
-    await hookRunCommand(h.deps, 'activation-stop', stdin({ ...base, status: 'completed' }), 'cursor')
-    expect(JSON.parse(h.io.outLines.at(-1) ?? '{}')).toHaveProperty('followup_message')
-  })
-
-  it('never repeats a Cursor activation claim, however long the conversation lasts', async () => {
-    const h = harness()
-    const input = stdin({
-      conversation_id: 'cursor-activation-once',
-      workspace_roots: [h.deps.cwd],
-      status: 'completed',
-      loop_count: 0,
-    })
-
-    await hookRunCommand(h.deps, 'activation-stop', input, 'cursor')
-    expect(JSON.parse(h.io.outLines.at(-1) ?? '{}')).toHaveProperty('followup_message')
-
-    h.io.outLines = []
-    await hookRunCommand(h.deps, 'activation-stop', input, 'cursor')
-    h.advanceClock(24 * 3600 * 1000)
-    await hookRunCommand(h.deps, 'activation-stop', input, 'cursor')
-    expect(h.io.outLines).toEqual([])
-  })
-
-  it('fails closed without a Cursor conversation id and still activates after an errored turn', async () => {
-    const h = harness()
-
-    await hookRunCommand(
-      h.deps,
-      'activation-stop',
-      stdin({ workspace_roots: [h.deps.cwd], status: 'completed', loop_count: 0 }),
-      'cursor',
-    )
-    expect(h.io.outLines).toEqual([])
-
-    await hookRunCommand(
-      h.deps,
-      'activation-stop',
-      stdin({
-        conversation_id: 'cursor-error-activation',
-        workspace_roots: [h.deps.cwd],
-        status: 'error',
-        loop_count: 0,
-      }),
-      'cursor',
-    )
-    expect(JSON.parse(h.io.outLines.at(-1) ?? '{}')).toHaveProperty('followup_message')
+    await hookRunCommand(h.deps, 'stop', stdin({ ...envelope, status: 'completed', loop_count: 0 }), 'cursor')
+    expect(h.io.outLines.join('\n')).not.toContain('followup_message')
   })
 
   it.each([
@@ -5549,23 +5432,6 @@ describe('pruning abandoned session state', () => {
 
     expect(pruneAbandonedSessions(h.env, REAL - 400 * 24 * 3600 * 1000)).toBe(0)
     expect(readSessionState('jumped', h.env).last_prompt_at).toBe(NOW)
-  })
-
-  it('keeps a live Cursor conversation\'s activation record and prunes an idle one', () => {
-    const h = harness()
-    expect(claimCursorStopActivation('cursor-live', h.env, REAL)).toBe(true)
-    expect(claimCursorStopActivation('cursor-idle', h.env, REAL)).toBe(true)
-    const old = new Date(REAL - 30 * 24 * 3600 * 1000)
-    for (const id of ['cursor-live', 'cursor-idle']) {
-      utimesSync(sessionFile(h, `${sanitizeSessionId(id)}.cursor-activation`), old, old)
-    }
-    // A Stop in the live conversation keeps its record young.
-    expect(cursorStopActivationSent('cursor-live', h.env, REAL)).toBe(true)
-
-    expect(pruneAbandonedSessions(h.env, REAL)).toBe(1)
-
-    expect(claimCursorStopActivation('cursor-live', h.env, REAL)).toBe(false)
-    expect(claimCursorStopActivation('cursor-idle', h.env, REAL)).toBe(true)
   })
 
   it('never fails a hook because housekeeping could not run', () => {
