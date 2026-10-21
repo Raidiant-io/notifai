@@ -8,6 +8,67 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 This project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 and [Conventional Commits](https://www.conventionalcommits.org/en/v1.0.0/).
 
+## [13.1.0](https://github.com/Raidiant-io/notifai/compare/v13.0.0...v13.1.0) (2026-10-21)
+
+
+### Features
+
+* **cli:** answer frequent hooks from the hub through the native launcher ([#340](https://github.com/Raidiant-io/notifai/issues/340)) ([0216f82](https://github.com/Raidiant-io/notifai/commit/0216f8209bd6e32ec7e879fedc68b30f44974ab1))
+* **cli:** block empty Codex wakes and keep unloaded Codex app conversations open ([#336](https://github.com/Raidiant-io/notifai/issues/336)) ([727149e](https://github.com/Raidiant-io/notifai/commit/727149eff210ba988368edefc9b3d9f0b42652a2))
+* **cli:** continue a stopped Codex app conversation in the running app, and close a dismissed Codex card ([#363](https://github.com/Raidiant-io/notifai/issues/363)) ([66ee838](https://github.com/Raidiant-io/notifai/commit/66ee8380cbf9af4004ad4ab89d3740b8e2fb3ebc))
+* **cli:** continue under a fork that has not notified where the service creates it ([#357](https://github.com/Raidiant-io/notifai/issues/357)) ([ee22743](https://github.com/Raidiant-io/notifai/commit/ee22743e6aec26a67a88dd198c9cdb43840f4540))
+* **cli:** expire a closed session's questions and drop unread answers ([#328](https://github.com/Raidiant-io/notifai/issues/328)) ([becb99f](https://github.com/Raidiant-io/notifai/commit/becb99fbe2138ad2c5d97a3f273e6f0f61502b13))
+* **cli:** gate Codex card linking on an app-server floor and add a daily card canary ([#331](https://github.com/Raidiant-io/notifai/issues/331)) ([75334ea](https://github.com/Raidiant-io/notifai/commit/75334eaa28de759e835c5024a0aa6af7552bc980))
+* **cli:** hold stopped sessions, continue forks and end dismissed questions ([#354](https://github.com/Raidiant-io/notifai/issues/354)) ([a991ed2](https://github.com/Raidiant-io/notifai/commit/a991ed2016151fd17e1f4bc6d371772b019152aa))
+* **cli:** install updates automatically, with a machine-wide off switch ([#339](https://github.com/Raidiant-io/notifai/issues/339)) ([2b93c97](https://github.com/Raidiant-io/notifai/commit/2b93c97bc03f46bba094b872648450b5f667d705))
+* **cli:** let Codex run Notifai commands outside its sandbox on the User's yes ([#330](https://github.com/Raidiant-io/notifai/issues/330)) ([a43c09b](https://github.com/Raidiant-io/notifai/commit/a43c09becc1f5692c5c8519d4ca6756cd50cf19e))
+* **cli:** native session child per Agent Session and one shared hub (B3) ([#334](https://github.com/Raidiant-io/notifai/issues/334)) ([98cfbf6](https://github.com/Raidiant-io/notifai/commit/98cfbf673a737767499c75a5178716cd5e3e13fa))
+* **cli:** OpenCode question form from devices, OpenClaw generation fence, Hermes public plugin API, Grok requalified ([#335](https://github.com/Raidiant-io/notifai/issues/335)) ([024c918](https://github.com/Raidiant-io/notifai/commit/024c91820cbcb4da4e6121063ec687d1c58fd1cd))
+* **cli:** reopen a terminal conversation the machine stopped when its answer arrives ([#362](https://github.com/Raidiant-io/notifai/issues/362)) ([b760604](https://github.com/Raidiant-io/notifai/commit/b76060470b2fcfccc1de104e5801e87ef919e25e))
+
+
+### Bug Fixes
+
+* **cli:** back off wakes when shown input cannot be handed in ([#348](https://github.com/Raidiant-io/notifai/issues/348)) ([9f69428](https://github.com/Raidiant-io/notifai/commit/9f694289eb8d296a2fb29fbdf67aa69ba6720e54))
+* **cli:** bring tests in line with reopen and Project rules, and fit config rows ([#368](https://github.com/Raidiant-io/notifai/issues/368)) ([f734c15](https://github.com/Raidiant-io/notifai/commit/f734c15060f85866b8143dbd025285a0b00cdd7d))
+* **cli:** check link() when recording the hub network so the Linux launcher builds ([#369](https://github.com/Raidiant-io/notifai/issues/369)) ([8ffd2c7](https://github.com/Raidiant-io/notifai/commit/8ffd2c77dbe006ceb05d519ac206a9783387e329))
+* **cli:** confirm a session's end before expiring its questions ([#346](https://github.com/Raidiant-io/notifai/issues/346)) ([4a34b9e](https://github.com/Raidiant-io/notifai/commit/4a34b9e983b901f237ca9b5b5cb1abc0a45c1b61))
+* **cli:** confirm SessionEnd without a hub and settle repairs recorded for another home ([#358](https://github.com/Raidiant-io/notifai/issues/358)) ([7b90ec6](https://github.com/Raidiant-io/notifai/commit/7b90ec63948791bc7143954eb5163e47dedeb2a1))
+* **cli:** hand a session's questions to one current answer owner ([#337](https://github.com/Raidiant-io/notifai/issues/337)) ([e9c2f2c](https://github.com/Raidiant-io/notifai/commit/e9c2f2c5405896e059d68c214935772abf463cb2))
+* **cli:** hand the hub over to the active build after any update ([#342](https://github.com/Raidiant-io/notifai/issues/342)) ([03b6634](https://github.com/Raidiant-io/notifai/commit/03b6634e33524c7dcff862d506d8e13324732945))
+* **cli:** honor setup consent, resolve nested repos as one Project, and verify session markers ([#367](https://github.com/Raidiant-io/notifai/issues/367)) ([3d32122](https://github.com/Raidiant-io/notifai/commit/3d3212236f19c331e3876419e6f3b7ef6588d4dc))
+* **cli:** keep a standby place's Claude Code picker linked when the primary exits ([#359](https://github.com/Raidiant-io/notifai/issues/359)) ([09cba49](https://github.com/Raidiant-io/notifai/commit/09cba497a5e7fde45e939356e389f038dc81d87e))
+* **cli:** keep Claude Code hooks quiet and settle after a crashed claim guard ([#364](https://github.com/Raidiant-io/notifai/issues/364)) ([3f2c74a](https://github.com/Raidiant-io/notifai/commit/3f2c74a0d96f7158be4de2ea513e484d7550fc4a))
+* **cli:** keep concurrent sends in one Project from failing on shared state ([#356](https://github.com/Raidiant-io/notifai/issues/356)) ([b87b2c5](https://github.com/Raidiant-io/notifai/commit/b87b2c5496e69e140f1543842336184b614aceb2))
+* **cli:** keep questions open when an app or the machine stops a Claude Code conversation ([#347](https://github.com/Raidiant-io/notifai/issues/347)) ([210a204](https://github.com/Raidiant-io/notifai/commit/210a204b47c7af36cc0e25147248c5e99cdb4236))
+* **cli:** keep questions open when an app or the machine stops a Codex conversation ([#351](https://github.com/Raidiant-io/notifai/issues/351)) ([89c34b3](https://github.com/Raidiant-io/notifai/commit/89c34b3d42fd31bfe4336c9de837145d7b747f11))
+* **cli:** keep the Codex control connection from claiming thread originators ([#345](https://github.com/Raidiant-io/notifai/issues/345)) ([1b5b1c0](https://github.com/Raidiant-io/notifai/commit/1b5b1c0c4ad1262cb6f51f1d01212185cf46c0ae))
+* **cli:** lay out interactive screens on a terminal that reports no size ([#333](https://github.com/Raidiant-io/notifai/issues/333)) ([b25984b](https://github.com/Raidiant-io/notifai/commit/b25984b0241c51f63965eca141383ed021a5f49b))
+* **cli:** never leave a Claude Code picker open after a device answer or dismissal ([#355](https://github.com/Raidiant-io/notifai/issues/355)) ([47437fe](https://github.com/Raidiant-io/notifai/commit/47437fef8ce799013ced3900a31bbab64de66218))
+* **cli:** never revive a closed session ([#326](https://github.com/Raidiant-io/notifai/issues/326)) ([b306951](https://github.com/Raidiant-io/notifai/commit/b3069519b0f8e43f4887973a16adc31e1c91ccba))
+* **cli:** offer Claude command approval only in default mode and reword the Codex cards line ([#350](https://github.com/Raidiant-io/notifai/issues/350)) ([16e908e](https://github.com/Raidiant-io/notifai/commit/16e908e8e023bf043413f2191ade6b7bf2f4a042))
+* **cli:** one decider per SessionEnd, clock-step-proof Linux identity, deliberate hub environment ([#366](https://github.com/Raidiant-io/notifai/issues/366)) ([1bf2607](https://github.com/Raidiant-io/notifai/commit/1bf260749276ef7e78d8e6e911b874bc79b3f57f))
+* **cli:** pass release gates for the Codex command rule ([#332](https://github.com/Raidiant-io/notifai/issues/332)) ([43426fe](https://github.com/Raidiant-io/notifai/commit/43426fe8e217c8192e3a5bf7733fc022d5144bf1))
+* **cli:** reopen stopped conversations with their exact permissions, never during shutdown ([#365](https://github.com/Raidiant-io/notifai/issues/365)) ([6345da3](https://github.com/Raidiant-io/notifai/commit/6345da374cd2c28641c9fcb69eb534c9d001352f))
+* **cli:** restart the hub seamlessly so only hook-changing updates wait ([#344](https://github.com/Raidiant-io/notifai/issues/344)) ([3fcee79](https://github.com/Raidiant-io/notifai/commit/3fcee7945e5e64438d44ef316ce7c7ae4bd9b66a))
+* **cli:** return wake command output only after it has been read ([#361](https://github.com/Raidiant-io/notifai/issues/361)) ([ceb86b5](https://github.com/Raidiant-io/notifai/commit/ceb86b5549bbf70911d5405165e52085e8697aba))
+* **cli:** review only new Codex hooks on update, and keep Claude Code hooks readable after rollback ([#370](https://github.com/Raidiant-io/notifai/issues/370)) ([e28ebc1](https://github.com/Raidiant-io/notifai/commit/e28ebc13b7c8c47f07f3c055f4614c5381285dc5))
+* **cli:** select a native form's answer for delivery however fast it arrives ([#352](https://github.com/Raidiant-io/notifai/issues/352)) ([00c6f06](https://github.com/Raidiant-io/notifai/commit/00c6f06c1bcbd84b70fbed5308a5f91dc539aa86))
+* **cli:** send Codex agents to the question card only when they have it ([#353](https://github.com/Raidiant-io/notifai/issues/353)) ([3465758](https://github.com/Raidiant-io/notifai/commit/3465758f33fed67efbe22047c0a5471e40ecdf7d))
+* **cli:** settle hook repair requirements against the definition present ([#343](https://github.com/Raidiant-io/notifai/issues/343)) ([b81c534](https://github.com/Raidiant-io/notifai/commit/b81c5347a4d092f25aa478fdc7771022016361c8))
+* **cli:** wake an idle Codex terminal on the shared server only while a terminal shows it ([#360](https://github.com/Raidiant-io/notifai/issues/360)) ([c4541a3](https://github.com/Raidiant-io/notifai/commit/c4541a31e5bd10c989defb3bfc23a6c7944ea34d))
+* **hooks:** keep nested work inside each hook's own timeout ([#327](https://github.com/Raidiant-io/notifai/issues/327)) ([8d936c8](https://github.com/Raidiant-io/notifai/commit/8d936c82dd9dae20fdfe23f648461565a4fae153))
+* **hooks:** scope health notices to the active build ([#322](https://github.com/Raidiant-io/notifai/issues/322)) ([47e33e2](https://github.com/Raidiant-io/notifai/commit/47e33e26a544afd0572a8ea43958bff19a112600))
+* register Codex questions from native cards ([#325](https://github.com/Raidiant-io/notifai/issues/325)) ([df3c568](https://github.com/Raidiant-io/notifai/commit/df3c568c2601c045c7a544356b25d59f6d03638e))
+* **release:** keep beta discovery current with stable ([#323](https://github.com/Raidiant-io/notifai/issues/323)) ([762f430](https://github.com/Raidiant-io/notifai/commit/762f430dd049e924c1fa1fccaf987fa99e7b21b0))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * @raidiant/notifai-protocol bumped from 8.4.0 to 8.5.0
+
 ## [13.0.0](https://github.com/Raidiant-io/notifai/compare/v12.1.1...v13.0.0) (2026-10-18)
 
 
