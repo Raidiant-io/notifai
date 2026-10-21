@@ -28,6 +28,7 @@ import { compareReleasePrecedence } from './version.js'
 import { updateWorkPending } from './commands-update-resume.js'
 import { buildIdentity } from './distribution.js'
 import { nativeUpdateCommand, type NativeUpdateFlags } from './commands-native-installation.js'
+import { prepareClaudeHooksForRuntime } from './commands-hook-install.js'
 
 export type CliUpdateFlags = NativeUpdateFlags
 
@@ -228,6 +229,12 @@ export function cliUpdateCommand(deps: CommandDeps, requested: CliUpdateFlags): 
     return failed(deps, flags, 'package_manager_prefix_not_on_path', before, packageManagerPrefix)
   }
 
+  // A release older than the exec-form readers must find hooks it can read.
+  if (target !== null && !prepareClaudeHooksForRuntime(deps, target.version)) {
+    return failed(deps, flags, { code: 'claude_hooks_not_prepared',
+      message: `Notifai ${target.version} reads Claude Code hooks only in shell form, and they could not be rewritten, so nothing was installed. Inspect the installation with:`,
+      recoveryCommand: 'notifai doctor --json', target }, before, packageManagerPrefix)
+  }
   const install = npmRun(deps, [
     'install',
     '--global',

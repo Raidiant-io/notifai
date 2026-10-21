@@ -15,7 +15,7 @@ import { stateDir } from './config.js'
 import { withFileLock } from './file-lock.js'
 import { isHookInstallableHarness, questionRoutingCapability } from './harnesses.js'
 import { buildHookConfig, buildCursorHookConfig, NON_ROUTING_BLOCKING_STOP_TIMEOUT_SECONDS, settingsFile, codexTrustProblems,
-  findInstallations, machineHookFiles, type Installation } from './install-hooks.js'
+  findInstallations, installedHookRevision, machineHookFiles, type Installation } from './install-hooks.js'
 import { hookAdapterPath, inspectHookAdapter } from './hook-adapter.js'
 import { opencodePluginSource } from './opencode-plugin.js'
 import { openclawPluginSource } from './openclaw-plugin.js'
@@ -46,6 +46,9 @@ function save(file: string, requirements: Requirement[]): void {
 /** Render only the owned definition. The literal revision excludes unrelated
  * host config and stays stable across runtime-only updates. */
 function desiredRevision(deps: CommandDeps, installation: Installation): string {
+  // A Codex refresh keeps the revision its handlers carry (stampHookDefinition).
+  const kept = installation.harness === 'codex' ? installedHookRevision(installation.handlers) : undefined
+  if (kept !== undefined) return kept
   const platform = deps.hookPlatform ?? process.platform
   const adapterPath = hookAdapterPath(deps.hookAdapterHome, platform)
   const target = inspectHookAdapter(deps.hookAdapterHome, platform).target
@@ -178,6 +181,9 @@ export function pendingHookRepairs(deps: CommandDeps,
         }
       }
       if (owner) {
+        // Codex keeps one revision across refreshes, so there this proves the
+        // session runs Notifai's handlers. Codex's own approval, checked
+        // above, covers a handler that is new or changed.
         if (owner.sessionId === undefined || !loadedIntegrationObserved(owner.sessionId, requirement.expected, env)) {
           problems.push(`The changed ${owner.label} definition has not been observed in this Agent Session. Preserve existing work and verify a real lifecycle callback after the harness loads the repaired definition.`)
         }

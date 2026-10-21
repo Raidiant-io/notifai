@@ -773,8 +773,11 @@ export class Installation {
   /** Complete authenticated download-to-activation operation. Reuses an
    * already verified immutable build; never downloads on an ordinary hook. */
   async installRelease(input: { channel: ReleaseChannel; source: InstallSource; expectedGeneration: number;
-    version?: string; allowStableDowngrade?: boolean }): Promise<ActivationResult & { version: string }> {
+    version?: string; allowStableDowngrade?: boolean
+    /** Runs once the release is staged, before it is activated; a throw activates nothing. */
+    beforeActivate?: (version: string) => void }): Promise<ActivationResult & { version: string }> {
     const staged = await this.stageRelease(input)
+    input.beforeActivate?.(staged.version)
     const result = this.activate({ ...input, build: staged.build })
     return { ...result, version: staged.version }
   }

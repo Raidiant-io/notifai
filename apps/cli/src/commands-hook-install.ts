@@ -1,6 +1,6 @@
 import { buildIdentity } from './distribution.js'
 import { claudeHookFormFor } from './claude-hook-form.js'
-import { clearClaudeFormDeferral, recordClaudeFormDeferral } from './claude-form-readers.js'
+import { clearClaudeFormDeferral, EXEC_FORM_READER_VERSION, recordClaudeFormDeferral } from './claude-form-readers.js'
 import { hookAdapterPath, resolveHookAdapterHome } from './hook-adapter.js'
 /** Hook installation and uninstallation across supported harnesses. */
 import { existsSync, lstatSync, readFileSync, readdirSync, rmSync, rmdirSync } from 'node:fs'
@@ -39,11 +39,13 @@ import {
   isTomlSettingsPath,
   documentHasExecForm,
   handlerCommandLine,
+  installedHookRevision,
   loadCursorSettings,
   loadSettings,
   machineHookFiles,
   mergeCursorHooks,
   mergeHooks,
+  ownedHandlers,
   prepareCodexPluginCleanup,
   preparePlan,
   removeCursorHooks,
@@ -75,6 +77,7 @@ import { isOurOpencodePlugin, opencodePluginSource } from './opencode-plugin.js'
 import { hermesPluginDir, installHermesPlugin, preflightHermesPlugin, refreshHermesPlugin, uninstallHermesPlugin } from './hermes-plugin.js'
 import { integrationPublication, type IntegrationPublication } from './native-installation.js'
 import { packageVersion } from './release.js'
+import { compareReleasePrecedence } from './version.js'
 import { CLI_PACKAGE_NAME, cliPackageSpec } from './cli-contract.js'
 import { activeNpmCli } from './npm-invocation.js'
 import { removeClaudeCommandRules } from './claude-command-approval.js'
@@ -85,6 +88,8 @@ export interface HooksInstallFlags {
   harness?: string
   /** Init owns the final setup result and suppresses per-harness close narration. */
   narrate?: boolean
+  /** Internal: write Claude Code hooks in this form whatever the installed version supports. */
+  claudeForm?: 'shell'
   /** Test seam; production resolves the running CLI. */
   execPath?: string
   scriptPath?: string
@@ -150,6 +155,25 @@ function printHooksInstallClose(deps: CommandDeps, harness: HookInstallableHarne
   }
   deps.io.out(`Installed ${harness} hooks in ${file}`)
   deps.io.out(activation)
+}
+
+/**
+ * Before a runtime older than `EXEC_FORM_READER_VERSION` becomes active.
+ * Such a runtime recognises Notifai's Claude Code handlers only in shell form:
+ * left in exec form, it reports Claude Code as not wired and refuses questions,
+ * and its own `hooks install` adds a second set beside them. Shell form runs
+ * the same handlers on every Claude Code and every Notifai build, so the
+ * running build rewrites them while it is still the active one. Returns false
+ * when a definition could not be rewritten; nothing should be activated then.
+ */
+export function prepareClaudeHooksForRuntime(deps: CommandDeps, version: string, publication?: IntegrationPublication): boolean {
+  if ((deps.hookPlatform ?? process.platform) === 'win32' ||
+      !['before', 'unparseable'].includes(compareReleasePrecedence(version, EXEC_FORM_READER_VERSION))) return true
+  const exec = findInstallations(deps.env, deps.hookAdapterHome, deps.hookPlatform)
+    .some(installation => installation.harness === 'claude-code' && installation.handlers.some(handler => handler.execForm === true))
+  if (!exec) return true
+  return installHooks(deps, { harness: 'claude-code', refreshOnly: true, narrate: false, claudeForm: 'shell' },
+    publication ?? integrationPublication(deps)) === EXIT.ok
 }
 
 export function hooksRefreshCommand(deps: CommandDeps, harness: string, publication?: IntegrationPublication): number {
@@ -325,16 +349,21 @@ function installDocumentHooks(deps: CommandDeps, flags: HooksInstallFlags, harne
   ): { file: string; foreignStopCount: number; apply: () => void } => {
     const foreignStopCount = foreignStopHandlers(document).length
     // Exec form only for a Claude Code known to support it.
-    const claudeDecision = harness === 'claude-code' ? claudeHookFormFor(deps, documentHasExecForm(document)) : undefined
-    const claudeForm = claudeDecision?.form
+    const claudeDecision = harness === 'claude-code' && flags.claudeForm === undefined
+      ? claudeHookFormFor(deps, documentHasExecForm(document)) : undefined
+    const claudeForm = harness === 'claude-code' ? flags.claudeForm ?? claudeDecision?.form : undefined
     // Exec form held back for an older attendant: the hub applies it once that attendant is gone.
     if (claudeDecision?.reason === 'older-attendants-running') recordClaudeFormDeferral(deps.env, file)
     // Only a definite answer settles it; an unreadable Claude Code version keeps the record.
-    else if (claudeDecision !== undefined && claudeDecision.reason !== 'version-unknown') clearClaudeFormDeferral(deps.env)
+    // A forced form must not be undone by the hub applying an earlier deferral.
+    else if (claudeForm !== undefined && claudeDecision?.reason !== 'version-unknown') clearClaudeFormDeferral(deps.env)
+    // Codex approves each handler by its exact bytes: keep the revision they carry.
+    const keptRevision = harness === 'codex' ? installedHookRevision(ownedHandlers(document, scriptPath)) : undefined
     const result = mergeHooks(
       document,
       buildHookConfig({
         integrationScope: file,
+        ...(keptRevision === undefined ? {} : { integrationRevision: keptRevision }),
         adapterPath,
         harness,
         platform: hookPlatform,

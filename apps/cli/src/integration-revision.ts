@@ -11,8 +11,12 @@ export function stampIntegrationSource(source: string, scope = ''): string {
   if (!source.includes(INTEGRATION_REVISION_PLACEHOLDER)) throw new Error('Missing loaded integration revision')
   return source.replaceAll(INTEGRATION_REVISION_PLACEHOLDER, hash(`${scope}\n${source}`))
 }
-export function stampHookDefinition<T extends object>(definition: T, scope = ''): T {
-  const revision = hash(`${scope}\n${JSON.stringify(definition)}`)
+/** `kept` is a revision the installed definition already carries. Codex
+ * approves each handler by its exact command, so a revision that changed with
+ * every definition would turn one added handler into a review of all of them.
+ * Codex therefore keeps the revision its owned handlers were first given. */
+export function stampHookDefinition<T extends object>(definition: T, scope = '', kept?: string): T {
+  const revision = kept ?? hash(`${scope}\n${JSON.stringify(definition)}`)
   const visit = (value: unknown): void => {
     if (!value || typeof value !== 'object') return
     const args = (value as Record<string, unknown>)['args']

@@ -1,6 +1,6 @@
 import { encodeWindowsCodexCommand, decodeWindowsCodexCommand } from './windows-codex-command.js'
 import type { ClaudeHookFormName } from './claude-hook-form.js'
-import { stampHookDefinition } from './integration-revision.js'
+import { sourceIntegrationRevision, stampHookDefinition } from './integration-revision.js'
 import {
   existsSync,
   lstatSync,
@@ -262,6 +262,8 @@ export function quoteWindowsArg(value: string): string {
 
 export interface BuildOptions {
   integrationScope?: string
+  /** Codex: the revision the owned handlers already carry (`installedHookRevision`). */
+  integrationRevision?: string
   /** Stable user-level executable installed by the hook adapter module. */
   adapterPath: string
   /** The installed adapter stamps its exact harness into project pointers. */
@@ -419,7 +421,7 @@ export function buildHookConfig(options: BuildOptions): HookConfig {
       else group.hooks.push(attend)
     }
   }
-  return stampHookDefinition(hooks, options.integrationScope ?? '')
+  return stampHookDefinition(hooks, options.integrationScope ?? '', options.integrationRevision)
 }
 
 export interface CursorHookHandler {
@@ -1091,6 +1093,21 @@ function readSettings(file: string): SettingsDocument {
  */
 function isOurHandler(handler: HookHandler, scriptPath: string): boolean {
   return isOurCommand(handlerCommandLine(handler), scriptPath)
+}
+
+/**
+ * The one revision every owned handler in this document carries, or undefined.
+ * A Codex refresh stamps it again, so a handler whose definition did not
+ * change keeps the exact bytes Codex approved and only a new or changed
+ * handler needs review.
+ */
+export function installedHookRevision(handlers: ReadonlyArray<{ command: string; args?: unknown }>): string | undefined {
+  return handlers.length === 0 ? undefined : sourceIntegrationRevision(JSON.stringify(handlers)) ?? undefined
+}
+
+export function ownedHandlers(document: SettingsDocument, scriptPath: string): HookHandler[] {
+  return Object.values(document.hooks ?? {}).flatMap(groups => Array.isArray(groups)
+    ? groups.flatMap(group => group.hooks.filter(handler => isOurHandler(handler, scriptPath))) : [])
 }
 
 /** Drops only our handlers, keeping the group and anyone else's handlers. */
