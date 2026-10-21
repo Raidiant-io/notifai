@@ -8,6 +8,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 This project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 and [Conventional Commits](https://www.conventionalcommits.org/en/v1.0.0/).
 
+## [8.5.0](https://github.com/Raidiant-io/notifai/compare/protocol-v8.4.0...protocol-v8.5.0) (2026-10-21)
+
+
+### Features
+
+* **cli:** continue under a fork that has not notified where the service creates it ([#357](https://github.com/Raidiant-io/notifai/issues/357)) ([ee22743](https://github.com/Raidiant-io/notifai/commit/ee22743e6aec26a67a88dd198c9cdb43840f4540))
+* **cli:** expire a closed session's questions and drop unread answers ([#328](https://github.com/Raidiant-io/notifai/issues/328)) ([becb99f](https://github.com/Raidiant-io/notifai/commit/becb99fbe2138ad2c5d97a3f273e6f0f61502b13))
+* **cli:** native session child per Agent Session and one shared hub (B3) ([#334](https://github.com/Raidiant-io/notifai/issues/334)) ([98cfbf6](https://github.com/Raidiant-io/notifai/commit/98cfbf673a737767499c75a5178716cd5e3e13fa))
+* **protocol:** add stopped sessions, continued ends and question dismiss ([#349](https://github.com/Raidiant-io/notifai/issues/349)) ([13e4d50](https://github.com/Raidiant-io/notifai/commit/13e4d506ffe819c94583ddcb463e04be1e892b6f))
+
 ## [8.4.0](https://github.com/Raidiant-io/notifai/compare/protocol-v8.3.3...protocol-v8.4.0) (2026-10-18)
 
 
