@@ -205,6 +205,14 @@ export interface SessionState {
    * answer; this is the context that says why, read once.
    */
   claude_picker_closed?: { question_id: string; digest: string; context: string }
+  /**
+   * A picker whose waiting handler Claude Code cancelled. Every resolution
+   * reaches the handler as a cancellation, so what the picker's result means
+   * (an answer, an auto-continue while the User was away, a request for
+   * another round, or nothing) is settled by its `PostToolUse`; with none
+   * within the bound, the session owner withdraws the device question.
+   */
+  claude_picker_cancelled?: { question_id: string; digest: string; at: number }
   /** A content-free native wake is outstanding for this incarnation. */
   input_wake?: {
     incarnation: string; token: string; queued: boolean; writer: ProcessIdentity

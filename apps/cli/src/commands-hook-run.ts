@@ -100,6 +100,7 @@ import {
   claudePostToolUse,
   closeClaudePicker,
   reportClaudeTerminalAnswers,
+  settleCancelledClaudePicker,
   takeOwedClaudePickerAnswer,
 } from './claude-question-hooks.js'
 const INTERNAL_HOOK_EVENTS = [
@@ -1041,8 +1042,10 @@ export async function hookRunCommand(
       if (harness === 'codex') await reportCodexTerminalAnswers(ctx, sessionId, true)
       await submitSessionQuestions(ctx, envelope, processDeadlineAt, notes)
       // The same owner settles what a closed Claude Code picker left behind:
-      // a withdrawn device question to retire, a terminal answer to report.
+      // a cancelled picker whose result never came, a withdrawn device
+      // question to retire, a terminal answer to report.
       if (harness === 'claude-code') {
+        await settleCancelledClaudePicker({ env: deps.env, log: logger, now: deps.now, sleep: ctx.sleep }, sessionId)
         await reportClaudeTerminalAnswers(ctx, sessionId)
         await drainRetirements(ctx, sessionId, deps.env)
       }

@@ -372,22 +372,27 @@ export function claudePickerUnanswered(registration: CodexQuestionRegistration, 
 /**
  * The terminal's own picker answers as registered question and choice ids, for
  * the native answer report. A value that is not one of the picker's labels is
- * typed text. Null when the response does not answer every question of the
- * picker.
+ * typed text. Freeform text the User typed instead of selecting an option
+ * (`response`) answers the questions that `answers` leaves out. Null when the
+ * response still leaves a question of the picker unanswered.
  */
 export function claudeTerminalAnswers(
   registration: CodexQuestionRegistration,
   toolResponse: unknown,
 ): ReplyAnswerT[] | null {
-  const raw = typeof toolResponse === 'object' && toolResponse !== null
-    ? (toolResponse as { answers?: unknown }).answers
-    : undefined
-  if (typeof raw !== 'object' || raw === null) return null
-  const given = raw as Record<string, unknown>
+  if (typeof toolResponse !== 'object' || toolResponse === null) return null
+  const { answers: raw, response } = toolResponse as { answers?: unknown; response?: unknown }
+  const typedResponse = typeof response === 'string' && response.trim() !== '' ? response.trim() : undefined
+  if ((typeof raw !== 'object' || raw === null) && typedResponse === undefined) return null
+  const given = (typeof raw === 'object' && raw !== null ? raw : {}) as Record<string, unknown>
   const answers: ReplyAnswerT[] = []
   for (const binding of registration.questions) {
     const value = given[pickerTitle(binding)]
-    if (typeof value !== 'string' || value.trim() === '') return null
+    if (typeof value !== 'string' || value.trim() === '') {
+      if (typedResponse === undefined) return null
+      answers.push({ question_id: binding.question.id, text: typedResponse })
+      continue
+    }
     const choices = (binding.question.choices ?? []).map((choice) => ({ id: choice.id, label: pickerLabel(binding, choice.id)! }))
     const exact = choices.find((choice) => choice.label === value)
     if (exact !== undefined) {

@@ -17,11 +17,17 @@
  * acknowledgement instruction, or it records a terminal answer as the native
  * answer so the devices stop asking.
  *
- * Claude Code signals the waiting handler when the picker is dismissed with
- * Esc or the session ends, but not when the terminal answers or the User
- * chooses to chat instead. So the wait watches local state, which
- * `PostToolUse`, `Stop` and the next prompt all update. A picker that closes
- * without an answer withdraws its device question.
+ * Claude Code signals the waiting handler when the picker resolves without its
+ * decision: Esc, the session ending, an auto-continue while the User was away,
+ * or a request for another round; but not when the terminal answers or the
+ * User chooses to chat instead. A cancellation says nothing about which, so
+ * the handler only marks the picker cancelled and `PostToolUse` settles it
+ * from the picker's result: an auto-continue is not an answer and the device
+ * question stays open; typed text is a terminal answer; anything else closes
+ * without an answer and withdraws the device question. With no `PostToolUse`
+ * within `CLAUDE_PICKER_CANCEL_SETTLE_MS`, the session owner withdraws it.
+ * Otherwise the wait watches local state, which `PostToolUse`, `Stop` and the
+ * next prompt all update.
  */
 import { createHash } from 'node:crypto'
 import { isDeepStrictEqual } from 'node:util'
@@ -88,6 +94,37 @@ export const CLAUDE_TERMINAL_OPERATION = 'terminal'
 /** What the User's devices show for a picker answered in the terminal. */
 export const CLAUDE_TERMINAL_ACKNOWLEDGEMENT = 'Answered in the terminal.'
 
+/**
+ * How long a cancelled picker waits for the `PostToolUse` that says what its
+ * result meant before the session owner withdraws its device question. Esc,
+ * "Chat about this" and a denial by another hook run no `PostToolUse`.
+ */
+export const CLAUDE_PICKER_CANCEL_SETTLE_MS = 5_000
+
+/**
+ * Context the agent reads beside a picker that Claude Code continued while the
+ * User was away (`askUserQuestionTimeout`, `CLAUDE_AFK_TIMEOUT_MS`). Nobody
+ * answered, so the device question stays open and its answer takes the
+ * ordinary route. Claude Code's own result already told the agent to proceed
+ * with its best judgement.
+ */
+export function claudePickerAutoContinued(questionId: string): string {
+  return `Notifai: the User did not answer. ${questionId} stays open on their devices; an answer arrives as your next message, so check then that the work it answers still applies.`
+}
+
+/** What a picker's result says it was, from the fields Claude Code adds to it. */
+export type ClaudePickerResult = 'auto-continued' | 'follow-up' | 'answered' | 'unanswered'
+
+export function classifyClaudePickerResult(toolResponse: unknown): ClaudePickerResult {
+  if (typeof toolResponse !== 'object' || toolResponse === null) return 'unanswered'
+  const { afkTimeoutMs, followUp, answers, response } = toolResponse as Record<string, unknown>
+  if (typeof afkTimeoutMs === 'number') return 'auto-continued'
+  if (followUp === true || (typeof followUp === 'object' && followUp !== null)) return 'follow-up'
+  if (typeof response === 'string' && response.trim() !== '') return 'answered'
+  if (typeof answers === 'object' && answers !== null && Object.values(answers).some((value) => typeof value === 'string' && value.trim() !== '')) return 'answered'
+  return 'unanswered'
+}
+
 function sameProcess(a: ProcessIdentity | undefined, b: ProcessIdentity): boolean {
   return a !== undefined && a.pid === b.pid && a.start === b.start
 }
@@ -100,6 +137,13 @@ function withoutPicker(state: SessionState): SessionState {
   if (state.claude_picker === undefined) return state
   const next = { ...state }
   delete next.claude_picker
+  return next
+}
+
+function withoutCancelledPicker(state: SessionState): SessionState {
+  if (state.claude_picker_cancelled === undefined) return state
+  const next = { ...state }
+  delete next.claude_picker_cancelled
   return next
 }
 
@@ -167,13 +211,55 @@ export function closeClaudePicker(
   logger: Logger,
   cwd?: string,
 ): void {
-  const picker = readSessionState(sessionId, deps.env).claude_picker
-  if (picker === undefined) return
-  updateSessionState(sessionId, deps.env, (state) =>
-    state.claude_picker?.question_id === picker.question_id ? withoutPicker(state) : state)
-  const outcome = withdrawPickerQuestion(sessionId, deps.env, picker.question_id)
-  logger.info('hook.gate', { hook: 'picker-close', reason: outcome, question_ids: [picker.question_id], stage: 'picker-closed' })
-  if (outcome === 'retiring') launchSessionWork(deps as CommandDeps, sessionId, cwd, logger)
+  const state = readSessionState(sessionId, deps.env)
+  const picker = state.claude_picker
+  if (picker !== undefined) {
+    updateSessionState(sessionId, deps.env, (current) =>
+      current.claude_picker?.question_id === picker.question_id ? withoutPicker(current) : current)
+    const outcome = withdrawPickerQuestion(sessionId, deps.env, picker.question_id)
+    logger.info('hook.gate', { hook: 'picker-close', reason: outcome, question_ids: [picker.question_id], stage: 'picker-closed' })
+    if (outcome === 'retiring') launchSessionWork(deps as CommandDeps, sessionId, cwd, logger)
+  }
+  // A cancelled picker whose result never came: the turn moved on without it.
+  const cancelled = state.claude_picker_cancelled
+  if (cancelled !== undefined) {
+    const outcome = settleUnansweredCancelledPicker(sessionId, deps.env, cancelled)
+    logger.info('hook.gate', { hook: 'picker-close', reason: outcome, question_ids: [cancelled.question_id], stage: 'picker-cancelled-unsettled' })
+    if (outcome === 'retiring') launchSessionWork(deps as CommandDeps, sessionId, cwd, logger)
+  }
+}
+
+/** Withdraw the device question of a cancelled picker that no `PostToolUse` settled. */
+function settleUnansweredCancelledPicker(
+  sessionId: string,
+  env: NodeJS.ProcessEnv,
+  cancelled: NonNullable<SessionState['claude_picker_cancelled']>,
+): ReturnType<typeof withdrawPickerQuestion> | 'settled' {
+  let mine = false
+  updateSessionState(sessionId, env, (state) => {
+    mine = state.claude_picker_cancelled?.question_id === cancelled.question_id && state.claude_picker_cancelled.at === cancelled.at
+    return mine ? withoutCancelledPicker(state) : state
+  })
+  return mine ? withdrawPickerQuestion(sessionId, env, cancelled.question_id) : 'settled'
+}
+
+/**
+ * The session owner's half of a cancelled picker: give its `PostToolUse` the
+ * bound to say what the result meant, then withdraw the device question of a
+ * picker still unsettled. Run after every launch the cancelling handler made.
+ */
+export async function settleCancelledClaudePicker(
+  ctx: { env: NodeJS.ProcessEnv; log?: Logger | undefined; now?: (() => number) | undefined; sleep: (milliseconds: number) => Promise<void> },
+  sessionId: string,
+): Promise<void> {
+  const cancelled = readSessionState(sessionId, ctx.env).claude_picker_cancelled
+  if (cancelled === undefined) return
+  const now = ctx.now ?? Date.now
+  const remaining = cancelled.at + CLAUDE_PICKER_CANCEL_SETTLE_MS - now()
+  if (remaining > 0) await ctx.sleep(remaining)
+  const outcome = settleUnansweredCancelledPicker(sessionId, ctx.env, cancelled)
+  if (outcome === 'settled') return
+  ctx.log?.info('hook.gate', { hook: 'question-submission', reason: outcome, question_ids: [cancelled.question_id], stage: 'picker-cancelled-unsettled' })
 }
 
 /**
@@ -515,10 +601,26 @@ export async function claudePermissionRequest(
     state.waiting_answers?.some(answer => answer.pending.question_id === questionId) === true ||
     state.accepted?.answers.some(answer => answer.pending.question_id === questionId) === true
 
+  /**
+   * Claude Code cancelled this handler: the picker resolved without its
+   * decision. Whether that was Esc, an auto-continue while the User was away,
+   * a request for another round or something else is in the picker's result,
+   * which only `PostToolUse` sees, so mark the picker cancelled and let that
+   * hook settle it; the owner withdraws it if nothing does within the bound.
+   */
+  const cancelled = (): 'left-to-terminal' => {
+    updateSessionState(sessionId, deps.env, (state) => holding(state)
+      ? { ...withoutPicker(state), claude_picker_cancelled: { question_id: questionId, digest, at: now() } }
+      : state)
+    logger.info('hook.gate', { hook: 'permission-request', reason: 'awaiting-tool-result', question_ids: [questionId], stage: 'picker-cancelled' })
+    launchSessionWork(deps, sessionId, envelope.cwd, logger)
+    return 'left-to-terminal'
+  }
+
   let stagedSince: number | null = null
   for (;;) {
-    // Esc, a session ending, or this handler's own timeout: the picker has no answer to wait for.
-    if (stopped) return leave('picker-cancelled', true)
+    if (stopped) return cancelled()
+    // A session ending, or this handler's own timeout: the picker has no answer to wait for.
     if (sessionHasEnded(sessionId, deps.env) || !parentAlive()) return leave('session-ended', true)
     const state = readSessionState(sessionId, deps.env)
     // Another hook resolved the picker: the terminal answered, the turn moved on, or a newer picker opened.
@@ -640,8 +742,11 @@ function recordTerminalAnswer(
 }
 
 /**
- * `PostToolUse` for `AskUserQuestion`: the picker has an answer. Writes at
- * most one context line telling the agent what that answer obliges.
+ * `PostToolUse` for `AskUserQuestion`: the picker has a result. Writes at most
+ * one context line telling the agent what that result obliges. A result that
+ * is not an answer (an auto-continue while the User was away) leaves the
+ * device question open; a request for another round, or no answer at all,
+ * withdraws it.
  */
 export function claudePostToolUse(deps: CommandDeps, envelope: HookEnvelope, logger: Logger): void {
   const sessionId = envelope.session_id
@@ -652,9 +757,10 @@ export function claudePostToolUse(deps: CommandDeps, envelope: HookEnvelope, log
     ? (envelope.tool_response as { answers?: unknown }).answers
     : undefined
   const digest = pickerDigest(envelope.tool_input)
+  const result = classifyClaudePickerResult(envelope.tool_response)
   let context: string | null = null
   let stage = 'unbound'
-  let terminal: string | undefined
+  let settled: string | undefined
   updateSessionState(sessionId, deps.env, (state) => {
     const presented = state.claude_picker_presented
     if (presented !== undefined) {
@@ -680,18 +786,33 @@ export function claudePostToolUse(deps: CommandDeps, envelope: HookEnvelope, log
       context = closed.context
       return next
     }
-    if (state.claude_picker === undefined || state.claude_picker.digest !== digest) return state
-    terminal = state.claude_picker.question_id
-    stage = 'terminal-answer'
-    return withoutPicker(state)
+    // The picker this result belongs to: still held, or cancelled and waiting for this result.
+    const picker = state.claude_picker?.digest === digest ? state.claude_picker
+      : state.claude_picker_cancelled?.digest === digest ? state.claude_picker_cancelled : undefined
+    if (picker === undefined) return state
+    settled = picker.question_id
+    stage = `picker-${result}`
+    return withoutCancelledPicker(withoutPicker(state))
   })
   let outcome: string | undefined
-  if (terminal !== undefined) {
-    outcome = recordTerminalAnswer(deps, sessionId, incarnation.key, terminal, envelope.tool_response)
+  if (settled !== undefined) {
+    switch (result) {
+      case 'auto-continued':
+        // Not an answer: the question stays open and its answer takes the ordinary route.
+        context = claudePickerAutoContinued(settled)
+        outcome = 'question-stays-open'
+        break
+      case 'answered':
+        outcome = recordTerminalAnswer(deps, sessionId, incarnation.key, settled, envelope.tool_response)
+        break
+      default:
+        // Another round was asked for, or the picker closed with nothing: the User is at the terminal.
+        outcome = withdrawPickerQuestion(sessionId, deps.env, settled)
+    }
     if (outcome === 'native-answer-recorded' || outcome === 'retiring') launchSessionWork(deps, sessionId, envelope.cwd, logger)
   }
   logger.info('hook.gate', { hook: 'post-tool-use', reason: outcome ?? 'proceeding', stage,
-    ...(terminal === undefined ? {} : { question_ids: [terminal] }) })
+    ...(settled === undefined ? {} : { question_ids: [settled] }) })
   if (context !== null) deps.io.out(additionalContext(context))
 }
 

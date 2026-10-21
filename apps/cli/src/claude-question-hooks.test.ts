@@ -15,15 +15,19 @@ import {
 } from './claude-question-bindings.js'
 import {
   CLAUDE_PICKER_ANSWER_FOLLOWS,
+  CLAUDE_PICKER_CANCEL_SETTLE_MS,
   CLAUDE_PICKER_DISMISSED,
   CLAUDE_PICKER_HANDOVER_MS,
   CLAUDE_TERMINAL_ACKNOWLEDGEMENT,
   CLAUDE_TERMINAL_OPERATION,
   claudePermissionRequest,
+  claudePickerAutoContinued,
   claudePickerHolds,
   claudePostToolUse,
+  classifyClaudePickerResult,
   closeClaudePicker,
   reportClaudeTerminalAnswers,
+  settleCancelledClaudePicker,
   takeOwedClaudePickerAnswer,
 } from './claude-question-hooks.js'
 import { ApiCallError, type ApiClient } from './client.js'
@@ -484,19 +488,33 @@ describe('Claude Code picker hooks', () => {
     expect(h.state().question_history).toEqual([expect.objectContaining({ question_id: questionId, state: 'withdrawn' })])
   })
 
-  it('withdraws the device question when the picker closes without an answer: Esc, chat instead, or a denial', async () => {
+  it('marks a cancelled picker and lets the owner withdraw it within the bound when no tool result follows: Esc, or a denial', async () => {
     const dismissed = setup()
     let signal!: () => void
     const signalled = new Promise<void>((resolve) => { signal = resolve })
     let questionId = ''
+    let at = 0
     expect(await claudePermissionRequest(dismissed.deps, dismissed.envelope(), dismissed.logger, {
-      signalled, sleep: async () => { questionId = dismissed.held(); dismissed.confirm(); signal(); await Promise.resolve() },
+      signalled, sleep: async () => { questionId = dismissed.held(); dismissed.confirm(); at = Date.now(); signal(); await Promise.resolve() },
     })).toBe('left-to-terminal')
+    // The cancellation alone says nothing about why: the question stays until the result or the bound.
     expect(dismissed.state().claude_picker).toBeUndefined()
+    expect(dismissed.state().claude_picker_cancelled).toMatchObject({ question_id: questionId })
+    expect(dismissed.pendingOf(questionId)).toBeDefined()
+    expect(dismissed.gates.at(-1)).toMatchObject({ stage: 'picker-cancelled', reason: 'awaiting-tool-result' })
+    expect(dismissed.launches).toHaveLength(2)
+    // The owner the handler launched waits out the rest of the bound, then withdraws.
+    const slept: number[] = []
+    const cancelledAt = dismissed.state().claude_picker_cancelled!.at
+    await settleCancelledClaudePicker({ env: dismissed.env, log: dismissed.logger, now: () => cancelledAt + 1_200, sleep: async (ms) => { slept.push(ms) } }, SESSION)
+    expect(slept).toEqual([CLAUDE_PICKER_CANCEL_SETTLE_MS - 1_200])
+    expect(dismissed.state().claude_picker_cancelled).toBeUndefined()
     expect(dismissed.pendingOf(questionId)).toBeUndefined()
     expect(dismissed.state().retiring).toEqual([expect.objectContaining({ request_id: `req_${questionId}`, state: 'expired' })])
-    expect(dismissed.gates.at(-1)).toMatchObject({ stage: 'picker-cancelled', reason: 'retiring' })
-    expect(dismissed.launches).toHaveLength(2)
+    expect(dismissed.gates.at(-1)).toMatchObject({ stage: 'picker-cancelled-unsettled', reason: 'retiring' })
+    expect(at).toBeGreaterThan(0)
+    // Nothing left to settle: a second owner pass does nothing.
+    await settleCancelledClaudePicker({ env: dismissed.env, sleep: async () => { throw new Error('nothing to wait for') } }, SESSION)
 
     // "Chat about this" and a denial by another hook both end the turn without a tool result.
     const chatted = setup()
@@ -507,6 +525,99 @@ describe('Claude Code picker hooks', () => {
     expect(chatted.pendingOf(questionId)).toBeUndefined()
     expect(chatted.state().question_history).toEqual([expect.objectContaining({ question_id: questionId, state: 'withdrawn' })])
     expect(chatted.output).toEqual([])
+
+    // The turn moving on also settles a cancelled picker nobody resolved.
+    const moved = setup()
+    let movedSignal!: () => void
+    const movedSignalled = new Promise<void>((resolve) => { movedSignal = resolve })
+    await claudePermissionRequest(moved.deps, moved.envelope(), moved.logger, {
+      signalled: movedSignalled, sleep: async () => { questionId = moved.held(); moved.confirm(); movedSignal(); await Promise.resolve() },
+    })
+    expect(moved.state().claude_picker_cancelled).toBeDefined()
+    await hookRunCommand(moved.deps, 'user-prompt-submit', async () => JSON.stringify({ session_id: SESSION, cwd: moved.root, hook_event_name: 'UserPromptSubmit', prompt: 'next' }), 'claude-code')
+    expect(moved.state().claude_picker_cancelled).toBeUndefined()
+    expect(moved.pendingOf(questionId)).toBeUndefined()
+  })
+
+  it('keeps the question open when Claude Code continued the picker while the User was away', async () => {
+    const h = setup()
+    let signal!: () => void
+    const signalled = new Promise<void>((resolve) => { signal = resolve })
+    let questionId = ''
+    await claudePermissionRequest(h.deps, h.envelope(), h.logger, {
+      signalled, sleep: async () => { questionId = h.held(); h.confirm(); signal(); await Promise.resolve() },
+    })
+    // Claude Code auto-continued with "any answers selected so far": not an answer.
+    claudePostToolUse(h.deps, h.envelope(ENVIRONMENT, { tool_response: { answers: { [REWORDED]: 'Staging' }, afkTimeoutMs: 60_000 } }), h.logger)
+    expect(h.context()).toBe(claudePickerAutoContinued(questionId))
+    expect(h.context()).toContain('stays open on their devices')
+    expect(h.context()).not.toMatch(/dismiss/i)
+    expect(h.state().claude_picker_cancelled).toBeUndefined()
+    expect(h.pendingOf(questionId)).toBeDefined()
+    expect(h.state().native_answer_operations).toBeUndefined()
+    expect(h.state().retiring ?? []).toEqual([])
+    expect(h.gates.at(-1)).toMatchObject({ stage: 'picker-auto-continued', reason: 'question-stays-open' })
+    // Nothing is left for the owner to withdraw.
+    await settleCancelledClaudePicker({ env: h.env, sleep: async () => { throw new Error('settled already') } }, SESSION)
+    expect(h.pendingOf(questionId)).toBeDefined()
+    // The device answer that comes later takes the ordinary route: no picker holds it.
+    expect(claudePickerHolds(h.state())).toBe(false)
+    // The same result reaching a picker still held (no cancellation seen) means the same.
+    const held = setup()
+    await claudePermissionRequest(held.deps, held.envelope(), held.logger, {
+      sleep: async () => {
+        questionId = held.held()
+        held.confirm()
+        claudePostToolUse(held.deps, held.envelope(ENVIRONMENT, { tool_response: { answers: {}, afkTimeoutMs: 5_000 } }), held.logger)
+      },
+    })
+    expect(held.context()).toBe(claudePickerAutoContinued(questionId))
+    expect(held.pendingOf(questionId)).toBeDefined()
+  })
+
+  it('records text the User typed instead of choosing as the terminal answer', async () => {
+    const h = setup()
+    let questionId = ''
+    await claudePermissionRequest(h.deps, h.envelope(FORM), h.logger, {
+      sleep: async () => {
+        questionId = h.held()
+        h.confirm()
+        // One question chosen, the other typed.
+        claudePostToolUse(h.deps, h.envelope(FORM, { tool_response: { answers: { 'Which environment?': 'Staging' }, response: 'Only the quick ones' } }), h.logger)
+      },
+    })
+    const recorded = h.state().native_answer_operations![0]!
+    expect(recorded).toMatchObject({ question_id: questionId, operation_id: CLAUDE_TERMINAL_OPERATION })
+    expect([...recorded.answers].sort((a, b) => a.question_id.localeCompare(b.question_id))).toEqual([
+      { question_id: 'which-checks-should-run-first', text: 'Only the quick ones' }, { question_id: 'which-environment', choice_ids: ['staging'] }])
+    expect(h.pendingOf(questionId)).toBeDefined()
+    expect(h.output).toEqual([])
+    // Typed text alone answers a one-question picker.
+    const registration = h.registration(questionId)
+    expect(claudeTerminalAnswers(registration, { response: 'Neither' })).toEqual([
+      { question_id: 'which-environment', text: 'Neither' }, { question_id: 'which-checks-should-run-first', text: 'Neither' }])
+    expect(claudeTerminalAnswers(registration, { answers: {}, response: '  ' })).toBeNull()
+    expect(claudeTerminalAnswers(registration, { response: 7 })).toBeNull()
+  })
+
+  it('withdraws the question when the User asked for another round of questions', async () => {
+    const h = setup()
+    let signal!: () => void
+    const signalled = new Promise<void>((resolve) => { signal = resolve })
+    let questionId = ''
+    await claudePermissionRequest(h.deps, h.envelope(), h.logger, {
+      signalled, sleep: async () => { questionId = h.held(); h.confirm(); signal(); await Promise.resolve() },
+    })
+    claudePostToolUse(h.deps, h.envelope(ENVIRONMENT, { tool_response: { answers: {}, followUp: true } }), h.logger)
+    expect(h.output).toEqual([])
+    expect(h.state().claude_picker_cancelled).toBeUndefined()
+    expect(h.pendingOf(questionId)).toBeUndefined()
+    expect(h.state().retiring).toEqual([expect.objectContaining({ request_id: `req_${questionId}`, state: 'expired' })])
+    expect(h.gates.at(-1)).toMatchObject({ stage: 'picker-follow-up', reason: 'retiring' })
+    expect(classifyClaudePickerResult({ answers: {}, followUp: { questions: [] } })).toBe('follow-up')
+    expect(classifyClaudePickerResult({ answers: { [REWORDED]: 'Staging' } })).toBe('answered')
+    expect(classifyClaudePickerResult({ answers: {} })).toBe('unanswered')
+    expect(classifyClaudePickerResult(undefined)).toBe('unanswered')
   })
 
   it('returns a partial device answer through the picker, leaving out what the User skipped', async () => {
