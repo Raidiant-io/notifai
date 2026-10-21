@@ -28,7 +28,8 @@ function git(cwd: string, ...args: string[]): void {
 
 function setup(options: {
   globalToml?: string
-  projectToml?: string
+  /** A committed `.notifai/config.toml` in the checkout; Notifai never reads it. */
+  committedToml?: string
   projectLocalToml?: string
   sessionToml?: string
   sessionId?: string
@@ -42,9 +43,9 @@ function setup(options: {
   const project = path.join(home, 'repo', 'nested')
   mkdirSync(project, { recursive: true })
   const projectDir = path.join(home, 'repo', '.notifai')
-  if (options.projectToml !== undefined) {
+  if (options.committedToml !== undefined) {
     mkdirSync(projectDir, { recursive: true })
-    writeFileSync(path.join(projectDir, 'config.toml'), options.projectToml)
+    writeFileSync(path.join(projectDir, 'config.toml'), options.committedToml)
   }
   if (options.projectLocalToml !== undefined) {
     const localFile = personalProjectConfigPath(project, { XDG_CONFIG_HOME: home })
@@ -62,12 +63,12 @@ function setup(options: {
 }
 
 describe('automatic updates setting', () => {
-  it('is on by default and read only from the machine file, never a project, personal-project or session layer', () => {
+  it('is on by default and read only from the machine file, never a personal-project or session layer', () => {
     const off = 'updates.automatic = false\n'
     expect(loadConfig({ ...setup({}), sessionId: 'sess' })['updates.automatic']).toEqual({ value: true, source: 'default' })
-    const scoped = setup({ projectToml: '[updates]\nautomatic = false\n', projectLocalToml: '"updates.automatic" = false\n', sessionToml: 'updates.automatic = false\n' })
+    const scoped = setup({ committedToml: '[updates]\nautomatic = false\n', projectLocalToml: '"updates.automatic" = false\n', sessionToml: 'updates.automatic = false\n' })
     expect(loadConfig({ ...scoped, sessionId: 'sess' })['updates.automatic']).toEqual({ value: true, source: 'default' })
-    const machine = setup({ globalToml: off, projectToml: '"updates.automatic" = true\n' })
+    const machine = setup({ globalToml: off, committedToml: '"updates.automatic" = true\n' })
     const resolved = loadConfig(machine)['updates.automatic']
     expect(resolved.value).toBe(false)
     expect(resolved.source).toMatch(/^global:/)
@@ -94,10 +95,10 @@ describe('harness config layers', () => {
     expect(personalProjectConfigPath(linked, env)).toBe(personalProjectConfigPath(repo, env))
   })
 
-  it('orders session over project-local over project over global', () => {
+  it('orders session over project-local over global', () => {
     const { env, cwd } = setup({
       globalToml: 'ask_grace_seconds = 10\n',
-      projectToml: 'ask_grace_seconds = 20\n',
+      committedToml: 'ask_grace_seconds = 20\n',
       projectLocalToml: 'ask_grace_seconds = 30\n',
       sessionToml: 'ask_grace_seconds = 40\n',
       sessionId: 'abc',
@@ -114,9 +115,9 @@ describe('harness config layers', () => {
     expect(loadConfig({ cwd, env }).ask_grace_seconds.value).toBe(30)
   })
 
-  it('keeps a personal toggle out of the committed project file', () => {
+  it('keeps a Project Override outside the repository', () => {
     const { env, cwd } = setup({
-      projectToml: 'ask_notifications = true\n',
+      committedToml: 'ask_notifications = true\n',
       projectLocalToml: 'ask_notifications = false\n',
     })
     const config = loadConfig({ cwd, env })
@@ -124,16 +125,27 @@ describe('harness config layers', () => {
     expect(config.ask_notifications.source).toMatch(/\/projects\/[0-9a-f]{32}\.toml$/)
   })
 
-  it('ignores an in-tree config.local.toml leftover', () => {
-    const { env, cwd } = setup({ projectToml: 'ask_notifications = true\n' })
-    mkdirSync(path.join(cwd, '..', '.notifai'), { recursive: true })
-    writeFileSync(path.join(cwd, '..', '.notifai', 'config.local.toml'), 'ask_notifications = false\n')
-    expect(loadConfig({ cwd, env }).ask_notifications).toEqual({ value: true, source: expect.stringMatching(/^project:/) })
+  it('reads no configuration committed to the repository', () => {
+    // A repository cannot configure Notifai: neither the old shared file nor
+    // an in-tree local leftover is a layer, whatever it holds.
+    const { env, cwd } = setup({
+      globalToml: 'wait_seconds = 20\n',
+      committedToml: 'wait_seconds = 5\nask_notifications = false\nmedia_origins = ["http://10.0.0.1"]\nproject = "planted"\n',
+    })
+    writeFileSync(path.join(cwd, '..', '.notifai', 'config.local.toml'), 'ask_grace_seconds = 30\n')
+    mkdirSync(path.join(cwd, '.notifai'), { recursive: true })
+    writeFileSync(path.join(cwd, '.notifai', 'config.toml'), 'wait_seconds = 1\n')
+    const config = loadConfig({ cwd, env })
+    expect(config.wait_seconds).toEqual({ value: 20, source: expect.stringMatching(/^global:/) })
+    expect(config.ask_notifications).toEqual({ value: true, source: 'default' })
+    expect(config.ask_grace_seconds).toEqual({ value: 0, source: 'default' })
+    expect(config.media_origins).toEqual({ value: [], source: 'default' })
+    expect(config.project).toEqual({ value: null, source: 'default' })
   })
 
   it('takes the service origin from NOTIFAI_BASE_URL, not from a config file', () => {
     const { env, cwd } = setup({
-      projectToml: 'base_url = "https://attacker.example"\n',
+      committedToml: 'base_url = "https://attacker.example"\n',
     })
     expect(loadConfig({ cwd, env }).base_url).toEqual({
       value: 'https://api.notifai.sh',
@@ -208,20 +220,20 @@ describe('config precedence', () => {
     expect(config.ttl_seconds.value).toBe(86400)
   })
 
-  it('project config (found by parent walk) beats machine-global', () => {
+  it('a Project Override beats machine-global', () => {
     const { env, cwd } = setup({
       globalToml: 'wait_seconds = 20\nsound = "default"\n',
-      projectToml: 'wait_seconds = 5\n',
+      projectLocalToml: 'wait_seconds = 5\n',
     })
     const config = loadConfig({ cwd, env })
     expect(config.wait_seconds.value).toBe(5)
-    expect(config.wait_seconds.source).toMatch(/^project:/)
+    expect(config.wait_seconds.source).toMatch(/^project-local:/)
     expect(config.sound.value).toBe('default')
     expect(config.sound.source).toMatch(/^global:/)
   })
 
   it('flags beat everything', () => {
-    const { env, cwd } = setup({ projectToml: 'wait_seconds = 5\n' })
+    const { env, cwd } = setup({ projectLocalToml: 'wait_seconds = 5\n' })
     const config = loadConfig({ cwd, env, flags: { wait_seconds: 2 } })
     expect(config.wait_seconds.value).toBe(2)
     expect(config.wait_seconds.source).toBe('flag')
@@ -293,7 +305,7 @@ describe('draft building', () => {
 
   it('orders explicit flags over saved user config', () => {
     const { env, cwd } = setup({
-      projectToml: 'sound = "alert"\ninterruption_level = "active"\n',
+      projectLocalToml: 'sound = "alert"\ninterruption_level = "active"\n',
     })
     const config = loadConfig({ cwd, env })
     const configured = buildDraft(config, { title: 'T', body: 'B', kind: 'done' })
@@ -331,7 +343,7 @@ describe('draft building', () => {
   })
 
   it('lets the user shorten or lengthen how long an answer is accepted', () => {
-    const { env, cwd } = setup({ projectToml: 'reply_window_seconds = 7200\n' })
+    const { env, cwd } = setup({ projectLocalToml: 'reply_window_seconds = 7200\n' })
     const config = loadConfig({ cwd, env })
     const build = buildDraft(config, { title: 'Question', body: 'Deploy?', reply: true })
     if (!build.ok) throw new Error(build.error)
@@ -348,7 +360,7 @@ describe('draft building', () => {
   })
 
   it('orders explicit and configured Project identity over inference', () => {
-    const { env, cwd } = setup({ projectToml: 'project = "my-app"\n' })
+    const { env, cwd } = setup({ projectLocalToml: 'project = "my-app"\n' })
     const config = loadConfig({ cwd, env })
     const fromConfig = buildDraft(
       config,
@@ -593,7 +605,7 @@ describe('draft building', () => {
   })
 
   it('uses configured devices unless --all is passed', () => {
-    const { env, cwd } = setup({ projectToml: 'devices = ["dev_a", "dev_b"]\n' })
+    const { env, cwd } = setup({ projectLocalToml: 'devices = ["dev_a", "dev_b"]\n' })
     const config = loadConfig({ cwd, env })
     const scoped = buildDraft(config, { title: 'T', body: 'B' })
     if (!scoped.ok) throw new Error(scoped.error)
@@ -678,7 +690,7 @@ describe('draft building', () => {
       error: expect.stringContaining('Android does not support caller-selected interruption levels'),
     })
 
-    const configuredCase = setup({ projectToml: 'interruption_level = "passive"\n' })
+    const configuredCase = setup({ projectLocalToml: 'interruption_level = "passive"\n' })
     const configured = loadConfig({ cwd: configuredCase.cwd, env: configuredCase.env })
     expect(buildDraft(configured, { title: 'T', body: 'B', platform: 'android' })).toMatchObject({
       ok: false,

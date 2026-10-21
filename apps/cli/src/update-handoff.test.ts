@@ -69,3 +69,21 @@ it("does not ask a session to attend to another harness's gap after an update", 
   expect(updateSessionEffects('claude-code', states)).toMatchObject({ assessment: 'continue', diagnostics: states.slice(0, 3) })
   expect(updateSessionEffects('grok', states).assessment).toBe('needs_attention')
 })
+
+it.each([
+  ['cursor', 'darwin', false], ['opencode', 'linux', false], ['openclaw', 'linux', false], ['hermes', 'win32', false],
+  ['openclaw', 'darwin', true], ['hermes', 'darwin', true], ['claude-code', 'linux', true],
+] as const)('treats a %s question-route gap on %s as repairable only where async ask is supported', (harness, platform, supported) => {
+  const gap = { id: 'hooks-answer-continuation', title: 'How an answer returns', status: 'gap' as const, detail: 'not attending',
+    remedy: { by: 'user-here' as const, summary: 'repair', command: 'notifai hooks install' } }
+  const effects = updateSessionEffects(harness, [{ id: 'hooks', title: 'Hooks', status: 'ready', detail: 'current' }, gap], undefined, platform)
+  const continuation = effects.diagnostics.find(state => state.id === gap.id)!
+  if (supported) {
+    expect(continuation).toMatchObject({ status: 'gap', remedy: gap.remedy })
+    expect(effects.assessment).toBe('needs_attention')
+  } else {
+    expect(continuation.status).toBe('optional-gap')
+    expect(continuation).not.toHaveProperty('remedy')
+    expect(effects.assessment).toBe('continue')
+  }
+})

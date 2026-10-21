@@ -2,13 +2,14 @@ import { handlerEvent } from './install-hooks.js'
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
+import { personalProjectConfigPath } from './config.js'
 import { afterEach, expect, it, vi } from 'vitest'
 import type { CommandDeps, CommandIo } from './commands-core.js'
 import { hooksInstallCommand, prepareClaudeHooksForRuntime } from './commands-hook-install.js'
 import { updateResumeCommand } from './commands-update-resume.js'
 import { installHookAdapter, inspectHookAdapter } from './hook-adapter.js'
 import { codexHookIdentityHash, codexTrustFindings, codexTrustKey, findInstallations } from './install-hooks.js'
-import { cachedIntegrationFaultNotice, integrationFaultNotice, localIntegrationAssessment, refreshIntegrationHealth } from './integration-health.js'
+import { cachedIntegrationFaultNotice, integrationFaultNotice, localIntegrationAssessment, pendingIntegrationFaultNotice, refreshIntegrationHealth } from './integration-health.js'
 import { nativeSkills } from './native-skills.js'
 import { packageVersion } from './release.js'
 import { markSessionEnded, readSessionState, writeSessionState } from './hook-session-state.js'
@@ -420,6 +421,20 @@ it('lets a prompt hook read the turn-end assessment without scanning, once per c
   expect(cachedIntegrationFaultNotice(f.deps, 'codex')).toBeUndefined()
 })
 
+it('keeps a prompt-path fault notice due until a reader claims it', () => {
+  const f = fixture()
+  removeToolHook(f.installation.file)
+  refreshIntegrationHealth(f.deps, 'codex')
+  const unshown = pendingIntegrationFaultNotice(f.deps, 'codex')
+  expect(unshown?.text).toContain('hooks-drift')
+  // Reading spends nothing: a context without room for it leaves it due.
+  const shown = pendingIntegrationFaultNotice(f.deps, 'codex')
+  expect(shown?.text).toBe(unshown?.text)
+  expect(shown!.claim()).toBe(true)
+  expect(unshown!.claim()).toBe(false)
+  expect(pendingIntegrationFaultNotice(f.deps, 'codex')).toBeUndefined()
+})
+
 it('lets a resident observer detect missing wiring without consuming the agent notice or changing trust', () => {
   const f = fixture()
   const trust = readFileSync(f.trust, 'utf8')
@@ -590,8 +605,9 @@ it('requires the loaded revision and accepts a same-scope replacement after the 
   const f = fixture()
   f.deps.env.CLAUDECODE = '1'
   f.deps.env.CLAUDE_CODE_SESSION_ID = 'original'
-  mkdirSync(path.join(f.root, '.notifai'), { recursive: true })
-  writeFileSync(path.join(f.root, '.notifai', 'config.toml'), 'project = "migration-fixture"\n')
+  const settings = personalProjectConfigPath(f.root, f.deps.env)
+  mkdirSync(path.dirname(settings), { recursive: true })
+  writeFileSync(settings, 'project = "migration-fixture"\n')
   enableProject(projectBinding(f.root, f.deps.env, 'migration-fixture')!)
   expect(hooksInstallCommand(f.deps, { harness: 'claude-code', narrate: false })).toBe(0)
   const hooks = findInstallations(f.deps.env, f.home).find(entry => entry.harness === 'claude-code')!

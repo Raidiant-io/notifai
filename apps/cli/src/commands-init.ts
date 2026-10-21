@@ -6,11 +6,12 @@ import {
   type SubmissionReceipt,
 } from '@raidiant/notifai-protocol'
 import { randomBytes } from 'node:crypto'
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { existsSync, readFileSync, writeFileSync } from 'node:fs'
 import path from 'node:path'
 import { parse as parseToml, stringify as stringifyToml } from 'smol-toml'
 import { ApiCallError, NetworkError, type ApiClient } from './client.js'
-import { SHARED_PROJECT_CONFIG_REFUSAL, sharedProjectConfigPath, type CliConfig } from './config.js'
+import { ensurePrivateDirectory } from './atomic-file.js'
+import { personalProjectConfigPath, projectLocation, type CliConfig } from './config.js'
 import { projectSlugFrom as inferredProjectSlugFrom } from './invocation-context.js'
 import { type SkillScope } from './native-skills.js'
 import {
@@ -663,7 +664,7 @@ function wantsOptional(deps: CommandDeps, state: ReadinessState, flags: InitFlag
   if (deps.io.interactive !== true) return Promise.resolve(false)
   const question =
     state.id === 'hooks'
-      ? 'Install harness hooks, so questions reach your devices when you are away?'
+      ? 'Install harness hooks, so your agents use Notifai on their own and their questions reach your devices when you are away?'
       : state.id === 'claude-commands'
         ? "Let Claude Code run Notifai's send, ask, receive and acknowledge commands without asking first? Otherwise a question waits for a terminal approval while you are away."
         : state.id === 'codex-commands'
@@ -789,20 +790,20 @@ export async function initCommand(deps: CommandDeps, flags: InitFlags): Promise<
   let resolved: InitFlags = { ...flags }
   await workingDeps.io.intro?.('Notifai setup')
 
-  // Project inference is the default and writes nothing. An explicit id is a
-  // deliberate shared repository override, authored in this checkout so Git
-  // can review and merge it like every other tracked project policy change.
+  // Project inference is the default and writes nothing. An explicit id is the
+  // User's own Project setting, stored on this machine outside the checkout,
+  // the same file `config set project <id> --local` writes.
   if (resolved.projectId !== undefined) {
-    const configPath = sharedProjectConfigPath(workingDeps.cwd, workingDeps.env)
-    if (configPath === null) {
-      workingDeps.io.err(SHARED_PROJECT_CONFIG_REFUSAL)
+    if (projectLocation(workingDeps.cwd, workingDeps.env) === null) {
+      workingDeps.io.err('Your home folder is never a Project. Run this from inside the Project\'s folder.')
       return EXIT.usage
     }
+    const configPath = personalProjectConfigPath(workingDeps.cwd, workingDeps.env)
     const existing = existsSync(configPath)
       ? (parseToml(readFileSync(configPath, 'utf8')) as Record<string, unknown>)
       : {}
     existing['project'] = projectSlugFrom(resolved.projectId)
-    mkdirSync(path.dirname(configPath), { recursive: true })
+    ensurePrivateDirectory(path.dirname(configPath))
     writeFileSync(configPath, `${stringifyToml(existing)}\n`)
   }
 

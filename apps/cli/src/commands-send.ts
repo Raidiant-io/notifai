@@ -283,7 +283,7 @@ export async function sendCommand(
     (flags.title.trim().endsWith('?') || flags.summary.trim().endsWith('?'))
   ) {
     deps.io.err(
-      'Heads up: this notification ends with a question but has no reply action. Add --reply (and optionally --choice) so it can be answered from the notification.',
+      'Heads up: this notification ends with a question, but it cannot be answered. Use `notifai ask` for a question the User should answer.',
     )
   }
   const waitSeconds = flags.noWait ? 0 : config.wait_seconds.value

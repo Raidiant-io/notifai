@@ -5,55 +5,50 @@ harness shares.
 
 ## Activation
 
-**Claude Code:** run the installer if needed, start one fresh Agent Session,
-send one prompt, then run `notifai doctor`. An already-running Agent Session cannot
-receive newly installed `SessionStart` context. If SessionStart is absent,
-reinstall the current hooks and start a fresh Agent Session; UserPromptSubmit
-records presence and question lifecycle only and never substitutes for
-lifecycle activation. Claude's SubagentStart gives ordinary workers the
-reporting-only context; explicit textual delegation makes a worker load the
-skill and guidance as the new Notification Request owner.
+Run the installer if needed, start one fresh Agent Session, send one prompt,
+then run `notifai doctor`. A session that was already running cannot receive
+newly installed `SessionStart` context. If doctor finds no SessionStart,
+reinstall the current hooks and start a fresh Agent Session; a prompt hook
+alone never activates Notifai.
 
-## How the answer gets back
+An ordinary subagent receives worker context: it reports to its parent and does
+not notify. A worker explicitly delegated Notification Requests in its prompt
+loads the skill and guidance as their owner.
 
-**Claude Code:** after submission Notifai waits out of band for the complete
-answer window: on macOS and Linux the shared hub waits, and a small session
-child that stays the session's own child writes the wake-up, opening the inbox
-with the session's token. On Windows a per-session resident does both. Stop
-can recover answer ownership without holding the turn. When the
-answer arrives it is stored with the session's pending inputs. Its own inbox
-socket receives a wake-up: an idle Agent Session starts a new turn, and a busy
-one receives it between tool calls or when its current turn ends. The wake-up
-carries no answer; Claude Code shows it as a message from another session. The prompt hook or the named
-`notifai receive` command drains the current notes and answers together.
+## What arrives and what to do
+
+Answers and notes come back on their own for the whole answer window. A busy
+session receives a wake-up between tool calls or when its turn ends; an idle
+one starts a new turn. The wake-up carries no answer; Claude Code shows it as a
+message from another session, though it comes from Notifai. Follow it as the
+skill's "When the answer arrives" says. Before Claude Code 2.1.224 on macOS and
+Linux, or 2.1.234 on Windows, the answer arrives at the session's next turn
+instead.
+
 Closing the Agent Session ends its questions within seconds: exiting, closing
 its terminal, or replacing it there with `/clear` or another conversation's
-`/resume`. Notifai never resumes it. When the same conversation continues at
-once elsewhere (`/desktop`, the desktop app reopening it, a resume in another
-terminal), its questions stay open and their answers follow it. Open in two
-places at once, it receives answers and notes in the most recently opened one
-only; closing one leaves the other. Stops the User did not make keep its
-questions open for their window: the desktop app pausing a conversation it
-still lists, an Orca chat stopping it after 30 idle minutes, Orca losing a
-pane's terminal, and the machine shutting down or restarting. An answer given meanwhile arrives when
-the conversation comes back (the app reopening it, `claude --resume`),
-possibly hours later: check that the work it answers still applies. Notes
-sent meanwhile wait and arrive the same way. A terminal conversation the
-machine stopped reopens by itself when an answer or note arrives: a new
-terminal window in its folder and config home runs `claude --resume` with the
-options it was started with, in the permission mode it last ran in (never a
-more permissive one). One that started before this Notifai version, or with
-an option Notifai does not know, waits for the User instead. Do not ask the
-User to resume it meanwhile. `notifai config set reopen.terminal off` (or `reopen.automatic off`
-for every place) makes it wait for the User instead; change these only when
-the User asks. A `/branch` of it continues it
-under a new id: its questions and their answers move to the branch when the
-service supports it (an older service only once the branch has sent a
-notification), and expire otherwise. A scripted `claude -p --resume` of it receives nothing.
+`/resume`. Never suggest any of these while a question waits. Continuing the
+same conversation at once elsewhere (`/desktop`, the desktop app reopening it,
+a resume in another terminal) keeps its questions, and their answers follow it.
+Open in two places, it receives answers and notes in the most recently opened
+one only. A `/branch` takes its questions with it where the service can move
+them; otherwise they expire. A scripted `claude -p --resume` of it receives
+nothing.
 
-The inbox is a socket on macOS and Linux from Claude Code 2.1.224, and a
-named pipe on Windows from 2.1.234. On an older Claude Code the answer is
-still delivered, at the Agent Session's next turn rather than on its own.
+Stops the User did not make keep its questions open for their window: the
+desktop app pausing a conversation it still lists, an app that hosts the
+conversation stopping it after it sits idle or losing its terminal, and the
+machine shutting down or restarting. An answer or note given meanwhile arrives
+when the conversation comes back (the app reopening it, `claude --resume`),
+possibly hours later: check that the work it answers still applies.
+
+A terminal conversation the machine stopped reopens by itself when an answer or
+note arrives: a new terminal window runs `claude --resume` in its folder, in the
+permission mode it last ran in and never a more permissive one. When Notifai
+cannot reproduce how it started, it waits for the User instead. Do not ask the
+User to resume it.
+`notifai config set reopen.terminal off` (or `reopen.automatic off` for every
+place) makes it wait for the User; change these only when the User asks.
 
 ## Question picker
 
@@ -70,7 +65,7 @@ message, and mark the option you recommend with Claude Code's own
 "(Recommended)" label suffix. Devices show the question, shortened when it is
 over 240 characters, each label with its description under it, and the
 recommended option marked. Wording too long for a device stays whole in the
-notification body.
+notification body. Option previews stay in the terminal.
 
 The picker takes whichever answer comes first and closes:
 
@@ -81,20 +76,18 @@ The picker takes whichever answer comes first and closes:
 - **A device answer the picker could not return** closes it unanswered, with
   Notifai context that says so. End your turn: the answer arrives as your next
   message, with its own acknowledgement command. Do not ask again.
-- **A question the User dismissed on a device** closes the picker unanswered,
-  with Notifai context that says so. They will not answer it: carry on
-  without it.
+- **A question that expired on the devices** closes the picker unanswered,
+  with Notifai context that says so: carry on without it.
 - **A terminal answer** needs nothing from you. Notifai records it, so the
   devices stop asking.
-- **Esc, "Chat about this", or a denied picker** withdraws the device question.
-  Ask again if you still need the answer.
+- **Esc, "Chat about this", or a picker another hook denies** withdraws the
+  device question: continue in the conversation.
 
-A picker that cannot reach devices still works in the terminal. This happens
-when the Project is not enabled, the machine is not signed in, question routing
-is off, or the picker belongs to a subagent. `notifai logs --event hook.gate` shows each outcome:
-`picker-terminal-only` with its `reason`, `picker-waiting`, `picker-answered`,
-`picker-dismissed` or `picker-closed`. Pickers reach devices on macOS and
-Linux.
+A picker stays in the terminal when the Project is not enabled, the machine is
+not signed in, question routing is off, or it runs on Windows; it still works
+there. Pickers reach devices on macOS and Linux.
+`notifai logs --event hook.gate` shows why a picker stayed in the terminal
+(`picker-terminal-only` and its `reason`) and how it closed.
 
 ## Command approval
 
@@ -104,16 +97,13 @@ commands, so an away User's first question can wait at a terminal approval
 nobody sees. Readiness reports this as `claude-commands` once Claude Code is
 wired; it never blocks setup.
 
-The offer depends on the session's permission mode. Notifai learns it from
-the session's own hooks, from the mode the session was started with, or from
-`permissions.defaultMode` in the Claude Code settings; when none of them names
-a mode, as in first-time setup before any hook has run, it is Claude Code's
-default. Outside Claude Code or in `default` mode, `claude-commands` carries a
-remedy. In `auto`, `acceptEdits`, `plan`, `bypassPermissions` or any other
-known mode it reads `not applicable` with no remedy: do not offer the rules, do
-not ask the User about them, and do not run the command. With the remedy
-present, or during first-time setup before Claude Code is wired, on the User's
-yes:
+The offer depends on the session's permission mode. In `default` mode, outside
+Claude Code, or before any hook has reported a mode (as in first-time setup),
+`claude-commands` carries a remedy. In `auto`, `acceptEdits`, `plan`,
+`bypassPermissions` or any other known mode it reads `not applicable` with no
+remedy: do not offer the rules, do not ask the User about them, and do not run
+the command. With the remedy present, or during first-time setup before Claude
+Code is wired, on the User's yes:
 
 ```bash
 notifai init --claude-commands --json
@@ -126,3 +116,10 @@ keep their prompt. `notifai hooks uninstall` removes the rules with the wiring.
 Never add them unasked, and never edit Claude Code's permission settings by hand.
 If setup reports that the rules were not added, it says why in one line: relay
 that to the User and do not retry.
+
+## After a Notifai update
+
+The hooks call the updated CLI on their next run; reread changed guidance
+yourself. A changed hook definition counts as loaded only once a natural hook
+call shows it. A definition Claude Code holds in memory may need a fresh Agent
+Session.

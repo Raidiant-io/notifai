@@ -54,8 +54,8 @@ describe('a dismissed Codex card', () => {
     expect(r.steered[0]!.text).toBe(dismissalEnvelope(registration()))
     const body = JSON.parse(r.steered[0]!.text.split('\n')[1]!) as Record<string, unknown>[]
     expect(body).toEqual([{ questionItemId: '["request_user_input_async","call_1",0]', question: 'Ship it?', answer: CODEX_CARD_DISMISSED_ANSWER,
-      notifai: { origin: 'companion', question_id: 'q_1', dismissed: true, instruction: CODEX_CARD_DISMISSED } }])
-    expect(CODEX_CARD_DISMISSED).toBe('Notifai — the user dismissed this question on their device, so it will not be answered. Carry on without an answer to it.')
+      notifai: { origin: 'companion', question_id: 'q_1', expired: true, instruction: CODEX_CARD_DISMISSED } }])
+    expect(CODEX_CARD_DISMISSED).toBe('Notifai — this question has expired, so it will not be answered. Carry on without an answer to it.')
     expect(r.settled()).toEqual([true])
     // Settled: never sent again.
     expect(await r.run()).toBe(0)

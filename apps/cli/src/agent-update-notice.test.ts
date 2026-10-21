@@ -4,7 +4,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { promisify } from 'node:util'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { agentUpdateNotice, cachedAgentUpdateNotice, refreshAgentUpdateState } from './agent-update-notice.js'
+import { agentUpdateNotice, cachedAgentUpdateNotice, pendingAgentUpdateNotice, refreshAgentUpdateState } from './agent-update-notice.js'
 import { stateDir } from './config.js'
 import { packageVersion } from './release.js'
 
@@ -88,6 +88,21 @@ describe('update notice on the prompt path', () => {
     expect(read(NOW)).toContain('A newer Notifai is available.')
     expect(read(NOW + 1)).toBeUndefined()
     expect(f.fetchImpl).toHaveBeenCalledTimes(1)
+  })
+
+  it('stays due until a reader claims it, and is claimed once', async () => {
+    const f = fixture()
+    await refreshAgentUpdateState({ env: f.env, now: NOW, fetchImpl: f.fetchImpl })
+    const read = () => pendingAgentUpdateNotice({ env: f.env, now: NOW, updateCommand: 'notifai update' })
+    const unshown = read()
+    expect(unshown?.text).toContain('A newer Notifai is available.')
+    // Reading spends nothing: a context without room for it leaves it due.
+    const shown = read()
+    expect(shown?.text).toBe(unshown?.text)
+    expect(shown!.claim()).toBe(true)
+    // Another reader that saw it before the claim cannot show it again.
+    expect(unshown!.claim()).toBe(false)
+    expect(read()).toBeUndefined()
   })
 
   it('keeps a known release when a later lookup cannot reach the registry', async () => {

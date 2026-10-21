@@ -316,7 +316,7 @@ export function buildProgram(deps: CommandDeps, options: BuildProgramOptions = {
       'Set up Notifai here, idempotently: sign-in, project id, hooks, device readiness, live receipt proof. ' +
         'Interactive at a human terminal; never prompts otherwise (agents: pass flags)',
     )
-    .option('--project-id <id>', 'Project identifier slug (default: derived from the directory name)')
+    .option('--project-id <id>', 'Project identifier slug, saved for this project on this machine (default: derived from the directory name)')
     .option('--json', 'machine-readable final readiness; never prompts')
     .option('--approval <route>', 'computer approval route: qr (default), notification, or browser')
     .option('--approval-email <email>', 'Account email for the selected notification approval route')
@@ -920,7 +920,7 @@ export function buildProgram(deps: CommandDeps, options: BuildProgramOptions = {
     .command('install')
     .description(
       'Wire this harness to Notifai lifecycle events on this machine. ' +
-        'Whether Notifai acts in a project is `notifai project enable`, not an install scope',
+        'Notifai is switched on and off per project with `notifai project enable` and `disable`, not by an install scope',
     )
     .option(
       '--harness <name>',
@@ -991,7 +991,6 @@ export function buildProgram(deps: CommandDeps, options: BuildProgramOptions = {
     .description(
       'Set a configuration value (choose a layer interactively; unattended defaults machine-global and requires --yes)',
     )
-    .option('--project', 'write to the shared .notifai/config.toml instead')
     .option('--local', 'write a personal project preference on this machine (not in the repo)')
     .option('--session <id>', 'apply only to one Agent Session')
     .option('--yes', 'skip the confirmation gate')
@@ -999,7 +998,7 @@ export function buildProgram(deps: CommandDeps, options: BuildProgramOptions = {
       async (
         key: string,
         value: string,
-        opts: { project?: boolean; local?: boolean; session?: string; yes?: boolean },
+        opts: { local?: boolean; session?: string; yes?: boolean },
       ) => {
         exit(await runners.configSet(deps, key, value, opts))
       },
@@ -1009,14 +1008,13 @@ export function buildProgram(deps: CommandDeps, options: BuildProgramOptions = {
     .description(
       'Remove a configuration value so the next layer or shipped default applies (choose a layer interactively; unattended defaults machine-global and requires --yes)',
     )
-    .option('--project', 'remove from the shared .notifai/config.toml instead')
     .option('--local', 'remove a personal project preference stored on this machine')
     .option('--session <id>', 'remove from one Agent Session')
     .option('--yes', 'skip the confirmation gate')
     .action(
       async (
         key: string,
-        opts: { project?: boolean; local?: boolean; session?: string; yes?: boolean },
+        opts: { local?: boolean; session?: string; yes?: boolean },
       ) => {
         exit(await runners.configUnset(deps, key, opts))
       },
@@ -1041,14 +1039,13 @@ export function buildProgram(deps: CommandDeps, options: BuildProgramOptions = {
         '(choose a layer interactively; unattended defaults machine-global and requires --yes)',
     )
     .option('--file <path>', 'read the guidance text from a file (use - for stdin)')
-    .option('--project', 'write to the shared .notifai/guidance/ instead')
     .option('--local', 'write a personal project preference on this machine (not in the repo)')
     .option('--yes', 'skip the confirmation gate')
     .action(
       async (
         topic: string,
         text: string | undefined,
-        opts: { file?: string; project?: boolean; local?: boolean; yes?: boolean },
+        opts: { file?: string; local?: boolean; yes?: boolean },
       ) => {
         let content = text
         if (typeof opts.file === 'string') {
@@ -1072,7 +1069,6 @@ export function buildProgram(deps: CommandDeps, options: BuildProgramOptions = {
         }
         exit(
           await runners.guidanceSet(deps, topic, content, {
-            project: opts.project,
             local: opts.local,
             yes: opts.yes,
           }),
@@ -1085,11 +1081,10 @@ export function buildProgram(deps: CommandDeps, options: BuildProgramOptions = {
       'Remove a guidance override so the next layer or the shipped topic applies ' +
         '(choose a layer interactively; unattended defaults machine-global and requires --yes)',
     )
-    .option('--project', 'remove from the shared .notifai/guidance/ instead')
     .option('--local', 'remove a personal project preference stored on this machine')
     .option('--yes', 'skip the confirmation gate')
     .action(
-      async (topic: string, opts: { project?: boolean; local?: boolean; yes?: boolean }) => {
+      async (topic: string, opts: { local?: boolean; yes?: boolean }) => {
         exit(await runners.guidanceUnset(deps, topic, opts))
       },
     )

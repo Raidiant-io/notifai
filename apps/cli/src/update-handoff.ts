@@ -2,7 +2,7 @@ import { readFileSync } from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { compareReleasePrecedence, isSemVer } from './version.js'
-import type { SourceContextHarness } from './harnesses.js'
+import { questionRoutingCapability, type SourceContextHarness } from './harnesses.js'
 import { appliesHere, type ReadinessState } from './readiness.js'
 import { buildIdentity } from './distribution.js'
 
@@ -41,17 +41,19 @@ export function installedChangelog(version: string | null, from?: string, root =
 export const HARNESS_UPDATE_EFFECTS: Record<SourceContextHarness, string> = {
   'claude-code': 'Existing command hooks use the updated adapter on their next invocation. Reread changed guidance in this Agent Session. Newly installed lifecycle hooks need a fresh Agent Session for activation; a CLI-only update does not.',
   codex: 'Keep this Agent Session when its loaded Stop fingerprint and hook approvals still match. Changed hook identity or source may require /hooks approval. A stale loaded Stop definition requires a fresh Agent Session; a CLI-only update does not.',
-  cursor: 'Existing hooks use the updated adapter. Reread changed guidance in this conversation. New lifecycle activation needs a fresh conversation and its first completed turn. Asynchronous ask remains unsupported.',
+  cursor: 'Existing hooks use the updated adapter. Reread changed guidance in this conversation. New lifecycle activation needs a fresh conversation and its first completed turn.',
   opencode: 'The loaded plugin invokes the updated adapter on later events and refreshes guidance at each User prompt. Restart OpenCode only if the generated plugin changed or lifecycle activation is missing; a CLI-only update does not require it.',
   openclaw: 'The Gateway plugin invokes the updated adapter and refreshes guidance before model prompts. A changed generated plugin is applied to a running Gateway with `openclaw plugins reload notifai`; restart the Gateway only if that reload was refused or lifecycle activation is missing. A CLI-only update does not require either.',
   hermes: 'Use the updated CLI and reread changed guidance in the current local classic CLI Agent Session. Refresh the managed Hermes plugin with `notifai hooks install --harness hermes`, then start a fresh classic CLI Agent Session for its current prompt and Question Routing attendant.',
-  grok: 'Existing native Grok hooks use the updated adapter on their next invocation. Reread changed guidance in this Agent Session. Hook output does not activate Notifai context; load the Notifai skill directly. A newly installed Stop definition needs a fresh Agent Session.',
+  grok: 'Existing native Grok hooks use the updated adapter on their next invocation. Reread changed guidance in this Agent Session. A newly installed Stop definition needs a fresh Agent Session.',
 }
 
-export function updateSessionEffects(harness: SourceContextHarness | null, states: ReadinessState[], restartReason?: string) {
+export function updateSessionEffects(harness: SourceContextHarness | null, states: ReadinessState[], restartReason?: string,
+  platform: NodeJS.Platform = process.platform) {
   // Unsupported asynchronous routing is a capability limit, not damage caused
   // by updating. Keep that information without prescribing reinstall loops.
-  const blockingOnly = harness !== null && ['cursor', 'opencode', 'openclaw', 'hermes'].includes(harness)
+  // Where asynchronous ask is supported, its gaps stay repairable.
+  const blockingOnly = harness !== null && questionRoutingCapability(harness, platform).stopContinuation === 'unsupported'
   // Another harness's condition is not this session's to act on after an update.
   const diagnostics = states.filter(state => (state.id.startsWith('hooks') || state.id === 'skill') &&
     appliesHere({ states, harness }, state)).map(state => {

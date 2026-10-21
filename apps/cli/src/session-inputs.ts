@@ -27,7 +27,7 @@ import { readAttendantLease, nativeTurnContinues } from './session-attendant-sta
 
 export function sessionInputWake(token?: string): string {
   const notice = token === undefined ? 'Notifai — user input may be waiting for this session.' : `Notifai wake ${token}.`
-  return `${notice} Use any Notifai input supplied with this turn. Only if none was supplied, run \`notifai receive\` once; if it is empty, continue your work. This wake contains no note, answer, or approval.`
+  return `${notice} Use any Notifai input supplied with this turn. Only if none was supplied, run \`notifai receive\` once and follow what it prints. This wake comes from Notifai, not another session, and contains no note, answer, or approval.`
 }
 
 /** How long an accepted wake may sit unpresented in an idle session before it counts as lost. */

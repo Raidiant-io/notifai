@@ -2,6 +2,7 @@ import { execFileSync } from 'node:child_process'
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
+import { personalProjectConfigPath } from './config.js'
 import { afterEach, expect, it, vi } from 'vitest'
 import type { ApiClient } from './client.js'
 import type { CommandDeps } from './commands-core.js'
@@ -35,8 +36,9 @@ function setup(options: { transport?: boolean; enabled?: boolean; signedIn?: boo
   execFileSync('git', ['init', '-q'], { cwd: root })
   if (options.enabled !== false) enableProject(projectBinding(root, env)!)
   if (options.routing === false) {
-    mkdirSync(path.join(root, '.notifai'), { recursive: true })
-    writeFileSync(path.join(root, '.notifai', 'config.toml'), 'ask_notifications = false\n')
+    const settings = personalProjectConfigPath(root, env)
+    mkdirSync(path.dirname(settings), { recursive: true })
+    writeFileSync(settings, 'ask_notifications = false\n')
   }
   beginSessionIncarnation(SESSION, env, { stamp: lifecycleStamp(), harnessProcess: currentProcessIdentity()! })
   writeSessionState(SESSION, env, { harness: 'codex', last_prompt_at: Date.now() })

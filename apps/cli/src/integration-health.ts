@@ -18,6 +18,7 @@ import { inspectSkillCopies, skillDestination } from './native-skills.js'
 import { currentRuntimeBuild } from './launch-self.js'
 import { canonicalPath } from './local-path.js'
 import { nativeInstallationIdentity } from './native-installation-identity.js'
+import { claimNow, type PendingNotice } from './pending-notice.js'
 import { accountHome } from './platform.js'
 import { packageVersion } from './release.js'
 import { type SkillInspectionBudget } from './skill-integrity.js'
@@ -162,7 +163,7 @@ function healthScope(deps: CommandDeps, cli: ReturnType<typeof integrationCli>, 
 /** The notice text. No file contents, paths, settings, or trust evidence enter agent copy. */
 function faultNoticeText(faults: readonly IntegrationFault[]): string {
   const codes = [...new Set(faults.map(fault => fault.code))].join(', ')
-  return `Notifai local integration needs attention (${codes}). Run \`notifai doctor --json\` for the exact lost capability and remedy before relying on prompt note delivery. This diagnostic does not block ordinary sends. Report actionable faults to the Notification Request owner; honor User deferrals. Do not change installations, settings or native trust without authorization, restart unnecessarily, or send repeated warnings.`
+  return `Notifai's local integration needs attention (${codes}). Run \`notifai doctor --json\` to see what stopped working and how to fix it; sending still works. Mention a fault to the User once, and honor their deferrals. Change installations, settings or hook trust only with their authorization, and restart nothing just for this.`
 }
 
 function healthDir(deps: CommandDeps): string {
@@ -268,10 +269,10 @@ const CACHED_NOTICE_MAX_AGE_MS = 60 * 60_000
 /**
  * The fault notice for a prompt-path hook, read from the last assessment of
  * this harness and directory. It never scans the installation: turn end and
- * the Session Attendant refresh it. The notice lock is taken without waiting,
- * and only when there is a notice to emit.
+ * the Session Attendant refresh it. The notice is spent only when the caller
+ * claims it; the claim takes the notice lock without waiting.
  */
-export function cachedIntegrationFaultNotice(deps: CommandDeps, harness?: HookInstallableHarness): string | undefined {
+export function pendingIntegrationFaultNotice(deps: CommandDeps, harness?: HookInstallableHarness): PendingNotice | undefined {
   try {
     const pointed = pointedHealthRecord(deps, harness)
     if (pointed === null) return undefined
@@ -280,17 +281,32 @@ export function cachedIntegrationFaultNotice(deps: CommandDeps, harness?: HookIn
       typeof record.checked_at === 'number' && now >= record.checked_at && now - record.checked_at < CACHED_NOTICE_MAX_AGE_MS &&
       Array.isArray(record.faults) && record.faults.length > 0 && typeof record.fingerprint === 'string' &&
       record.reported !== record.fingerprint
-    if (!owed(pointed.record)) return undefined
+    const seen = pointed.record
+    if (!owed(seen)) return undefined
     const current = healthPublicationCurrent(deps)
     if (!current()) return undefined
-    return withFileLock(`${pointed.file}.lock`, () => {
-      const record = readHealthRecord(pointed.file)
-      if (!owed(record) || !current()) return undefined
-      atomicWriteFileSync(pointed.file, JSON.stringify({ ...record, reported: record.fingerprint }))
-      return faultNoticeText(record.faults)
-    }, { waitMs: 0 })
+    return {
+      text: faultNoticeText(seen.faults),
+      claim: () => {
+        try {
+          return withFileLock(`${pointed.file}.lock`, () => {
+            const record = readHealthRecord(pointed.file)
+            if (!owed(record) || record.fingerprint !== seen.fingerprint || !current()) return false
+            atomicWriteFileSync(pointed.file, JSON.stringify({ ...record, reported: record.fingerprint }))
+            return true
+          }, { waitMs: 0 })
+        } catch {
+          return false
+        }
+      },
+    }
   } catch {
     // Diagnostics never hold a turn, fail a hook, or block ordinary sending.
     return undefined
   }
+}
+
+/** The fault notice for a caller that prints whatever it reads. */
+export function cachedIntegrationFaultNotice(deps: CommandDeps, harness?: HookInstallableHarness): string | undefined {
+  return claimNow(pendingIntegrationFaultNotice(deps, harness))
 }

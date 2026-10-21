@@ -551,7 +551,6 @@ async function settingDetailScreen(
 
   const code = await configSetCommand(deps, key, value, {
     yes: true,
-    ...(layer === 'project' ? { project: true } : {}),
     ...(layer === 'local' ? { local: true } : {}),
   })
   if (code !== EXIT.ok) return 'unchanged'
@@ -650,20 +649,19 @@ async function promptForDevices(deps: CommandDeps): Promise<string | null> {
  * Which layer the value lands in.
  *
  * Asked every time rather than defaulting, because the difference between
- * "my machine" and "everyone who clones this repository" is not recoverable by
- * guessing, and the shared file is the one that ends up in a commit.
+ * "every project on this machine" and "this project" is not recoverable by
+ * guessing.
  */
-async function chooseLayer(): Promise<'global' | 'project' | 'local' | null> {
-  const layer = await clack.select<'global' | 'project' | 'local'>({
+async function chooseLayer(): Promise<'global' | 'local' | null> {
+  const layer = await clack.select<'global' | 'local'>({
     message: 'Where should this apply?',
     options: [
       { value: 'global', label: 'This machine', hint: 'every project you work on here' },
-      { value: 'project', label: 'This project, shared', hint: '.notifai/config.toml — commit it' },
-      { value: 'local', label: 'This project, just me', hint: 'stored on this machine, not in the repo' },
+      { value: 'local', label: 'This project', hint: 'stored on this machine, not in the repo' },
     ],
     initialValue: 'global',
   })
-  return cancelled(layer) ? null : (layer as 'global' | 'project' | 'local')
+  return cancelled(layer) ? null : (layer as 'global' | 'local')
 }
 
 // ---------------------------------------------------------------------------

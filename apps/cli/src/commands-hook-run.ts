@@ -1,7 +1,8 @@
 import { observeLoadedIntegration } from './integration-revision.js'
 /** Fail-open CLI adapter from harness input to hook lifecycle handlers. */
-import { cachedAgentUpdateNotice } from './agent-update-notice.js'
-import { cachedIntegrationFaultNotice, refreshIntegrationHealth } from './integration-health.js'
+import { pendingAgentUpdateNotice } from './agent-update-notice.js'
+import type { PendingNotice } from './pending-notice.js'
+import { cachedIntegrationFaultNotice, pendingIntegrationFaultNotice, refreshIntegrationHealth } from './integration-health.js'
 import { claudeWakeRoute } from './claude-wake.js'
 import { ApiCallError, NetworkError, type ApiClient } from './client.js'
 import { type MachineCredential } from './credentials.js'
@@ -704,14 +705,15 @@ export async function hookRunCommand(
     }
     // Both notices are read from records written off the prompt path: the
     // update lookup by the detached daily maintenance, the integration
-    // assessment at turn end and by the Session Attendant.
+    // assessment at turn end and by the Session Attendant. They are claimed
+    // only if the activation below prints them.
     const updateNotice = event === 'session-start' &&
       ['claude-code', 'codex', 'cursor', 'opencode', 'openclaw'].includes(harness ?? '')
-      ? cachedAgentUpdateNotice({ env: deps.env, now: now(), updateCommand: updateCliCommand(deps) })
+      ? pendingAgentUpdateNotice({ env: deps.env, now: now(), updateCommand: updateCliCommand(deps) })
       : undefined
     const faultNotice = event === 'session-start' && harness !== undefined && harness !== 'grok'
-      ? cachedIntegrationFaultNotice({ ...deps, cwd }, harness) : undefined
-    const notice = [updateNotice, faultNotice].filter(part => part !== undefined).join('\n\n') || undefined
+      ? pendingIntegrationFaultNotice({ ...deps, cwd }, harness) : undefined
+    const notices = [updateNotice, faultNotice].filter((part): part is PendingNotice => part !== undefined)
     if (harness === 'openclaw' && envelope.session_id !== undefined) {
       try {
         const sessionKey = envelope.session_id
@@ -737,7 +739,7 @@ export async function hookRunCommand(
           }
           const output = sessionActivationOutput(
             harness, event === 'session-start' ? 'SessionStart' : 'SubagentStart',
-            cwd, deps.env, notice,
+            cwd, deps.env, notices,
           )
           if (output === undefined || output.trim().length === 0) return 'activation-unavailable'
           recordSessionStart(
@@ -761,7 +763,7 @@ export async function hookRunCommand(
       event === 'session-start' ? 'SessionStart' : 'SubagentStart',
       cwd,
       deps.env,
-      notice,
+      notices,
     )
     if (stdout !== undefined) deps.io.out(stdout)
     let settlementRecovery: Record<string, unknown> = {}
@@ -963,9 +965,8 @@ export async function hookRunCommand(
         if (credential === null) authenticated = null
         else {
           // Pin authenticated traffic to the origin the credential was issued
-          // for. A repository can commit `.notifai/config.toml`, and honouring a
-          // base_url from it would hand this machine's bearer token to whatever
-          // host it names.
+          // for. Honouring a base_url from anywhere else would hand this
+          // machine's bearer token to whatever host it names.
           diagnoseIgnoredOriginOverride(deps.io, resolved, credential)
           // A short hook (UserPromptSubmit in front of the User's own prompt,
           // a non-routing Stop) can make two calls, so each gets a slice of its

@@ -1,16 +1,7 @@
 # Harness setup and recovery
 
-The mechanics behind installing Notifai, routing questions to devices, and
-working out why either is not happening. Read it when you are installing,
-diagnosing, or recovering — not before.
-
-- [Signing this machine in](#signing-this-machine-in)
-- [Install deliberately](#install-deliberately)
-- [Activation by harness](#activation-by-harness)
-- [How the answer gets back to the agent](#how-the-answer-gets-back-to-the-agent)
-- [Bounded recovery](#bounded-recovery)
-- [Reading the record](#reading-the-record)
-- [Settings and environment](#settings-and-environment)
+Choose the branch for the reported gap: sign-in, hook installation and trust,
+or bounded recovery. Settings follow the steps.
 
 ## Signing this machine in
 
@@ -47,15 +38,11 @@ access already requested and waiting on a person — not something to ask them t
 do again. They fail differently and are worth separating before you report
 either as broken.
 
-## Install deliberately
+## Installing hooks and trust
 
-Flagless `notifai init --json` asks no terminal questions and advances the
-required setup steps; its reported gap names any remaining User action. Hooks
-place files, so this is where a question belongs: ask whether
-they want questions routed. There is no scope to ask about — Notifai installs
-one lifecycle mechanism per harness, for this machine, and whether it acts in a
-project is `notifai project enable`. Never tell the user to run setup commands
-themselves.
+After the User chooses hooks, install the lifecycle wiring.
+There is no scope to ask about: Notifai installs
+one lifecycle mechanism per harness, for this machine.
 
 ```bash
 notifai init --hooks --json
@@ -78,39 +65,17 @@ workspace is ambiguous.
 A machine-wide Notifai skill is guidance, not routing evidence. The active
 harness needs its installed hook and a current session pointer.
 
-Installed definitions call the stable native command at
-`~/.notifai/bin/notifai` on macOS/Linux or `$HOME\.notifai\bin\notifai.exe`
-on Windows. Native updates switch the active runtime behind that path while
-preserving hook definitions. npm launchers and NPX caches are never hook targets.
-Codex and Claude Code Stop run asynchronously on every platform. Both declare a timeout
-above the longest answer window so their waiters can own the complete window;
-prompt-submit and session-end retain fixed short limits on both.
-Codex SessionStart stays within the harness's built-in inline-context budget;
-Notifai does not add an output-limit override that would create a second trust
-identity. Upgrades preserve both the source file and the approved definition.
-Migrating an older Codex definition requires one unavoidable `/hooks` approval;
-later upgrades must not require another.
+In the `init --json` result, `question_routing_ready` says whether questions
+can come back to this Agent Session. `direct_wake_ready` says whether an
+answer can start a turn on its own; it is optional when a held turn or
+recovery owns the answer, and `null` when nothing assessed it.
 
-`notifai ask --json` owns its admission check. On failure, branch on its stable
-`code`, `check_id`, `exit_code`, and `remedy`; do not run a routine doctor pass
-first. The current Agent Session's UserPromptSubmit observation proves that the
-exact session owns this turn. A historical Stop observation is diagnostic
-telemetry, not an admission prerequisite: the installed, trusted, current,
-singular Stop definition and its answer waiter establish that the asking
-turn can route the question. Ask exposes no `--session-id` override and will
-not guess one.
-When the failure includes a User-owned trust or permission `user_action`, relay
-the exact `remedy`, say the hooks need the User's trust or approval, and wait.
-Never bypass that gap with `notifai send --reply`.
-
-`hooks-wake-route` reports, without probing anything, whether an answer could
-start a turn in this exact Agent Session after its ordinary continuation has
-returned. It never blocks Question Routing. Claude Code's inbox is a socket on
-macOS and Linux and a named pipe on Windows; where a Claude Code release is too
-old to publish one, the answer waits for the Agent Session's next turn. The
-same holds for an idle Codex terminal on Codex's shared server until Notifai's
-check of that Codex build has passed, and whenever no terminal is seen to show
-the conversation.
+`notifai ask --json` checks its own admission: branch on `code`, `check_id`,
+`exit_code` and `remedy` instead of running doctor first. It never guesses an
+Agent Session and has no `--session-id` override. When the failure includes a
+User-owned trust or permission `user_action`, relay the exact `remedy`, say
+the hooks need the User's trust or approval, and wait. Never bypass that gap
+with `notifai send --reply`.
 
 Notifai never writes trust approvals. If its diagnosis and Codex disagree,
 `/hooks` is authoritative.
@@ -120,21 +85,11 @@ The prepared User message for this human-only action is:
 > Open `/hooks` in Codex, approve or enable the Notifai handlers, then tell me
 > when it is done. I will finish setup and verify a fresh session.
 
-For a genuine unsupported-harness fallback, the blocking command is the
-foreground owner. Keep it alive for the complete answer window and set
-`--reply-timeout` equal to `--reply-window`. If it times out, preserve its
-request ID, inspect the original with `notifai replies <request_id> --json` and
-`notifai status <request_id> --json`, and never send a duplicate.
+### Your harness
 
-Conflicting inherited harness markers also require that foreground flow.
-Historical hook timestamps cannot prove which nested Agent Session owns a
-shell. Do not strip markers or borrow another Agent Session's identity to make
-`ask` pass; basic sending remains available without guessed Source Context.
-
-## Activation by harness
-
-Activation and the answer's last meter differ per harness. Read only the file
-for the harness you are in:
+Read only the file for the harness you are in: when installing or verifying
+its activation, when you need how its questions, answers and notes arrive or
+how it approves Notifai commands, or after a Notifai update:
 
 - [Claude Code](harness-claude-code.md)
 - [Codex](harness-codex.md)
@@ -147,45 +102,12 @@ for the harness you are in:
 Do not infer Question Routing from managed installation. `notifai doctor`
 reports each harness's supported route separately.
 
-## How the answer gets back to the agent
-
-The session that registered a question owns the answer's return. The last
-meter is in that harness's file above. Cursor, OpenCode, OpenClaw and Hermes
-have no separate route beyond what their activation describes.
-
-**Crash recovery:** the answer journal protects an accepted answer if an
-owner process or its route fails. It is not the normal last meter for an
-unexpired question.
-
-`ask` durably registers the question and immediately launches submission. It
-does not wait for Stop or hold the command for the answer window. Stop and
-UserPromptSubmit recover outstanding work; they are not required to begin
-normal submission. Registration is not evidence of Provider Acceptance.
-
-Continue independent work and supervision while the question is outstanding.
-Only answer-dependent work waits. Delivery into the agent still follows the
-harness boundaries above; immediate submission does not make every harness
-able to inject an answer during a running turn.
-
-Keep the original identity when an answer has not arrived. Queue acceptance
-does not prove consumption, and expiry, retirement, or recovery failure can
-prevent resumption. Inspect `status` and `replies` instead of re-asking.
-
-At the `ask_grace_seconds` default of `0`, the question reaches devices as soon
-as registration starts background submission. A positive value keeps it in the terminal for that
-long first, so an answer typed there wins without a notification ever leaving.
-`reply_window_seconds` then controls how long the answer is accepted and how
-long Question Routing keeps an exact return path to this Agent Session. The
-grace window is skipped when a question from this Agent Session is already
-waiting on the user's devices: they have been interrupted already, and holding
-the second question back would only delay it.
-
 ## Bounded recovery
 
 Follow the exact `notifai doctor` diagnostic. Repair the affected owned scope,
-verify the capability it changed, and recheck once. Preserve healthy compatible
-owners. A changed definition may need reload or approval; unchanged files do
-not require a fresh session. Stop if the current pointer
+verify the capability it changed with one fresh activation when needed, and
+recheck once. Preserve healthy compatible owners. A changed definition may need
+reload or approval; unchanged files do not require a fresh session. Stop if the current pointer
 belongs to another active session or if the hook still has not fired; ask the
 user or coordinator instead of retrying indefinitely.
 
@@ -193,59 +115,43 @@ If a companion device is missing, ask the user to open a supported companion
 build, sign in, and grant notification permission. Do not emulate that, and do
 not treat Provider Acceptance as Companion Receipt proof.
 
-To stop Notifai acting in one project while leaving other projects wired, run
-`notifai project disable` — that is the per-project switch. `notifai hooks
-uninstall` removes the machine's lifecycle wiring for every project; pass
-`--harness <name>` to name one when several are wired. Uninstall also clears
-any Project-scoped hook file an older Notifai left in this checkout.
+To turn Notifai's guidance off in one project while leaving other projects
+wired, run `notifai project disable`.
+`notifai hooks uninstall` removes the machine's lifecycle wiring for every
+project; pass `--harness <name>` to name one when several are wired. Uninstall
+also clears any Project-scoped hook file an older Notifai left in this
+checkout.
 
-## Reading the record
+Where no answer can come back to this Agent Session later, `ask` refuses and
+names a blocking `notifai send --reply` question. That command is the
+foreground owner: keep it alive for the complete answer window and set
+`--reply-timeout` equal to `--reply-window`. If it times out, keep its request
+ID, inspect the original with `notifai replies <request_id> --json` and
+`notifai status <request_id> --json`, and never send a duplicate.
 
-`notifai logs` narrows several ways, and they compose:
+When `ask` reports conflicting inherited harness markers, use that foreground
+flow too: nothing can prove which nested Agent Session owns the shell. Do not
+strip markers or borrow another Agent Session's identity to
+make `ask` pass; basic sending remains available without guessed Source
+Context.
 
-- `--request <id>` · `--run <id>` · `--session <id>` — one notification, one
-  invocation, one Agent Session
-- `--event <name>` (repeatable) · `--grep <text>` · `--level error`
-- `--since 10m|2h|1d|<ISO 8601>` · `-n <count>` · `--all` · `--project <id>` ·
-  `--all-projects`
-- `--json` for one record per line, `--path` for where the files are
-
-`--clear` deletes the user's local record. It is theirs, and nothing else keeps
-a copy — do not run it to tidy up.
+For a missing answer to an open question, keep its IDs and inspect
+`notifai status <request_id> --json` and `notifai replies <request_id> --json`
+instead of asking again. Queue acceptance does not prove consumption.
+Read [Diagnostics](diagnostics.md#log-filters) before concluding a hook failed.
 
 ## Settings and environment
 
 `notifai config explain <key> [--json]` gives the full explanation of one
 setting; `notifai config show --explain` includes advanced keys and the file
-each value came from. Beyond the usual scopes, `--session <id>` writes a
-preference that lasts only for one Agent Session.
+each value came from.
 
 With no scope flag, `notifai config set` writes Machine-Global Configuration.
-`--local` writes a personal Project Override under the user's configuration
-directory; one local Git checkout and all its linked worktrees resolve to the
-same file. `--project` is deliberately different: it writes the tracked shared
-`.notifai/config.toml` at the repository root. Do not create that repository
-file during setup or to preserve personal state, and do not reach into another
-worktree to write it—make the explicit shared change in the active checkout and
-merge it through Git.
-
-`ask_notifications` is the setting that turns question routing off for a scope;
-`ask_grace_seconds` is the terminal-first window described above;
-`reply_window_seconds` is how long an answer is still accepted, a day by
-default and up to three.
-
-Those are three different controls and only the last one decides whether an
-answer is still wanted. Question Routing owns that complete window. Claude Code
-waits out of band and wakes the Agent Session through its inbox,
-while Codex queues a wake-up into its Agent Session's durable inbox (on Codex's
-shared server, only while a terminal is seen to show it). Codex and
-Claude Code keep pending input locally until a foreground drain; the native
-wake never stores a second copy of the User's answer.
+`--local` writes a Project Override under the user's configuration directory;
+one local Git checkout and all its linked worktrees resolve to the same file.
+Nothing in the repository configures Notifai.
 
 `NOTIFAI_NO_INPUT=1` guarantees no command will ever prompt, which is what you
 want in CI or any shell with nobody at it. `NOTIFAI_CREDENTIALS=file` stores the
 machine credential in a plaintext file rather than the OS keychain — only when
 the user has asked for it, and never on a shared machine.
-
-`notifai init` never creates `.notifai/config.toml`; that file is only for
-tracked, shared overrides a Project chooses to commit.

@@ -8,13 +8,12 @@ import { GUIDANCE_TRUST_PREAMBLE, SHIPPED_GUIDANCE, shippedGuidanceTopic } from 
 import {
   GUIDANCE_TOPIC_MAX_BYTES,
   GUIDANCE_TOPIC_PATTERN,
-  findProjectGuidanceDir,
   globalGuidanceDir,
   personalProjectGuidanceDir,
   resolveGuidance,
 } from './guidance.js'
 import { renderGuidance } from './guidance-render.js'
-import { loadConfig, SHARED_PROJECT_CONFIG_REFUSAL, sharedProjectConfigPath } from './config.js'
+import { loadConfig } from './config.js'
 
 // ---------------------------------------------------------------------------
 // guidance show / set / unset
@@ -24,10 +23,9 @@ import { loadConfig, SHARED_PROJECT_CONFIG_REFUSAL, sharedProjectConfigPath } fr
  * The whole effective guidance, ready to be followed as read.
  *
  * The trust preamble comes first and belongs to the CLI: it says who supplied
- * each topic and what no topic may ask for. Each topic then follows its own
- * marker, so a reader can tell the User's standing word from a repository's
- * house rules from the shipped default without the output stopping being
- * Markdown.
+ * each topic and what no instruction may ask for. Each topic then follows its
+ * own marker, so a reader can tell the User's standing word from the shipped
+ * default without the output stopping being Markdown.
  */
 export async function guidanceShowCommand(deps: CommandDeps, flags: { json?: boolean }): Promise<number> {
   const active = resolveActiveHarness(deps.env, deps.cwd, (deps.now ?? Date.now)())
@@ -63,65 +61,45 @@ export async function guidanceShowCommand(deps: CommandDeps, flags: { json?: boo
 }
 
 type GuidanceMutationFlags = {
-  project?: boolean | undefined
   local?: boolean | undefined
   yes?: boolean | undefined
 }
-type GuidanceLayer = 'global' | 'project' | 'local'
+type GuidanceLayer = 'global' | 'local'
 
-/**
- * Where a topic file for one layer lives. The project layer prefers an
- * existing `.notifai/guidance` up the tree and otherwise starts one beside the
- * Project's shared config, the same anchoring `config set --project` uses for
- * its file. Null where no shared file can belong to a Project.
- */
-function guidanceLayerDir(deps: CommandDeps, layer: GuidanceLayer): string | null {
-  if (layer === 'local') return personalProjectGuidanceDir(deps.cwd, deps.env)
-  if (layer === 'project') {
-    const existing = findProjectGuidanceDir(deps.cwd)
-    if (existing !== null) return existing
-    const shared = sharedProjectConfigPath(deps.cwd, deps.env)
-    return shared === null ? null : path.join(path.dirname(shared), 'guidance')
-  }
-  return globalGuidanceDir(deps.env)
+/** Where a topic file for one layer lives; both are under the User's config home. */
+function guidanceLayerDir(deps: CommandDeps, layer: GuidanceLayer): string {
+  return layer === 'local' ? personalProjectGuidanceDir(deps.cwd, deps.env) : globalGuidanceDir(deps.env)
 }
 
 async function guidanceMutationTarget(
   deps: CommandDeps,
   topic: string,
   flags: GuidanceMutationFlags,
-): Promise<{ path: string; layer: GuidanceLayer } | null> {
+): Promise<{ path: string } | null> {
   if (!GUIDANCE_TOPIC_PATTERN.test(topic)) {
     deps.io.err(
       `"${topic}" is not a topic name. Use lowercase letters, digits, "-" and "_", e.g. ${SHIPPED_GUIDANCE.map((t) => t.name).join(', ')}.`,
     )
     return null
   }
-  let layer: GuidanceLayer = flags.local ? 'local' : flags.project ? 'project' : 'global'
+  let layer: GuidanceLayer = flags.local ? 'local' : 'global'
   if (
     flags.local !== true &&
-    flags.project !== true &&
     flags.yes !== true &&
     deps.io.interactive === true &&
     deps.io.select
   ) {
     const selected = await deps.io.select('Where should this guidance live?', [
       { value: 'global', label: 'This machine', hint: 'your standing word, applies across projects' },
-      { value: 'project', label: 'This project (shared)', hint: '.notifai/guidance/ — committed, read as project policy' },
-      { value: 'local', label: 'This project (personal)', hint: 'your standing word here, stored outside the repo' },
+      { value: 'local', label: 'This project', hint: 'your standing word here, stored outside the repo' },
     ])
     if (selected === null) {
       deps.io.err('No guidance layer selected.')
       return null
     }
-    layer = selected as GuidanceLayer
+    layer = selected === 'local' ? 'local' : 'global'
   }
-  const dir = guidanceLayerDir(deps, layer)
-  if (dir === null) {
-    deps.io.err(SHARED_PROJECT_CONFIG_REFUSAL)
-    return null
-  }
-  return { path: path.join(dir, `${topic}.md`), layer }
+  return { path: path.join(guidanceLayerDir(deps, layer), `${topic}.md`) }
 }
 
 /**
@@ -165,15 +143,6 @@ export async function guidanceSetCommand(
   deps.io.out(`Wrote ${topic} to ${target.path}`)
   if (shipped !== undefined) {
     deps.io.out(`This file now replaces the shipped "${topic}" guidance wherever it applies.`)
-  }
-  // A shared file is committed and travels to everyone who clones this
-  // repository, where it is read as the project's policy rather than as
-  // anyone's personal standing word. Worth saying at the moment of writing:
-  // the same sentence means something different in the two locations.
-  if (target.layer === 'project') {
-    deps.io.out(
-      'This is shared project policy: it is committed, everyone working here reads it, and it is never read as the User\'s own standing word. Use --local for a personal preference.',
-    )
   }
   return EXIT.ok
 }

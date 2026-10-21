@@ -543,11 +543,11 @@ describe('rendering', () => {
       run: 'r_1',
       cmd: 'hook stop',
       pid: 1,
-      data: { verdict: 'held', reason: 'notifications-off', source: 'default' },
+      data: { verdict: 'held', reason: 'question-notifications-off', source: 'default' },
     })
     expect(line).toContain('2026-08-11 12:04:31')
     expect(line).toContain('hook.gate')
-    expect(line).toContain('reason=notifications-off')
+    expect(line).toContain('reason=question-notifications-off')
     expect(line).toContain('source=default')
   })
 

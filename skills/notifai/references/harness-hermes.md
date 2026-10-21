@@ -5,29 +5,43 @@ harness shares.
 
 ## Activation
 
-**Hermes:** with Hermes v0.21.5, `notifai hooks install --harness hermes`
+With Hermes v0.21.5, `notifai hooks install --harness hermes`
 installs and enables Notifai's native plugin through `hermes plugins`. Start a
-fresh local classic CLI Agent Session after installation. Its bounded system
-prompt section checks Project Enablement and gives root or delegated worker
-guidance. Hermes's prompt budget cannot hold every effective guidance topic;
-when the full set exceeds it, the section directs the agent to run
-`notifai guidance` before deciding whether or how to notify. Notifai reads
-exact `HERMES_SESSION_ID` for Source Context and derives git branch and
-worktree from the actual invocation cwd. Install the Notifai skill through
+fresh local classic CLI Agent Session after installation. Install the Notifai skill through
 the built-in Notifai skill installer; the Hermes plugin does not include a copy.
-On local classic CLI sessions the plugin supervises a Session Attendant for that exact session.
-After the first Notification Request, it reports Session Presence and hands
-Session Notes and post-consumption Answer Edits into that session through
-Hermes's public plugin API; a Note may interrupt a working turn. Hermes
-accepting a write means the text was admitted as the session's next input,
-not that the agent read it, so the agent must acknowledge the message. The
-plugin holds writes while Hermes waits on an approval prompt or while a slash
-command such as `/new` or `/resume` may switch sessions, so a write never
-answers a prompt and never lands in a different session. An attended
-classic CLI session can route an `ask` answer into that same live session;
-keep Hermes running for the answer window. Registration schedules background submission;
-the plugin owns answer delivery. Closing the session ends its questions: if
-the process exits first, the answer is not delivered.
-TUI, gateway, API, ACP, remote terminal backends, and Windows remain outside
-this proven cell.
-Nested inherited harness markers fail closed.
+
+The plugin's bounded system prompt section checks Project Enablement and gives
+root or worker guidance. Hermes's prompt budget holds the trust text and terms
+but no guidance topic, so the section directs you to run `notifai guidance`
+before deciding whether or how to notify; on Hermes that output also carries
+any update notice. Notifai
+reads exact `HERMES_SESSION_ID` for Source Context and takes git branch and
+worktree from the directory each command runs in. Nested inherited harness
+markers fail closed.
+
+Only local classic CLI sessions are supported. TUI, gateway, API, ACP, remote
+terminal backends and Windows are not.
+
+## Questions, notes and edits
+
+A classic CLI session receives an `ask` answer back into the same live
+session. On other Hermes surfaces `ask` refuses: use a blocking
+`notifai send --reply` question, as the skill's "Bounded foreground wait" says.
+Keep Hermes running for the answer window: closing the session ends its
+questions, and an answer that arrives after the process exits is not
+delivered.
+
+After the session's first Notification Request, Session Notes and
+post-consumption Answer Edits also arrive in it; a note may interrupt a working
+turn. Hermes accepting one means it is the session's next input, not that you
+read it: acknowledge each message after reading it. Notifai holds messages
+while Hermes waits on an approval prompt or a session-switching slash command
+such as `/new` or `/resume`, so a message never answers a prompt or lands in
+another session.
+
+## After a Notifai update
+
+A compatible plugin keeps the session's answer route while its files are
+refreshed; reread guidance yourself. Changed plugin code counts as loaded only
+once a loaded plugin shows it. An older plugin may need its old file kept until
+its work finishes: follow the update's continuity diagnosis.

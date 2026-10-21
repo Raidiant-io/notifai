@@ -1,56 +1,91 @@
 # Writing examples
 
-Examples for the shipped `titles`, `content`, and `acknowledgements` guidance.
-The effective guidance printed by `notifai guidance` always wins over them.
+Worked examples for the shipped `titles` and `content` guidance; the guidance
+printed by `notifai guidance` always wins over them. Each shows the Title, the
+Summary a banner shows, and the Body the focused view shows instead of the
+Summary, so the Body carries everything the Summary says, then the detail.
 
-## Titles
+## Work finished
 
-Good:
+Title: `Users can now create accounts`
 
-- `Users can now create accounts` — the capability, not the process behind it
-- `Password reset emails aren't sending` — the failure as the user experiences it
-- `Refund rollout awaits provider recovery` — what is stuck, not machinery
-- `Found why checkout was flaky` — the finding they were waiting on
-- `3 orders didn't import and need review` — a count that earns its place
-  because acting on it is theirs to do
+Summary: `Sign-up, email verification and login now work on staging.`
 
-Bad:
+Body:
 
-- `All 42 tests passed` — machinery; say what work is done
-- `Adversarial review found 3 issues` — process report; say what it means for
-  what ships
-- `Migration 0007 failed` — internal identifier; say what the user lost
-- `Task complete` / `Build failed` / `Need input` — no substance, and the
-  kind restated
-- `Exit code 1` — mechanics, not meaning
+```markdown
+Sign-up, email verification and login **now work on staging**.
 
-## Content
+- New accounts get a verification email within a minute.
+- Unverified accounts can sign in, but can't post until they verify.
 
-Work finished:
+Next: password reset. Nothing needed from you.
+```
 
-> Account creation works end to end now: sign-up, email verification, and
-> login are live on staging.
->
-> Next I'll start on password reset unless you want something else first.
+## Work failed
 
-Work failed:
+Title: `New prices aren't live`
 
-> The new pricing page isn't live. The deploy failed and I rolled it back, so
-> the site still shows the old page — nothing is broken for users.
->
-> The blocker is on my side and I'm fixing it; I'll retry and confirm when the
-> page is up. Nothing needed from you.
+Summary: `The new prices didn't go live: the payment provider rejected the euro prices, so customers still see the old ones.`
 
-Blocked:
+Body:
 
-> The refund flow is built, but the production rollout is waiting for the
-> payment provider to recover. I am monitoring it and will resume automatically.
->
-> There is nothing for you to answer; I will confirm when it is live.
+```markdown
+The new prices **didn't go live**, so customers still see the old ones.
+Checkout works as before.
 
-## Acknowledgements
+**Why:** your payment provider account doesn't accept euros yet, so it
+rejected the euro prices. Only you can change that setting.
 
-- A note: `Switching the migration to staging; I'll rerun it there.`
-- An edit after irreversible work: `The email already went out with Monday;
-  sending a correction for Friday now.` — say what already happened; never
-  imply it was undone.
+**To launch them:** turn on euros in the provider's *currency settings*,
+then ask me to deploy the new prices again.
+```
+
+## A question with steps
+
+Summary, which `notifai ask` also uses as the title: `Is the test phone connected and unlocked so I can install the new build?`
+
+Choices: `Ready — install now` / `Not yet — wait`
+
+Body:
+
+```markdown
+Is the test phone **connected and unlocked**, so I can install the new build?
+
+Before you answer:
+
+1. Connect it to this computer with a cable.
+2. Unlock it and keep the screen on.
+3. If it asks whether to trust this computer, choose *Trust*.
+```
+
+## Waiting on an outside change, Summary only
+
+Title: `Refund rollout waits on the payment provider`
+
+Summary: `Refunds are ready, but going live waits for the payment provider's outage to end; I'll finish and confirm then.`
+
+A Summary that says everything needs no Body.
+
+## Too long (bad)
+
+Title: `PR #482 merged after CI`
+
+Summary: `Merged PR #482 (feat/checkout-v2) after 214 tests passed in 6m12s and migration 0042 ran.`
+
+Body:
+
+```markdown
+I started by profiling the checkout flow and found that the order summary
+query was doing a sequential scan, so I added migration 0042 with a composite
+index, rewrote the cart serializer, fixed two flaky tests in
+checkout.spec.ts, reran CI three times (214 tests, 6m12s), opened PR #482,
+addressed review comments and merged it into main.
+```
+
+It narrates the work and names a PR, a branch, a test file, a migration and a
+test count the User never saw. What changed for them fits in one line:
+
+Title: `Checkout is faster`
+
+Summary: `Checkout pages now load in about half the time; nothing needed from you.`

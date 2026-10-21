@@ -10,9 +10,8 @@ export const GATE_REASONS = [
   'acknowledgement-required',
   'acknowledgement-abandoned',
   'harness-cannot-continue',
-  'notifications-off',
+  'question-notifications-off',
   'claimed-elsewhere',
-  'elapsed',
   'proceeding',
 ] as const
 

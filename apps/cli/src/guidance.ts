@@ -7,7 +7,6 @@ import {
   openSync,
   readSync,
   readdirSync,
-  realpathSync,
   type Dirent,
 } from 'node:fs'
 import path from 'node:path'
@@ -18,28 +17,21 @@ import { SHIPPED_GUIDANCE } from './guidance-content.js'
  * Layered notification-writing guidance with provenance. Most specific wins,
  * per topic, exactly the discipline config keys follow:
  *
- *   project-local > project > global > shipped default
+ *   project-local > global > shipped default
  *
  * A topic is one Markdown file named `<topic>.md`. A user file replaces the
  * shipped topic of the same name wholesale — their words outrank the default,
  * not annotate it — and a file whose name matches no shipped topic is purely
- * additive house rules. There is no session layer: an instruction given in
- * conversation tunes the session by being followed, not persisted.
+ * additive. There is no session layer: an instruction given in conversation
+ * tunes the session by being followed, not persisted.
  *
- * Two of those layers are the User's own word and one is not. `global` and
- * `project-local` live under the User's config home: only they can write
- * there. `project` is `.notifai/guidance` inside the repository, so it
- * arrives with a clone and is written by whoever wrote the repository —
- * which may be nobody the User has ever met. It remains authoritative about
- * *how this project's notifications should read*, because shared house rules
- * are the feature; it is never the User speaking. `authority` carries that
- * distinction to every reader so a cloned repository cannot borrow the
- * User's voice.
+ * Both layers live under the User's config home, so every topic that is not
+ * shipped is the User's own word. A repository cannot supply guidance: nothing
+ * committed to a checkout is read.
  */
 
 export type GuidanceSource =
   | `project-local:${string}`
-  | `project:${string}`
   | `global:${string}`
   | 'default'
 
@@ -47,11 +39,9 @@ export type GuidanceSource =
  * Who is speaking in a topic.
  *
  * - `user` — the User's own standing word, from a location only they can write.
- * - `repository` — this checkout's shared house rules; committed content, and
- *   therefore untrusted input that speaks for the project, not the User.
- * - `shipped` — the default that applies when nobody said otherwise.
+ * - `shipped` — the default that applies when the User has not said otherwise.
  */
-export type GuidanceAuthority = 'user' | 'repository' | 'shipped'
+export type GuidanceAuthority = 'user' | 'shipped'
 
 export interface ResolvedGuidanceTopic {
   name: string
@@ -63,54 +53,23 @@ export interface ResolvedGuidanceTopic {
 }
 
 export function guidanceAuthority(source: GuidanceSource): GuidanceAuthority {
-  if (source === 'default') return 'shipped'
-  return source.startsWith('project:') ? 'repository' : 'user'
+  return source === 'default' ? 'shipped' : 'user'
 }
 
 /**
- * Topic names double as filenames, and the project layer arrives from a
- * repository — untrusted input. Anything that does not match is not a topic,
- * the same way `coerce` drops an unrecognised config value.
+ * Topic names double as filenames. Anything that does not match is not a
+ * topic, the same way `coerce` drops an unrecognised config value.
  */
 export const GUIDANCE_TOPIC_PATTERN = /^[a-z0-9][a-z0-9_-]{0,63}$/
 
 /**
  * One topic is capped at the body limit. Guidance is read into agent context
- * on every session, and a repository could otherwise feed it without bound.
+ * on every session, so no file may feed it without bound.
  */
 export const GUIDANCE_TOPIC_MAX_BYTES = 16_000
 
 export function globalGuidanceDir(env: NodeJS.ProcessEnv = process.env): string {
   return path.join(globalConfigDir(env), 'guidance')
-}
-
-function isWithin(root: string, candidate: string): boolean {
-  const relative = path.relative(root, candidate)
-  return relative === '' || (!path.isAbsolute(relative) && relative !== '..' && !relative.startsWith(`..${path.sep}`))
-}
-
-/** Walk up from cwd looking for `.notifai/guidance` (shared, committed). */
-export function findProjectGuidanceDir(startDir: string): string | null {
-  let dir = path.resolve(startDir)
-  for (;;) {
-    const candidate = path.join(dir, '.notifai', 'guidance')
-    if (existsSync(candidate)) {
-      try {
-        // A clone may contain symlinks. Repository guidance may read only
-        // regular content rooted in that repository; it must never turn a
-        // local private file into model context by pointing outside the tree.
-        const candidateStat = lstatSync(candidate)
-        const repositoryRoot = realpathSync(dir)
-        const resolved = realpathSync(candidate)
-        if (candidateStat.isDirectory() && isWithin(repositoryRoot, resolved)) return candidate
-      } catch {
-        // An unreadable or unstable candidate is not guidance. Keep walking.
-      }
-    }
-    const parent = path.dirname(dir)
-    if (parent === dir) return null
-    dir = parent
-  }
 }
 
 /**
@@ -136,8 +95,7 @@ function topicsInDir(dir: string): Map<string, string> {
     return topics
   }
   for (const entry of entries.sort((left, right) => left.name.localeCompare(right.name))) {
-    // In particular, refuse symlinks. A committed link to a User-owned file
-    // must not make that file part of repository guidance output.
+    // Only regular files are topics.
     if (!entry.isFile() || !entry.name.endsWith('.md')) continue
     const name = entry.name.slice(0, -'.md'.length)
     if (!GUIDANCE_TOPIC_PATTERN.test(name)) continue
@@ -183,15 +141,13 @@ export function resolveGuidance(options: {
   const cwd = options.cwd ?? process.cwd()
 
   // Ascending precedence: a later layer overwrites an earlier one per topic.
-  const layers: { dir: string | null; label: 'global' | 'project' | 'project-local' }[] = [
+  const layers: { dir: string; label: 'global' | 'project-local' }[] = [
     { dir: globalGuidanceDir(env), label: 'global' },
-    { dir: findProjectGuidanceDir(cwd), label: 'project' },
     { dir: personalProjectGuidanceDir(cwd, env), label: 'project-local' },
   ]
 
   const winners = new Map<string, { source: GuidanceSource; content: string }>()
   for (const layer of layers) {
-    if (layer.dir === null) continue
     for (const [name, filePath] of topicsInDir(layer.dir)) {
       const content = readTopicFile(filePath)
       if (content === null) continue
@@ -220,12 +176,11 @@ export function resolveGuidance(options: {
   })
   for (const name of [...winners.keys()].sort()) {
     const extra = winners.get(name)!
-    const authority = guidanceAuthority(extra.source)
     resolved.push({
       name,
       source: extra.source,
-      authority,
-      summary: authority === 'repository' ? 'Project house rules' : 'User-added guidance',
+      authority: guidanceAuthority(extra.source),
+      summary: 'User-added guidance',
       content: extra.content,
     })
   }

@@ -20,9 +20,8 @@ export interface ProjectBinding {
 
 /**
  * The Project name inferred for a folder: from its Project root (see
- * `projectLocation`), so a submodule or nested checkout inside a configured
- * repository is named like the repository it belongs to. Null when the folder
- * belongs to no Project or its root yields no usable name.
+ * `projectLocation`), so a subdirectory is named like its checkout. Null when
+ * the folder belongs to no Project or its root yields no usable name.
  */
 export function inferredProjectName(cwd: string, env: NodeJS.ProcessEnv = process.env): string | null {
   const location = projectLocation(cwd, env)
@@ -33,11 +32,10 @@ export function inferredProjectName(cwd: string, env: NodeJS.ProcessEnv = proces
  * Resolve the User-owned enablement record for this exact local Project.
  *
  * Name and key both come from the one Project root `projectLocation` decides,
- * so a hook fired in a subdirectory, a submodule or a worktree's submodule
- * reads the same decision `notifai project enable` wrote at the root. The
- * opaque key binds the Project id to the root's Git common directory: linked
- * worktrees share one decision, while another checkout cannot borrow it
- * merely by committing the same Project id. Outside Git the root itself is
+ * so a hook fired in a subdirectory reads the same decision `notifai project
+ * enable` wrote at the root. The opaque key binds the Project id to the root's
+ * Git common directory: linked worktrees share one decision, while another
+ * checkout with the same name cannot borrow it. Outside Git the root itself is
  * the anchor. The home folder is never a Project, so it has no record.
  */
 export function projectBinding(

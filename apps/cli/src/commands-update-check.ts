@@ -74,7 +74,7 @@ export async function cliUpdateCheckCommand(
       installed: readiness.states.find(state => state.id === 'skill') ?? null,
     } : { verified: false, error: bundle.error },
     session: {
-      ...updateSessionEffects(owner?.harness ?? null, readiness.states, restartReason),
+      ...updateSessionEffects(owner?.harness ?? null, readiness.states, restartReason, deps.hookPlatform),
       outstanding_questions: sessionState === null ? null : pendingList(sessionState).length,
       acknowledgement_obligations: sessionState === null ? null : (sessionState.acknowledgement_due?.length ?? 0) +
         (sessionState.message_acknowledgement_due?.length ?? 0),

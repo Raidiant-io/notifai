@@ -452,7 +452,7 @@ describe('Claude Code picker hooks', () => {
     expect(dismissed.state().claude_picker).toBeUndefined()
     expect(dismissed.pendingOf(questionId)).toBeUndefined()
     expect(dismissed.state().retiring).toEqual([expect.objectContaining({ request_id: `req_${questionId}`, state: 'expired' })])
-    expect(dismissed.gates.at(-1)).toMatchObject({ stage: 'picker-dismissed', reason: 'retiring' })
+    expect(dismissed.gates.at(-1)).toMatchObject({ stage: 'picker-cancelled', reason: 'retiring' })
     expect(dismissed.launches).toHaveLength(2)
 
     // "Chat about this" and a denial by another hook both end the turn without a tool result.
@@ -664,8 +664,8 @@ describe('Claude Code picker hooks', () => {
     expect(h.decision().hookSpecificOutput).toEqual({
       hookEventName: 'PermissionRequest', decision: { behavior: 'allow', updatedInput: { ...ENVIRONMENT, answers: {} } },
     })
-    expect(CLAUDE_PICKER_DISMISSED).toBe('Notifai — the user dismissed this question on their device, so it will not be answered. Carry on without an answer to it.')
-    expect(h.gates.at(-1)).toMatchObject({ stage: 'question-dismissed', reason: 'dismissed' })
+    expect(CLAUDE_PICKER_DISMISSED).toBe('Notifai — this question has expired, so it will not be answered. Carry on without an answer to it.')
+    expect(h.gates.at(-1)).toMatchObject({ stage: 'question-expired', reason: 'expired' })
     expect(h.state().claude_picker).toBeUndefined()
     expect(h.state().retiring).toEqual([expect.objectContaining({ request_id: `req_${questionId}`, state: 'expired' })])
     // Should PostToolUse never run, the next prompt carries why, once.
