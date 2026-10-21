@@ -46,7 +46,7 @@ import { loadConfig, stateDir } from './config.js'
 import { recordSessionNotified } from './hook-session-state.js'
 import type { Logger } from './logging.js'
 import { currentProcessIdentity, processIdentityLiveness, type ProcessIdentity } from './process-identity.js'
-import { projectBinding, projectEnabled } from './project-enablement.js'
+import { projectBinding, projectDisabled } from './project-enablement.js'
 
 /** What OpenCode's devices-facing acknowledgement says for an answer given in OpenCode. */
 export const OPENCODE_NATIVE_ACKNOWLEDGEMENT = 'Answered in OpenCode.'
@@ -361,8 +361,8 @@ async function registerForm(
   } catch {
     return { reason: 'config-invalid' }
   }
-  // Project Enablement is the User's opt-in: forms elsewhere stay in OpenCode.
-  if (!projectEnabled(projectBinding(cwd, deps.env, config.project.value))) return { reason: 'project-not-enabled' }
+  // Nothing reaches the devices from a Project the User disabled.
+  if (projectDisabled(projectBinding(cwd, deps.env, config.project.value))) return { reason: 'project-disabled' }
   if (!config.ask_notifications.value) return { reason: 'question-notifications-off' }
   const form = pickerForm(opencodePickerQuestions(request))
   if ('error' in form) return { reason: 'unsupported-form', detail: { shape: form.error } }

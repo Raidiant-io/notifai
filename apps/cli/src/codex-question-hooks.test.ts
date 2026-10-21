@@ -14,7 +14,7 @@ import { fileURLToPath } from 'node:url'
 import { hookAdapterPath, installHookAdapter } from './hook-adapter.js'
 import { buildHookConfig, codexHookIdentityHash, codexTrustKey, findInstallations } from './install-hooks.js'
 import { currentProcessIdentity } from './process-identity.js'
-import { enableProject, projectBinding } from './project-enablement.js'
+import { disableProject, enableProject, projectBinding, projectEnablementState } from './project-enablement.js'
 
 const SESSION = '22222222-2222-4222-8222-222222222222'
 const TURN = 'card-turn'
@@ -22,7 +22,7 @@ const CARD = { questions: [{ title: 'Which environment?', options: ['Staging', '
 const roots: string[] = []
 afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }) })
 
-function setup(options: { transport?: boolean; enabled?: boolean; signedIn?: boolean; routing?: boolean } = {}) {
+function setup(options: { transport?: boolean; enabled?: boolean; disabled?: boolean; signedIn?: boolean; routing?: boolean } = {}) {
   const root = mkdtempSync(path.join(os.tmpdir(), 'notifai-codex-card-'))
   roots.push(root)
   const env = { HOME: path.join(root, 'home'), XDG_CONFIG_HOME: path.join(root, 'config'), XDG_STATE_HOME: path.join(root, 'state'),
@@ -35,6 +35,7 @@ function setup(options: { transport?: boolean; enabled?: boolean; signedIn?: boo
     `[hooks.state.${JSON.stringify(codexTrustKey(installed, handler))}]\ntrusted_hash = "${codexHookIdentityHash(handler)}"\n`).join('\n'))
   execFileSync('git', ['init', '-q'], { cwd: root })
   if (options.enabled !== false) enableProject(projectBinding(root, env)!)
+  if (options.disabled === true) disableProject(projectBinding(root, env)!)
   if (options.routing === false) {
     const settings = personalProjectConfigPath(root, env)
     mkdirSync(path.dirname(settings), { recursive: true })
@@ -84,9 +85,17 @@ it('registers the card itself and prevents a device-unclosable card while retain
   expect(h.launch).toHaveBeenCalledTimes(1)
 })
 
+it('registers the card in a Project with no record, and leaves the Project as it was', async () => {
+  const h = setup({ enabled: false })
+  await hookRunCommand(h.deps, 'pre-tool-use', async () => JSON.stringify(h.envelope), 'codex')
+  expect(readSessionState(SESSION, h.env).pending).toHaveLength(1)
+  expect(h.launch).toHaveBeenCalledTimes(1)
+  expect(projectEnablementState(projectBinding(h.root, h.env))).toBe('unset')
+})
+
 it.each(['disabled', 'signed-out', 'routing-off', 'unsupported', 'subagent', 'wrong-process', 'untrusted', 'narrowed-post-hook'] as const)(
   'leaves a card untouched when Notifai would not route it: %s', async mode => {
-    const h = setup({ enabled: mode !== 'disabled', signedIn: mode !== 'signed-out', routing: mode !== 'routing-off' })
+    const h = setup({ disabled: mode === 'disabled', signedIn: mode !== 'signed-out', routing: mode !== 'routing-off' })
     const envelope = { ...h.envelope,
       ...(mode === 'subagent' ? { agent_id: 'child' } : {}),
       ...(mode === 'unsupported' ? { tool_input: { questions: [{ title: 'Control?', options: ['1', '2', '3', '4', '5', '6', '7'] }] } } : {}),

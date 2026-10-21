@@ -285,7 +285,7 @@ export async function sendCommand(
     submissionDraft.source?.session_id === activeSession.sessionId
     ? activeSession.sessionId : null
   const foregroundGeneration = foregroundSession === null ? null
-    : activeOpenclawGeneration(foregroundSession, deps.env, deps.cwd)
+    : activeOpenclawGeneration(foregroundSession, deps.env)
   emitSendWarnings(deps, flags, config)
   if (
     !flags.reply &&
@@ -338,7 +338,7 @@ export async function sendCommand(
     let recorded = false
     try {
       recorded = recordOpenclawForegroundReply(
-        foregroundSession, receipt.request_id, foregroundGeneration, deps.env, deps.cwd,
+        foregroundSession, receipt.request_id, foregroundGeneration, deps.env,
       )
     } catch (err) {
       deps.io.err(`Could not retain ownership of ${receipt.request_id}: ${String(err)}`)

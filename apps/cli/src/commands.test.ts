@@ -8611,9 +8611,9 @@ describe('asking before the hooks have ever run', () => {
   })
 
   it.each([
-    ['not enabled', false, 'enable the Project with `notifai project enable` only when the User asked for Notifai here, then'],
-    ['already enabled', true, 'run the question from a current OpenClaw turn'],
-  ] as const)('words the OpenClaw generation refusal for a Project that is %s', (_label, enabled, remedyStart) => {
+    ['not enabled', false],
+    ['already enabled', true],
+  ] as const)('words the OpenClaw generation refusal the same for a Project that is %s', (_label, enabled) => {
     const cwd = scratchDir('notifai-openclaw-generation-remedy-')
     const io = new CapturedIo()
     const env = { ...isolatedEnv(cwd), NOTIFAI_ACTIVE_HARNESS: 'openclaw', NOTIFAI_ACTIVE_SESSION_ID: 'agent:main:remedy' }
@@ -8627,12 +8627,10 @@ describe('asking before the hooks have ever run', () => {
 
     expect(askCommand(deps, 'Ship it?', { json: true })).toBe(EXIT.usage)
     const refusal = JSON.parse(io.outLines.at(-1)!)
-    expect(refusal).toMatchObject({ code: 'openclaw_generation_stale', registered: false })
-    expect(refusal.remedy.startsWith(remedyStart), refusal.remedy).toBe(true)
-    if (enabled) expect(refusal.remedy).not.toContain('project enable')
-    // Without the User's request the agent still has a route.
-    else expect(refusal.remedy.endsWith('; otherwise ask in the conversation'), refusal.remedy).toBe(true)
-    // A refused OpenClaw ask never enables the Project itself.
+    expect(refusal).toMatchObject({
+      code: 'openclaw_generation_stale', registered: false,
+      remedy: 'run the question from a current OpenClaw turn after the Notifai plugin has recorded it',
+    })
     expect(projectEnabled(binding!)).toBe(enabled)
   })
 

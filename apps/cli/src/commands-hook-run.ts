@@ -452,7 +452,7 @@ export async function hookRunCommand(
             envelope.openclaw_session_id !== undefined && current.sessionId !== undefined &&
             envelope.openclaw_session_id !== current.sessionId
           ) return 'stale-reset-ignored'
-          if (current.activated) handleSessionEnd(deps.env, envelope, now())
+          if (current.recorded) handleSessionEnd(deps.env, envelope, now())
           writeOpenclawGeneration(sessionKey, deps.env, {
             ...current, ended: true, resetPending: true,
           })
@@ -591,13 +591,13 @@ export async function hookRunCommand(
       logger.error('hook.gate', { stage: 'grok-activation', outcome: 'ignored', ...failureData(err) })
     }
   }
-  // Generation fencing alone decides ownership. Project Enablement gates only
-  // activation of a generation, so disabling never strands owed answers.
+  // Generation fencing alone decides ownership. SessionStart records a
+  // generation in every Project, so disabling never strands owed answers.
   const currentOpenclawOwner = (): string | null => {
     if (harness !== 'openclaw' || envelope.session_id === undefined) return null
     const current = readOpenclawGeneration(envelope.session_id, deps.env)
     const incarnation = readSessionIncarnation(envelope.session_id, deps.env)
-    return current !== null && current.activated && !current.ended &&
+    return current !== null && current.recorded && !current.ended &&
       incarnation?.openclaw_generation === current.id &&
       !sessionHasEnded(envelope.session_id, deps.env) &&
       (envelope.openclaw_lifecycle_revision === undefined ||
@@ -609,8 +609,11 @@ export async function hookRunCommand(
     start({ cwd })
     try {
       const cardContext = harness === 'codex' ? await codexCardPostToolUse(deps, envelope, logger) : null
-      if (harness === 'codex' && lifecycleEnabled()) {
-        const notice = [cardContext, cachedIntegrationFaultNotice({ ...deps, cwd }, harness)].filter(Boolean).join('\n\n') || undefined
+      // A device answer reaches the session in every Project; the fault notice
+      // is guidance, so only a Project with guidance on carries it.
+      if (harness === 'codex') {
+        const faultNotice = lifecycleEnabled() ? cachedIntegrationFaultNotice({ ...deps, cwd }, harness) : undefined
+        const notice = [cardContext, faultNotice].filter(Boolean).join('\n\n') || undefined
         let wrote = false
         const io = { ...deps.io, out: (line: string) => {
           wrote = true
@@ -619,7 +622,7 @@ export async function hookRunCommand(
         await deliverCodexToolMessage({ ...deps, io }, envelope, logger)
         if (!wrote && notice !== undefined) deps.io.out(appendIntegrationContext(undefined, notice, harness, 'PostToolUse'))
       }
-      // An explicit question, like its answer, does not depend on Project Enablement.
+      // A picker's answer, like every answer, does not depend on Project Enablement.
       if (harness === 'claude-code') claudePostToolUse(deps, envelope, logger)
       logger.info('hook.end', { hook: event, outcome: 'checked', decided: false })
     } catch (err) {
@@ -663,13 +666,7 @@ export async function hookRunCommand(
   if (event === 'openclaw-attendance-ready') {
     start({ cwd })
     if (currentOpenclawOwner() !== null && envelope.session_id !== undefined &&
-        readAttendantLease(envelope.session_id, deps.env) !== null &&
-        (() => {
-          try {
-            const config = loadConfig({ cwd, env: deps.env, sessionId: envelope.session_id })
-            return projectEnabled(projectBinding(cwd, deps.env, config.project.value))
-          } catch { return false }
-        })()) deps.io.out('ready')
+        readAttendantLease(envelope.session_id, deps.env) !== null) deps.io.out('ready')
     return EXIT.ok
   }
   if (event === 'openclaw-verify-prepared') {
@@ -688,30 +685,23 @@ export async function hookRunCommand(
     return EXIT.ok
   }
   if (event === 'openclaw-settlement' && currentOpenclawOwner() === null) return EXIT.ok
-  // Installation only makes lifecycle hooks available. Model-visible
-  // activation is a separate User-owned Project decision, checked anew on
-  // every run so disabling takes effect without reinstalling anything.
+  // Installation only makes lifecycle hooks available. The session is
+  // recorded in every Project, because its questions and answers route there;
+  // model-visible activation is a separate User-owned Project decision,
+  // checked anew on every run so disabling takes effect without reinstalling.
   if (event === 'session-start' || event === 'subagent-start') {
     start({ cwd, source: envelope.source ?? null })
     if (event === 'session-start') startDueMaintenance()
-    if (!lifecycleEnabled()) {
-      logger.info('hook.end', {
-        hook: event,
-        outcome: 'ignored',
-        reason: 'project-disabled',
-        decided: false,
-      })
-      return EXIT.ok
-    }
+    const guidanceOn = lifecycleEnabled()
     // Both notices are read from records written off the prompt path: the
     // update lookup by the detached daily maintenance, the integration
     // assessment at turn end and by the Session Attendant. They are claimed
     // only if the activation below prints them.
-    const updateNotice = event === 'session-start' &&
+    const updateNotice = guidanceOn && event === 'session-start' &&
       ['claude-code', 'codex', 'cursor', 'opencode', 'openclaw'].includes(harness ?? '')
       ? pendingAgentUpdateNotice({ env: deps.env, now: now(), updateCommand: updateCliCommand(deps) })
       : undefined
-    const faultNotice = event === 'session-start' && harness !== undefined && harness !== 'grok'
+    const faultNotice = guidanceOn && event === 'session-start' && harness !== undefined && harness !== 'grok'
       ? pendingIntegrationFaultNotice({ ...deps, cwd }, harness) : undefined
     const notices = [updateNotice, faultNotice].filter((part): part is PendingNotice => part !== undefined)
     if (harness === 'openclaw' && envelope.session_id !== undefined) {
@@ -723,34 +713,42 @@ export async function hookRunCommand(
               current?.supersededLifecycleRevisions?.includes(envelope.openclaw_lifecycle_revision)) {
             return 'stale-prompt-ignored'
           }
-          const generation = observeOpenclawPrompt(
+          let generation = observeOpenclawPrompt(
             current, envelope.openclaw_session_id,
             envelope.openclaw_lifecycle_revision,
           )
           if (envelope.openclaw_session_id !== undefined &&
               generation.sessionId !== envelope.openclaw_session_id) return 'stale-prompt-ignored'
-          writeOpenclawGeneration(sessionKey, deps.env, generation)
-          if (generation.activated) { observeIntegration(); return 'already-activated' }
-          const previous = readSessionIncarnation(sessionKey, deps.env)
-          if (previous !== null && previous.openclaw_generation !== generation.id) {
-            // A new sessionId or resumed generation is authoritative even if
-            // its old session_end was dropped or delayed.
-            handleSessionEnd(deps.env, envelope, now())
+          if (!generation.recorded) {
+            const previous = readSessionIncarnation(sessionKey, deps.env)
+            if (previous !== null && previous.openclaw_generation !== generation.id) {
+              // A new sessionId or resumed generation is authoritative even if
+              // its old session_end was dropped or delayed.
+              handleSessionEnd(deps.env, envelope, now())
+            }
+            recordSessionStart(
+              sessionKey, deps.env, harness, cwd, undefined, lifecycleStamp(now()), generation.id,
+            )
+            generation = { ...generation, recorded: true }
           }
+          writeOpenclawGeneration(sessionKey, deps.env, generation)
+          observeIntegration()
+          // A conversation recorded while guidance was off gets its activation
+          // at the first prompt after the Project is enabled.
+          if (!guidanceOn) return 'recorded'
+          if (generation.activationPrinted) return 'already-activated'
           const output = sessionActivationOutput(
             harness, event === 'session-start' ? 'SessionStart' : 'SubagentStart',
             cwd, deps.env, notices,
           )
           if (output === undefined || output.trim().length === 0) return 'activation-unavailable'
-          recordSessionStart(
-            sessionKey, deps.env, harness, cwd, undefined, lifecycleStamp(now()), generation.id,
-          )
-          writeOpenclawGeneration(sessionKey, deps.env, { ...generation, activated: true })
-          observeIntegration()
+          writeOpenclawGeneration(sessionKey, deps.env, { ...generation, activationPrinted: true })
           deps.io.out(output)
           return 'context-added'
         })
-        logger.info('hook.end', { hook: event, outcome, decided: false })
+        logger.info('hook.end', {
+          hook: event, outcome, decided: false, ...(guidanceOn ? {} : { reason: 'guidance-off' }),
+        })
       } catch (err) {
         logger.error('hook.end', {
           hook: event, outcome: 'record-failed', reason: 'session-state-failed', ...failureData(err),
@@ -758,13 +756,15 @@ export async function hookRunCommand(
       }
       return EXIT.ok
     }
-    const stdout = sessionActivationOutput(
-      harness,
-      event === 'session-start' ? 'SessionStart' : 'SubagentStart',
-      cwd,
-      deps.env,
-      notices,
-    )
+    const stdout = guidanceOn
+      ? sessionActivationOutput(
+        harness,
+        event === 'session-start' ? 'SessionStart' : 'SubagentStart',
+        cwd,
+        deps.env,
+        notices,
+      )
+      : undefined
     if (stdout !== undefined) deps.io.out(stdout)
     let settlementRecovery: Record<string, unknown> = {}
     if (event === 'session-start' && envelope.session_id !== undefined) {
@@ -796,9 +796,12 @@ export async function hookRunCommand(
     }
     logger.info('hook.end', {
       hook: event,
-      outcome: stdout === undefined
-        ? harness === 'grok' ? 'activation-awaiting-tool' : 'unsupported-harness'
-        : 'context-added',
+      outcome: !guidanceOn
+        ? 'recorded'
+        : stdout === undefined
+          ? harness === 'grok' ? 'activation-awaiting-tool' : 'unsupported-harness'
+          : 'context-added',
+      ...(guidanceOn ? {} : { reason: 'guidance-off' }),
       decided: false,
       ...settlementRecovery,
     })
@@ -808,7 +811,7 @@ export async function hookRunCommand(
   // A Codex turn starts here. This prompt hook is synchronous, so Codex runs it
   // before the turn and one turn at a time: the Session Attendant reads the
   // thread's activity from starts recorded in that order.
-  if (event === 'user-prompt-submit' && harness === 'grok' && lifecycleEnabled()) {
+  if (event === 'user-prompt-submit' && harness === 'grok') {
     try { startGrokAttendant(envelope, cwd, deps.env) }
     catch (err) { logger.error('hook.gate', { stage: 'grok-attendant', outcome: 'ignored', ...failureData(err) }) }
   }
@@ -914,7 +917,7 @@ export async function hookRunCommand(
                 envelope.openclaw_session_id !== current.sessionId)) {
               return { notes: [], log: { outcome: 'ignored', reason: 'stale-openclaw-generation' } }
             }
-            const ended = current.activated
+            const ended = current.recorded
               ? handleSessionEnd(deps.env, envelope, now())
               : { notes: [], log: { outcome: 'ignored', reason: 'inactive-openclaw-generation' } }
             writeOpenclawGeneration(sessionKey, deps.env, { ...current, ended: true })
@@ -1028,8 +1031,8 @@ export async function hookRunCommand(
     if (event === 'question-submission') {
       const notes: string[] = []
       const sessionId = envelope.session_id
-      // An explicit question is not lifecycle activation: like Stop, submit it
-      // whatever the directory's Project Enablement says.
+      // A registered question keeps the contract it was registered under:
+      // like Stop, submit it whatever the Project's decision is now.
       if (sessionId === undefined || harness === undefined ||
           readSessionState(sessionId, deps.env).harness !== harness) return EXIT.ok
       await submitSessionQuestions(ctx, envelope, processDeadlineAt, notes)

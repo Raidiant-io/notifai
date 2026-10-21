@@ -485,9 +485,10 @@ describe('Notifai agent skill', () => {
     expect(codex).toMatch(/device answer\*\* arrives in the card with its own `notifai acknowledge req_…` command/i)
     expect(codex).not.toMatch(/hands back|ask --wait/i)
     // Cards that stay in the terminal on purpose get their own outcome, never
-    // an `ask` that refuses (routing off) or fails (signed out).
-    expect(codex).toMatch(/with question routing off, or on a signed-out machine, the card stays in the terminal and still works there/i)
-    expect(codex).toMatch(/in a Project that is not enabled the card also stays on this machine; enable the Project with `notifai project enable` only when the User asked for Notifai here/i)
+    // an `ask` that refuses (questions off, a disabled Project) or fails
+    // (signed out).
+    expect(codex).toMatch(/with question notifications off, or in a project the User disabled, the card is your question and stays in the terminal, as a card on a signed-out machine does; it still works there/i)
+    expect(codex).not.toMatch(/Project that is not enabled|notifai project enable/i)
     expect(codex).toMatch(/any other card without that context, such as one in a shape the devices cannot show, stays on this machine: if it is still unanswered, `ask` the question too/i)
     expect(codex).not.toMatch(/subagent's card/i)
     const opencode = harnessFile('opencode').replace(/\s+/g, ' ')
@@ -622,13 +623,17 @@ describe('Notifai agent skill', () => {
     expect(loose(skill)).toMatch(/--body-file <path>/)
   })
 
-  it('keeps a self-opened form local outside an enabled Project, and names project disable as the guidance switch', () => {
-    // Until every Project records its sessions, a form stays in the terminal
-    // in a Project that is not enabled.
-    expect(loose(harnessFile('claude-code'))).toMatch(/A picker stays in the terminal when the Project is not enabled, the machine is not signed in, question routing is off, or it runs on Windows/)
-    expect(loose(harnessFile('opencode'))).toMatch(/reaches the User's devices by itself in an enabled Project/)
-    expect(loose(harnessFile('opencode'))).toMatch(/A form in a Project that is not enabled, on a signed-out machine, with question routing off, or in a shape the devices cannot show stays in OpenCode only/)
-    expect(loose(harnessFile('openclaw'))).toMatch(/This needs an enabled Project and a local Gateway/)
+  it('routes a self-opened form in every Project the User has not disabled, and names project disable as the switch', () => {
+    // Question Routing works whatever the Project's Enablement, so no
+    // reference names an unenabled Project as keeping a form local.
+    for (const name of ['claude-code', 'codex', 'opencode', 'openclaw'] as const) {
+      expect(harnessFile(name).replace(/\s+/g, ' ')).not.toMatch(/Project (is|that is) not enabled|in an enabled Project; never|needs an enabled Project/i)
+    }
+    // A disabled Project keeps every self-opened form in the terminal.
+    expect(loose(harnessFile('claude-code'))).toMatch(/A picker stays in the terminal when question notifications are off, the machine is not signed in, the User disabled this project, or it runs on Windows/)
+    expect(loose(harnessFile('opencode'))).toMatch(/reaches the User's devices by itself; never also register it/)
+    expect(loose(harnessFile('opencode'))).toMatch(/A form on a signed-out machine, with question notifications off, in a project the User disabled, or in a shape the devices cannot show stays in OpenCode only/)
+    expect(loose(harnessFile('openclaw'))).toMatch(/This needs a local Gateway/)
     // Claude Code gives subagents no picker, so none is named.
     expect(harnessFile('claude-code').replace(/\s+/g, ' ')).not.toMatch(/picker belongs to a subagent/i)
     // `project disable` switches the guidance today; nothing yet stops a

@@ -113,7 +113,7 @@ import {
   disableProject,
   enableProject,
   projectBinding,
-  projectEnabled,
+  projectEnablementState,
 } from './project-enablement.js'
 
 /** Keep unrelated lifecycle fixtures valid under the authored content contract. */
@@ -494,8 +494,8 @@ describe('OpenClaw generation fencing at the CLI boundary', () => {
 
     const binding = projectBinding(h.deps.cwd, h.env)!
     disableProject(binding)
-    // New asks need an enabled Project; owed answers do not.
-    expect(activeOpenclawGeneration(sessionId, env, h.deps.cwd)).toBeNull()
+    // The generation is the conversation's, whatever the User decided for the Project.
+    expect(activeOpenclawGeneration(sessionId, env)).toBe(generation)
     expect(openclawOwnsReply(sessionId, 'req_owned', env)).toBe(true)
     await hookRunCommand(h.deps, 'openclaw-generation', stdin(envelope), 'openclaw')
     expect(h.io.outLines.at(-1)).toBe(generation)
@@ -507,7 +507,7 @@ describe('OpenClaw generation fencing at the CLI boundary', () => {
       ...envelope, hook_event_name: 'SessionStart',
     }), 'openclaw')
     await hookRunCommand(h.deps, 'session-start', stdin(envelope), 'openclaw')
-    expect(activeOpenclawGeneration(sessionId, env, h.deps.cwd)).toBeNull()
+    expect(activeOpenclawGeneration(sessionId, env)).toBeNull()
   })
 
   it('drops old message debt at reset and grants the new generation only its own', async () => {
@@ -641,7 +641,7 @@ describe('OpenClaw generation fencing at the CLI boundary', () => {
     }), 'openclaw')
     await prompt('R1')
     expect(readOpenclawGeneration(envelope.session_id, h.env)).toMatchObject({
-      id: second.id, lifecycleRevision: 'R2', activated: true, ended: false,
+      id: second.id, lifecycleRevision: 'R2', recorded: true, activationPrinted: true, ended: false,
     })
     await hookRunCommand(h.deps, 'openclaw-generation', stdin({
       ...envelope, openclaw_lifecycle_revision: 'R2',
@@ -658,7 +658,7 @@ describe('OpenClaw generation fencing at the CLI boundary', () => {
     expect(restarted.id).not.toBe(second.id)
     expect(restarted.lifecycleRevision).toBe('R2')
     expect(restarted.supersededLifecycleRevisions).toEqual(['R1'])
-    expect(restarted.activated).toBe(true)
+    expect(restarted.recorded).toBe(true)
   })
 
   it('treats a first resumedFrom as a generation signal without an end', async () => {
@@ -711,7 +711,7 @@ describe('OpenClaw generation fencing at the CLI boundary', () => {
     await start('transcript-a')
     await prompt()
     expect(readOpenclawGeneration(envelope.session_id, h.env)).toMatchObject({
-      id: activated?.id, resumedFrom: 'transcript-a', startSeen: true, activated: true,
+      id: activated?.id, resumedFrom: 'transcript-a', startSeen: true, recorded: true, activationPrinted: true,
     })
     expect(readSessionIncarnation(envelope.session_id, h.env)?.incarnation).toBe(incarnation)
     expect(h.io.outLines).toHaveLength(2)
@@ -743,7 +743,7 @@ describe('OpenClaw generation fencing at the CLI boundary', () => {
       ...envelope('transcript-a'), openclaw_reason: 'idle',
     }), 'openclaw')
     expect(readOpenclawGeneration(sessionId, h.env)).toMatchObject({
-      id: next?.id, sessionId: 'transcript-b', activated: true, ended: false,
+      id: next?.id, sessionId: 'transcript-b', recorded: true, activationPrinted: true, ended: false,
     })
     expect(readSessionIncarnation(sessionId, h.env)?.incarnation).toBe(incarnation)
     expect(h.io.outLines).toHaveLength(1)
@@ -770,7 +770,7 @@ describe('OpenClaw generation fencing at the CLI boundary', () => {
     await hookRunCommand(h.deps, 'session-start', stdin(envelope('transcript-b')), 'openclaw')
     expect(readOpenclawGeneration(sessionId, h.env)).toMatchObject({
       id: activated?.id, sessionId: 'transcript-b', resumedFrom: 'transcript-a',
-      startSeen: true, activated: true,
+      startSeen: true, recorded: true, activationPrinted: true,
     })
     expect(readSessionIncarnation(sessionId, h.env)?.incarnation).toBe(incarnation)
     expect(h.io.outLines).toHaveLength(2)
@@ -4036,28 +4036,34 @@ describe('session-start hook', () => {
     expect(h.io.outLines.join('\n')).toContain('A newer Notifai is available.')
   })
 
-  it('is completely silent when the Project is disabled', async () => {
+  it.each(['disabled', 'unset'] as const)('records the session but prints nothing in a Project that is %s', async (decision) => {
     const h = harness()
     const binding = projectBinding(h.deps.cwd, h.env)
     if (binding === null) throw new Error('test Project binding unavailable')
-    disableProject(binding)
+    if (decision === 'disabled') disableProject(binding)
+    else rmSync(binding.markerPath, { force: true })
 
-    for (const [event, hookHarness] of [
-      ['session-start', 'claude-code'],
-      ['subagent-start', 'codex'],
-      ['session-start', 'cursor'],
+    for (const [event, hookHarness, sessionId] of [
+      ['session-start', 'claude-code', 'silent-claude'],
+      ['session-start', 'codex', 'silent-codex'],
+      ['subagent-start', 'codex', 'silent-codex'],
+      ['session-start', 'cursor', 'silent-cursor'],
     ] as const) {
       h.io.outLines = []
       await hookRunCommand(
         h.deps,
         event,
-        stdin({ session_id: 'disabled', conversation_id: 'disabled', workspace_roots: [h.deps.cwd], loop_count: 0 }),
+        stdin({ session_id: sessionId, cwd: h.deps.cwd, conversation_id: sessionId, workspace_roots: [h.deps.cwd], loop_count: 0 }),
         hookHarness,
       )
       expect(h.io.outLines).toEqual([])
     }
-    expect(projectEnabled(binding)).toBe(false)
-    expect(readSessionState('disabled', h.env).started_at).toBeUndefined()
+    // Question Routing needs the recorded session in every Project.
+    for (const [sessionId, hookHarness] of [['silent-claude', 'claude-code'], ['silent-codex', 'codex']] as const) {
+      expect(readSessionIncarnation(sessionId, h.env)).not.toBeNull()
+      expect(readSessionState(sessionId, h.env)).toMatchObject({ harness: hookHarness, activation_cwd: h.deps.cwd })
+    }
+    expect(projectEnablementState(binding)).toBe(decision)
   })
 
   it('adds proactive Notifai context for an enabled Project before machine authentication exists', async () => {

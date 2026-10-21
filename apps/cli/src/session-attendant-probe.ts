@@ -88,7 +88,7 @@ export function openclawAttendanceProbe(options: {
     }
     const current = readOpenclawGeneration(options.sessionKey, options.env)
     const incarnation = readSessionIncarnation(options.sessionKey, options.env)
-    if (current === null || current.ended || !current.activated ||
+    if (current === null || current.ended || !current.recorded ||
         current.id !== options.generationId ||
         incarnation?.openclaw_generation !== options.generationId) {
       return { state: 'ended', reason: 'session-replaced' }

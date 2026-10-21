@@ -26,7 +26,6 @@ import { handleSessionEnd, runEscalationWaiter } from './hook-lifecycle.js'
 import type { EscalationDeliveryRoute, HookContext } from './hook-types.js'
 import type { Logger } from './logging.js'
 import { currentProcessIdentity, processStartTime } from './process-identity.js'
-import { projectBinding, projectEnabled } from './project-enablement.js'
 import type { MachineCredential } from './credentials.js'
 import { runSessionAttendant, systemAttendantClock, type AttendantHandle, type GateResult, type HarnessProbe } from './session-attendant.js'
 import { attendantClaimPath, attendantStatusPath, readAttendantLease, writeAttendantStatus } from './session-attendant-state.js'
@@ -182,16 +181,8 @@ export function hermesAnswerRoute(bridge: HermesWriterBridge, sessionId: string)
   }
 }
 
-function hermesGates(deps: CommandDeps, cwd: string, sessionId: string, pluginOwned: () => boolean): GateResult {
+function hermesGates(deps: CommandDeps, pluginOwned: () => boolean): GateResult {
   if (nativeUninstallPending(deps.env)) return { ok: false, reason: 'uninstall-in-progress' }
-  try {
-    const config = loadConfig({ cwd, env: deps.env, sessionId })
-    if (!projectEnabled(projectBinding(cwd, deps.env, config.project.value))) {
-      return { ok: false, reason: 'project-disabled' }
-    }
-  } catch {
-    return { ok: false, reason: 'enablement-unavailable' }
-  }
   if (!pluginOwned()) {
     return { ok: false, reason: 'hermes-plugin-removed-or-replaced' }
   }
@@ -212,7 +203,7 @@ export async function hermesAttendCommand(deps: CommandDeps, input: Readable, ou
   const pluginOwned = currentRuntimeBuild(deps.env) === null
     ? () => hermesPluginCurrent(deps.hookAdapterHome, deps.env)
     : retainedHermesPlugin(deps.hookAdapterHome, deps.env)
-  const gate = () => hermesGates(deps, cwd, sessionId, pluginOwned)
+  const gate = () => hermesGates(deps, pluginOwned)
   if (!gate().ok) {
     bridge.close()
     return 0

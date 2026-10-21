@@ -31,7 +31,7 @@ export function listPendingOpenclawSessions(env: NodeJS.ProcessEnv): OpenclawPen
       if (state.harness !== 'openclaw' || typeof cwd !== 'string' ||
           !path.isAbsolute(cwd) || sessionHasEnded(sessionKey, env)) continue
       const generation = readOpenclawGeneration(sessionKey, env)
-      if (generation === null || generation.ended || !generation.activated ||
+      if (generation === null || generation.ended || !generation.recorded ||
           readSessionIncarnation(sessionKey, env)?.openclaw_generation !== generation.id) continue
       sessions.push({ session_key: sessionKey, cwd, generation: generation.id,
         ...(generation.sessionId === undefined ? {} : { session_id: generation.sessionId }) })

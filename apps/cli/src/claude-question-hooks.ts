@@ -44,7 +44,7 @@ import { makeClient, type CommandDeps } from './commands-core.js'
 import { claudeHookSourcePid } from './commands-harness-context.js'
 import { resolveDraftInvocation } from './commands-send-support.js'
 import { loadConfig } from './config.js'
-import { projectBinding, projectEnabled } from './project-enablement.js'
+import { projectBinding, projectDisabled } from './project-enablement.js'
 import type { ServiceIdentity } from './credentials.js'
 import { acknowledgementContext, answersContext } from './hook-acknowledgements.js'
 import { registerQuestion } from './hook-lifecycle.js'
@@ -416,8 +416,8 @@ export interface ClaudePickerSeams {
  * Only a picker nobody answered or dismissed on a device is left to the
  * terminal.
  *
- * A picker in a Project the User has not enabled stays in the terminal, as
- * does a subagent's: Claude Code does not give its subagents this tool, and
+ * A picker in a Project the User disabled stays in the terminal, as does a
+ * subagent's: Claude Code does not give its subagents this tool, and
  * the device answer would be owed to the agent that owns the session's
  * Notification Requests, not to the subagent.
  */
@@ -434,11 +434,11 @@ export async function claudePermissionRequest(
     return 'not-bound'
   }
   if (envelope.agent_id !== undefined) return terminalOnly('subagent')
-  // Project Enablement is the User's opt-in: pickers elsewhere stay in the terminal.
+  // Nothing reaches the devices from a Project the User disabled.
   try {
     const cwd = envelope.cwd ?? deps.cwd
     const config = loadConfig({ cwd, env: deps.env, sessionId })
-    if (!projectEnabled(projectBinding(cwd, deps.env, config.project.value))) return terminalOnly('project-not-enabled')
+    if (projectDisabled(projectBinding(cwd, deps.env, config.project.value))) return terminalOnly('project-disabled')
   } catch {
     return terminalOnly('config-invalid')
   }

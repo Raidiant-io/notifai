@@ -1341,8 +1341,8 @@ function register(api) {
     await runHook("openclaw-turn-start", envelope)
     const messageContext = worker ? null :
       await messageContextForPointer(api, event, ctx, sessionKey, nativeRevision)
-    // Successful empty output means this Project is disabled or this
-    // generation was already activated. A later prompt rechecks enablement.
+    // Successful empty output means this Project has guidance off or this
+    // generation was already activated. A later prompt checks again.
     if (resolved !== null && resolved.trim().length === 0 && messageContext === null) return
     const context = typeof resolved === "string" && resolved.trim().length > 0
       ? resolved.trim()

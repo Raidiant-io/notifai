@@ -32,7 +32,7 @@ import { codexRoutingTrustProblems, findInstallations, handlerEvent } from './in
 import { CODEX_CARD_VERSION_FLOOR, codexCardHooksReady, codexCardToolOffered } from './codex-card-capability.js'
 import { activeOpenclawGeneration } from './openclaw-session-access.js'
 import { openclawGatewayReady } from './openclaw-gateway-readiness.js'
-import { enableProject, inferredProjectName, projectBinding, projectEnabled } from './project-enablement.js'
+import { enableProject, inferredProjectName, projectBinding } from './project-enablement.js'
 import { spawnQuestionSettlement } from './question-settlement-process.js'
 import {
   buildDraft,
@@ -860,16 +860,11 @@ export function askCommand(
     }
     const state = readSessionState(active.sessionId, deps.env)
     if (active.harness === 'openclaw' &&
-        activeOpenclawGeneration(active.sessionId, deps.env, deps.cwd) === null) {
-      // Only an enabled Project activates a generation. Whether to enable it is
-      // the User's word, which only the agent can tell from the conversation.
-      const projectOff = explicitBinding !== null && !projectEnabled(explicitBinding)
+        activeOpenclawGeneration(active.sessionId, deps.env) === null) {
       return askFailure(
         deps, flags, 'openclaw_generation_stale', 'exact_session',
-        'This OpenClaw tool subprocess cannot prove the current enabled Gateway session generation.',
-        projectOff
-          ? 'enable the Project with `notifai project enable` only when the User asked for Notifai here, then run the question from a current OpenClaw turn after the Notifai plugin has activated; otherwise ask in the conversation'
-          : 'run the question from a current OpenClaw turn after the Notifai plugin has activated',
+        'This OpenClaw tool subprocess cannot prove the current Gateway session generation.',
+        'run the question from a current OpenClaw turn after the Notifai plugin has recorded it',
       )
     }
     if (active.harness === 'openclaw' && !openclawGatewayReady(deps.env)) {

@@ -20,7 +20,7 @@ import {
   type OpencodeQuestionOutbound,
   type OpencodeQuestionRequest,
 } from './opencode-question.js'
-import { enableProject, projectBinding } from './project-enablement.js'
+import { disableProject, enableProject, projectBinding, projectEnablementState } from './project-enablement.js'
 
 const SESSION = 'ses_opencode_parent'
 const REQUEST: OpencodeQuestionRequest = {
@@ -93,7 +93,7 @@ const roots: string[] = []
 afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }) })
 
 function setup(options: {
-  enabled?: boolean; signedIn?: boolean; signals?: NodeJS.Signals[]; settings?: string
+  enabled?: boolean; disabled?: boolean; signedIn?: boolean; signals?: NodeJS.Signals[]; settings?: string
   sleep?: (ms: number) => Promise<void>
 } = {}) {
   const root = mkdtempSync(path.join(os.tmpdir(), 'notifai-opencode-question-'))
@@ -101,6 +101,7 @@ function setup(options: {
   const env = { HOME: path.join(root, 'home'), XDG_CONFIG_HOME: path.join(root, 'config'), XDG_STATE_HOME: path.join(root, 'state') }
   execFileSync('git', ['init', '-q'], { cwd: root })
   if (options.enabled !== false) enableProject(projectBinding(root, env)!)
+  if (options.disabled === true) disableProject(projectBinding(root, env)!)
   if (options.settings !== undefined) {
     mkdirSync(path.dirname(globalConfigPath(env)), { recursive: true })
     writeFileSync(globalConfigPath(env), options.settings)
@@ -253,6 +254,15 @@ describe('opencode-question command', () => {
     await t.run
   })
 
+  it('registers a form in a Project with no record, and leaves the Project as it was', async () => {
+    const t = setup({ enabled: false })
+    expect(await t.frame('registered')).toEqual({ type: 'registered', request_id: 'req_opencode' })
+    expect(t.submitted).toHaveLength(1)
+    expect(projectEnablementState(projectBinding(t.root, t.env))).toBe('unset')
+    t.input.end()
+    await t.run
+  })
+
   it('holds the form in OpenCode for the terminal-first delay before it reaches the devices', async () => {
     const slept: Array<{ ms: number; submitted: number }> = []
     const t = setup({ settings: 'ask_grace_seconds = 30\n', sleep: async (ms) => {
@@ -278,7 +288,7 @@ describe('opencode-question command', () => {
   })
 
   it.each([
-    [{ enabled: false }, 'project-not-enabled'],
+    [{ disabled: true }, 'project-disabled'],
     [{ settings: 'ask_notifications = false\n' }, 'question-notifications-off'],
     [{ signedIn: false }, 'not-signed-in'],
   ])('leaves the form to OpenCode alone when %o', async (options, reason) => {

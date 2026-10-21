@@ -38,7 +38,7 @@ import { beginSessionIncarnation, lifecycleStamp, readSessionState, updateSessio
 import type { AnsweredPending, HookEnvelope, PendingQuestion, SessionState } from './hook-types.js'
 import { createLogger, readLogRecords } from './logging.js'
 import { currentProcessIdentity, processStartTime, type ProcessIdentity } from './process-identity.js'
-import { enableProject, projectBinding } from './project-enablement.js'
+import { disableProject, enableProject, projectBinding, projectEnablementState } from './project-enablement.js'
 import { attendantClaimPath, writeAttendantStatus } from './session-attendant-state.js'
 import { readDeliveryJournal } from './session-delivery.js'
 
@@ -702,16 +702,20 @@ describe('Claude Code picker hooks', () => {
     expect(h.state().waiting_answers).toHaveLength(1)
   })
 
-  it('leaves every picker in a Project the User has not enabled to the terminal', async () => {
-    const h = setup({ enabled: false })
+  it('links a picker in a Project with no record, and leaves it to the terminal only in a disabled one', async () => {
+    const unset = setup({ enabled: false })
+    expect(await claudePermissionRequest(unset.deps, unset.envelope(), unset.logger,
+      { sleep: async () => { closeClaudePicker(unset.deps, SESSION, unset.logger) } })).toBe('left-to-terminal')
+    expect(unset.gates.map(gate => gate['stage'])).toContain('picker-waiting')
+    // A harness's own form is no request for Notifai: the Project stays as it was.
+    expect(projectEnablementState(projectBinding(unset.root, unset.env))).toBe('unset')
+
+    const h = setup()
+    disableProject(projectBinding(h.root, h.env)!)
     expect(await claudePermissionRequest(h.deps, h.envelope(), h.logger)).toBe('not-bound')
-    expect(h.gates).toEqual([expect.objectContaining({ stage: 'picker-terminal-only', reason: 'project-not-enabled' })])
+    expect(h.gates).toEqual([expect.objectContaining({ stage: 'picker-terminal-only', reason: 'project-disabled' })])
     expect(h.state().pending).toBeUndefined()
     expect(h.launches).toEqual([])
-    enableProject(projectBinding(h.root, h.env)!)
-    expect(await claudePermissionRequest(h.deps, h.envelope(), h.logger, { sleep: async () => { closeClaudePicker(h.deps, SESSION, h.logger) } }))
-      .toBe('left-to-terminal')
-    expect(h.gates.map(gate => gate['stage'])).toContain('picker-waiting')
   })
 
   it('leaves the picker to the terminal, and says why, whenever it cannot reach a device', async () => {

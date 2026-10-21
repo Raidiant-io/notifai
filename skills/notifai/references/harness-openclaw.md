@@ -26,9 +26,9 @@ their owner.
 On macOS, an asynchronous `notifai ask` answer comes back into the same Agent
 Session after the asking turn ends, as a followup turn carrying a pointer. Run
 `notifai replies <id>` from that session to read the answer and
-`notifai acknowledge <id>` before acting on it. This needs an enabled Project
-and a local Gateway that has loaded the currently installed plugin and runs a
-matching CLI version. Off macOS, `ask` refuses: use a blocking
+`notifai acknowledge <id>` before acting on it. This needs a local Gateway that
+has loaded the currently installed plugin and runs a matching CLI version. Off
+macOS, `ask` refuses: use a blocking
 `notifai send --reply` question, as the skill's "Bounded foreground wait" says.
 
 Stopping the Gateway, or disabling or uninstalling the Notifai plugin while it
