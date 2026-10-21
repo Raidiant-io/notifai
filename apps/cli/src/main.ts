@@ -1,4 +1,6 @@
 #!/usr/bin/env node
+import { isatty } from 'node:tty'
+import { cursorBareHookRun } from './cursor-imported-hook.js'
 import { belowNodeFloor, nodeFloorMessage } from './node-floor.js'
 
 // Before anything else is parsed. `node-floor.js` imports nothing and uses no
@@ -8,5 +10,9 @@ if (belowNodeFloor(process.version)) {
   for (const line of nodeFloorMessage(process.version)) process.stderr.write(`${line}\n`)
   process.exit(2)
 }
+
+// Cursor's copy of a Claude Code hook, with its arguments dropped: nothing to
+// do, so nothing loads, prints or records.
+if (cursorBareHookRun(process.argv.slice(2), process.env, isatty(0))) process.exit(0)
 
 await import('./main-run.js')

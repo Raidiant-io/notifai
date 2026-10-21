@@ -41,6 +41,7 @@ import {
   parseHookInput,
   submitSessionQuestions,
 } from './hook-lifecycle.js'
+import { cursorHookEnvironment } from './cursor-imported-hook.js'
 import { drainRetirements } from './hook-question-retirement.js'
 import {
   claimCursorStopActivation,
@@ -250,10 +251,12 @@ export async function hookRunCommand(
   }
 
   // Cursor may load ~/.claude/settings.json in addition to its own native
-  // hooks. Cursor guarantees CURSOR_PROJECT_DIR to hook processes, so a Claude
-  // compatibility copy becomes a no-op and the native Cursor definition is
-  // the single owner. Real Claude hooks do not receive that hook-only marker.
-  if (harness === 'claude-code' && deps.env['CURSOR_PROJECT_DIR']) {
+  // hooks, and runs those copies with no Stop loop limit. Cursor's hook-only
+  // environment marks them, so a Claude compatibility copy becomes a no-op and
+  // the native Cursor definition is the single owner. Real Claude hooks do not
+  // receive that environment. The launcher ends these copies earlier on macOS
+  // and Linux; this covers every other entry.
+  if (harness === 'claude-code' && cursorHookEnvironment(deps.env)) {
     start({ outcome: 'cursor-compatibility-copy-skipped' })
     logger.info('hook.end', {
       hook: event,
