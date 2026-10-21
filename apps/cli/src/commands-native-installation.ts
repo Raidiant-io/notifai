@@ -10,6 +10,7 @@ import { nativeLifecycleCommand } from './cli-bin.js'
 import { ContinuityPending } from './local-continuity.js'
 import { npmRepairCommand } from './commands-npm-repair.js'
 import { integrationRecoveryCommand } from './commands-integration-recovery.js'
+import { prepareClaudeHooksForRuntime } from './commands-hook-install.js'
 
 function stagedRecovery(deps: CommandDeps, installation?: Installation): string {
   try {
@@ -31,6 +32,7 @@ export interface NativeUpdateFlags {
 }
 interface NativeUpdateSeams {
   installation?: Installation
+  prepareHooks?: (deps: CommandDeps, version: string) => boolean
   resume?: (executable: string, from: string) => Record<string, unknown>
 }
 function resumeIntegration(deps: CommandDeps, executable: string, from: string): Record<string, unknown> {
@@ -89,9 +91,19 @@ export async function nativeUpdateCommand(deps: CommandDeps, flags: NativeUpdate
     const previous = installation.activeRelease(before.active?.generation)
     const channel = flags.channel ?? before.channel
     if (!channel) throw new Error('Installed release channel is unavailable')
+    // An older runtime must find hooks it can read once it is active.
+    const prepare = (version: string) => {
+      if (!(seams.prepareHooks ?? prepareClaudeHooksForRuntime)(deps, version)) {
+        throw new Error(`Notifai ${version} reads Claude Code hooks only in shell form, and they could not be rewritten; nothing was activated. Run notifai doctor --json.`)
+      }
+    }
+    if (flags.rollback) {
+      const retained = before.active?.previous
+      if (retained) prepare(installation.versionRelease(retained).version)
+    }
     const activation = flags.rollback ? installation.rollback(previous.generation) : await installation.installRelease({
       channel, source: before.source!, expectedGeneration: previous.generation,
-      allowStableDowngrade: flags.allowDowngrade === true,
+      allowStableDowngrade: flags.allowDowngrade === true, beforeActivate: prepare,
     })
     const active = installation.activeRelease(activation.active.generation)
     let integration: Record<string, unknown>

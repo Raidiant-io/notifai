@@ -1504,6 +1504,27 @@ it('native rollback runs integration through the restored immutable executable a
 })
 
 
+it('native rollback prepares hooks for the retained runtime first, and activates nothing when that fails', async () => {
+  const f = fixture(), first = f.installation.stage(f.candidate('1.0.0'))
+  f.installation.activate({ build: first, expectedGeneration: 0, source: 'shell', channel: 'stable' })
+  const second = f.installation.stage(f.candidate('2.0.0'))
+  f.installation.activate({ build: second, expectedGeneration: 1, source: 'shell', channel: 'stable' })
+  const out: string[] = [], prepared: Array<{ version: string; active: string | undefined }> = []
+  const deps: CommandDeps = { env: { HOME: f.root }, cwd: f.root,
+    store: { load: () => null, save() {}, clear() {}, describe: () => 'fixture' },
+    io: { out: line => out.push(line), err: line => out.push(line), confirm: async () => false, openUrl() {} } }
+  const resume = () => ({ ok: true, files_complete: true, migration_complete: true, pending_actions: [] })
+  expect(await nativeUpdateCommand(deps, { rollback: true, json: true }, { installation: f.installation, resume,
+    prepareHooks: () => false })).toBe(1)
+  expect(JSON.parse(out[0]!)).toMatchObject({ ok: false, message: expect.stringContaining('nothing was activated') })
+  expect(f.installation.inspect().active).toMatchObject({ active: second, generation: 2 })
+  expect(await nativeUpdateCommand(deps, { rollback: true, json: true }, { installation: f.installation, resume,
+    prepareHooks: (_deps, version) => { prepared.push({ version, active: f.installation.inspect().active?.active }); return true } })).toBe(0)
+  expect(prepared).toEqual([{ version: '1.0.0', active: second }])
+  expect(f.installation.inspect().active).toMatchObject({ active: first })
+})
+
+
 it('native update keeps the saved beta channel and reports incomplete integration after activation', async () => {
   const requested: string[] = []
   let record = '', inventory = ''

@@ -4,10 +4,10 @@ import os from 'node:os'
 import path from 'node:path'
 import { afterEach, expect, it, vi } from 'vitest'
 import type { CommandDeps, CommandIo } from './commands-core.js'
-import { hooksInstallCommand } from './commands-hook-install.js'
+import { hooksInstallCommand, prepareClaudeHooksForRuntime } from './commands-hook-install.js'
 import { updateResumeCommand } from './commands-update-resume.js'
 import { installHookAdapter, inspectHookAdapter } from './hook-adapter.js'
-import { codexHookIdentityHash, codexTrustKey, findInstallations } from './install-hooks.js'
+import { codexHookIdentityHash, codexTrustFindings, codexTrustKey, findInstallations } from './install-hooks.js'
 import { cachedIntegrationFaultNotice, integrationFaultNotice, localIntegrationAssessment, refreshIntegrationHealth } from './integration-health.js'
 import { nativeSkills } from './native-skills.js'
 import { packageVersion } from './release.js'
@@ -22,7 +22,7 @@ import { sourceIntegrationRevision } from './integration-revision.js'
 import { hookRunCommand } from './commands-hook-run.js'
 import { enableProject, projectBinding } from './project-enablement.js'
 import { hermesPluginDir, hermesPluginSource } from './hermes-plugin.js'
-import { readClaudeFormDeferral } from './claude-form-readers.js'
+import { readClaudeFormDeferral, recordClaudeFormDeferral } from './claude-form-readers.js'
 import { attendantClaimPath } from './session-attendant-state.js'
 import { acquireClaimFile, releaseClaimFile } from './hook-question-lock.js'
 
@@ -662,5 +662,64 @@ it('keeps Claude Code hooks in shell form through an update while an older atten
   // With no older attendant left, the User's update writes exec form.
   expect(await updateResumeCommand(f.deps, { json: true })).toBe(0)
   expect(readFileSync(claude.file, 'utf8')).toContain('"args"')
+  expect(readClaudeFormDeferral(f.deps.env)).toBeNull()
+})
+
+it('asks Codex to review only a handler an update adds, and leaves an unchanged definition byte-identical', async () => {
+  const f = fixture()
+  const trustAll = () => {
+    const installation = findInstallations(f.deps.env, f.home, 'darwin').find(entry => entry.harness === 'codex')!
+    writeFileSync(f.trust, installation.handlers.map(handler =>
+      `[hooks.state.${JSON.stringify(codexTrustKey(installation, handler))}]\ntrusted_hash = ${JSON.stringify(codexHookIdentityHash(handler))}\n`,
+    ).join('\n'))
+  }
+  const codex = () => findInstallations(f.deps.env, f.home, 'darwin').filter(entry => entry.harness === 'codex')
+  // An older release: the same handlers under its own revision, without the
+  // question-card handler this release adds, all approved in /hooks.
+  const current = sourceIntegrationRevision(readFileSync(f.installation.file, 'utf8'))!
+  const older = 'b'.repeat(64)
+  const document = JSON.parse(readFileSync(f.installation.file, 'utf8').replaceAll(current, older))
+  delete document.hooks.PreToolUse
+  writeFileSync(f.installation.file, `${JSON.stringify(document, null, 2)}\n`)
+  trustAll()
+  const kept = JSON.stringify(document.hooks)
+  expect(await updateResumeCommand(f.deps, { json: true })).toBe(0)
+  expect(JSON.parse(f.out.at(-1)!).changed).toContain('codex-hooks')
+  const upgraded = JSON.parse(readFileSync(f.installation.file, 'utf8'))
+  const { PreToolUse: added, ...unchanged } = upgraded.hooks
+  expect(JSON.stringify(unchanged)).toBe(kept)
+  expect(JSON.stringify(added)).toContain(`--integration-revision ${older}`)
+  expect(sourceIntegrationRevision(readFileSync(f.installation.file, 'utf8'))).toBe(older)
+  expect(codexTrustFindings(codex(), f.deps.env)).toEqual([{ file: f.installation.file, event: 'PreToolUse', state: 'new' }])
+  // Once that handler is approved, a later refresh changes nothing at all.
+  trustAll()
+  const approved = readFileSync(f.installation.file, 'utf8')
+  expect(hooksInstallCommand(f.deps, { harness: 'codex', narrate: false })).toBe(0)
+  expect(readFileSync(f.installation.file, 'utf8')).toBe(approved)
+  expect(codexTrustFindings(codex(), f.deps.env)).toEqual([])
+})
+
+it('rewrites exec-form Claude Code hooks to shell form before a runtime that reads only shell form becomes active', async () => {
+  const f = fixture()
+  f.deps.claudeCodeVersion = () => '2.1.304'
+  expect(hooksInstallCommand(f.deps, { harness: 'claude-code', narrate: false })).toBe(0)
+  const claude = () => findInstallations(f.deps.env, f.home, 'darwin').find(entry => entry.harness === 'claude-code')!
+  const exec = readFileSync(claude().file, 'utf8')
+  const slots = claude().handlers.map(handler => [handler.event, handler.groupIndex, handler.handlerIndex, handlerEvent(handler.command)])
+  expect(exec).toContain('"args"')
+  // A runtime that reads exec form needs nothing.
+  expect(prepareClaudeHooksForRuntime(f.deps, '13.1.0-beta.3')).toBe(true)
+  expect(readFileSync(claude().file, 'utf8')).toBe(exec)
+  // A deferral from an earlier update must not let the hub switch them back.
+  recordClaudeFormDeferral(f.deps.env, claude().file)
+  expect(prepareClaudeHooksForRuntime(f.deps, '13.0.0')).toBe(true)
+  const shell = claude()
+  expect(readFileSync(shell.file, 'utf8')).not.toContain('"args"')
+  // The same handlers in the same slots, each in the one shape such a runtime recognises.
+  expect(shell.handlers.map(handler => [handler.event, handler.groupIndex, handler.handlerIndex, handlerEvent(handler.command)])).toEqual(slots)
+  for (const handler of shell.handlers) {
+    expect(handler.execForm).not.toBe(true)
+    expect(handler.command).toMatch(/hook-adapter' hook [a-z-]+ --owner notifai --harness claude-code --integration-revision [a-f0-9]{64}$/)
+  }
   expect(readClaudeFormDeferral(f.deps.env)).toBeNull()
 })
