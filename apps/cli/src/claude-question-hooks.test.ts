@@ -64,6 +64,18 @@ function picker(questions: Array<{ question: string; labels: string[]; multiSele
 }
 
 const ENVIRONMENT = picker([{ question: REWORDED, labels: ['Staging', 'Production'] }])
+
+/** A picker from a host that enables Claude Code's extended schema: a heading, text and number questions, a helper line, previews. */
+const DECK = {
+  title: 'Deck plan',
+  questions: [
+    { question: 'What should the deck be called?', header: 'Name', kind: 'text', placeholder: 'Q3 review', options: [], multiSelect: false },
+    { question: 'How many slides?', header: 'Length', kind: 'number', description: 'One slide per section.',
+      min: 5, max: 20, step: 5, defaultValue: 10, unit: 'slides', options: [], multiSelect: false },
+    { question: 'Which layout?', header: 'Layout', kind: 'choice', multiSelect: false,
+      options: [{ label: 'Wide', preview: '<wide mockup>' }, { label: 'Classic', description: 'Four by three.', preview: '<classic mockup>' }] },
+  ],
+}
 const FORM = picker([
   { question: 'Which environment?', labels: ['Staging', 'Production'], header: 'Target' },
   { question: 'Which checks should run first?', labels: ['Lint', 'Tests', 'End to end'], multiSelect: true, header: 'Checks' },
@@ -248,8 +260,47 @@ describe('a Claude Code picker as a device question', () => {
     expect(pickerForm(pickerQuestions(picker([{ question: 'One?', labels: ['A'] }]))!)).toEqual({ error: 'unsupported-option-count' })
     expect(pickerForm(pickerQuestions(picker([{ question: 'Q?', labels: ['A', 'B'] }, { question: 'Q?', labels: ['C', 'D'] }]))!))
       .toEqual({ error: 'duplicate-question' })
-    expect(pickerQuestions({ questions: [{ question: 'No options' }] })).toBeNull()
+    // A missing kind is a choice, and a choice needs its options.
+    expect(pickerForm(pickerQuestions({ questions: [{ question: 'No options' }] })!)).toEqual({ error: 'unsupported-option-count' })
+    expect(pickerForm(pickerQuestions({ questions: [{ question: 'Name?', kind: 'text', options: [{ label: 'A' }, { label: 'B' }] }] })!))
+      .toEqual({ error: 'unsupported-option-count' })
+    // A kind a later Claude Code adds is not guessed at.
+    expect(pickerForm(pickerQuestions({ questions: [{ question: 'When?', kind: 'date' }] })!)).toEqual({ error: 'unsupported-question-kind' })
+    expect(pickerQuestions({ questions: [{ question: 'Q?', options: 'A, B' }] })).toBeNull()
     expect(pickerQuestions('not a picker')).toBeNull()
+  })
+
+  it('asks a text or number picker question as free text, with its helper line and range in the Body', () => {
+    const form = pickerForm(pickerQuestions(DECK)!) as PickerForm
+    expect(form.questions).toEqual([
+      { id: 'what-should-the-deck-be-called', text: 'What should the deck be called?' },
+      { id: 'how-many-slides', text: 'How many slides?' },
+      // Previews stay in the terminal; the choice still links.
+      { id: 'which-layout', text: 'Which layout?', choices: [{ id: 'wide', label: 'Wide' }, { id: 'classic', label: 'Classic', description: 'Four by three.' }] },
+    ])
+    expect(form.shown.map((entry) => entry.labels)).toEqual([{}, {}, { wide: 'Wide', classic: 'Classic' }])
+    expect(form.summary).toBe('What should the deck be called?')
+    // The device has no number control: the Body says what to type.
+    expect(form.body).toBe('**How many slides?**\n\nOne slide per section.\n\nA number from 5 to 20 slides, in steps of 5.')
+    // The heading, when there is one, is the title (the hook applies it); the headers otherwise.
+    expect(form.title).toBe('Name · Length · Layout')
+    expect(pickerHeading(DECK)).toBe('Deck plan')
+  })
+
+  it('states whatever range a number question gives', () => {
+    const body = (bounds: Record<string, unknown>) =>
+      (pickerForm(pickerQuestions({ questions: [{ question: 'How many?', kind: 'number', ...bounds }] })!) as PickerForm).body
+    expect(body({ min: 0, max: 1.5 })).toBe('**How many?**\n\nA number from 0 to 1.5.')
+    expect(body({ min: 1, unit: 'px' })).toBe('**How many?**\n\nA number of at least 1 px.')
+    expect(body({ max: 100, unit: '%', step: 10 })).toBe('**How many?**\n\nA number of at most 100 %, in steps of 10.')
+    expect(body({})).toBe('**How many?**\n\nA number.')
+  })
+
+  it('names a picker the same whether its host writes the choice kind out or leaves it implied', () => {
+    const written = { questions: ENVIRONMENT.questions.map((question) => ({ ...question, kind: 'choice' })) }
+    expect(pickerDigest(written)).toBe(pickerDigest(ENVIRONMENT))
+    const asText = { questions: [{ question: REWORDED, header: 'Deploy', kind: 'text', options: [], multiSelect: false }] }
+    expect(pickerDigest(asText)).not.toBe(pickerDigest({ questions: [{ ...asText.questions[0]!, kind: 'number', min: 1, max: 2 }] }))
   })
 
   it('identifies a picker by its questions, whatever order its keys arrive in', () => {
@@ -327,6 +378,36 @@ describe('Claude Code picker hooks', () => {
     expect(claudeTerminalAnswers(registration, { answers: { 'Which environment?': 'Somewhere else', 'Which checks should run first?': 'Lint' } }))
       .toEqual([{ question_id: 'which-environment', text: 'Somewhere else' },
         { question_id: 'which-checks-should-run-first', choice_ids: ['lint'] }])
+  })
+
+  it('carries a text and number picker from a host with the extended schema both ways, titled by its heading', async () => {
+    const h = setup()
+    const outcome = await claudePermissionRequest(h.deps, h.envelope(DECK), h.logger, {
+      sleep: async () => {
+        if (h.state().waiting_answers?.length) return
+        expect(h.pendingOf(h.held())).toMatchObject({
+          title: 'Deck plan', summary: 'What should the deck be called?',
+          body: '**How many slides?**\n\nOne slide per section.\n\nA number from 5 to 20 slides, in steps of 5.',
+          questions: [{ id: 'what-should-the-deck-be-called' }, { id: 'how-many-slides' }, { id: 'which-layout' }],
+        })
+        expect(h.pendingOf(h.held())!.questions!.slice(0, 2).map((question) => question.choices)).toEqual([undefined, undefined])
+        h.confirm()
+        h.stage([{ question_id: 'what-should-the-deck-be-called', text: 'Q3 review' },
+          { question_id: 'how-many-slides', text: '15' }, { question_id: 'which-layout', choice_ids: ['wide'] }], h.held(), 'Q3 review')
+      },
+    })
+    expect(outcome).toBe('answered')
+    // The typed answers return as the picker's own values; its input goes back exactly as Claude Code sent it.
+    const decided = h.decision().hookSpecificOutput.decision.updatedInput
+    expect(decided.answers).toEqual({ 'What should the deck be called?': 'Q3 review', 'How many slides?': '15', 'Which layout?': 'Wide' })
+    expect({ ...decided, answers: undefined }).toEqual({ ...DECK, answers: undefined })
+    const registered = readLogRecords(h.env, { event: ['ask.registered'] }).records.at(-1)!.data
+    expect(registered).toMatchObject({ origin: 'picker', kinds: ['text', 'number', 'choice'], has_body: true })
+
+    // In the terminal the slider and the text box answer with strings too.
+    expect(claudeTerminalAnswers(h.registration(), { answers: { 'What should the deck be called?': 'Board deck', 'How many slides?': '10', 'Which layout?': 'Classic' } }))
+      .toEqual([{ question_id: 'what-should-the-deck-be-called', text: 'Board deck' },
+        { question_id: 'how-many-slides', text: '10' }, { question_id: 'which-layout', choice_ids: ['classic'] }])
   })
 
   it('links an identical picker to the equal question this session has open, and never to one whose answer was consumed', async () => {

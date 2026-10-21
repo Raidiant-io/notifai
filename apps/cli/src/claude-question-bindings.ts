@@ -48,7 +48,7 @@ export const CLAUDE_QUESTION_TOOL = 'AskUserQuestion'
 /** Stands where a Codex registration names its turn; a picker has none. */
 export const CLAUDE_PICKER_TURN = 'claude-code-picker'
 
-/** What Claude Code's picker accepts: one to four questions, at least two options each. */
+/** What Claude Code's picker accepts: one to four questions, at least two options for a choice. */
 const PICKER_MAX_QUESTIONS = 4
 const PICKER_MIN_OPTIONS = 2
 
@@ -56,12 +56,41 @@ export function isClaudeRegistration(registration: CodexQuestionRegistration): b
   return registration.registration_turn_id === CLAUDE_PICKER_TURN
 }
 
+/** A number question's bounds, as the picker gives them. */
+export interface PickerNumber {
+  min?: number
+  max?: number
+  step?: number
+  unit?: string
+}
+
 /** One picker question exactly as the hook received it. */
 export interface PickerQuestion {
   question: string
   header?: string
+  /**
+   * How the question is answered when not by a choice: a host that enables
+   * the extended schema may ask for typed `text` or a `number`. Plain terminal
+   * `claude` only asks for a choice and sends no kind. A kind Notifai does not
+   * know is kept as written, so the picker can say why it stayed in the
+   * terminal.
+   */
+  kind?: 'text' | 'number' | (string & {})
+  /** The helper line the extended schema shows under the question. */
+  description?: string
   options: Array<{ label: string; description?: string }>
   multiSelect: boolean
+  number?: PickerNumber
+}
+
+function finite(value: unknown): number | undefined {
+  return typeof value === 'number' && Number.isFinite(value) ? value : undefined
+}
+
+function pickerNumber(entry: Record<string, unknown>): PickerNumber {
+  const unit = typeof entry['unit'] === 'string' && entry['unit'].trim() !== '' ? oneLine(entry['unit']) : undefined
+  const bounds = { min: finite(entry['min']), max: finite(entry['max']), step: finite(entry['step']), unit }
+  return Object.fromEntries(Object.entries(bounds).filter(([, value]) => value !== undefined)) as PickerNumber
 }
 
 /** The picker's questions as the hook received them, or null when the input is not one. */
@@ -72,22 +101,25 @@ export function pickerQuestions(toolInput: unknown): PickerQuestion[] | null {
   const questions: PickerQuestion[] = []
   for (const entry of raw) {
     if (typeof entry !== 'object' || entry === null) return null
-    const { question, header, options, multiSelect } = entry as {
-      question?: unknown; header?: unknown; options?: unknown; multiSelect?: unknown
+    const { question, header, kind, description, options = [], multiSelect } = entry as {
+      question?: unknown; header?: unknown; kind?: unknown; description?: unknown; options?: unknown; multiSelect?: unknown
     }
-    if (typeof question !== 'string' || !Array.isArray(options)) return null
+    if (typeof question !== 'string' || !Array.isArray(options) || (kind !== undefined && typeof kind !== 'string')) return null
     const shown: PickerQuestion['options'] = []
     for (const option of options) {
       if (typeof option !== 'object' || option === null) return null
-      const { label, description } = option as { label?: unknown; description?: unknown }
+      const { label, description: optionDescription } = option as { label?: unknown; description?: unknown }
       if (typeof label !== 'string') return null
-      shown.push({ label, ...(typeof description === 'string' && description.trim() !== '' ? { description } : {}) })
+      shown.push({ label, ...(typeof optionDescription === 'string' && optionDescription.trim() !== '' ? { description: optionDescription } : {}) })
     }
     questions.push({
       question,
       ...(typeof header === 'string' && header.trim() !== '' ? { header } : {}),
+      ...(kind === undefined || kind === 'choice' ? {} : { kind }),
+      ...(typeof description === 'string' && description.trim() !== '' ? { description } : {}),
       options: shown,
       multiSelect: multiSelect === true,
+      ...(kind === 'number' ? { number: pickerNumber(entry as Record<string, unknown>) } : {}),
     })
   }
   return questions
@@ -97,12 +129,14 @@ export function pickerQuestions(toolInput: unknown): PickerQuestion[] | null {
  * The picker's identity within its own tool call: a digest of the questions it
  * shows, independent of key order. `PermissionRequest` and `PostToolUse` both
  * receive the same picker, so this ties one to the other without anything the
- * agent wrote having to match anything else.
+ * agent wrote having to match anything else. A host that writes the choice
+ * kind out and one that leaves it implied name the same picker.
  */
 export function pickerDigest(toolInput: unknown): string | null {
   const picker = pickerQuestions(toolInput)
   if (picker === null) return null
-  const canonical = picker.map((question) => [question.question, question.multiSelect, question.options.map((option) => option.label)])
+  const canonical = picker.map((question) => [question.question, question.multiSelect, question.options.map((option) => option.label),
+    ...(question.kind === undefined ? [] : [question.kind])])
   return createHash('sha256').update(JSON.stringify(canonical)).digest('hex')
 }
 
@@ -182,14 +216,38 @@ function uniqueId(base: string, fallback: string, used: Set<string>): string {
 }
 
 /**
+ * What a number question accepts, for a device where the answer is typed:
+ * "A number from 5 to 20 slides, in steps of 5."
+ */
+function numberRange(number: PickerNumber = {}): string {
+  const unit = number.unit === undefined ? '' : ` ${number.unit}`
+  const range = number.min !== undefined && number.max !== undefined ? ` from ${number.min} to ${number.max}${unit}`
+    : number.min !== undefined ? ` of at least ${number.min}${unit}`
+      : number.max !== undefined ? ` of at most ${number.max}${unit}`
+        : unit === '' ? '' : ` in${unit}`
+  return `A number${range}${number.step === undefined ? '' : `, in steps of ${number.step}`}.`
+}
+
+/** What the Body says under a picker question beyond its wording: its helper line, and a number's range. */
+function questionNotes(entry: PickerQuestion): string[] {
+  return [
+    ...(entry.description === undefined ? [] : [oneLine(entry.description)]),
+    ...(entry.kind === 'number' ? [numberRange(entry.number)] : []),
+  ]
+}
+
+/**
  * The device question this picker asks. Each option's description rides on
  * its choice, and the one option labelled "(Recommended)" becomes the
- * recommended choice. Long question text, labels and descriptions are
- * shortened to fit, and only then does the picker's full wording go into the
- * body. The Summary is the first question; the headers, when the picker has
- * any, become its title, so the question is never copied into the title. An
- * error names why the picker cannot be a device question at all; it then
- * stays in the terminal.
+ * recommended choice. A text or number question is a free-text device
+ * question; the device has no number control, so the Body states the range
+ * and the answer arrives as the text the User typed. A question's own helper
+ * line goes into the Body under that question. Long question text, labels and
+ * descriptions are shortened to fit, and only then does the picker's full
+ * wording go into the body. The Summary is the first question; the headers,
+ * when the picker has any, become its title, so the question is never copied
+ * into the title. An error names why the picker cannot be a device question
+ * at all; it then stays in the terminal.
  */
 export function pickerForm(picker: readonly PickerQuestion[]): PickerForm | { error: string } {
   if (picker.length < 1 || picker.length > Math.min(PICKER_MAX_QUESTIONS, REPLY_MAX_QUESTIONS)) {
@@ -204,6 +262,13 @@ export function pickerForm(picker: readonly PickerQuestion[]): PickerForm | { er
     const text = fit(entry.question, QUESTION_TEXT_MAX_LENGTH)
     if (text === '') return { error: 'empty-question' }
     if (text !== entry.question.trim()) detailed = true
+    if (entry.kind === 'text' || entry.kind === 'number') {
+      if (entry.options.length > 0) return { error: 'unsupported-option-count' }
+      questions.push({ id: uniqueId(slugify(text), `q${index + 1}`, questionIds), text })
+      shown.push({ title: entry.question, labels: {} })
+      continue
+    }
+    if (entry.kind !== undefined) return { error: 'unsupported-question-kind' }
     const labels = entry.options.map((option) => option.label)
     if (labels.length < PICKER_MIN_OPTIONS || labels.length > REPLY_MAX_CHOICES) return { error: 'unsupported-option-count' }
     if (new Set(labels).size !== labels.length) return { error: 'duplicate-option' }
@@ -242,15 +307,22 @@ export function pickerForm(picker: readonly PickerQuestion[]): PickerForm | { er
   const headers = picker.flatMap((question) => question.header === undefined || oneLine(question.header) === '' ? [] : [oneLine(question.header)])
   const title = headers.length === 0 ? {} : { title: headers.join(' · ') }
   const summary = fit(questions[0]!.text, SUMMARY_MAX_LENGTH)
-  if (!detailed) return { questions, ...title, summary, shown }
-  const body = picker.map((entry) => [
-    `**${oneLine(entry.question)}**`,
-    '',
-    ...entry.options.map((option) => option.description === undefined
+  // Shortened wording puts every question's full wording in the Body; otherwise
+  // only a question with something to add beneath it appears there.
+  const sections = picker.flatMap((entry) => {
+    const notes = questionNotes(entry)
+    if (!detailed && notes.length === 0) return []
+    const options = detailed ? entry.options.map((option) => option.description === undefined
       ? `- ${oneLine(option.label)}`
-      : `- **${oneLine(option.label)}**: ${oneLine(option.description)}`),
-  ].join('\n')).join('\n\n')
-  return { questions, ...title, summary, body, shown }
+      : `- **${oneLine(option.label)}**: ${oneLine(option.description)}`) : []
+    return [[
+      `**${oneLine(entry.question)}**`,
+      ...notes.flatMap((note) => ['', note]),
+      ...(options.length === 0 ? [] : ['', ...options]),
+    ].join('\n')]
+  })
+  if (sections.length === 0) return { questions, ...title, summary, shown }
+  return { questions, ...title, summary, body: sections.join('\n\n'), shown }
 }
 
 /**

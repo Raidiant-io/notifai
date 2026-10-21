@@ -393,6 +393,7 @@ function registerPickerQuestion(
   logger.info('ask.registered', {
     ok: true, origin: 'picker', session: sessionId, question_id: questionId, questions: form.questions.length,
     text_chars: form.questions[0]!.text.length, choices: form.questions[0]!.choices?.length ?? 0,
+    ...(picker.every((question) => question.kind === undefined) ? {} : { kinds: picker.map((question) => question.kind ?? 'choice') }),
     has_body: form.body !== undefined, ...(registered.registered ? {} : { linked: true }),
   })
   return { questionId }
