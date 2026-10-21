@@ -26,6 +26,14 @@ export interface NotificationHistoryItem {
    */
   retirement: QuestionRetirementView | null
   /**
+   * When the User dismissed this question from a Companion App (`question_dismiss`).
+   * A dismissal closes the window and retires the question as `expired`, so
+   * this is what tells a Dismissed question from one whose window ran out.
+   * Null when it was not dismissed. Absent from servers that predate it:
+   * read absent as unknown, not as "not dismissed".
+   */
+  dismissed_at?: string | null
+  /**
    * When the User first read this request on any Companion App of the
    * Account. Account-wide and never cleared: a Companion App shows a request
    * read when this is set or when it read the request itself.
