@@ -8643,6 +8643,14 @@ describe('asking before the hooks have ever run', () => {
       expect(readSessionState(sessionId, env).pending).toBeUndefined()
       expect(spawn).not.toHaveBeenCalled()
       expect(compatibility).not.toHaveBeenCalled()
+      // The card shows labels only; a described choice keeps ordinary ask.
+      io.outLines = []
+      expect(await askCommand(deps, 'Where?', {
+        choice: ['Staging', 'Production'], choiceDescription: [{ after: 2, text: 'Customers see it.' }], json: true,
+      })).toBe(EXIT.ok)
+      expect(JSON.parse(io.outLines.join('\n')).questions[0].choices[1]).toEqual({
+        id: 'production', label: 'Production', description: 'Customers see it.',
+      })
       return
     }
     if (cardHooks) {
@@ -11081,6 +11089,42 @@ describe('question sets', () => {
     expect(
       buildQuestions({ form: JSON.stringify({ summary: 'Answer this.', questions: [{ text: 'Q?' }] }) }, 'Also a question?'),
     ).toMatchObject({ ok: false })
+  })
+
+  it('takes a form choice as a label or as a label with its description and recommendation', () => {
+    const built = buildQuestions({ form: JSON.stringify({ summary: 'Two release decisions.', questions: [
+      { text: 'Deploy migration 0007?', choices: [
+        { label: 'Deploy now', description: 'Two minutes of downtime.', recommended: true },
+        'Wait for off-peak',
+      ] },
+      { text: 'Notify customers?', choices: ['Yes', { label: 'No', description: 'Nobody hears about it.' }] },
+    ] }) }, undefined)
+    expect(built).toMatchObject({ ok: true, questions: [
+      { choices: [
+        { id: 'deploy-now', label: 'Deploy now', description: 'Two minutes of downtime.', recommended: true },
+        { id: 'wait-for-off-peak', label: 'Wait for off-peak' },
+      ] },
+      { choices: [{ id: 'yes', label: 'Yes' }, { id: 'no', label: 'No', description: 'Nobody hears about it.' }] },
+    ] })
+    const twice = buildQuestions({ form: JSON.stringify({ summary: 'One decision.', questions: [
+      { text: 'Which?', choices: [{ label: 'A', recommended: true }, { label: 'B', recommended: true }] },
+    ] }) }, undefined)
+    expect(twice).toMatchObject({ ok: false, error: expect.stringContaining('at most one') })
+    const unknown = buildQuestions({ form: JSON.stringify({ summary: 'One decision.', questions: [
+      { text: 'Which?', choices: [{ label: 'A', detail: 'x' }, 'B'] },
+    ] }) }, undefined)
+    expect(unknown).toMatchObject({ ok: false, error: expect.stringContaining('Unknown choice keys: detail') })
+  })
+
+  it('carries flag descriptions and the recommended choice onto the single question', () => {
+    expect(buildQuestions({
+      choice: ['Deploy now', 'Wait'],
+      choiceDescription: [{ after: 2, text: 'Deploys at 02:00 UTC.' }],
+      recommended: ['Wait'],
+    }, 'Deploy migration 0007?')).toMatchObject({ ok: true, questions: [{ choices: [
+      { id: 'deploy-now', label: 'Deploy now' },
+      { id: 'wait', label: 'Wait', description: 'Deploys at 02:00 UTC.', recommended: true },
+    ] }] })
   })
 })
 

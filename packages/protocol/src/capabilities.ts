@@ -16,7 +16,7 @@ import {
   type Platform,
 } from './notification.js'
 import { BODY_MAX_LENGTH, SUMMARY_MAX_LENGTH } from './content.js'
-import { buildApnsEnvelope, RECEIPT_TOKEN_LENGTH } from './apns.js'
+import { buildApnsEnvelope, CONTENT_TOKEN_LENGTH, RECEIPT_TOKEN_LENGTH } from './apns.js'
 import { buildFcmDataEnvelope } from './fcm.js'
 
 /**
@@ -91,7 +91,7 @@ export const IOS_CAPABILITIES_V1: CapabilityDocument = {
         default_window_seconds: 86400,
       },
       reason:
-        'Free-text reply is an inline action whose button and placeholder are fixed by the app. Closed-choice answers appear on the expanded card after press-and-hold; the collapsed banner names that gesture and never shows choice labels.',
+        'Free-text reply is an inline action whose button and placeholder are fixed by the app. Closed-choice answers appear on the expanded notification; the banner never shows choice labels. Choice descriptions and the recommended marker show on the answer controls, never on notification action buttons.',
     },
     {
       path: 'presentation.media',
@@ -510,6 +510,15 @@ export function validateDraft(
           }
           seen.add(choice.id)
         }
+        // A recommendation singles one answer out; two would be no
+        // recommendation at all.
+        if (question.choices.filter((choice) => choice.recommended === true).length > 1) {
+          errors.push({
+            code: 'invalid_request',
+            path: `${path}.choices`,
+            message: 'Recommend at most one choice per question.',
+          })
+        }
       }
     }
   }
@@ -671,6 +680,8 @@ const ESTIMATED_ENVELOPE_IDS = {
   // Fixed width by construction (a truncated HMAC), so a placeholder reserves
   // exactly the room the real token will take.
   receiptToken: '0'.repeat(RECEIPT_TOKEN_LENGTH),
+  // Emitted only when the request has a Body or media; same fixed width.
+  contentToken: '0'.repeat(CONTENT_TOKEN_LENGTH),
   // ISO-8601 instants are fixed width, so any date reserves the real send time.
   createdAt: new Date(0),
 } as const

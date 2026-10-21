@@ -22,6 +22,8 @@
 import { createHash } from 'node:crypto'
 import { isDeepStrictEqual } from 'node:util'
 import {
+  CHOICE_DESCRIPTION_MAX_LENGTH,
+  CHOICE_LABEL_MAX_LENGTH,
   QUESTION_TEXT_MAX_LENGTH,
   REPLY_MAX_CHOICES,
   REPLY_MAX_QUESTIONS,
@@ -50,9 +52,6 @@ const PICKER_MAX_QUESTIONS = 4
 const PICKER_MIN_OPTIONS = 2
 const PICKER_MAX_OPTIONS = 4
 
-/** A device choice label's protocol limit. */
-const CHOICE_LABEL_MAX_LENGTH = 40
-
 export function isClaudeRegistration(registration: CodexQuestionRegistration): boolean {
   return registration.registration_turn_id === CLAUDE_PICKER_TURN
 }
@@ -73,14 +72,24 @@ export function claudePickerShape(questions: readonly QuestionT[] | undefined): 
   })
 }
 
-/** These questions as the core of `AskUserQuestion` input; the agent adds headers and option descriptions. */
+/** Claude Code's own convention for the option it recommends: this suffix on its label. */
+const PICKER_RECOMMENDED_SUFFIX = ' (Recommended)'
+
+/**
+ * These questions as the core of `AskUserQuestion` input, each option with the
+ * description it was given and Claude Code's recommended-label suffix; the
+ * agent adds headers and any missing descriptions.
+ */
 export function askUserQuestionInput(questions: readonly QuestionT[]): {
-  questions: Array<{ question: string; options: Array<{ label: string }>; multiSelect: boolean }>
+  questions: Array<{ question: string; options: Array<{ label: string; description?: string }>; multiSelect: boolean }>
 } {
   return {
     questions: questions.map((question) => ({
       question: question.text,
-      options: (question.choices ?? []).map((choice) => ({ label: choice.label })),
+      options: (question.choices ?? []).map((choice) => ({
+        label: choice.recommended === true ? `${choice.label}${PICKER_RECOMMENDED_SUFFIX}` : choice.label,
+        ...(choice.description === undefined ? {} : { description: choice.description }),
+      })),
       multiSelect: question.multi === true,
     })),
   }
@@ -170,6 +179,27 @@ function fit(text: string, max: number): string {
   return `${[...flat].slice(0, max - 1).join('').trimEnd()}…`
 }
 
+/**
+ * An option description that fits a device choice. A long one keeps its
+ * opening sentence when that fits, otherwise its words up to the limit; the
+ * whole description goes into the body.
+ */
+function fitDescription(text: string): string {
+  const flat = oneLine(text)
+  if (chars(flat) <= CHOICE_DESCRIPTION_MAX_LENGTH) return flat
+  const first = /^.+?[.!?](?=\s|$)/u.exec(flat)?.[0]
+  if (first !== undefined && chars(first) <= CHOICE_DESCRIPTION_MAX_LENGTH) return first
+  const cut = [...flat].slice(0, CHOICE_DESCRIPTION_MAX_LENGTH - 1).join('')
+  const space = cut.lastIndexOf(' ')
+  return `${(space > CHOICE_DESCRIPTION_MAX_LENGTH / 2 ? cut.slice(0, space) : cut).trimEnd()}…`
+}
+
+/** A picker label carrying Claude Code's recommended suffix, without it. */
+function withoutRecommendedSuffix(label: string): string | null {
+  const match = /^(.*\S)\s*\(recommended\)\s*$/iu.exec(label)
+  return match === null ? null : match[1]!
+}
+
 function uniqueId(base: string, fallback: string, used: Set<string>): string {
   let id = base === '' || !/^[a-z0-9]/u.test(base) ? fallback : base
   if (used.has(id)) id = `${id.slice(0, 28)}-${used.size + 1}`
@@ -178,10 +208,12 @@ function uniqueId(base: string, fallback: string, used: Set<string>): string {
 }
 
 /**
- * The device question this picker asks. Long question text is shortened to
- * fit, long labels are capped, and the picker's full wording and option
- * descriptions go into the body. An error names why the picker cannot be a
- * device question at all; it then stays in the terminal.
+ * The device question this picker asks. Each option's description rides on
+ * its choice, and the one option labelled "(Recommended)" becomes the
+ * recommended choice. Long question text, labels and descriptions are
+ * shortened to fit, and only then does the picker's full wording go into the
+ * body. An error names why the picker cannot be a device question at all; it
+ * then stays in the terminal.
  */
 export function pickerForm(picker: readonly PickerQuestion[]): PickerForm | { error: string } {
   if (picker.length < 1 || picker.length > Math.min(PICKER_MAX_QUESTIONS, REPLY_MAX_QUESTIONS)) {
@@ -202,13 +234,24 @@ export function pickerForm(picker: readonly PickerQuestion[]): PickerForm | { er
     const choiceIds = new Set<string>()
     const choices: NonNullable<QuestionT['choices']> = []
     const byId: Record<string, string> = {}
+    const recommended = entry.options.filter((option) => withoutRecommendedSuffix(option.label) !== null)
     for (const [position, option] of entry.options.entries()) {
-      const label = fit(option.label, CHOICE_LABEL_MAX_LENGTH)
+      // One recommendation is a recommendation; several are just wording.
+      const plain = recommended.length === 1 && recommended[0] === option
+        ? withoutRecommendedSuffix(option.label)!
+        : option.label
+      const label = fit(plain, CHOICE_LABEL_MAX_LENGTH)
       if (label === '') return { error: 'empty-option' }
-      if (label !== option.label) detailed = true
-      if (option.description !== undefined) detailed = true
-      const id = uniqueId(slugify(option.label), `option-${position + 1}`, choiceIds)
-      choices.push({ id, label })
+      if (label !== plain) detailed = true
+      const description = option.description === undefined ? undefined : fitDescription(option.description)
+      if (description !== undefined && description !== oneLine(option.description!)) detailed = true
+      const id = uniqueId(slugify(plain), `option-${position + 1}`, choiceIds)
+      choices.push({
+        id,
+        label,
+        ...(description === undefined || description === '' ? {} : { description }),
+        ...(plain !== option.label ? { recommended: true as const } : {}),
+      })
       byId[id] = option.label
     }
     if (new Set(choices.map((choice) => choice.label)).size !== choices.length) return { error: 'duplicate-option' }

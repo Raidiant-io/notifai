@@ -4,6 +4,7 @@ import {
   INTERRUPTION_LEVELS,
   MEDIA_MAX_ITEMS,
   NOTIFICATION_SCHEMA_VERSION,
+  CHOICE_DESCRIPTION_MAX_LENGTH,
   QUESTION_TEXT_MAX_LENGTH,
   SUMMARY_MAX_LENGTH,
   type AndroidOptionsT,
@@ -17,6 +18,7 @@ import {
   PLATFORMS,
   type Platform,
   type QuestionT,
+  type ReplyChoiceT,
   type SourceContextT,
   type SubmissionReceipt,
 } from '@raidiant/notifai-protocol'
@@ -65,6 +67,10 @@ export interface SendFlags {
    * per label, always — a label is a label, whatever characters it contains.
    */
   choice?: string[]
+  /** One-line consequence of each choice, attached to the `--choice` before it. */
+  choiceDescription?: ChoiceDescriptionInput[]
+  /** Exact label of the choice the sender recommends. */
+  recommended?: string[]
   /** The user may select several of the offered answers. */
   multi?: boolean
   /**
@@ -297,13 +303,12 @@ export function buildDraft(
 
   // Ids are derived from labels so an agent writing a one-liner does not have
   // to invent them, but they stay the stable thing it branches on afterwards.
-  const choices = parseChoices(flags.choice)
-  if (choices === 'invalid') {
-    return {
-      ok: false,
-      error: CHOICE_USAGE,
-    }
-  }
+  const parsedChoices = parseChoices(flags.choice, {
+    ...(flags.choiceDescription !== undefined ? { descriptions: flags.choiceDescription } : {}),
+    ...(flags.recommended !== undefined ? { recommended: flags.recommended } : {}),
+  })
+  if (!parsedChoices.ok) return parsedChoices
+  const choices = parsedChoices.choices
   if (flags.multi && choices === null && flags.questions === undefined) {
     return { ok: false, error: '--multi needs answers to select between; add --choice.' }
   }
@@ -411,6 +416,20 @@ export function receiptExitCode(receipt: SubmissionReceipt): number {
   return receipt.overall === 'provider_rejected_all' ? 1 : 0
 }
 
+/** One `--choice-description` occurrence and how many `--choice` flags preceded it. */
+export interface ChoiceDescriptionInput {
+  after: number
+  text: string
+}
+
+/** What a closed question may say about its choices beyond their labels. */
+export interface ChoiceDetails {
+  /** `--choice-description` occurrences in command-line order. */
+  descriptions?: ChoiceDescriptionInput[]
+  /** `--recommended` values: the exact label of the recommended choice. */
+  recommended?: string[]
+}
+
 /**
  * One flag occurrence, one answer: `--choice Staging --choice Production` ->
  * `[{id:'staging',label:'Staging'}, ...]`.
@@ -419,23 +438,67 @@ export function receiptExitCode(receipt: SubmissionReceipt): number {
  * buttons the agent never intended ("Nothing, I'll review" became two answers)
  * and nothing downstream could detect it, so the delimiter form is gone
  * rather than guarded: a label is a label.
+ *
+ * A description belongs to the `--choice` written just before it, so a
+ * description can never drift onto a neighbour; anything ambiguous is refused.
+ * The recommended choice is named by its exact label.
  */
 export function parseChoices(
   value: string[] | undefined,
-): { id: string; label: string }[] | null | 'invalid' {
-  if (value === undefined || value.length === 0) return null
-  const labels = value.map((part) => part.trim()).filter((part) => part.length > 0)
-  if (labels.length < 2 || labels.length > 6) return 'invalid'
-  const choices = labels.map((label) => ({ id: slugify(label), label }))
-  if (choices.some((choice) => choice.id === '')) return 'invalid'
-  if (new Set(choices.map((choice) => choice.id)).size !== choices.length) return 'invalid'
-  return choices
+  details: ChoiceDetails = {},
+): { ok: true; choices: ReplyChoiceT[] | null } | { ok: false; error: string } {
+  const descriptions = details.descriptions ?? []
+  const recommended = details.recommended ?? []
+  if (value === undefined || value.length === 0) {
+    if (descriptions.length > 0) return { ok: false, error: '--choice-description describes a --choice; add the choices.' }
+    if (recommended.length > 0) return { ok: false, error: '--recommended names a --choice; add the choices.' }
+    return { ok: true, choices: null }
+  }
+  const labels = value.map((part) => part.trim())
+  if (labels.some((label) => label.length === 0) || labels.length < 2 || labels.length > 6) {
+    return { ok: false, error: CHOICE_USAGE }
+  }
+  const choices: ReplyChoiceT[] = labels.map((label) => ({ id: slugify(label), label }))
+  if (choices.some((choice) => choice.id === '')) return { ok: false, error: CHOICE_USAGE }
+  if (new Set(choices.map((choice) => choice.id)).size !== choices.length) return { ok: false, error: CHOICE_USAGE }
+
+  for (const { after, text } of descriptions) {
+    const choice = choices[after - 1]
+    if (choice === undefined || choice.description !== undefined) return { ok: false, error: CHOICE_DESCRIPTION_USAGE }
+    const description = oneLine(text)
+    if (description === '' || [...description].length > CHOICE_DESCRIPTION_MAX_LENGTH) {
+      return {
+        ok: false,
+        error: `A choice description is one line of plain text, at most ${CHOICE_DESCRIPTION_MAX_LENGTH} characters: say what choosing it does.`,
+      }
+    }
+    choice.description = description
+  }
+
+  if (recommended.length > 1) return { ok: false, error: 'Recommend at most one choice: pass --recommended once.' }
+  if (recommended.length === 1) {
+    const choice = choices.find((entry) => entry.label === recommended[0]!.trim())
+    if (choice === undefined) {
+      return { ok: false, error: `--recommended ${JSON.stringify(recommended[0])} must repeat one --choice label exactly.` }
+    }
+    choice.recommended = true
+  }
+  return { ok: true, choices }
+}
+
+/** Whitespace runs, line breaks included, become single spaces. */
+function oneLine(text: string): string {
+  return text.replace(/\s+/gu, ' ').trim()
 }
 
 /** Message shared by every surface that accepts choice labels. */
 export const CHOICE_USAGE =
   'Offer 2-6 answers, one --choice flag per answer, unique once slugified — ' +
   'e.g. --choice "Yes, ship it" --choice "Not yet".'
+
+const CHOICE_DESCRIPTION_USAGE =
+  'Put each --choice-description right after the --choice it describes, at most one per choice — ' +
+  'e.g. --choice "Deploy now" --choice-description "Two minutes of downtime." --choice "Wait".'
 
 export function slugify(label: string): string {
   return label

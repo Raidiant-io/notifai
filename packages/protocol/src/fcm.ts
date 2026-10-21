@@ -4,13 +4,20 @@ import {
   SESSION_MESSAGES_SYNC,
   type NotificationDraftT,
 } from './notification.js'
-import type {
-  AgentAcknowledgementSync,
-  EnvelopeIds,
-  ProjectIdentity,
-  ReplyMetadata,
-  RetirementAnswerContext,
+import {
+  PUSHED_BODY_HEADROOM_BYTES,
+  type AgentAcknowledgementSync,
+  type EnvelopeIds,
+  type ProjectIdentity,
+  type ReplyMetadata,
+  type RetirementAnswerContext,
 } from './apns.js'
+import {
+  hasChoiceDescriptions,
+  pushedQuestions,
+  utf8Bytes,
+  withFittingContent,
+} from './pushed-content.js'
 
 /** Application-owned Android envelope version inside FCM data.notifai. */
 export const ANDROID_ENVELOPE_SCHEMA_VERSION = 1
@@ -138,11 +145,42 @@ export function buildFcmDataEnvelope(
           ...(agentAcknowledgementSync.replyId ? { agent_acknowledgement_reply_id: agentAcknowledgementSync.replyId } : {}),
         }
       : {}),
-    ...(draft.reply !== undefined ? { questions: draft.reply.questions } : {}),
+    ...(hasChoiceDescriptions(draft) ? { has_choice_descriptions: true } : {}),
+    ...(draft.reply !== undefined ? { questions: pushedQuestions(draft.reply.questions) } : {}),
   }
 
   return {
     data: { notifai: JSON.stringify(envelope) },
     priority: draft.lifecycle?.tier === 'done' ? 'NORMAL' : 'HIGH',
   }
+}
+
+/**
+ * Adds the optional content to a rendered FCM data map whenever the whole
+ * map, as it will be sent (destination stamp included), stays within
+ * `limitBytes` less {@link PUSHED_BODY_HEADROOM_BYTES}: first each choice's
+ * description, then the Markdown Body. Apply it last. `has_body` and
+ * `has_choice_descriptions` are unchanged either way, so an envelope without
+ * them still tells the app to fetch them.
+ */
+export function withPushedFcmContent(
+  data: Record<string, string>,
+  draft: NotificationDraftT,
+  limitBytes: number,
+): Record<string, string> {
+  let envelope: unknown
+  try {
+    envelope = JSON.parse(data['notifai'] ?? '')
+  } catch {
+    return data
+  }
+  if (typeof envelope !== 'object' || envelope === null || Array.isArray(envelope)) return data
+  const key = withFittingContent(
+    envelope as Record<string, unknown>,
+    draft,
+    (candidate) =>
+      utf8Bytes({ ...data, notifai: JSON.stringify(candidate) }) <=
+      limitBytes - PUSHED_BODY_HEADROOM_BYTES,
+  )
+  return key === null ? data : { ...data, notifai: JSON.stringify(key) }
 }

@@ -13,6 +13,7 @@ import {
   SOUND_NAME_MAX_LENGTH,
   SESSION_LABEL_MAX_LENGTH,
   type NotificationMediaType,
+  type QuestionT,
   type Platform,
 } from './notification.js'
 import type {
@@ -867,7 +868,59 @@ export interface NotificationContentResponse {
   /** Standalone focused content, always interpreted as Markdown when present. */
   body: string | null
   media: NotificationContentMediaItem[]
+  /**
+   * The reply questions exactly as accepted, choice descriptions included,
+   * or empty for a request that asks nothing. A push leaves the descriptions
+   * out when they do not fit; this is where a Companion App gets them.
+   */
+  questions: QuestionT[]
 }
+
+/** Most requests one content batch may name; a Companion App splits a longer list. */
+export const NOTIFICATION_CONTENT_BATCH_MAX = 50
+
+/**
+ * `POST /api/v1/notifications/content` (user auth; Server Feature
+ * `notification_content_batch`): the content of every named request in one
+ * exchange, so a screen or refresh costs one request rather than one per row.
+ */
+export const NotificationContentBatchRequest = Type.Object(
+  {
+    request_ids: Type.Array(Type.String({ pattern: REQUEST_ID_PATTERN }), {
+      minItems: 1,
+      maxItems: NOTIFICATION_CONTENT_BATCH_MAX,
+      uniqueItems: true,
+    }),
+  },
+  { additionalProperties: false },
+)
+export type NotificationContentBatchRequestT = Static<typeof NotificationContentBatchRequest>
+
+export interface NotificationContentBatchResponse {
+  /** Content of each named request this Account still holds, in request order. */
+  contents: NotificationContentResponse[]
+  /**
+   * Named requests with no content to return: unknown, another Account's, or
+   * deleted by retention. One case, exactly like the single-request 404.
+   */
+  missing: string[]
+}
+
+/**
+ * `POST /api/v1/delivery-content` (no Auth Session): the content of the one
+ * request a Delivery carried, authorized by the Delivery's `content_token`
+ * from the push. This is how a Notification Service Extension, which holds no
+ * session, fetches a Body that did not fit in the push and every image
+ * preview at arrival. The response is a {@link NotificationContentResponse}.
+ */
+export const DeliveryContentRequest = Type.Object(
+  {
+    delivery_id: Type.String({ pattern: '^del_[A-Za-z0-9_-]+$' }),
+    content_token: Type.String({ minLength: 16, maxLength: 64 }),
+  },
+  { additionalProperties: false },
+)
+export type DeliveryContentRequestT = Static<typeof DeliveryContentRequest>
 
 // ---------------------------------------------------------------------------
 // Projects (lazy identity; user-facing customization surface)

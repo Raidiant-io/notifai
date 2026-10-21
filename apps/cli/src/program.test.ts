@@ -298,6 +298,20 @@ describe('program argv parsing', () => {
     await parse(['ask', 'Ship now?', '--choice', 'Ship now', '--choice', 'Wait'], { ask })
     expect(seenQuestion).toBe('Ship now?')
     expect(seenFlags).toEqual({ choice: ['Ship now', 'Wait'] })
+
+    // A description records the choice it follows, in command-line order.
+    await parse([
+      'ask', 'Ship now?',
+      '--choice', 'Ship now', '--choice-description', 'Two minutes of downtime.',
+      '--choice', 'Wait',
+      '--choice', 'Hold', '--choice-description', 'Nothing ships today.',
+      '--recommended', 'Wait',
+    ], { ask })
+    expect(seenFlags).toEqual({
+      choice: ['Ship now', 'Wait', 'Hold'],
+      choiceDescription: [{ after: 1, text: 'Two minutes of downtime.' }, { after: 3, text: 'Nothing ships today.' }],
+      recommended: ['Wait'],
+    })
   })
 
   it('rejects the removed ask --title flag instead of preserving a compatibility shim', async () => {
