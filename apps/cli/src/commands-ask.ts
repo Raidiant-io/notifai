@@ -47,6 +47,12 @@ import {
 export interface AskFlags {
   /** Emit the registration and its turn obligation as one JSON object. */
   json?: boolean
+  /**
+   * Wait for the answer the way the agent would without Notifai. Where a
+   * later answer can return to this Agent Session the agent ends its turn;
+   * where none can, the command itself holds (`commands-ask-wait.ts`).
+   */
+  wait?: boolean
   /** The question's title: names the decision, as the `titles` guidance says. Always passed by current guidance. */
   title?: string
   choice?: string[]
@@ -403,8 +409,12 @@ function recordRegisteredQuestion(
   draft: NotificationDraftT,
   service: ServiceIdentity,
   json = false,
+  wait = false,
 ): number | Promise<number> {
-  const ordinary = () => persistRegisteredQuestion(deps, sessionId, built, draft, service, json)
+  const ordinary = () => persistRegisteredQuestion(deps, sessionId, built, draft, service, json, wait)
+  // A wait ends the turn, and Codex drops every open card at turn end, so a
+  // waiting ask never links one.
+  if (wait) return ordinary()
   if (codexCardOwner(deps, sessionId) !== null) return ordinary()
   if (built.questions.some(question => question.multi === true)) return ordinary()
   const local = currentCodexQuestionContext(readSessionState(sessionId, deps.env), sessionId, deps.env)
@@ -412,7 +422,7 @@ function recordRegisteredQuestion(
   const credential = deps.store.load()
   if (credential === null || credential.machineId !== service.machine_id || credential.baseUrl !== service.base_url) return ordinary()
   const persist = (nativeAdmission?: NativeQuestionAdmission, nativeUnavailable?: NativeUnavailable) =>
-    persistRegisteredQuestion(deps, sessionId, built, draft, service, json, nativeAdmission, local.owner_key, nativeUnavailable)
+    persistRegisteredQuestion(deps, sessionId, built, draft, service, json, false, nativeAdmission, local.owner_key, nativeUnavailable)
   // Discovery is optional and bounded. Missing service support must not create
   // a hidden binding or block ordinary question registration. Do not cache it.
   const client = makeClient(deps, service.base_url, `Bearer nfm_${credential.machineId}.${credential.secret}`, { timeoutMs: 1500 })
@@ -488,6 +498,13 @@ const ROUTE_NEUTRAL = 'Never say where the answer must arrive; it returns by wha
 const ON_ANSWER = 'Acknowledge it, then resume the committed work without asking the user to confirm again.'
 
 /**
+ * The end-the-turn wait: this Agent Session has a proven return path, so the
+ * agent waits as it would without Notifai, by ending its turn, and the answer
+ * wakes it.
+ */
+const END_TURN = 'Ask it in the conversation, say what each answer will make you do, then end your turn. The answer arrives as your next message.'
+
+/**
  * The duplicate guard found this question already open in this Agent Session,
  * or answered with the answer not yet handed to the agent: nothing new was
  * registered, and the earlier registration keeps its own Body and images. A
@@ -500,12 +517,15 @@ function reportAlreadyOpen(
   built: BuiltQuestions,
   questionId: string,
   json: boolean,
+  wait = false,
 ): number {
   log(deps).info('ask.registered', { ok: true, session: sessionId, question_id: questionId, linked: true, questions: built.questions.length })
   const open = captureCandidates(readSessionState(sessionId, deps.env)).find((pending) => pending.question_id === questionId)
   const questions = open?.questions ?? built.questions
   const message = `This question is already open in this Agent Session as ${questionId}: nothing new was registered, and a new Body or images were not applied. Its answer comes back into this Agent Session.`
-  const inThisTurn = 'Ask the question in the conversation and explain what each answer will change, then continue independent work; dependent work waits for the answer.'
+  const inThisTurn = wait
+    ? END_TURN
+    : 'Ask the question in the conversation and explain what each answer will change, then continue independent work; dependent work waits for the answer.'
   const answeredOutside = `If they answer in the conversation instead, run \`notifai close ${questionId}\` to retire this question.`
   if (json) {
     deps.io.out(JSON.stringify({
@@ -522,7 +542,7 @@ function reportAlreadyOpen(
       status: `notifai status ${questionId}`,
       close: `notifai close ${questionId}`,
       next: {
-        end_turn: false,
+        end_turn: wait,
         in_this_turn: inThisTurn,
         route_neutral: ROUTE_NEUTRAL,
         keep_session_open: KEEP_SESSION_OPEN,
@@ -546,6 +566,7 @@ function persistRegisteredQuestion(
   draft: NotificationDraftT,
   service: ServiceIdentity,
   json = false,
+  wait = false,
   nativeAdmission?: NativeQuestionAdmission,
   ownerKey?: string,
   nativeUnavailable?: NativeUnavailable,
@@ -596,7 +617,7 @@ function persistRegisteredQuestion(
       EXIT.failed,
     )
   }
-  if (!registered.registered) return reportAlreadyOpen(deps, sessionId, built, registered.question_id, json)
+  if (!registered.registered) return reportAlreadyOpen(deps, sessionId, built, registered.question_id, json, wait)
   const questionId = registered.question_id
   log(deps).info('ask.registered', {
     ok: true,
@@ -622,7 +643,9 @@ function persistRegisteredQuestion(
       message: err instanceof Error ? err.message : String(err) })
   }
   const nextStep = submission === 'scheduled'
-    ? 'Background submission is scheduled; this does not confirm submission or delivery, so check status before reporting either. Continue independent work: the answer comes back into this Agent Session.'
+    ? wait
+      ? 'Background submission is scheduled; this does not confirm submission or delivery, so check status before reporting either.'
+      : 'Background submission is scheduled; this does not confirm submission or delivery, so check status before reporting either. Continue independent work: the answer comes back into this Agent Session.'
     : 'Background startup failed. Keep this registration; ordinary lifecycle hooks can recover it. Inspect status before relying on submission.'
   const native = readSessionState(sessionId, deps.env).codex_question_bindings?.find(binding =>
     binding.question_id === questionId && binding.owner_key === readSessionIncarnation(sessionId, deps.env)?.key)
@@ -662,9 +685,10 @@ function persistRegisteredQuestion(
           status: `notifai status ${questionId}`,
           close: `notifai close ${questionId}`,
           next: {
-            end_turn: false,
-            in_this_turn:
-              `Ask the question in the conversation and explain what each answer will change. ${nextStep}`,
+            end_turn: wait,
+            in_this_turn: wait
+              ? `${END_TURN} ${nextStep}`
+              : `Ask the question in the conversation and explain what each answer will change. ${nextStep}`,
             route_neutral: ROUTE_NEUTRAL,
             keep_session_open: KEEP_SESSION_OPEN,
             on_answer: ON_ANSWER,
@@ -698,7 +722,7 @@ function persistRegisteredQuestion(
     `${nextStep} Inspect \`notifai status ${questionId}\` for submission evidence; never register a replacement to check this question.`,
   )
   deps.io.out(KEEP_SESSION_OPEN)
-  deps.io.out('Ask in the conversation and explain what each answer will change:')
+  deps.io.out(wait ? END_TURN : 'Ask in the conversation and explain what each answer will change:')
   for (const [index, entry] of built.questions.entries()) {
     const questionPrefix = built.questions.length > 1 ? `Question ${index + 1}, ` : ''
     if (entry.choices !== undefined) {
@@ -786,7 +810,7 @@ async function uploadAskMedia(
   if (!ready.ok) {
     return askFailure(deps, flags, 'invalid_draft', 'draft', ready.error, 'fix the reported field and retry')
   }
-  return recordRegisteredQuestion(deps, sessionId, built, ready.draft, service, flags.json === true)
+  return recordRegisteredQuestion(deps, sessionId, built, ready.draft, service, flags.json === true, flags.wait === true)
 }
 
 /**
@@ -1039,7 +1063,7 @@ export function askCommand(
   }
   // The card shows titles and option labels only; a question that carries
   // more keeps ordinary ask so nothing the agent wrote is lost.
-  if (flags.body === undefined && flags.image === undefined && built.body === undefined &&
+  if (flags.wait !== true && flags.body === undefined && flags.image === undefined && built.body === undefined &&
       built.questions.every(question => question.multi !== true && (question.choices ?? []).every(choice =>
         choice.description === undefined && choice.recommended !== true)) && codexCardAsks(deps, sessionId)) {
     const card = { questions: built.questions.map(question => ({ title: question.text,
@@ -1085,7 +1109,7 @@ export function askCommand(
   // The duplicate guard runs before any upload, so a repeat of an open question
   // costs no media round trip; registration repeats it under the session lock.
   const open = findOpenEqualQuestion(readSessionState(sessionId, deps.env), built.questions)
-  if (open !== undefined) return reportAlreadyOpen(deps, sessionId, built, open.question_id!, flags.json === true)
+  if (open !== undefined) return reportAlreadyOpen(deps, sessionId, built, open.question_id!, flags.json === true, flags.wait === true)
   if ((flags.image?.length ?? 0) > 0) {
     return uploadAskMedia(
       deps,
@@ -1098,5 +1122,5 @@ export function askCommand(
     )
   }
   return recordRegisteredQuestion(deps, sessionId, built, preflight.draft,
-    { base_url: credential.baseUrl, machine_id: credential.machineId }, flags.json === true)
+    { base_url: credential.baseUrl, machine_id: credential.machineId }, flags.json === true, flags.wait === true)
 }

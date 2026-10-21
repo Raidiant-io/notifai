@@ -84,6 +84,7 @@ import {
 } from './commands.js'
 import type { SendFlags } from './send.js'
 import type { AskFlags } from './commands-ask.js'
+import { REPLIES_WAIT_DEPRECATED } from './commands-send.js'
 import {
   applyPlan,
   buildHookConfig,
@@ -190,8 +191,7 @@ function sendCommand(
   flags: Omit<SendFlags, 'summary'> & {
     summary?: string
     json?: boolean
-    wait?: number
-    noWait?: boolean
+    deliveryTimeout?: number
     replyTimeout?: number
     idempotencyKey?: string
     retry?: boolean
@@ -2767,6 +2767,21 @@ describe('command contracts', () => {
     expect(io.outLines.join('\n')).not.toContain('notifai acknowledge')
   })
 
+  it('keeps the deprecated replies --wait polling, naming its replacement', async () => {
+    const io = new CapturedIo()
+    let polls = 0
+    let clock = Date.parse('2026-10-22T00:00:00.000Z')
+    const client = {
+      replies: async () => (++polls < 3 ? replyResponse([]) : replyResponse([reply])),
+    } as unknown as ApiClient
+    const deps = { ...makeDeps(io, client), now: () => clock, sleep: async (ms: number) => { clock += ms } }
+
+    expect(await repliesCommand(deps, receipt.request_id, { wait: 60, json: true })).toBe(EXIT.ok)
+    expect(polls).toBe(3)
+    expect(io.errLines).toEqual([REPLIES_WAIT_DEPRECATED])
+    expect(JSON.parse(io.outLines.join('\n'))).toMatchObject({ type: 'reply_result', replies: [{ text: reply.text }] })
+  })
+
   it('requires acknowledgement for an answer despite a legacy disabled flag', async () => {
     const io = new CapturedIo()
     const client = {
@@ -3141,12 +3156,10 @@ describe('command contracts', () => {
   it('attributes a degraded multi-request wait only to the request whose polls failed', async () => {
     const io = new CapturedIo()
     let now = 0
-    let failedPolls = 0
     const client = {
       replies: async (requestId: string) => {
         if (requestId !== 'req_degraded') return replyResponse([reply])
-        failedPolls += 1
-        if (failedPolls === 1) return replyResponse([])
+        // `replies` reads once, so the one read failing is the whole wait failing.
         throw new NetworkError('temporary disconnect')
       },
     } as unknown as ApiClient
@@ -3171,7 +3184,7 @@ describe('command contracts', () => {
     })
     writeProjectSession(root, deps.env, 'pending-degraded-log', Date.now(), 'codex')
 
-    expect(await repliesCommand(deps, undefined, { pending: true, wait: 1 })).toBe(EXIT.network)
+    expect(await repliesCommand(deps, undefined, { pending: true })).toBe(EXIT.network)
 
     io.outLines = []
     io.errLines = []
@@ -3200,15 +3213,10 @@ describe('command contracts', () => {
   it('records earlier degraded requests before a later pending wait throws', async () => {
     const io = new CapturedIo()
     let now = 0
-    let degradedPolls = 0
     const client = {
       replies: async (requestId: string) => {
         if (requestId === 'req_success') return replyResponse([reply])
-        if (requestId === 'req_degraded') {
-          degradedPolls += 1
-          if (degradedPolls === 1) return replyResponse([])
-          throw new NetworkError('temporary disconnect')
-        }
+        if (requestId === 'req_degraded') throw new NetworkError('temporary disconnect')
         if (requestId === 'req_failed') {
           throw new ApiCallError(404, 'not_found', 'That notification request does not exist.')
         }
@@ -3237,7 +3245,7 @@ describe('command contracts', () => {
     })
     writeProjectSession(root, deps.env, 'pending-mixed-log', Date.now(), 'codex')
 
-    expect(await repliesCommand(deps, undefined, { pending: true, wait: 1 })).toBe(EXIT.failed)
+    expect(await repliesCommand(deps, undefined, { pending: true })).toBe(EXIT.failed)
 
     const recordsFor = (requestId: string): Array<Record<string, unknown>> => {
       io.outLines = []
@@ -8828,6 +8836,16 @@ describe('asking before the hooks have ever run', () => {
       expect(readSessionState(sessionId, env).pending).toBeUndefined()
       expect(spawn).not.toHaveBeenCalled()
       expect(compatibility).not.toHaveBeenCalled()
+      // A wait ends the turn, and Codex drops open cards at turn end, so
+      // `ask --wait` never takes the card: it registers and says to end the turn.
+      io.outLines = []
+      expect(await askCommand(deps, 'Where?', { title: 'Decision', choice: ['Staging', 'Production'], wait: true, json: true })).toBe(EXIT.ok)
+      const waited = JSON.parse(io.outLines.join('\n'))
+      expect(waited).toMatchObject({ registered: true, next: { end_turn: true, in_this_turn: expect.stringMatching(/^Ask it in the conversation, say what each answer will make you do, then end your turn\. The answer arrives as your next message\./) } })
+      expect(waited).not.toHaveProperty('native_question')
+      expect(readSessionState(sessionId, env).pending).toHaveLength(1)
+      expect(readSessionState(sessionId, env).codex_question_bindings).toBeUndefined()
+      expect(await closeCommand(deps, waited.question_id, {})).toBe(EXIT.ok)
       // The card shows labels only; a described choice keeps ordinary ask.
       io.outLines = []
       expect(await askCommand(deps, 'Where?', {
@@ -9396,6 +9414,71 @@ describe('asking before the hooks have ever run', () => {
     expect(await askCommand(deps, 'Where?', { title: 'Deploy targets', choice: ['Staging', 'Production'], multi: true, json: true })).toBe(EXIT.ok)
     expect(JSON.parse(io.outLines.join('\n')).registered).toBe(true)
     expect(readSessionState('claude-closed', env).pending).toHaveLength(2)
+  })
+
+  it('ends the turn for `ask --wait` where the answer can come back, and again for a repeat', async () => {
+    // Claude Code has a return path (the inbox wake), so a wait is the agent's
+    // own wait: it registers at once and ends its turn; nothing is held.
+    const cwd = scratchDir('notifai-claude-ask-wait-')
+    const io = new CapturedIo()
+    const env = { ...isolatedEnv(cwd), CLAUDECODE: '1', CLAUDE_CODE_SESSION_ID: 'claude-wait' }
+    const client = { submit: vi.fn(), replies: vi.fn() } as unknown as ApiClient
+    const deps = { ...makeDeps(io, client), cwd, env, now: () => 42, spawnQuestionSettlement: vi.fn() }
+    expect(hooksInstallCommand(deps, { harness: 'claude-code', execPath, scriptPath })).toBe(EXIT.ok)
+    beginSessionIncarnation('claude-wait', env, { stamp: lifecycleStamp(), harnessProcess: currentProcessIdentity()! })
+    writeSessionState('claude-wait', env, { harness: 'claude-code', last_prompt_at: 42, last_stop_at: 41 })
+    writeProjectSession(cwd, env, 'claude-wait', 42, 'claude-code')
+    io.outLines = []
+    expect(await askCommand(deps, 'Which name?', { title: 'Release name', wait: true, json: true })).toBe(EXIT.ok)
+    const first = JSON.parse(io.outLines.join('\n'))
+    expect(first).toMatchObject({
+      registered: true,
+      next: {
+        end_turn: true,
+        in_this_turn: expect.stringMatching(/^Ask it in the conversation, say what each answer will make you do, then end your turn\. The answer arrives as your next message\./),
+        keep_session_open: expect.stringMatching(/Keep this Agent Session open/),
+      },
+    })
+    expect(readSessionState('claude-wait', env).pending).toHaveLength(1)
+    expect(deps.spawnQuestionSettlement).toHaveBeenCalledTimes(1)
+    // Nothing held: no submission or poll ran in this process.
+    expect(client.submit).not.toHaveBeenCalled()
+    expect(client.replies).not.toHaveBeenCalled()
+
+    // A repeated wait re-attaches to the open question and says to end the turn again.
+    io.outLines = []
+    expect(await askCommand(deps, 'Which name?', { title: 'Release name', wait: true, json: true })).toBe(EXIT.ok)
+    expect(JSON.parse(io.outLines.join('\n'))).toMatchObject({
+      registered: false, already_open: { question_id: first.question_id }, next: { end_turn: true, in_this_turn: expect.stringContaining('end your turn') },
+    })
+    expect(deps.spawnQuestionSettlement).toHaveBeenCalledTimes(1)
+
+    // The human output says the same.
+    io.outLines = []
+    expect(await askCommand(deps, 'Which colour?', { title: 'Release colour', wait: true })).toBe(EXIT.ok)
+    expect(io.outLines.join('\n')).toContain('then end your turn. The answer arrives as your next message.')
+    expect(io.outLines.join('\n')).not.toContain('Continue independent work')
+  })
+
+  it('refuses `ask --wait` in a hooked session that is not ready, and never holds it', async () => {
+    // Admission comes first: a harness with a return path whose routing is not
+    // ready is refused, so the wait cannot become a bypass of the hooks.
+    const cwd = scratchDir('notifai-claude-wait-not-ready-')
+    const io = new CapturedIo()
+    const env = { ...isolatedEnv(cwd), CLAUDECODE: '1', CLAUDE_CODE_SESSION_ID: 'claude-unready' }
+    const client = { submit: vi.fn(), replies: vi.fn() } as unknown as ApiClient
+    const deps = { ...makeDeps(io, client), cwd, env, now: () => 42 }
+    expect(await askCommand(deps, 'Which name?', { title: 'Release name', wait: true, json: true })).toBe(EXIT.usage)
+    expect(JSON.parse(io.outLines.at(-1)!)).toMatchObject({ code: 'hooks_not_installed', registered: false })
+    expect(client.submit).not.toHaveBeenCalled()
+    expect(readSessionState('claude-unready', env).pending).toBeUndefined()
+
+    // Hooks installed, but this session has not fired UserPromptSubmit yet.
+    expect(hooksInstallCommand(deps, { harness: 'claude-code', execPath, scriptPath })).toBe(EXIT.ok)
+    io.outLines = []
+    expect(await askCommand(deps, 'Which name?', { title: 'Release name', wait: true, json: true })).toBe(EXIT.usage)
+    expect(JSON.parse(io.outLines.at(-1)!)).toMatchObject({ code: 'session_not_activated' })
+    expect(client.submit).not.toHaveBeenCalled()
   })
 
   it('registers a question again once its earlier answer was handed to the agent', async () => {

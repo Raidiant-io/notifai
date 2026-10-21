@@ -49,6 +49,7 @@ import type { ChoiceDescriptionInput } from './send.js'
 import type { SkillScope } from './native-skills.js'
 import { GROUP, SEND_GROUP, helpConfiguration, rootHelpFooter } from './ui/help.js'
 import { readStdinWithTimeout } from './hook-input.js'
+import { SEND_WAIT_DEPRECATED } from './commands-send.js'
 import { argvFlagNames } from './logging.js'
 import { QUESTION_SETTLEMENT_INPUT_ENV } from './question-settlement-process.js'
 import { settleBeforeExit } from './exit-work.js'
@@ -105,7 +106,7 @@ function commandPath(command: Command): string {
 /**
  * Every command implementation the tree dispatches to, injectable so a test
  * can parse real argv and assert the exact flags a command would receive —
- * the layer where `--no-wait` disentangling and collector defaults live, which
+ * the layer where `--body-file` reading and collector defaults live, which
  * unit tests on the commands themselves can never see.
  */
 const defaultRunners = {
@@ -671,8 +672,7 @@ export function buildProgram(deps: CommandDeps, options: BuildProgramOptions = {
       '--level <level>',
       'Apple-only interruption level: passive | active | time_sensitive (unsupported with --platform android)',
     )
-    .option('--wait <seconds>', 'how long to wait for provider outcomes', (v: string) => Number(v))
-    .option('--no-wait', 'return immediately after acceptance')
+    .option('--delivery-timeout <seconds>', 'how long to wait for provider outcomes; 0 returns at acceptance (default: wait_seconds)', (v: string) => Number(v))
     .option('--data <key=value>', 'custom data (repeatable)', (v: string, all: string[] = []) => [...all, v])
     .option('--idempotency-key <key>', 'safe-retry key (default: random)')
     .option('--retry', 'explicitly retry one unresolved exact semantic send using its opaque saved attempt')
@@ -681,14 +681,22 @@ export function buildProgram(deps: CommandDeps, options: BuildProgramOptions = {
       'pairing override for the service origin; ignored when this machine is already paired (also NOTIFAI_BASE_URL)',
     )
     .option('--json', 'print the full submission receipt as JSON')
+    // Deprecated names kept working for shipped sessions and scripts, hidden
+    // from help: `--delivery-timeout` replaced `--wait` and `--no-wait`.
+    .addOption(new Option('--wait <seconds>').argParser((v: string) => Number(v)).hideHelp())
+    .addOption(new Option('--no-wait').hideHelp())
     .action(async (opts: Record<string, unknown>) => {
-      // commander maps --no-wait onto the same "wait" flag; disentangle.
-      const noWait = opts['wait'] === false
-      const wait = typeof opts['wait'] === 'number' ? opts['wait'] : undefined
       const sendOpts = { ...opts }
       // Commander collectors default to []; an empty list means "not passed".
       for (const key of ['choice', 'choiceDescription', 'recommended', 'image', 'imageAlt']) {
         if (Array.isArray(sendOpts[key]) && sendOpts[key].length === 0) delete sendOpts[key]
+      }
+      // commander maps --wait <seconds> and --no-wait onto one "wait" key.
+      const legacyWait = sendOpts['wait']
+      delete sendOpts['wait']
+      if (legacyWait !== undefined) {
+        deps.io.err(SEND_WAIT_DEPRECATED)
+        sendOpts['deliveryTimeout'] ??= legacyWait === false ? 0 : legacyWait
       }
       const bodyFile = sendOpts['bodyFile']
       delete sendOpts['bodyFile']
@@ -704,10 +712,7 @@ export function buildProgram(deps: CommandDeps, options: BuildProgramOptions = {
           return exit(2)
         }
       }
-      const flags = { ...sendOpts, noWait } as Parameters<typeof sendCommand>[1]
-      if (wait === undefined) delete (flags as { wait?: number }).wait
-      else flags.wait = wait
-      exit(await runners.send(deps, flags))
+      exit(await runners.send(deps, sendOpts as unknown as Parameters<typeof sendCommand>[1]))
     })
 
   send.addHelpText(
@@ -718,13 +723,13 @@ export function buildProgram(deps: CommandDeps, options: BuildProgramOptions = {
   program
     .command('replies [request_id]')
     .helpGroup(GROUP.agent)
-    .summary('Retrieve replies to a question')
-    .description('Retrieve replies for a notification request')
+    .summary('Read the answer to a question')
+    .description('Read the answers recorded for a question; one read, never a poll (waiting is `notifai ask --wait`)')
     .option('--pending', 'use the pushed question pending for this Project and Agent Session')
-    .option('--wait <seconds>', 'how long to wait for a reply', (v: string) => Number(v))
     .option('--after <seq>', 'return replies after this sequence number', (v: string) => Number(v))
     .option('--handoff', 're-present the selected answer to this exact Agent Session and record its hand-off')
     .option('--json', 'machine-readable output')
+    .addOption(new Option('--wait <seconds>', 'deprecated: a bounded poll').argParser((v: string) => Number(v)).hideHelp())
     .action(async (requestId: string | undefined, opts: { wait?: number; after?: number; json?: boolean; pending?: boolean; handoff?: boolean }) => {
       exit(await runners.replies(deps, requestId, opts))
     })
@@ -763,9 +768,13 @@ export function buildProgram(deps: CommandDeps, options: BuildProgramOptions = {
   const ask: Command = program
     .command('ask [question]')
     .helpGroup(GROUP.agent)
-    .summary('Ask now and continue independent work')
-    .description('Register a question and immediately start background submission, subject to your question-routing settings')
+    .summary('Ask the User a question')
+    .description('Register a question on the User\'s devices and keep working, or add --wait to wait for the answer the way you would without Notifai')
     .option('--title <text>', 'always pass it: names the decision in a few words, never the question itself (see notifai guidance titles)')
+    .option(
+      '--wait',
+      'wait for the answer: where a later answer can reach this Agent Session, end your turn as the output says; elsewhere this command holds until the answer arrives or the wait ends (exit 0 answered, 3 ended unanswered and withdrawn, 5 network)',
+    )
     .option(
       '--choice <label>',
       'answers to offer instead of free text; repeat the flag once per answer (2-6)',
@@ -803,6 +812,7 @@ export function buildProgram(deps: CommandDeps, options: BuildProgramOptions = {
     )
     .action(async (question: string | undefined, opts: {
       title?: string
+      wait?: boolean
       choice?: string[]
       choiceDescription?: ChoiceDescriptionInput[]
       recommended?: string[]
@@ -851,6 +861,7 @@ export function buildProgram(deps: CommandDeps, options: BuildProgramOptions = {
       // Commander collectors default to []; an empty list means "not passed".
       const flags: Parameters<typeof askCommand>[2] = {
         ...(opts.title !== undefined ? { title: opts.title } : {}),
+        ...(opts.wait === true ? { wait: true } : {}),
         ...(opts.choice?.length ? { choice: opts.choice } : {}),
         ...(opts.choiceDescription?.length ? { choiceDescription: opts.choiceDescription } : {}),
         ...(opts.recommended?.length ? { recommended: opts.recommended } : {}),

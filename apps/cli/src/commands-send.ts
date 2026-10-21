@@ -9,7 +9,7 @@ import {
   type ReplyView,
   type SubmissionReceipt,
 } from '@raidiant/notifai-protocol'
-import { ApiCallError, NetworkError, type ApiClient } from './client.js'
+import { ApiCallError, NetworkError, isRetryableReplyPollError, type ApiClient } from './client.js'
 import type { FlagOverrides, loadConfig } from './config.js'
 import { MIN_REPLY_WINDOW_SECONDS } from './hook-lifecycle.js'
 import { inspectQuestionState, type QuestionStateView } from './hook-question-state.js'
@@ -91,12 +91,17 @@ export function draftForServerCapabilities(
   return { ...draft, source: legacySource }
 }
 
+export const SEND_WAIT_DEPRECATED =
+  'notifai: `send --wait` and `--no-wait` are deprecated and will be removed; use `--delivery-timeout <seconds>`, where 0 returns at acceptance.'
+export const REPLIES_WAIT_DEPRECATED =
+  'notifai: `replies --wait` is deprecated and will be removed; `notifai replies` reads once, and `notifai ask --wait` waits for an answer.'
+
 export async function sendCommand(
   deps: CommandDeps,
   flags: SendFlags & {
     json?: boolean
-    wait?: number
-    noWait?: boolean
+    /** How long to wait for provider outcomes; 0 returns at acceptance. */
+    deliveryTimeout?: number
     replyTimeout?: number
     idempotencyKey?: string
     retry?: boolean
@@ -181,7 +186,7 @@ export async function sendCommand(
   const config = loadLoggedConfig(deps, {
     cwd: deps.cwd,
     env: deps.env,
-    flags: { base_url: flags.baseUrl, wait_seconds: flags.wait } as FlagOverrides,
+    flags: { base_url: flags.baseUrl, wait_seconds: flags.deliveryTimeout } as FlagOverrides,
   })
   if (flags.reply && !config.ask_notifications.value) {
     deps.io.err(
@@ -302,7 +307,7 @@ export async function sendCommand(
       'Heads up: this notification ends with a question, but it cannot be answered. Use `notifai ask` for a question the User should answer.',
     )
   }
-  const waitSeconds = flags.noWait ? 0 : config.wait_seconds.value
+  const waitSeconds = config.wait_seconds.value
   const idempotencyKey = attempt.idempotencyKey
   // Persist the retry identity before entering the ambiguous network boundary.
   // If the process is killed after the server accepts but before a response,
@@ -576,7 +581,14 @@ function emitSendWarnings(
 export async function repliesCommand(
   deps: CommandDeps,
   requestedId: string | undefined,
-  flags: { wait?: number; after?: number; json?: boolean; pending?: boolean; handoff?: boolean },
+  flags: {
+    /** Hidden and deprecated: a bounded poll kept for callers that still pass it. */
+    wait?: number
+    after?: number
+    json?: boolean
+    pending?: boolean
+    handoff?: boolean
+  },
 ): Promise<number> {
   if (deps.env['NOTIFAI_ACTIVE_HARNESS'] === 'openclaw') {
     const sessionKey = deps.env['NOTIFAI_ACTIVE_SESSION_ID'] ?? ''
@@ -586,6 +598,7 @@ export async function repliesCommand(
       return EXIT.usage
     }
   }
+  if (flags.wait !== undefined) deps.io.err(REPLIES_WAIT_DEPRECATED)
   const waitSeconds = flags.wait ?? 0
   const afterSeq = flags.after ?? 0
   if (!isNonNegativeInteger(waitSeconds)) {
@@ -603,7 +616,7 @@ export async function repliesCommand(
   }
   if (flags.handoff === true) {
     if (requestedId === undefined || flags.pending === true || waitSeconds !== 0 || afterSeq !== 0) {
-      deps.io.err('--handoff needs one request id without --pending, --wait, or --after.')
+      deps.io.err('--handoff needs one request id without --pending or --after.')
       return EXIT.usage
     }
     const active = sourceContextHarnessSession(deps.env, deps.cwd, (deps.now ?? Date.now)())
@@ -734,6 +747,14 @@ export async function repliesCommand(
         if (result.degraded) degradedRequestIds.push(requestId)
         allTimedOut &&= result.timedOut || result.closed === true
       } catch (err) {
+        // One read, so a transient fault leaves this request unread rather
+        // than ending the queue: it is "could not find out", named below.
+        if (isRetryableReplyPollError(err)) {
+          degradedRequestIds.push(requestId)
+          if (flags.json) jsonBodies.push(unansweredReadJson(requestId))
+          allTimedOut = false
+          continue
+        }
         recordDegradedReplyWaits(deps, degradedRequestIds)
         return reportError(deps, err, { operation: 'reply_wait', request_id: requestId })
       }
@@ -873,6 +894,21 @@ function unansweredReplyResultJson(receipt: SubmissionReceipt, degraded: boolean
     agent_acknowledgement: null,
     acknowledgement_command: null,
     degraded,
+  }
+}
+
+/** The read that could not reach the service: the same shape, no answer, `degraded: true`. */
+function unansweredReadJson(requestId: string): object {
+  return {
+    type: 'reply_result',
+    request_id: requestId,
+    reply_expires_at: null,
+    replies: [],
+    agent_acknowledgement_required: false,
+    agent_acknowledgement_text_required: false,
+    agent_acknowledgement: null,
+    acknowledgement_command: null,
+    degraded: true,
   }
 }
 
