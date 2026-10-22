@@ -20,15 +20,14 @@ import {
 import { resolveDraftInvocation, uploadImage } from './commands-send-support.js'
 import { loadConfig, type CliConfig } from './config.js'
 import { HERMES_QUESTION_ROUTING_UNAVAILABLE, isHookInstallableHarness } from './harnesses.js'
-import { QuestionRegistrationChanged, registerQuestion } from './hook-lifecycle.js'
+import { QuestionRegistrationChanged, registerQuestion, type RegisteredQuestion } from './hook-lifecycle.js'
+import { captureCandidates, findOpenEqualQuestion } from './question-guard.js'
 import { readSessionIncarnation, readSessionState, sessionHasEnded } from './hook-session-state.js'
 import { processIdentityLiveness } from './process-identity.js'
 import { connectCodexAnswerControl, type CodexAnswerUnavailable } from './codex-answer-control.js'
 import { currentCodexQuestionContext, nativeQuestionTitle, type NativeQuestionAdmission } from './codex-question-bindings.js'
-import { askUserQuestionInput, claudePickerShape } from './claude-question-bindings.js'
-import { installsClaudePickerHooks } from './hook-events.js'
 import { hermesQuestionRouteReady } from './session-attendant-state.js'
-import { codexRoutingTrustProblems, findInstallations, handlerEvent } from './install-hooks.js'
+import { codexRoutingTrustProblems, findInstallations } from './install-hooks.js'
 import { CODEX_CARD_VERSION_FLOOR, codexCardHooksReady, codexCardToolOffered } from './codex-card-capability.js'
 import { activeOpenclawGeneration } from './openclaw-session-access.js'
 import { openclawGatewayReady } from './openclaw-gateway-readiness.js'
@@ -40,6 +39,7 @@ import {
   rejectAccidentalEscapedNewlines,
   slugify,
   validateMediaInputs,
+  UNTITLED_FORM_TITLE,
   type ChoiceDescriptionInput,
   type ChoiceDetails,
   type DraftInvocation,
@@ -47,6 +47,8 @@ import {
 export interface AskFlags {
   /** Emit the registration and its turn obligation as one JSON object. */
   json?: boolean
+  /** The question's title: names the decision, as the `titles` guidance says. Always passed by current guidance. */
+  title?: string
   choice?: string[]
   /** One-line consequence of each choice, attached to the `--choice` before it. */
   choiceDescription?: ChoiceDescriptionInput[]
@@ -80,8 +82,6 @@ export interface AskFailure {
     action: string
     message: string
   }
-  /** The `AskUserQuestion` input that asks this instead, when the picker can. */
-  ask_user_question?: ReturnType<typeof askUserQuestionInput>
   request_user_input_async?: { questions: Array<{ title: string; options?: string[] }> }
 }
 
@@ -131,17 +131,37 @@ type AskFormChoice = string | { label: string; description?: string; recommended
 
 /** The `--form` document: what an agent writes to ask several things at once. */
 interface AskFormQuestion {
+  /** With several questions, a word or two naming this question's own decision: its header in a terminal form. */
+  title?: string
   text: string
   choices?: AskFormChoice[]
   multi?: boolean
 }
 
 const FORM_SHAPE =
-  '--form must be JSON: {"summary": "...", "questions": [{"text", "choices"?, "multi"?}], "body"?}; ' +
+  '--form must be JSON: {"title": "...", "summary": "...", "questions": [{"title"?, "text", "choices"?, "multi"?}], "body"?}; ' +
   'a choice is a label or {"label", "description"?, "recommended"?}.'
+
+const TITLE_GUIDANCE = 'it names the decision in a few words and is never the question itself (`notifai guidance titles`)'
+
+/** A title an older skill or script left out: the question still registers. */
+export const MISSING_TITLE_NOTE =
+  `notifai: pass --title (a form: its "title"); ${TITLE_GUIDANCE}. Until then the question is titled by the Agent Session name.`
+const missingQuestionTitlesNote = (numbers: number[]): string =>
+  `notifai: give each question of a form its own "title", a word or two naming its decision; ${numbers.map(n => `question ${n}`).join(', ')} ${numbers.length === 1 ? 'shows' : 'show'} as "Question N" until then.`
 
 export interface BuiltQuestions {
   questions: QuestionT[]
+  /**
+   * The agent's title for the question, or the form's title for everything it
+   * decides. Absent only for a form the agent opened itself, which is titled
+   * by its heading, its headers or the Agent Session name (`buildAskDraft`).
+   */
+  title?: string
+  /** With several questions, each question's own short title: its header in a terminal form. */
+  headers?: string[]
+  /** One line each for a title the agent left out, which current guidance always passes. */
+  notes?: string[]
   /** Purpose-written plain text for the collapsed banner and list surfaces. */
   summary: string
   /** Optional standalone Markdown Body for focused detail. */
@@ -151,17 +171,27 @@ export interface BuiltQuestions {
 /**
  * Turn ask input into questions plus authored presentation content. Everything is
  * validated at registration because a later hook failure is easy to miss.
+ *
+ * The guidance has `ask` always pass a title (`--title`, or the form's
+ * `"title"`), and a form with several questions a `"title"` per question. An
+ * agent session or script from before titles leaves them out, so a missing
+ * title is a note, not a usage error: the question takes the Agent Session
+ * name, the rule a self-opened form follows, and an untitled question of
+ * several is "Question N". A harness form the agent opened itself
+ * (`selfOpened`) has no agent-written title: its hook titles it, without a note.
  */
 export function buildQuestions(
   flags: AskFlags,
   question: string | undefined,
-): { ok: true; questions: QuestionT[]; summary: string; body?: string } | { ok: false; error: string } {
+  options: { selfOpened?: boolean } = {},
+): ({ ok: true } & BuiltQuestions) | { ok: false; error: string } {
+  const titled = options.selfOpened !== true
   if (flags.form !== undefined) {
     if (question !== undefined || flags.choice?.length || flags.multi ||
-        flags.choiceDescription?.length || flags.recommended?.length) {
+        flags.choiceDescription?.length || flags.recommended?.length || flags.title !== undefined) {
       return {
         ok: false,
-        error: '--form replaces the positional question, --choice, --choice-description, --recommended, and --multi.',
+        error: '--form replaces the positional question, --title, --choice, --choice-description, --recommended, and --multi; the form carries the title in its "title" key.',
       }
     }
     let parsed: unknown
@@ -175,7 +205,7 @@ export function buildQuestions(
     }
     const record = parsed as Record<string, unknown>
     const unknownKeys = Object.keys(record).filter(
-      (key) => key !== 'summary' && key !== 'questions' && key !== 'body',
+      (key) => key !== 'title' && key !== 'summary' && key !== 'questions' && key !== 'body',
     )
     if (unknownKeys.length > 0) {
       return {
@@ -188,6 +218,9 @@ export function buildQuestions(
     }
     if (typeof record['summary'] !== 'string' || record['summary'].trim() === '') {
       return { ok: false, error: '--form needs a non-empty one-line "summary" string.' }
+    }
+    if (record['title'] !== undefined && typeof record['title'] !== 'string') {
+      return { ok: false, error: '"title" must be a string.' }
     }
     const formQuestions = record['questions']
     if (formQuestions.length < 1 || formQuestions.length > REPLY_MAX_QUESTIONS) {
@@ -203,12 +236,22 @@ export function buildQuestions(
       return { ok: false, error: 'Pass the Markdown Body in either --body or the form "body" key, not both.' }
     }
     const questions: QuestionT[] = []
+    const headers: string[] = []
+    const untitled: number[] = []
     const usedIds = new Set<string>()
     for (const [index, entry] of formQuestions.entries()) {
       if (typeof entry !== 'object' || entry === null || typeof (entry as AskFormQuestion).text !== 'string') {
         return { ok: false, error: `Question ${index + 1} needs a "text" string.` }
       }
       const spec = entry as AskFormQuestion
+      if (spec.title !== undefined && typeof spec.title !== 'string') {
+        return { ok: false, error: `Question ${index + 1}: "title" must be a string.` }
+      }
+      if (spec.title !== undefined && spec.title.trim() !== '') headers.push(spec.title.trim())
+      else if (titled && formQuestions.length > 1) {
+        headers.push(`Question ${index + 1}`)
+        untitled.push(index + 1)
+      }
       const choices = formChoices(spec.choices)
       if ('error' in choices) return { ok: false, error: `Question ${index + 1}: ${choices.error}` }
       const built = buildOneQuestion(spec.text, choices.labels, choices.details, spec.multi === true, index, usedIds)
@@ -216,9 +259,17 @@ export function buildQuestions(
       questions.push(built.question)
     }
     const body = flags.body ?? (record['body'] as string | undefined)
+    const title = typeof record['title'] === 'string' ? record['title'].trim() : undefined
+    const notes = [
+      ...(titled && (title === undefined || title === '') ? [MISSING_TITLE_NOTE] : []),
+      ...(untitled.length > 0 ? [missingQuestionTitlesNote(untitled)] : []),
+    ]
     return {
       ok: true,
       questions,
+      ...(title !== undefined && title !== '' ? { title } : {}),
+      ...(headers.length === questions.length ? { headers } : {}),
+      ...(notes.length > 0 ? { notes } : {}),
       summary: record['summary'],
       ...(body !== undefined ? { body } : {}),
     }
@@ -235,6 +286,7 @@ export function buildQuestions(
   return {
     ok: true,
     questions: [built.question],
+    ...(flags.title !== undefined && flags.title.trim() !== '' ? { title: flags.title.trim() } : titled ? { notes: [MISSING_TITLE_NOTE] } : {}),
     summary: built.question.text,
     ...(flags.body !== undefined ? { body: flags.body } : {}),
   }
@@ -304,6 +356,12 @@ function buildOneQuestion(
   }
 }
 
+/**
+ * The draft of a registered question. A form the agent opened itself wrote no
+ * title: it is titled by its heading or headers (the caller's `built.title`),
+ * otherwise by the Agent Session name. No route copies the question into the
+ * title; the question is the Summary, shown once beneath it.
+ */
 export function buildAskDraft(
   config: CliConfig,
   built: BuiltQuestions,
@@ -314,7 +372,7 @@ export function buildAskDraft(
   const result = buildDraft(
     config,
     {
-      title: built.questions[0]!.text,
+      title: built.title ?? invocation.source?.session_label ?? UNTITLED_FORM_TITLE,
       summary: built.summary,
       ...(built.body !== undefined ? { body: built.body } : {}),
       ...(flags.project !== undefined ? { project: flags.project } : {}),
@@ -402,25 +460,6 @@ function nativeUnavailableDetail(unavailable: NativeUnavailable): string {
 }
 
 /**
- * Whether this Claude Code session's question picker asks these questions on
- * the User's devices by itself: both picker handlers are installed, the
- * session is live, and the picker can show every question. `ask` then refuses,
- * so a question is never asked twice.
- */
-function claudePickerOwner(deps: CommandDeps, sessionId: string, questions: BuiltQuestions['questions']): string | null {
-  if (readSessionState(sessionId, deps.env).harness !== 'claude-code' || !claudePickerShape(questions)) return null
-  const owner = readSessionIncarnation(sessionId, deps.env)
-  if (owner === null || sessionHasEnded(sessionId, deps.env) || owner.harness_process === undefined ||
-      processIdentityLiveness(owner.harness_process) !== 'alive') return null
-  const platform = deps.hookPlatform ?? process.platform
-  if (!installsClaudePickerHooks('claude-code', platform)) return null
-  const events = new Set(findInstallations(deps.env, deps.hookAdapterHome, deps.hookPlatform)
-    .filter(installation => installation.harness === 'claude-code')
-    .flatMap(installation => installation.handlers.map(handler => handlerEvent(handler.command))))
-  return events.has('permission-request') && events.has('post-tool-use') ? owner.key : null
-}
-
-/**
  * A trusted native card hook replaces the agent's registration/copy step:
  * any card this session opens registers itself, so `ask` never links one.
  */
@@ -442,6 +481,64 @@ function codexCardAsks(deps: CommandDeps, sessionId: string): boolean {
   return owner !== null && codexCardToolOffered(readSessionState(sessionId, deps.env), owner, sessionId, deps.env)
 }
 
+const KEEP_SESSION_OPEN = 'Keep this Agent Session open while the question waits: closing, clearing or switching it ends the question, so never suggest that.'
+
+const ROUTE_NEUTRAL = 'Never say where the answer must arrive; it returns by whatever route the harness supports.'
+
+const ON_ANSWER = 'Acknowledge it, then resume the committed work without asking the user to confirm again.'
+
+/**
+ * The duplicate guard found this question already open in this Agent Session,
+ * or answered with the answer not yet handed to the agent: nothing new was
+ * registered, and the earlier registration keeps its own Body and images. A
+ * duplicate is success, so an agent retrying after a crash is told nothing to
+ * fix; it asks in the conversation and carries on, as after any `ask`.
+ */
+function reportAlreadyOpen(
+  deps: CommandDeps,
+  sessionId: string,
+  built: BuiltQuestions,
+  questionId: string,
+  json: boolean,
+): number {
+  log(deps).info('ask.registered', { ok: true, session: sessionId, question_id: questionId, linked: true, questions: built.questions.length })
+  const open = captureCandidates(readSessionState(sessionId, deps.env)).find((pending) => pending.question_id === questionId)
+  const questions = open?.questions ?? built.questions
+  const message = `This question is already open in this Agent Session as ${questionId}: nothing new was registered, and a new Body or images were not applied. Its answer comes back into this Agent Session.`
+  const inThisTurn = 'Ask the question in the conversation and explain what each answer will change, then continue independent work; dependent work waits for the answer.'
+  const answeredOutside = `If they answer in the conversation instead, run \`notifai close ${questionId}\` to retire this question.`
+  if (json) {
+    deps.io.out(JSON.stringify({
+      registered: false,
+      already_open: { question_id: questionId },
+      question_id: questionId,
+      message,
+      questions: questions.map((entry) => ({
+        id: entry.id,
+        text: entry.text,
+        ...(entry.choices === undefined ? {} : { choices: entry.choices }),
+        ...(entry.multi === true ? { multi: true } : {}),
+      })),
+      status: `notifai status ${questionId}`,
+      close: `notifai close ${questionId}`,
+      next: {
+        end_turn: false,
+        in_this_turn: inThisTurn,
+        route_neutral: ROUTE_NEUTRAL,
+        keep_session_open: KEEP_SESSION_OPEN,
+        on_answer: ON_ANSWER,
+        answered_outside_notifai: answeredOutside,
+      },
+    }, null, 2))
+    return EXIT.ok
+  }
+  deps.io.out(message)
+  deps.io.out(`${inThisTurn} Inspect \`notifai status ${questionId}\` for submission evidence; never register a replacement to check this question.`)
+  deps.io.out(KEEP_SESSION_OPEN)
+  deps.io.out(answeredOutside)
+  return EXIT.ok
+}
+
 function persistRegisteredQuestion(
   deps: CommandDeps,
   sessionId: string,
@@ -453,7 +550,7 @@ function persistRegisteredQuestion(
   ownerKey?: string,
   nativeUnavailable?: NativeUnavailable,
 ): number {
-  let questionId: string
+  let registered: RegisteredQuestion
   const credential = deps.store.load()
   if (credential === null || credential.machineId !== service.machine_id || credential.baseUrl !== service.base_url) {
     return askFailure(deps, { json }, 'auth_required', 'credential',
@@ -461,11 +558,12 @@ function persistRegisteredQuestion(
       'retry the same ask from the intended signed-in machine', EXIT.auth)
   }
   try {
-    questionId = registerQuestion(
+    registered = registerQuestion(
       sessionId,
       deps.env,
       {
         question: built.questions[0]!.text,
+        title: draft.presentation.title,
         summary: draft.presentation.summary,
         service_identity: service,
         questions: built.questions,
@@ -498,6 +596,8 @@ function persistRegisteredQuestion(
       EXIT.failed,
     )
   }
+  if (!registered.registered) return reportAlreadyOpen(deps, sessionId, built, registered.question_id, json)
+  const questionId = registered.question_id
   log(deps).info('ask.registered', {
     ok: true,
     session: sessionId,
@@ -521,7 +621,6 @@ function persistRegisteredQuestion(
     log(deps).error('cli.error', { kind: 'question_submission_launch', session: sessionId, question_id: questionId, outcome: submission,
       message: err instanceof Error ? err.message : String(err) })
   }
-  const keepSessionOpen = 'Keep this Agent Session open while the question waits: closing, clearing or switching it ends the question, so never suggest that.'
   const nextStep = submission === 'scheduled'
     ? 'Background submission is scheduled; this does not confirm submission or delivery, so check status before reporting either. Continue independent work: the answer comes back into this Agent Session.'
     : 'Background startup failed. Keep this registration; ordinary lifecycle hooks can recover it. Inspect status before relying on submission.'
@@ -566,11 +665,9 @@ function persistRegisteredQuestion(
             end_turn: false,
             in_this_turn:
               `Ask the question in the conversation and explain what each answer will change. ${nextStep}`,
-            route_neutral:
-              'Never say where the answer must arrive; it returns by whatever route the harness supports.',
-            keep_session_open: keepSessionOpen,
-            on_answer:
-              'Acknowledge it, then resume the committed work without asking the user to confirm again.',
+            route_neutral: ROUTE_NEUTRAL,
+            keep_session_open: KEEP_SESSION_OPEN,
+            on_answer: ON_ANSWER,
             answered_outside_notifai: native === undefined
               ? `If they answer in the conversation instead, run \`notifai close ${questionId}\` to retire this question.`
               : nativeInstruction,
@@ -600,7 +697,7 @@ function persistRegisteredQuestion(
   deps.io.out(
     `${nextStep} Inspect \`notifai status ${questionId}\` for submission evidence; never register a replacement to check this question.`,
   )
-  deps.io.out(keepSessionOpen)
+  deps.io.out(KEEP_SESSION_OPEN)
   deps.io.out('Ask in the conversation and explain what each answer will change:')
   for (const [index, entry] of built.questions.entries()) {
     const questionPrefix = built.questions.length > 1 ? `Question ${index + 1}, ` : ''
@@ -712,6 +809,7 @@ export function askCommand(
   if (!built.ok) {
     return askFailure(deps, flags, 'invalid_input', 'questions', built.error, 'fix the question input and retry')
   }
+  for (const note of built.notes ?? []) deps.io.err(note)
   const mediaInputError = validateMediaInputs(flags.image, flags.imageAlt)
   if (mediaInputError !== null) {
     return askFailure(deps, flags, 'invalid_input', 'media', mediaInputError, 'fix the media flags and retry')
@@ -939,20 +1037,6 @@ export function askCommand(
       'ask the way you would without Notifai: in the conversation, or in your own question form, which stays in the terminal; change the setting only if the User asks',
     )
   }
-  // In Claude Code the picker is the question: it reaches the User's devices
-  // by itself. Registering the same question here would ask it twice.
-  if (claudePickerOwner(deps, sessionId, built.questions) !== null) {
-    const picker = askUserQuestionInput(built.questions)
-    const these = built.questions.length > 1 ? 'these questions' : 'this question'
-    return reportAskFailure(deps, flags, {
-      code: 'use_question_picker',
-      check_id: 'question_picker',
-      exit_code: EXIT.usage,
-      message: `Nothing was registered. In Claude Code, ask ${these} with the AskUserQuestion tool: Notifai sends that picker to the user's devices by itself and returns whichever answer comes first, from a device or the terminal.`,
-      remedy: `call AskUserQuestion with ${JSON.stringify(picker)}, adding a short header to each question and a description to each option that lacks one. Put further context in the option descriptions or your message. Keep \`notifai ask\` for free-text questions.`,
-      ask_user_question: picker,
-    })
-  }
   // The card shows titles and option labels only; a question that carries
   // more keeps ordinary ask so nothing the agent wrote is lost.
   if (flags.body === undefined && flags.image === undefined && built.body === undefined &&
@@ -998,6 +1082,10 @@ export function askCommand(
   if (!preflight.ok) {
     return askFailure(deps, flags, 'invalid_draft', 'draft', preflight.error, 'fix the reported field and retry')
   }
+  // The duplicate guard runs before any upload, so a repeat of an open question
+  // costs no media round trip; registration repeats it under the session lock.
+  const open = findOpenEqualQuestion(readSessionState(sessionId, deps.env), built.questions)
+  if (open !== undefined) return reportAlreadyOpen(deps, sessionId, built, open.question_id!, flags.json === true)
   if ((flags.image?.length ?? 0) > 0) {
     return uploadAskMedia(
       deps,

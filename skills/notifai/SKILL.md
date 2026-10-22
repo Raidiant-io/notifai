@@ -128,15 +128,17 @@ back into this Agent Session whenever they reply.
 
 ```bash
 notifai ask "Deploy the schema change to production now?" \
+  --title "Production deploy" \
   --choice "Deploy now" --choice-description "About two minutes of downtime." \
   --choice "Wait for off-peak" --choice-description "Deploys at 02:00 UTC, no downtime." \
   --recommended "Wait for off-peak"
 ```
 
-The positional question is the Summary and the title: the exact question, at
-most 240 characters. Offer 2-6 closed choices, one `--choice` each (commas are
-literal), each followed by its `--choice-description` when the label alone
-does not say what it does. Companion Apps show a description on its choice, so
+The positional question is the Summary: the exact question, at most 240
+characters. Write `--title` as the `titles` guidance says for a question.
+Offer 2-6 closed choices, one `--choice` each (commas are literal), each
+followed by its `--choice-description` when the label alone does not say what
+it does. Companion Apps show a description on its choice, so
 never restate the choices in the Body. The User can always type an answer
 instead. Add `--body-file` for standalone Markdown reasoning, `--image` for
 evidence, `--multi` when several choices may combine, or `--form <path>` for up

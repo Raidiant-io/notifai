@@ -21,6 +21,7 @@ import { markCodexOrdinaryPresentation, markNativeQuestionsDismissed, mayRetireF
 import { isDeepStrictEqual } from 'node:util'
 import { currentCodexTurn } from './session-attendant-state.js'
 import { reserveClaudeQuestion } from './claude-question-bindings.js'
+import { findOpenEqualQuestion } from './question-guard.js'
 import { ApiCallError, isRetryableReplyPollError, RequestCancelledError } from './client.js'
 import { withFileLock } from './file-lock.js'
 import { HARNESS_CAPABILITIES } from './harnesses.js'
@@ -127,7 +128,7 @@ import {
   QUESTION_SUBMISSION_COMPLETION_HEADROOM_SECONDS,
   QUESTION_WAITER_CEILING_SECONDS,
 } from './question-timing.js'
-import { buildDraft } from './send.js'
+import { buildDraft, UNTITLED_FORM_TITLE } from './send.js'
 
 /**
  * The wire contract's shortest reply window. A question submitted with less
@@ -210,6 +211,8 @@ const CLAIM_HANDOFF_POLL_MS = 1_000
 async function prepareQuestionSubmission(
   ctx: HookContext,
   options: {
+    /** The registered title; a question registered without one is titled by its Agent Session name. */
+    title?: string | undefined
     summary: string
     body?: string
     questions: QuestionT[]
@@ -232,7 +235,7 @@ async function prepareQuestionSubmission(
   const build = buildDraft(
     ctx.config,
     {
-      title: options.questions[0]!.text,
+      title: options.title ?? options.source?.session_label ?? UNTITLED_FORM_TITLE,
       summary: options.summary,
       ...(options.body !== undefined ? { body: options.body } : {}),
       lifecycle: { tier: 'needs_you' },
@@ -2042,6 +2045,7 @@ async function admitDueQuestions(
       let intent = entry.submission
       if (intent === undefined) {
         const prepared = await prepareQuestionSubmission(ctx, {
+          ...(entry.title !== undefined ? { title: entry.title } : {}),
           summary: entry.summary,
           ...(entry.body !== undefined ? { body: entry.body } : {}),
           questions,
@@ -2124,6 +2128,7 @@ async function admitDueQuestions(
               `question submission was rejected (${err.code}, HTTP ${err.status}); reminting the draft in the current contract instead of replaying the frozen one`,
             )
             const reminted = await prepareQuestionSubmission(ctx, {
+              ...(entry.title !== undefined ? { title: entry.title } : {}),
               summary: entry.summary,
               ...(entry.body !== undefined ? { body: entry.body } : {}),
               questions,
@@ -2814,6 +2819,16 @@ interface QuestionRegistrationGuard {
  * The queue is keyed on the session, not the project: several agents may be
  * running in one project at once, and their questions must never interfere.
  */
+export interface RegisteredQuestion {
+  question_id: string
+  /**
+   * False when this session already had this question open, or answered with
+   * the answer not yet handed to the agent: nothing new was registered, and
+   * the caller's route is linked to that question instead (`question-guard.ts`).
+   */
+  registered: boolean
+}
+
 export function registerQuestion(
   sessionId: string,
   env: NodeJS.ProcessEnv,
@@ -2821,9 +2836,10 @@ export function registerQuestion(
   now: number = Date.now(),
   nativeAdmission?: NativeQuestionAdmission,
   guard?: QuestionRegistrationGuard,
-): string {
+): RegisteredQuestion {
   let full: 'unasked' | 'live' | null = null
   let stored = false
+  let linked = false
   let questionId = question.question_id ?? `q_${randomBytes(12).toString('base64url')}`
   updateSessionState(sessionId, env, (state) => {
     // Revalidate after acquiring the lock: discovery and lock contention can
@@ -2852,8 +2868,19 @@ export function registerQuestion(
         }
         questionId = existing.question_id
         stored = true
+        linked = true
         return state
       }
+    }
+    // The duplicate guard: this question is already open, or answered and not
+    // yet handed to the agent. Link this route to it instead of asking twice;
+    // the reservations bind a native form to the existing registration.
+    const open = findOpenEqualQuestion(state, question.questions)
+    if (open !== undefined) {
+      questionId = open.question_id!
+      stored = true
+      linked = true
+      return reserveClaudeQuestion(reserveCurrentCodexQuestion(state, open, sessionId, env, nativeAdmission), open, nativeAdmission)
     }
     const pending = pendingList(state)
     const unasked = pending.filter((entry) => entry.request_id === undefined)
@@ -2890,7 +2917,7 @@ export function registerQuestion(
   }
   // updateSessionState skips its callback when SessionEnd won the lock.
   if (!stored) throw new QuestionRegistrationChanged('owner')
-  return questionId
+  return { question_id: questionId, registered: !linked }
 }
 
 /** Parses hook JSON from stdin, tolerating an empty or malformed body. */

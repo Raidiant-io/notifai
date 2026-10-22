@@ -46,7 +46,7 @@ function fixture(confirmed = true) {
   recordTurnStart(SESSION, env, owner.key, 'turn-1')
   writeSessionState(SESSION, env, { harness: 'codex' })
   const service = { base_url: 'https://api.example.test', machine_id: 'machine_test' }
-  const questionId = registerQuestion(SESSION, env, { question: 'Where?', summary: 'Where?', service_identity: service,
+  const { question_id: questionId } = registerQuestion(SESSION, env, { question: 'Where?', summary: 'Where?', service_identity: service,
     questions: [{ id: 'q1', text: 'Where?', choices: [{ id: 'staging', label: 'Staging' }, { id: 'production', label: 'Production' }] },
       { id: 'q2', text: 'Any notes?' }],
   }, Date.now(), { owner_key: owner.key, turn_id: 'turn-1', service,

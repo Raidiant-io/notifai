@@ -306,7 +306,7 @@ describe('rotation', () => {
     const logger = createLogger({ env, settings: { maxBytes: 600, maxFiles: 2 } })
     logger.info('ask.registered', { question_id: 'q_old', origin: 'picker' })
     logger.info('hook.gate', { hook: 'permission-request', stage: 'picker-terminal-only', reason: 'not-signed-in' })
-    logger.error('cli.error', { kind: 'ask_admission', code: 'use_question_picker' })
+    logger.error('cli.error', { kind: 'ask_admission', code: 'session_not_activated' })
     logger.error('cli.error', { kind: 'http', message: 'not a question outcome' })
     for (let i = 0; i < 80; i += 1) logger.info('cli.end', { i, pad: 'p'.repeat(40) })
 

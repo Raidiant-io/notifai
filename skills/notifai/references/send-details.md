@@ -18,19 +18,22 @@ reply. The file is JSON:
 
 ```json
 {
+  "title": "Release plan",
   "summary": "Two decisions before the release.",
   "body": "Optional standalone Markdown.",
   "questions": [
-    { "text": "Ship on Friday?", "choices": [
+    { "title": "Ship day", "text": "Ship on Friday?", "choices": [
       "Yes",
       { "label": "No", "description": "Moves the release to Monday.", "recommended": true }
     ] },
-    { "text": "Anything to add to the notes?" }
+    { "title": "Release notes", "text": "Anything to add to the notes?" }
   ]
 }
 ```
 
-A choice is a label or `{"label", "description"?, "recommended"?}`, a description being one
+With several questions, each takes a `"title"` of a word or two naming its
+own decision; a terminal form shows it as that question's tab. A choice is a
+label or `{"label", "description"?, "recommended"?}`, a description being one
 line of at most 160 characters; add `"multi": true` to a
 question whose choices may combine. Mark at most one choice per question as
 recommended.

@@ -37,7 +37,7 @@ function fixture(confirmed = true) {
     codex_tool_hook: { incarnation: owner.incarnation, fingerprint: 'controlled', root_observed: { turn_id: 'turn-1', at: 1 } },
   })
   const service = { base_url: 'https://api.example.test', machine_id: 'machine_test' }
-  const questionId = registerQuestion(sessionId, env, { question: 'Where?', summary: 'Where?', service_identity: service,
+  const { question_id: questionId } = registerQuestion(sessionId, env, { question: 'Where?', summary: 'Where?', service_identity: service,
     questions: [{ id: 'q1', text: 'Where?', choices: [{ id: 'staging', label: 'Staging' }, { id: 'production', label: 'Production' }] }],
   }, Date.now(), { owner_key: owner.key, turn_id: 'turn-1', service })
   const confirm = () => recordConfirmedNativeAnswerTarget(sessionId, env, { question_id: questionId, request_id: 'req_original', question: 'Where?', summary: 'Where?', service_identity: service })
@@ -175,7 +175,7 @@ it('revokes a native registration added between close-pending discovery and actu
   const retire = retirement.retireQueuedQuestions
   vi.spyOn(retirement, 'retireQueuedQuestions').mockImplementationOnce((...args) => {
     added = registerQuestion(h.sessionId, h.env, { question: 'Later?', summary: 'Later?', service_identity: h.service,
-      questions: [{ id: 'q1', text: 'Later?' }] }, Date.now(), { owner_key: h.owner.key, turn_id: 'turn-1', service: h.service })
+      questions: [{ id: 'q1', text: 'Later?' }] }, Date.now(), { owner_key: h.owner.key, turn_id: 'turn-1', service: h.service }).question_id
     return retire(...args)
   })
   expect(await closeCommand(h.deps, undefined, { pending: true, json: true })).toBe(EXIT.ok)
@@ -211,7 +211,7 @@ it('reports an answer to a Claude Code picker question through the same report a
   writeSessionState(sessionId, env, { harness: 'claude-code' })
   const service = { base_url: 'https://api.example.test', machine_id: 'machine_test' }
   const questions = [{ id: 'q1', text: 'Where?', choices: [{ id: 'staging', label: 'Staging' }, { id: 'production', label: 'Production' }] }]
-  const questionId = registerQuestion(sessionId, env, { question: 'Where?', summary: 'Where?', service_identity: service, questions },
+  const { question_id: questionId } = registerQuestion(sessionId, env, { question: 'Where?', summary: 'Where?', service_identity: service, questions },
     Date.now(), { owner_key: owner.key, turn_id: CLAUDE_PICKER_TURN, service,
       picker: [{ title: 'Where should this go?', labels: { staging: 'Staging', production: 'Production' } }] })
   recordConfirmedNativeAnswerTarget(sessionId, env, { question_id: questionId, request_id: 'req_original', question: 'Where?', summary: 'Where?', service_identity: service })

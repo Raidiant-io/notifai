@@ -9,11 +9,12 @@
  * device answer, so one picker can be answered from a device or from the
  * terminal and settle in both places.
  *
- * Nothing is matched. The device question is built from the picker's own
- * input, so the agent never copies text and an earlier open question can never
- * be confused with this one. Each binding keeps the picker's exact question
- * text and option labels, because the picker's answers are keyed by them while
- * the device may show a shortened form.
+ * Nothing is matched by the agent. The device question is built from the
+ * picker's own input, so the agent never copies text. A picker that is exactly
+ * a question this session already has open links to it (the duplicate guard);
+ * any other picker is its own question. Each binding keeps the picker's exact
+ * question text and option labels, because the picker's answers are keyed by
+ * them while the device may show a shortened form.
  *
  * Registrations live beside the Codex ones, in the same list, so the shared
  * lifecycle (confirmed request, ordinary presentation, retirement, native
@@ -47,52 +48,12 @@ export const CLAUDE_QUESTION_TOOL = 'AskUserQuestion'
 /** Stands where a Codex registration names its turn; a picker has none. */
 export const CLAUDE_PICKER_TURN = 'claude-code-picker'
 
-/** What Claude Code's picker accepts: one to four questions, two to four options each. */
+/** What Claude Code's picker accepts: one to four questions, at least two options each. */
 const PICKER_MAX_QUESTIONS = 4
 const PICKER_MIN_OPTIONS = 2
-const PICKER_MAX_OPTIONS = 4
 
 export function isClaudeRegistration(registration: CodexQuestionRegistration): boolean {
   return registration.registration_turn_id === CLAUDE_PICKER_TURN
-}
-
-/**
- * Whether Claude Code's picker can ask these questions: every question offers
- * two to four distinct choices, and no two questions share a text. `ask`
- * refuses exactly these in a Claude Code session, because the picker asks
- * them and reaches the User's devices on its own.
- */
-export function claudePickerShape(questions: readonly QuestionT[] | undefined): boolean {
-  if (questions === undefined || questions.length < 1 || questions.length > PICKER_MAX_QUESTIONS) return false
-  if (new Set(questions.map((question) => question.text)).size !== questions.length) return false
-  return questions.every((question) => {
-    const labels = question.choices?.map((choice) => choice.label) ?? []
-    return labels.length >= PICKER_MIN_OPTIONS && labels.length <= PICKER_MAX_OPTIONS &&
-      new Set(labels).size === labels.length
-  })
-}
-
-/** Claude Code's own convention for the option it recommends: this suffix on its label. */
-const PICKER_RECOMMENDED_SUFFIX = ' (Recommended)'
-
-/**
- * These questions as the core of `AskUserQuestion` input, each option with the
- * description it was given and Claude Code's recommended-label suffix; the
- * agent adds headers and any missing descriptions.
- */
-export function askUserQuestionInput(questions: readonly QuestionT[]): {
-  questions: Array<{ question: string; options: Array<{ label: string; description?: string }>; multiSelect: boolean }>
-} {
-  return {
-    questions: questions.map((question) => ({
-      question: question.text,
-      options: (question.choices ?? []).map((choice) => ({
-        label: choice.recommended === true ? `${choice.label}${PICKER_RECOMMENDED_SUFFIX}` : choice.label,
-        ...(choice.description === undefined ? {} : { description: choice.description }),
-      })),
-      multiSelect: question.multi === true,
-    })),
-  }
 }
 
 /** One picker question exactly as the hook received it. */
@@ -147,9 +108,22 @@ export function pickerDigest(toolInput: unknown): string | null {
 
 export interface PickerForm {
   questions: QuestionT[]
+  /** The picker's non-empty headers joined, when it has any: the title unless the picker carries a heading. */
+  title?: string
   summary: string
   body?: string
   shown: NativeQuestionShown[]
+}
+
+/**
+ * The heading a picker shows above its questions, in a host that enables the
+ * extended schema (`title`, "Optional single-line heading shown above the
+ * questions"). Plain terminal `claude` never carries one.
+ */
+export function pickerHeading(toolInput: unknown): string | undefined {
+  if (typeof toolInput !== 'object' || toolInput === null) return undefined
+  const heading = (toolInput as { title?: unknown }).title
+  return typeof heading === 'string' && heading.trim() !== '' ? oneLine(heading) : undefined
 }
 
 function chars(text: string): number {
@@ -212,8 +186,10 @@ function uniqueId(base: string, fallback: string, used: Set<string>): string {
  * its choice, and the one option labelled "(Recommended)" becomes the
  * recommended choice. Long question text, labels and descriptions are
  * shortened to fit, and only then does the picker's full wording go into the
- * body. An error names why the picker cannot be a device question at all; it
- * then stays in the terminal.
+ * body. The Summary is the first question; the headers, when the picker has
+ * any, become its title, so the question is never copied into the title. An
+ * error names why the picker cannot be a device question at all; it then
+ * stays in the terminal.
  */
 export function pickerForm(picker: readonly PickerQuestion[]): PickerForm | { error: string } {
   if (picker.length < 1 || picker.length > Math.min(PICKER_MAX_QUESTIONS, REPLY_MAX_QUESTIONS)) {
@@ -263,11 +239,10 @@ export function pickerForm(picker: readonly PickerQuestion[]): PickerForm | { er
     })
     shown.push({ title: entry.question, labels: byId })
   }
-  const headers = picker.map((question) => question.header === undefined ? '' : oneLine(question.header))
-  const summary = fit(questions.length > 1 && headers.every((header) => header !== '')
-    ? headers.join(' · ')
-    : questions[0]!.text, SUMMARY_MAX_LENGTH)
-  if (!detailed) return { questions, summary, shown }
+  const headers = picker.flatMap((question) => question.header === undefined || oneLine(question.header) === '' ? [] : [oneLine(question.header)])
+  const title = headers.length === 0 ? {} : { title: headers.join(' · ') }
+  const summary = fit(questions[0]!.text, SUMMARY_MAX_LENGTH)
+  if (!detailed) return { questions, ...title, summary, shown }
   const body = picker.map((entry) => [
     `**${oneLine(entry.question)}**`,
     '',
@@ -275,13 +250,16 @@ export function pickerForm(picker: readonly PickerQuestion[]): PickerForm | { er
       ? `- ${oneLine(option.label)}`
       : `- **${oneLine(option.label)}**: ${oneLine(option.description)}`),
   ].join('\n')).join('\n\n')
-  return { questions, summary, body, shown }
+  return { questions, ...title, summary, body, shown }
 }
 
 /**
  * Called by registration while holding the session lock: bind the device
  * question to the picker that asked it. The binding is verified by
- * construction; there is nothing to observe later.
+ * construction; there is nothing to observe later. A picker linked to a
+ * question registered earlier (by `ask`, or by a picker that is gone) gets
+ * its binding here too, with the request the submission already confirmed, so
+ * the device answer can return through this picker.
  */
 export function reserveClaudeQuestion(
   state: SessionState,
@@ -304,6 +282,7 @@ export function reserveClaudeQuestion(
         registration_turn_id: CLAUDE_PICKER_TURN,
         transcript: { file: '', identity: CLAUDE_PICKER_TURN, registered_offset: 0 },
         service_identity: { ...pending.service_identity },
+        ...(pending.request_id === undefined ? {} : { confirmed_request_id: pending.request_id }),
         questions: pending.questions.map((question, index) => ({
           question: structuredClone(question),
           picker: structuredClone(picker[index]!),
@@ -393,22 +372,27 @@ export function claudePickerUnanswered(registration: CodexQuestionRegistration, 
 /**
  * The terminal's own picker answers as registered question and choice ids, for
  * the native answer report. A value that is not one of the picker's labels is
- * typed text. Null when the response does not answer every question of the
- * picker.
+ * typed text. Freeform text the User typed instead of selecting an option
+ * (`response`) answers the questions that `answers` leaves out. Null when the
+ * response still leaves a question of the picker unanswered.
  */
 export function claudeTerminalAnswers(
   registration: CodexQuestionRegistration,
   toolResponse: unknown,
 ): ReplyAnswerT[] | null {
-  const raw = typeof toolResponse === 'object' && toolResponse !== null
-    ? (toolResponse as { answers?: unknown }).answers
-    : undefined
-  if (typeof raw !== 'object' || raw === null) return null
-  const given = raw as Record<string, unknown>
+  if (typeof toolResponse !== 'object' || toolResponse === null) return null
+  const { answers: raw, response } = toolResponse as { answers?: unknown; response?: unknown }
+  const typedResponse = typeof response === 'string' && response.trim() !== '' ? response.trim() : undefined
+  if ((typeof raw !== 'object' || raw === null) && typedResponse === undefined) return null
+  const given = (typeof raw === 'object' && raw !== null ? raw : {}) as Record<string, unknown>
   const answers: ReplyAnswerT[] = []
   for (const binding of registration.questions) {
     const value = given[pickerTitle(binding)]
-    if (typeof value !== 'string' || value.trim() === '') return null
+    if (typeof value !== 'string' || value.trim() === '') {
+      if (typedResponse === undefined) return null
+      answers.push({ question_id: binding.question.id, text: typedResponse })
+      continue
+    }
     const choices = (binding.question.choices ?? []).map((choice) => ({ id: choice.id, label: pickerLabel(binding, choice.id)! }))
     const exact = choices.find((choice) => choice.label === value)
     if (exact !== undefined) {

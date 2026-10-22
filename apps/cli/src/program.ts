@@ -765,6 +765,7 @@ export function buildProgram(deps: CommandDeps, options: BuildProgramOptions = {
     .helpGroup(GROUP.agent)
     .summary('Ask now and continue independent work')
     .description('Register a question and immediately start background submission, subject to your question-routing settings')
+    .option('--title <text>', 'always pass it: names the decision in a few words, never the question itself (see notifai guidance titles)')
     .option(
       '--choice <label>',
       'answers to offer instead of free text; repeat the flag once per answer (2-6)',
@@ -784,7 +785,7 @@ export function buildProgram(deps: CommandDeps, options: BuildProgramOptions = {
       '--literal-backslash-n',
       'allow the two-character sequence \\n in --body instead of treating it as a mistaken escaped newline',
     )
-    .option('--form <path>', 'ask several questions as one form; JSON file (use - for stdin)')
+    .option('--form <path>', 'ask several questions as one form; JSON file (use - for stdin) with "title", "summary" and "questions", each question carrying its own "title" when there are several')
     .option(
       '--image <path|url|media_id>',
       'upload or attach an image; reference it in Body as media:N (repeatable, maximum 8)',
@@ -801,6 +802,7 @@ export function buildProgram(deps: CommandDeps, options: BuildProgramOptions = {
       'initial Agent Session name; repeat the same name, use session rename for a changed job (env: NOTIFAI_SESSION_LABEL)',
     )
     .action(async (question: string | undefined, opts: {
+      title?: string
       choice?: string[]
       choiceDescription?: ChoiceDescriptionInput[]
       recommended?: string[]
@@ -848,6 +850,7 @@ export function buildProgram(deps: CommandDeps, options: BuildProgramOptions = {
       }
       // Commander collectors default to []; an empty list means "not passed".
       const flags: Parameters<typeof askCommand>[2] = {
+        ...(opts.title !== undefined ? { title: opts.title } : {}),
         ...(opts.choice?.length ? { choice: opts.choice } : {}),
         ...(opts.choiceDescription?.length ? { choiceDescription: opts.choiceDescription } : {}),
         ...(opts.recommended?.length ? { recommended: opts.recommended } : {}),
