@@ -756,16 +756,16 @@ export async function handleUserPromptSubmit(
       route: 'session-queue', stage: 'prompt-observed', message_ids: presented,
     })
   }
-  // Owed Session Message acknowledgements come before any resumed work: a
+  // Owed acknowledgements come before any resumed work: a
   // session resumed after SessionEnd has no Stop to remind it first.
-  const reminder: PromptReminder = { text: await messageAcknowledgementReminder(ctx, sessionId), used: false }
+  const reminder: PromptReminder = { text: await owedAcknowledgementReminder(ctx, sessionId), used: false }
   const outcome = await answerPrompt(ctx, envelope, sessionId, reminder)
   if (reminder.text === null || reminder.used || outcome.stdout !== undefined || sessionHasEnded(sessionId, ctx.env)) {
     return outcome
   }
   const stdout = userPromptContextOutput(ctx.harness, reminder.text)
   if (stdout === undefined) return outcome
-  outcome.notes.push('an owed Session Message acknowledgement was added to the user\'s new turn')
+  outcome.notes.push('an owed acknowledgement was added to the user\'s new turn')
   return {
     ...outcome,
     stdout,
@@ -787,13 +787,19 @@ function withReminder(reminder: PromptReminder, context: string): string {
 }
 
 /**
- * The instruction for Session Message acknowledgements still owed after asking
- * the service, or null when none is.
+ * The instruction for acknowledgements still owed after asking the service, or
+ * null when none is.
  */
-async function messageAcknowledgementReminder(ctx: HookContext, sessionId: string): Promise<string | null> {
+async function owedAcknowledgementReminder(ctx: HookContext, sessionId: string): Promise<string | null> {
   const generation = ctx.harness === 'openclaw' ? readSessionIncarnation(sessionId, ctx.env)?.openclaw_generation : undefined
-  const owed = presentedMessageAcknowledgements(readSessionState(sessionId, ctx.env))
+  const state = readSessionState(sessionId, ctx.env)
+  const messages = presentedMessageAcknowledgements(state)
     .filter((entry) => ctx.harness !== 'openclaw' || (generation !== undefined && entry.openclaw_generation === generation))
+  // Claude Code and Codex run Stop detached (`stopHandlerIsDetached`), and
+  // neither reads a detached hook's block decision, so the Stop reminder for an
+  // owed answer acknowledgement never reaches the model there. Their prompt
+  // carries it instead; Stop still counts the turns before it is abandoned.
+  const owed = ctx.harness === 'claude-code' || ctx.harness === 'codex' ? owedAcknowledgements(state) : messages
   if (owed.length === 0) return null
   const still = await reconcileAcknowledgementObligations(ctx, sessionId, owed)
   return still.length === 0 ? null : acknowledgementBlockContext(still)

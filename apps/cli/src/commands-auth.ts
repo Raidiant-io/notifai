@@ -68,6 +68,17 @@ const PAIRING_WAIT_CEILING_MS = 10 * 60 * 1000
 export type PairingOutcome = 'pending' | 'denied' | 'expired' | 'not_started'
 
 /**
+ * The conversation message an agent sends the User as written. It carries the
+ * proof-bearing link, so it never belongs in a Notification Request.
+ */
+export function pairingApprovalMessage(pairing: Pick<PendingPairing, 'code' | 'approve_url'>, qrShown: boolean): string {
+  const open = qrShown ? 'Scan the QR shown here to open Notifai' : `Open ${pairing.approve_url}`
+  return `Approve this computer before the approval expires. ${open}, check your Account and this computer, ` +
+    `compare code **${pairing.code}**, and approve. A signed-in app needs no new email code.` +
+    (qrShown ? ` Browser alternative: ${pairing.approve_url}.` : '') + ' Tell me when it\'s done.'
+}
+
+/**
  * The state `init` reports when approval has been started and not finished.
  *
  * It is a `credential` gap whose remedy names the exact page and code, so an
@@ -89,6 +100,7 @@ export function pendingApprovalBlocker(pairing: PendingPairing, env?: NodeJS.Pro
         alternatives: ['qr', 'notification', 'browser'],
         code: pairing.code,
         expires_at: pairing.expires_at,
+        message: pairingApprovalMessage(pairing, env !== undefined),
       },
     },
     remedy: {

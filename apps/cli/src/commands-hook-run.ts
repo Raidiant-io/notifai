@@ -73,6 +73,7 @@ import {
 import { projectBinding, projectEnabled } from './project-enablement.js'
 import { releaseCodexCardHandbacks } from './codex-card-handback.js'
 import { codexCardPostToolUse, codexPreToolUse } from './codex-question-hooks.js'
+import { unlinkedQuestionFormContext } from './unlinked-question-forms.js'
 import { spawnQuestionSettlement } from './question-settlement-process.js'
 import { QUESTION_WAITER_CEILING_SECONDS } from './question-timing.js'
 import { sessionActivationOutput, userPromptContextOutput } from './session-activation.js'
@@ -573,6 +574,10 @@ export async function hookRunCommand(
     try {
       if (event === 'post-compact') resetGrokActivation(envelope.session_id!, deps.env)
       else if (lifecycleEnabled()) context = claimGrokActivation(envelope, cwd, deps.env)
+      if (event === 'post-tool-use') {
+        const form = unlinkedQuestionFormContext(deps, envelope, harness, cwd)
+        if (form !== undefined) context = [context, form].filter(Boolean).join('\n\n')
+      }
       if (context !== undefined) deps.io.out(JSON.stringify({
         hookSpecificOutput: {
           hookEventName: envelope.hook_event_name === 'PostToolUseFailure' ? 'PostToolUseFailure' : 'PostToolUse',
@@ -628,7 +633,8 @@ export async function hookRunCommand(
       // guidance on carries it.
       if (harness === 'codex') {
         const faultNotice = lifecycleEnabled() ? cachedIntegrationFaultNotice({ ...deps, cwd }, harness) : undefined
-        const notice = [cardContext, takeCodexTerminalConflictContext(deps, envelope), faultNotice].filter(Boolean).join('\n\n') || undefined
+        const notice = [cardContext, unlinkedQuestionFormContext(deps, envelope, harness, cwd),
+          takeCodexTerminalConflictContext(deps, envelope), faultNotice].filter(Boolean).join('\n\n') || undefined
         let wrote = false
         const io = { ...deps.io, out: (line: string) => {
           wrote = true

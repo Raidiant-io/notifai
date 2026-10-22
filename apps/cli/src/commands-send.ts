@@ -19,6 +19,7 @@ import { questionsAwaitingAnswer } from './native-answer-operation.js'
 import { enableProjectUnlessDisabled, projectBinding } from './project-enablement.js'
 import {
   buildDraft,
+  contentLengthNotes,
   formatReceipt,
   receiptExitCode,
   rejectAccidentalEscapedNewlines,
@@ -374,6 +375,7 @@ export async function sendCommand(
     recordSessionNotified(notifiedSession, deps.env, (deps.now ?? Date.now)())
   }
   const receiptExit = receiptExitCode(receipt)
+  for (const note of contentLengthNotes(flags.summary ?? '', flags.body)) deps.io.err(note)
   // The single most useful line in the log: it ties the local invocation to
   // the server-side request id, which is what every later question about this
   // notification ("did it arrive?", "which device?") is asked in terms of.

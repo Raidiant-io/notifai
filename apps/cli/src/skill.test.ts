@@ -552,6 +552,14 @@ describe('Notifai agent skill', () => {
     }
   })
 
+  it('names each rare-procedure reference in the CLI diagnosis that leads to it', () => {
+    const sources = readdirSync(new URL('.', import.meta.url)).filter(name => name.endsWith('.ts') && !name.endsWith('.test.ts'))
+      .map(name => readFileSync(new URL(name, import.meta.url), 'utf8')).join('\n')
+    const named = new Set([...sources.matchAll(/references\/([a-z-]+\.md)/g)].map(match => match[1]!))
+    for (const file of named) expect(existsSync(new URL(file, referencesDir)), file).toBe(true)
+    expect([...named]).toEqual(expect.arrayContaining(['npm-migration.md', 'hermes-publication-recovery.md']))
+  })
+
   it('makes the agent the operator and the human only the human', () => {
     const setup = section('## Set Notifai up')
     expect(setup).toMatch(/run every command you can run yourself; hand the User only human-only steps/i)

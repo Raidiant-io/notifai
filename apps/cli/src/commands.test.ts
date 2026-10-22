@@ -634,6 +634,19 @@ describe('command contracts', () => {
     expect(submissions).toBe(1)
   })
 
+  it('sends a long Summary and notes it on stderr without changing the outcome', async () => {
+    const cwd = mkdtempSync(path.join(os.tmpdir(), 'notifai-long-send-'))
+    execFileSync('git', ['init', '--quiet', cwd])
+    const io = new CapturedIo()
+    let submissions = 0
+    const client = { submit: async () => ((submissions += 1), receipt) } as unknown as ApiClient
+    const deps = { ...makeDeps(io, client), cwd, env: isolatedEnv(cwd) }
+    expect(await sendCommand(deps, { title: 'Ready', summary: 'a'.repeat(210), kind: 'done', json: true })).toBe(EXIT.ok)
+    expect(submissions).toBe(1)
+    expect(io.errLines.join('\n')).toContain('this Summary is 210 characters')
+    expect(() => JSON.parse(io.outLines.join('\n'))).not.toThrow()
+  })
+
   it.each([false, true])('registers no question in a Project the User disabled (json: %s)', (json) => {
     const cwd = mkdtempSync(path.join(os.tmpdir(), 'notifai-disabled-ask-'))
     writeProjectSettings(cwd, isolatedEnv(cwd), 'project = "disabled-ask"\n')
@@ -7200,6 +7213,10 @@ describe('init', () => {
       remedy: { by: 'user-here', command: 'notifai init' },
     })
     expect(waiting.remedy.summary).toContain('123456')
+    // The prepared message is the CLI's own: no template is fetched from the website.
+    expect(waiting.technical.pairing.message).toContain('compare code **123456**')
+    expect(waiting.technical.pairing.message).toContain('Scan the QR shown here')
+    expect(waiting.technical.pairing.message).toContain(`Browser alternative: ${waiting.technical.pairing.approve_url}.`)
     expect(io.errLines.join('\n')).toContain('Starting computer approval.')
 
     // The User approved; the next run resumes the same pairing and moves on

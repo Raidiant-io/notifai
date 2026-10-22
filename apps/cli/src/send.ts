@@ -160,6 +160,29 @@ function validateMediaManifest(media: readonly MediaItemT[]): string | null {
 
 export { rewriteMediaReferences } from '@raidiant/notifai-protocol'
 
+/**
+ * Where a send note starts. Measured on local transcripts (2026-10-22): the
+ * median Summary was 153 characters and the 90th percentile 196; the 90th
+ * percentile Body was 1,310 characters. Every Body over eight lines already
+ * had Markdown structure, so structure gets no note.
+ */
+export const SUMMARY_NOTE_LENGTH = 200
+export const BODY_NOTE_LENGTH = 1_500
+
+/** A non-blocking stderr note for the agent's next notification; never a refusal. */
+export function contentLengthNotes(summary: string, body: string | undefined): string[] {
+  const notes: string[] = []
+  const summaryLength = Array.from(summary).length
+  if (summaryLength >= SUMMARY_NOTE_LENGTH) {
+    notes.push(`Note: this Summary is ${summaryLength} characters. A banner shows about one short sentence: write your next Summary as one.`)
+  }
+  const bodyLength = body === undefined ? 0 : Array.from(body).length
+  if (bodyLength > BODY_NOTE_LENGTH) {
+    notes.push(`Note: this Body is ${bodyLength} characters. Write your next Body shorter: the result, what the User needs to do, and a list where it helps.`)
+  }
+  return notes
+}
+
 /** Merge flags over resolved config into a Notification Request draft. */
 /**
  * The title of a question that reached registration without one and without an
