@@ -31,7 +31,8 @@
       "changelog-path": "CHANGELOG.md",
       "extra-files": [
         "/README.md"
-      ]
+      ],
+      "release-as": "9.0.0"
     }
   }
 }
