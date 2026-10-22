@@ -71,6 +71,7 @@ import {
   writeOpenclawGeneration,
 } from './openclaw-generation.js'
 import { projectBinding, projectEnabled } from './project-enablement.js'
+import { releaseCodexCardHandbacks } from './codex-card-handback.js'
 import { codexCardPostToolUse, codexPreToolUse } from './codex-question-hooks.js'
 import { spawnQuestionSettlement } from './question-settlement-process.js'
 import { QUESTION_WAITER_CEILING_SECONDS } from './question-timing.js'
@@ -393,6 +394,10 @@ export async function hookRunCommand(
     } catch {
       // The waiting handler also ends with its picker or its session.
     }
+  }
+  if (harness === 'codex' && envelope.session_id !== undefined &&
+      ['post-tool-use', 'stop', 'interrupt', 'user-prompt-submit'].includes(event)) {
+    releaseCodexCardHandbacks(envelope.session_id, deps.env, envelope, event, (deps.now ?? Date.now)())
   }
   if (event === 'pre-tool-use') {
     start({ cwd })

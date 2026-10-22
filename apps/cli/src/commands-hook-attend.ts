@@ -1,3 +1,4 @@
+import { releaseCodexCardHandbacks } from './codex-card-handback.js'
 import { nativeInstallationIdentity } from './native-installation-identity.js'
 import { hasSessionInputs, inputWakeDeferred, inputWakeOverdue, stageSessionMessages, wakeSessionInputs, wakeCodexSessionInputs, reconcileSessionInputWakes } from './session-inputs.js'
 /**
@@ -194,6 +195,7 @@ export async function attendHook(
       return
     }
     if (envelope.hook_event_name === 'Interrupt') {
+      releaseCodexCardHandbacks(sessionId, deps.env, envelope, 'interrupt')
       recordCodexTurnEnd(envelope, sessionId, deps.env)
       return
     }

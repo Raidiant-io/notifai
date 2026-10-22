@@ -1,3 +1,4 @@
+import { releaseCodexCardHandbacks } from './codex-card-handback.js'
 /**
  * The hub: one shared Notifai process per OS user and state directory.
  *
@@ -1657,6 +1658,9 @@ export class Hub {
         // in-session `/resume` back to it) hosts it again.
         const pid = frame['harness_pid']
         if (session !== undefined && frame['hook_event'] === 'SessionStart' && typeof pid === 'number') session.left.delete(pid)
+        if (session?.harness === 'codex' && frame['hook_event'] === 'Interrupt' && typeof pid === 'number') {
+          releaseCodexCardHandbacks(session.id, { ...session.env, NOTIFAI_HOOK_SOURCE_PID: String(pid) }, {}, 'interrupt', this.clock.wall())
+        }
         session?.hinted()
         reply({ type: 'ok' })
         return

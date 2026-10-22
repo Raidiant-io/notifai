@@ -25,12 +25,15 @@ loads the skill and guidance as their owner.
 
 ## Questions
 
-When your tools include `request_user_input_async`, ask with that card: call
-it with the User's questions and follow its tool context. Codex offers it only
-with some models, in the terminal and the apps alike. The card hook registers
-the questions after Codex accepts the call.
+To keep working while the User decides, run `notifai ask`. When your tools
+include `request_user_input_async` and Notifai can link it, `ask` hands back
+the exact card to open: the question is already registered with your title,
+Body, images and choice descriptions, and Notifai matches the card by its exact
+text. Open it unchanged. A card whose text no longer matches is refused, and
+its tool context gives the registered question to ask in plain conversation
+instead. Codex offers the card only with some models, in the terminal and the
+apps alike.
 
-Without that tool, use `notifai ask`: it registers an ordinary question.
 `request_user_input` (no `_async`) is not linked to Notifai: where Codex
 accepts it, it waits in the terminal, where an away User never sees it. Use
 `ask` for those questions too.
@@ -43,9 +46,9 @@ A card you open on your own is the Notifai question when its tool context
 says Notifai registered it; then never also `ask` it. With question
 notifications off, or in a project the User disabled, the card is your
 question and stays in the terminal, as a card on a signed-out machine does; it
-still works there. Any other card without that context, such as one in a
-shape the devices cannot show, stays on this machine: if it is still
-unanswered, `ask` the question too.
+still works there. Any other card without that context stays on this machine:
+if it is still unanswered, `ask` the question too. A card Notifai cannot carry is refused;
+follow its tool context to ask the question.
 
 The card closes on the first answer:
 

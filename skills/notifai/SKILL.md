@@ -151,18 +151,19 @@ to 10 questions decided together ([format](references/send-details.md)).
 Register independent questions separately, and never register an open
 question again.
 
-A question form you open yourself carries only its own fields, and reaches the
+When `ask` hands back a question form, open it unchanged: the question is
+already registered with your title, Body and images. A question form you open
+yourself carries only its own fields, and reaches the
 User's devices only where Notifai links it; when its tool context says Notifai
-registered it, never also `ask` it. For a `native_question` from `ask`, read
-[native questions](references/native-questions.md). Never promise form
-closure.
+registered it, never also `ask` it. Never promise form closure.
 
-**Registering is not the end of the turn.** In the same turn, ask the question
-in the conversation and say what each answer will make you do, before you
-start a wait. After plain `ask`, continue independent work; dependent work
-waits for the answer. When `ask --wait` says to end your turn, end it.
-**Never say where the answer must arrive** ("tell me here"): it comes back by
-whatever route the harness has.
+**Registering is not the end of the turn.** Say what each answer will make
+you do before you open a handed-back form or start a wait. A handed-back form
+is your question in the conversation: never also ask it in prose. Otherwise,
+ask in the conversation. Continue independent work; dependent work waits for
+the answer. When `ask --wait` says to end your turn, end it. **Never say where
+the answer must arrive** ("tell me here"): it comes back by whatever route
+the harness has.
 While a question waits, keep this Agent Session open: closing, clearing or
 switching it ends the question.
 

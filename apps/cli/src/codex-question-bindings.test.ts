@@ -2,12 +2,14 @@ import { appendFileSync, mkdirSync, mkdtempSync, rmSync } from 'node:fs'
 import path from 'node:path'
 import os from 'node:os'
 import { afterEach, expect, it } from 'vitest'
-import { admitBoundNativeAnswer, markCodexOrdinaryPresentation, mayRetireFromPrompt, nativeQuestionTitle, observeCodexQuestions, reserveCodexQuestion } from './codex-question-bindings.js'
+import { admitBoundNativeAnswer, currentCodexQuestionContext, markCodexOrdinaryPresentation, mayRetireFromPrompt, nativeQuestionTitle, observeCodexQuestions } from './codex-question-bindings.js'
 import { readNativeQuestionSnapshot } from './codex-native-turn.js'
 import { confirmNativeAnswerTarget, prepareNativeAnswerOperation } from './native-answer-operation.js'
 import { beginSessionIncarnation, clearSessionState, lifecycleStamp, readSessionState, writeSessionState } from './hook-session-state.js'
 import { pendingAnsweredByPrompt } from './hook-question-retirement.js'
 import type { PendingQuestion, SessionState } from './hook-types.js'
+import { currentProcessIdentity } from './process-identity.js'
+import { recordTurnStart } from './session-attendant-state.js'
 
 const roots: string[] = []
 afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }) })
@@ -26,7 +28,12 @@ function fixture() {
   }
   const snapshot = () => readNativeQuestionSnapshot(file, 'session', env)!
   const initial = { harness: 'codex', pending: [pending] } as SessionState
-  let state = reserveCodexQuestion(initial, pending, owner.key, snapshot())
+  const legacy = (state: SessionState, pending: PendingQuestion, markers: string[]): SessionState => ({ ...state,
+    codex_question_bindings: [...(state.codex_question_bindings ?? []), { question_id: pending.question_id!, owner_key: owner.key,
+      registration_turn_id: 'registration', service_identity: service,
+      transcript: { file: snapshot().file, identity: snapshot().identity, registered_offset: snapshot().size },
+      questions: pending.questions!.map((question, index) => ({ question, marker: markers[index]! })) }] })
+  let state = legacy(initial, pending, ['001'])
   const binding = () => state.codex_question_bindings![0]!.questions[0]!
   let calls = 0
   const emit = (title = nativeQuestionTitle(binding()), options: string[] | null = ['Staging', 'Production'], accepted: boolean | null = true) => {
@@ -38,9 +45,25 @@ function fixture() {
   }
   const observe = () => { state = observeCodexQuestions(state, owner.key, snapshot()); return binding() }
   const admit = (answers = [{ question_id: 'q1', choice_ids: ['staging'] }]) => admitBoundNativeAnswer(state, pending.question_id!, owner.key, service, answers)
-  return { env, file, append, owner, pending, initial, snapshot, binding, emit, observe, admit,
+  return { env, file, append, owner, pending, initial, snapshot, binding, emit, observe, admit, legacy,
     state: () => state, setState: (next: SessionState) => { state = next } }
 }
+
+it('keeps current hand-back eligibility after an unrelated denied card', () => {
+  const harness = fixture()
+  const owner = beginSessionIncarnation('session', harness.env, {
+    stamp: lifecycleStamp(), harnessProcess: currentProcessIdentity()!,
+  })
+  recordTurnStart('session', harness.env, owner.key, 'registration')
+  harness.append('response_item', { type: 'function_call', name: 'request_user_input_async', call_id: 'denied-card',
+    arguments: JSON.stringify({ questions: [{ title: 'A mismatched question?', options: ['One', 'Two'] }] }) })
+  harness.append('response_item', { type: 'function_call_output', call_id: 'denied-card', output: 'Blocked by hook: use the registered plain question.' })
+  const state: SessionState = { ...harness.initial,
+    codex_native_turn: { key: owner.key, turn_id: 'registration', transcript_path: harness.file },
+    codex_tool_hook: { incarnation: owner.incarnation, fingerprint: 'trusted', root_observed: { turn_id: 'registration', at: Date.now() } },
+  }
+  expect(currentCodexQuestionContext(state, 'session', harness.env)?.snapshot.latest.id).toBe('registration')
+})
 
 it('automatically associates one accepted marked emission, preserving identical unmarked controls', () => {
   const h = fixture()
@@ -106,17 +129,6 @@ it('withdraws eligibility when full registration-turn or file identity evidence 
   expect(h.observe().verified).toBeUndefined()
 })
 
-it('allocates unique local markers across registrations and expands beyond three characters', () => {
-  const h = fixture()
-  h.setState(reserveCodexQuestion(h.state(), { ...h.pending, question_id: 'q_second' }, h.owner.key, h.snapshot()))
-  const markers = h.state().codex_question_bindings!.flatMap(r => r.questions.map(q => q.marker))
-  expect(new Set(markers).size).toBe(2)
-  const expanded = reserveCodexQuestion({ ...h.state(), codex_question_marker_counter: 36 ** 3 - 1 }, { ...h.pending, question_id: 'q_third' }, h.owner.key, h.snapshot())
-  expect(expanded.codex_question_bindings?.at(-1)?.questions[0]?.marker).toBe('1000')
-  // Native tokens remain local; original app question content is unchanged.
-  expect(expanded.pending?.[0]?.questions).toEqual(h.pending.questions)
-})
-
 it('keeps ordinary presentation sticky while still allowing a fresh native submission', () => {
   const h = fixture()
   h.setState(markCodexOrdinaryPresentation(h.state(), new Set(['q_registered'])))
@@ -165,7 +177,7 @@ it('admits a partial typed or choice answer only for its bound form questions', 
     { id: 'locations', text: 'Which location?', choices: [{ id: 'one', label: 'One' }, { id: 'two', label: 'Two' }] },
     { id: 'why', text: 'Why?' },
   ] }
-  h.setState(reserveCodexQuestion(h.state(), multi, h.owner.key, h.snapshot()))
+  h.setState(h.legacy(h.state(), multi, ['002', '003']))
   const bindings = h.state().codex_question_bindings![1]!.questions
   h.emit(nativeQuestionTitle(bindings[0]!), ['One', 'Two'])
   h.emit(nativeQuestionTitle(bindings[1]!), null)
@@ -174,9 +186,3 @@ it('admits a partial typed or choice answer only for its bound form questions', 
   expect(admitBoundNativeAnswer(h.state(), 'q_multi', h.owner.key, service, [{ question_id: 'locations', choice_ids: ['one'] }])).toEqual({ service })
 })
 
-it('leaves multi-select forms on ordinary delivery because native async options are single-select', () => {
-  const h = fixture()
-  const multi = { ...h.pending, question_id: 'q_multi', questions: h.pending.questions!.map(question => ({ ...question, multi: true })) }
-  expect(reserveCodexQuestion(h.state(), multi, h.owner.key, h.snapshot())).toBe(h.state())
-  expect(mayRetireFromPrompt(h.state(), multi)).toBe(true)
-})
