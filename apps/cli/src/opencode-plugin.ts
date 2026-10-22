@@ -29,12 +29,19 @@ import {
  * resolved once per User prompt and kept in the plugin for every model request
  * of that turn, instead of starting a CLI for each request.
  *
- * OpenCode's own question form (`question.asked`) is offered to the User's
- * devices through `opencode-question`, the one command that holds the Machine
- * Credential for it. The plugin settles the form in this process with
- * OpenCode's question list and reply API, through the client OpenCode handed
- * it, and passes an answer or dismissal given in OpenCode back to that
- * command. Permission prompts deliberately stay in OpenCode.
+ * OpenCode's own question form is offered to the User's devices through
+ * `opencode-question`, the one command that holds the Machine Credential for
+ * it. The `question` tool carries Notifai's optional title, Body, images and
+ * source (`tool.definition`); the plugin takes them off the input and asks
+ * that command about the form before it opens (`tool.execute.before`), which
+ * may refuse it with a tool error the agent reads. The plugin settles the
+ * form in this process with OpenCode's question list and reply API, through
+ * the client OpenCode handed it, and passes an answer or dismissal given in
+ * OpenCode back to that command. A form whose question expired on the devices
+ * closes unanswered with Notifai context as its result (`tool.execute.after`).
+ * `shell.env` tells the agent's shell whether its session is a worker, so
+ * only a root session's `notifai ask --wait` hands back a form. Permission
+ * prompts deliberately stay in OpenCode.
  */
 
 /** Marker line; also how an install from another checkout is recognised. */
@@ -44,7 +51,64 @@ export const OPENCODE_PLUGIN_MARKER = '// notifai managed opencode plugin'
 export const OPENCODE_PLUGIN_FILENAME = 'notifai.js'
 
 /** Bump when an installed generated file must be rewritten to remain functional. */
-const OPENCODE_ADAPTER_VERSION = 14
+const OPENCODE_ADAPTER_VERSION = 15
+
+/**
+ * The JSON schema OpenCode offers models for its `question` tool. Its own
+ * definition carries an Effect schema a plugin cannot convert, so the
+ * extension starts from this copy, and only while the tool's parameters are
+ * still exactly `questions`.
+ */
+export const OPENCODE_QUESTION_JSON_SCHEMA = {
+  type: 'object',
+  properties: {
+    questions: {
+      type: 'array',
+      items: {
+        type: 'object',
+        properties: {
+          question: { type: 'string', description: 'Complete question' },
+          header: { type: 'string', description: 'Very short label (max 30 chars)' },
+          options: {
+            type: 'array',
+            items: {
+              type: 'object',
+              properties: {
+                label: { type: 'string', description: 'Display text (1-5 words, concise)' },
+                description: { type: 'string', description: 'Explanation of choice' },
+              },
+              required: ['label', 'description'],
+            },
+            description: 'Available choices',
+          },
+          multiple: { type: 'boolean', description: 'Allow selecting multiple choices' },
+        },
+        required: ['question', 'header', 'options'],
+      },
+      description: 'Questions to ask',
+    },
+  },
+  required: ['questions'],
+} as const
+
+/**
+ * Notifai's optional `question` fields. The plugin removes them before
+ * OpenCode reads the input; the User's devices show them with the form.
+ */
+export const OPENCODE_QUESTION_EXTRA_PROPERTIES = {
+  title: { type: 'string', description: 'Notifai: a few words naming what this form decides; the User\'s devices show it as the title.' },
+  body: { type: 'string', description: 'Notifai: optional Markdown the User\'s devices show beneath the questions. Show an image as ![alt](media:1), numbered in "images" order.' },
+  images: {
+    type: 'array',
+    description: 'Notifai: optional local JPEG, PNG or GIF files the User\'s devices show with the questions.',
+    items: {
+      type: 'object',
+      properties: { path: { type: 'string' }, alt: { type: 'string' } },
+      required: ['path', 'alt'],
+    },
+  },
+  source: { type: 'string', description: 'Notifai: only the value `notifai ask --wait` handed back with this form.' },
+} as const
 
 /**
  * OpenCode's global config directory for the running installation.
@@ -138,6 +202,11 @@ const TIMEOUT_MS = ${timeoutSeconds * 1000}
 const ADAPTER_VERSION = ${OPENCODE_ADAPTER_VERSION}
 const MISSING_LIFECYCLE_GUIDANCE_CONTEXT = ${JSON.stringify(MISSING_LIFECYCLE_GUIDANCE_CONTEXT)}
 const WORKER_ACTIVATION_CONTEXT = ${JSON.stringify(WORKER_ACTIVATION_CONTEXT)}
+const QUESTION_JSON_SCHEMA = ${JSON.stringify(OPENCODE_QUESTION_JSON_SCHEMA)}
+const QUESTION_EXTRA_PROPERTIES = ${JSON.stringify(OPENCODE_QUESTION_EXTRA_PROPERTIES)}
+const QUESTION_EXTRAS = Object.keys(QUESTION_EXTRA_PROPERTIES)
+// How long a form waits for Notifai's decision before it opens in OpenCode alone.
+const VERDICT_TIMEOUT_MS = 10000
 const PENDING_SESSION_TITLE =
   /^New session(?: *- *[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(?:[.][0-9]+)?Z)?$/i
 
@@ -200,6 +269,25 @@ function runHook(event, envelope) {
 
 function sameAnswers(left, right) {
   return JSON.stringify(left) === JSON.stringify(right)
+}
+
+function strictQuestionSchema(schema) {
+  if (schema === null || typeof schema !== "object") return schema
+  const result = { ...schema }
+  if (schema.properties !== undefined) {
+    const required = new Set(schema.required ?? [])
+    result.properties = Object.fromEntries(Object.entries(schema.properties).map(([key, value]) => {
+      const property = strictQuestionSchema(value)
+      return [key, required.has(key) ? property : { anyOf: [property, { type: "null" }] }]
+    }))
+    result.required = Object.keys(schema.properties)
+    result.additionalProperties = false
+  }
+  if (schema.items !== undefined) result.items = strictQuestionSchema(schema.items)
+  for (const key of ["anyOf", "oneOf", "allOf"]) {
+    if (Array.isArray(schema[key])) result[key] = schema[key].map(strictQuestionSchema)
+  }
+  return result
 }
 
 export const NotifAIPlugin = async ({ directory, client }) => {
@@ -269,6 +357,16 @@ export const NotifAIPlugin = async ({ directory, client }) => {
   const owedAcknowledgements = new Map()
   // OpenCode question requests whose device question is open, by request id.
   const forms = new Map()
+  // Forms Notifai accepted before they opened, by tool call id.
+  const accepted = new Map()
+  // Tool calls whose form Notifai already decided on, so their opening starts nothing new.
+  const decided = new Set()
+  // What a form closed because its question expired returns instead, by tool call id.
+  const expiredResults = new Map()
+
+  function sessionLabel(title) {
+    return title.length === 0 ? {} : PENDING_SESSION_TITLE.test(title) ? { session_label_pending: true } : { session_label: title }
+  }
 
   function resolveActivation(sessionID) {
     return (async () => {
@@ -292,7 +390,8 @@ export const NotifAIPlugin = async ({ directory, client }) => {
   }
 
   function endForm(form) {
-    forms.delete(form.requestID)
+    if (form.requestID !== null && forms.get(form.requestID) === form) forms.delete(form.requestID)
+    if (form.callID !== null && accepted.get(form.callID) === form) accepted.delete(form.callID)
     try { form.child.stdin?.end() } catch { /* already closed */ }
   }
 
@@ -324,17 +423,44 @@ export const NotifAIPlugin = async ({ directory, client }) => {
     }
   }
 
-  function startForm(request, title) {
-    if (questionApi === null || typeof request?.id !== "string" || typeof request?.sessionID !== "string") return
-    if (forms.has(request.id)) return
+  /** The question expired on the devices: close the form unanswered, with context that says so. */
+  async function applyExpiry(form, frame) {
+    if (form.settled || form.requestID === null || typeof frame.context !== "string" ||
+        !(await pendingRequest(form.requestID, form.sessionID))) {
+      send(form, { type: "stale" })
+      return
+    }
+    const unanswered = Array.from({ length: form.questions }, () => [])
+    form.applying = unanswered
+    if (form.callID !== null) expiredResults.set(form.callID, frame.context)
+    if (await replyRequest(form.requestID, unanswered)) {
+      form.settled = true
+      send(form, { type: "applied" })
+    } else {
+      form.applying = null
+      if (form.callID !== null) expiredResults.delete(form.callID)
+      send(form, { type: "stale" })
+    }
+  }
+
+  /** Starts a form's command. Its first decision goes to onVerdict; null when it ends without one. */
+  function startCommand(sessionID, callID, onVerdict) {
     const child = startHook("opencode-question")
-    if (child === null) return
-    const form = { requestID: request.id, sessionID: request.sessionID, child, settled: false, applying: null }
-    forms.set(request.id, form)
+    if (child === null) return null
+    const form = { requestID: null, sessionID, callID, child, settled: false, applying: null, questions: 0, onVerdict }
+    const verdict = (frame) => {
+      const resolve = form.onVerdict
+      form.onVerdict = null
+      resolve?.(frame)
+    }
+    const gone = () => {
+      verdict(null)
+      endForm(form)
+    }
     // Writing to a command that already ended must never crash OpenCode.
     child.stdin?.on("error", () => {})
-    child.on("error", () => forms.delete(request.id))
-    child.on("close", () => forms.delete(request.id))
+    child.on("error", gone)
+    child.on("close", gone)
     child.stderr?.resume()
     child.stdout?.setEncoding("utf-8")
     let buffered = ""
@@ -350,12 +476,53 @@ export const NotifAIPlugin = async ({ directory, client }) => {
         buffered = buffered.slice(newline + 1)
         let frame
         try { frame = JSON.parse(line) } catch { continue }
+        if (frame?.type === "accepted" || frame?.type === "refused" || frame?.type === "terminal") verdict(frame)
         if (frame?.type === "answer") void applyDeviceAnswer(form, frame)
-        else if (frame?.type === "terminal" || frame?.type === "done") endForm(form)
+        else if (frame?.type === "expired") void applyExpiry(form, frame)
+        else if (frame?.type === "terminal" || frame?.type === "refused" || frame?.type === "done") endForm(form)
       }
     })
-    const label = title.length === 0 ? {} : PENDING_SESSION_TITLE.test(title) ? { session_label_pending: true } : { session_label: title }
-    send(form, { type: "ask", session_id: request.sessionID, cwd, request, ...label })
+    return form
+  }
+
+  /** A form opened some other way than a model's tool call: carried, or left in OpenCode. */
+  function startForm(request, title) {
+    if (questionApi === null || typeof request?.id !== "string" || typeof request?.sessionID !== "string") return
+    if (forms.has(request.id)) return
+    const form = startCommand(request.sessionID, typeof request?.tool?.callID === "string" ? request.tool.callID : null, null)
+    if (form === null) return
+    form.requestID = request.id
+    form.questions = Array.isArray(request.questions) ? request.questions.length : 0
+    forms.set(request.id, form)
+    send(form, { type: "ask", session_id: request.sessionID, cwd, request, ...sessionLabel(title) })
+  }
+
+  /**
+   * Notifai's decision on a root session's form before it opens: carried to
+   * the User's devices, left in OpenCode, or refused. No decision in time
+   * leaves it in OpenCode.
+   */
+  function decideForm(sessionID, callID, questions, extras, title) {
+    return new Promise((resolve) => {
+      let form = null
+      const timer = setTimeout(() => {
+        if (form !== null) {
+          form.onVerdict = null
+          endForm(form)
+        }
+        resolve({ verdict: null, form: null })
+      }, VERDICT_TIMEOUT_MS)
+      form = startCommand(sessionID, callID, (verdict) => {
+        clearTimeout(timer)
+        resolve({ verdict, form })
+      })
+      if (form === null) {
+        clearTimeout(timer)
+        resolve({ verdict: null, form: null })
+        return
+      }
+      send(form, { type: "form", session_id: sessionID, cwd, call_id: callID, questions, extras, ...sessionLabel(title) })
+    })
   }
 
   return {
@@ -397,20 +564,71 @@ export const NotifAIPlugin = async ({ directory, client }) => {
       const sessionID = input?.sessionID
       if (typeof sessionID === "string" && sessionID.length > 0) {
         output.env.NOTIFAI_ACTIVE_SESSION_ID = sessionID
-        try {
-          const response = await client.session.get({ path: { id: sessionID } })
-          const title = response?.data?.title
-          if (typeof title === "string" && title.trim().length > 0) {
-            if (PENDING_SESSION_TITLE.test(title.trim())) {
-              output.env.NOTIFAI_ACTIVE_SESSION_LABEL_PENDING = "1"
-            } else {
-              output.env.NOTIFAI_ACTIVE_SESSION_LABEL = title
-            }
+        // Only a root session's \`notifai ask --wait\` hands back a form; a
+        // session the plugin cannot place counts as a worker.
+        const session = await sessionInfo(sessionID)
+        output.env.NOTIFAI_ACTIVE_SESSION_WORKER = session.worker ? "1" : "0"
+        if (session.title.length > 0) {
+          if (PENDING_SESSION_TITLE.test(session.title)) {
+            output.env.NOTIFAI_ACTIVE_SESSION_LABEL_PENDING = "1"
+          } else {
+            output.env.NOTIFAI_ACTIVE_SESSION_LABEL = session.title
           }
-        } catch {
-          // Identity remains useful when this OpenCode build cannot expose a title.
         }
       }
+    },
+
+    /** Offers Notifai's optional title, Body, images and source on OpenCode's own form. */
+    "tool.definition": async (input, output) => {
+      if (input?.toolID !== "question" || questionApi === null || output === null || typeof output !== "object") return
+      const own = output.jsonSchema
+      const fields = output.parameters?.fields
+      const base = own !== null && typeof own === "object" ? own
+        : fields !== null && typeof fields === "object" && Object.keys(fields).join(",") === "questions" ? QUESTION_JSON_SCHEMA : null
+      if (base === null || base.properties === null || typeof base.properties !== "object" || base.properties.questions === undefined) return
+      output.jsonSchema = strictQuestionSchema({ ...base, properties: { ...base.properties, ...QUESTION_EXTRA_PROPERTIES } })
+    },
+
+    /** Takes Notifai's fields off the form, then asks Notifai about it before it opens. */
+    "tool.execute.before": async (input, output) => {
+      if (input?.tool !== "question") return
+      const args = output?.args
+      if (args === null || typeof args !== "object") return
+      const extras = {}
+      for (const key of QUESTION_EXTRAS) {
+        if (key in args) {
+          if (args[key] !== null) extras[key] = args[key]
+          delete args[key]
+        }
+      }
+      if (Array.isArray(args.questions)) {
+        for (const question of args.questions) {
+          if (question !== null && typeof question === "object" && question.multiple === null) delete question.multiple
+        }
+      }
+      const sessionID = input?.sessionID
+      const callID = input?.callID
+      if (questionApi === null || typeof sessionID !== "string" || typeof callID !== "string") return
+      // A worker's form stays in OpenCode: the device answer would be owed
+      // to the agent that owns the session's Notification Requests.
+      const session = await sessionInfo(sessionID)
+      if (session.worker) return
+      const { verdict, form } = await decideForm(sessionID, callID, args.questions, extras, session.title)
+      decided.add(callID)
+      if (verdict?.type === "accepted" && form !== null) accepted.set(callID, form)
+      if (verdict?.type === "refused" && typeof verdict.message === "string") {
+        decided.delete(callID)
+        throw new Error(verdict.message)
+      }
+    },
+
+    /** A form closed because its question expired returns only that. */
+    "tool.execute.after": async (input, output) => {
+      if (input?.tool !== "question" || typeof input?.callID !== "string") return
+      const context = expiredResults.get(input.callID)
+      if (context === undefined || output === null || typeof output !== "object") return
+      expiredResults.delete(input.callID)
+      output.output = context
     },
 
     /**
@@ -431,10 +649,23 @@ export const NotifAIPlugin = async ({ directory, client }) => {
     /** Session lifecycle and question events are delivered through OpenCode's event bus. */
     event: async ({ event }) => {
       if (event?.type === "question.asked") {
-        // A worker's form stays in OpenCode: the device answer would be owed
-        // to the agent that owns the session's Notification Requests.
         const request = event?.properties
         if (typeof request?.sessionID !== "string") return
+        const callID = request?.tool?.callID
+        if (typeof callID === "string" && decided.has(callID)) {
+          decided.delete(callID)
+          const form = accepted.get(callID)
+          // Left in OpenCode, or Notifai did not decide in time.
+          if (form === undefined || typeof request?.id !== "string") return
+          accepted.delete(callID)
+          form.requestID = request.id
+          form.questions = Array.isArray(request.questions) ? request.questions.length : 0
+          forms.set(request.id, form)
+          send(form, { type: "opened", request })
+          return
+        }
+        // A worker's form stays in OpenCode: the device answer would be owed
+        // to the agent that owns the session's Notification Requests.
         const session = await sessionInfo(request.sessionID)
         if (!session.worker) startForm(request, session.title)
       } else if (event?.type === "question.replied") {

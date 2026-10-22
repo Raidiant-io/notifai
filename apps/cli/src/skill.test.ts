@@ -511,6 +511,10 @@ describe('Notifai agent skill', () => {
     expect(codex).not.toMatch(/subagent's card/i)
     const opencode = harnessFile('opencode').replace(/\s+/g, ' ')
     expect(opencode).not.toMatch(/worker session's form/i)
+    // OpenCode waits through the form `ask --wait` hands back; a worker holds in the command.
+    expect(opencode).toMatch(/To wait, run `notifai ask --wait`: it hands back the `question` form with your title, Body and images; open it unchanged\. In a worker it waits in the command instead\./)
+    expect(opencode).toMatch(/\*\*A question that expired on the devices\*\* closes the form unanswered, with Notifai context that says so: carry on without it\./)
+    expect(opencode).not.toMatch(/when the question needs a Body or images/)
     const claude = harnessFile('claude-code').replace(/\s+/g, ' ')
     expect(claude).toMatch(/terminal answer\*\* needs nothing from you/i)
     // `ask` carries every Claude Code question and opens no picker; a picker
@@ -656,7 +660,9 @@ describe('Notifai agent skill', () => {
     // A disabled Project keeps every self-opened form in the terminal.
     expect(loose(harnessFile('claude-code'))).toMatch(/A picker stays in the terminal when question notifications are off, the machine is not signed in, the User disabled this project, Notifai cannot carry its shape, or it runs on Windows/)
     expect(loose(harnessFile('opencode'))).toMatch(/reaches the User's devices by itself; never also register it/)
-    expect(loose(harnessFile('opencode'))).toMatch(/A form on a signed-out machine, with question notifications off, in a project the User disabled, or in a shape the devices cannot show stays in OpenCode only/)
+    expect(loose(harnessFile('opencode'))).toMatch(/A form on a signed-out machine, with question notifications off, or in a project the User disabled stays in OpenCode only/)
+    // A form the devices cannot show is refused before it opens, so none is named as staying local.
+    expect(loose(harnessFile('opencode'))).not.toMatch(/shape the devices cannot show/)
     expect(loose(harnessFile('openclaw'))).toMatch(/This needs a local Gateway/)
     // Claude Code gives subagents no picker, so none is named.
     expect(harnessFile('claude-code').replace(/\s+/g, ' ')).not.toMatch(/picker belongs to a subagent/i)

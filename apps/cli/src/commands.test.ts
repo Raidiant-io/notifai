@@ -8924,6 +8924,71 @@ describe('a held ask --wait', () => {
     expect(refusal.remedy).toContain('ask in the conversation')
   })
 
+  /** An admitted OpenCode session whose current plugin reported whether it is a worker. */
+  function opencodeSession(worker: '0' | '1') {
+    const cwd = mkdtempSync(path.join(os.tmpdir(), 'notifai-opencode-handback-'))
+    const env = { ...isolatedEnv(cwd), NOTIFAI_ACTIVE_HARNESS: 'opencode', NOTIFAI_ACTIVE_SESSION_ID: 'ses_root',
+      NOTIFAI_ACTIVE_SESSION_LABEL: 'Release the beta', NOTIFAI_ACTIVE_SESSION_WORKER: worker }
+    const plugin = path.join(env.OPENCODE_CONFIG_DIR!, 'plugins', 'notifai.js')
+    mkdirSync(path.dirname(plugin), { recursive: true })
+    writeFileSync(plugin, opencodePluginSource({ adapterPath: path.join(cwd, 'adapter'), timeoutSeconds: 10 }))
+    updateSessionState('ses_root', env, (state) => ({ ...state, harness: 'opencode', last_prompt_at: Date.now() - 1_000 }))
+    return { cwd, env }
+  }
+
+  it('offers an OpenCode root session the hand-back when plain ask cannot return', async () => {
+    const { cwd, env } = opencodeSession('0')
+    const io = new CapturedIo()
+    const { deps } = scriptDeps(io, {} as never)
+    expect(await askCommand({ ...deps, cwd, env }, 'Deploy?', { title: 'Production deploy', json: true })).toBe(EXIT.usage)
+    expect(JSON.parse(io.outLines[0]!).remedy).toBe('to wait for the answer, run `notifai ask --wait`: it hands back OpenCode\'s `question` form, which reaches the User\'s devices; to keep working, ask in the conversation, which the devices do not see')
+  })
+
+  it('hands back OpenCode\'s question form for a root session\'s ask --wait, and submits nothing itself', async () => {
+    const { cwd, env } = opencodeSession('0')
+    const io = new CapturedIo()
+    const submit = vi.fn()
+    const { deps } = scriptDeps(io, { submit } as never)
+    const flags = { title: 'Deploy target', wait: true, json: true, body: 'Staging has the new migrations.',
+      choice: ['Production', 'Staging'], recommended: ['Staging'] }
+    expect(await askCommand({ ...deps, cwd, env }, 'Which environment should I deploy to?', flags)).toBe(EXIT.ok)
+    expect(submit).not.toHaveBeenCalled()
+    const handed = JSON.parse(io.outLines[0]!) as { registered: boolean; question_id: string; open_form: { tool: string; input: unknown }; next: { end_turn: boolean } }
+    expect(handed.registered).toBe(true)
+    expect(handed.next.end_turn).toBe(false)
+    expect(handed.open_form).toEqual({ tool: 'question', input: {
+      questions: [{ question: 'Which environment should I deploy to?', header: 'Deploy target',
+        options: [{ label: 'Staging (Recommended)', description: '' }, { label: 'Production', description: '' }] }],
+      source: `notifai:${handed.question_id}`,
+    } })
+    const pending = readSessionState('ses_root', env).pending!
+    expect(pending).toHaveLength(1)
+    expect(pending[0]).toMatchObject({ question_id: handed.question_id, title: 'Deploy target', body: 'Staging has the new migrations.',
+      opencode_hand_back: handed.open_form.input })
+    // Asking the same again returns the same hand-back, and registers nothing new.
+    io.outLines = []
+    expect(await askCommand({ ...deps, cwd, env }, 'Which environment should I deploy to?', flags)).toBe(EXIT.ok)
+    const again = JSON.parse(io.outLines[0]!) as { registered: boolean; question_id: string; open_form: unknown }
+    expect(again).toMatchObject({ registered: false, question_id: handed.question_id, open_form: handed.open_form })
+    expect(readSessionState('ses_root', env).pending).toHaveLength(1)
+  })
+
+  it.each([
+    ['a worker\'s', '1' as const, ['Production', 'Staging']],
+    ['a free-text', '0' as const, undefined],
+  ])('holds %s OpenCode ask --wait in the command', async (_case, worker, choice) => {
+    const { cwd, env } = opencodeSession(worker)
+    const io = new CapturedIo()
+    const submit = vi.fn(async () => receipt)
+    const { deps } = scriptDeps(io, { submit, replies: async () => replyResponse([reply]),
+      closeReplies: async () => claimedReplyResponse([reply]), putAgentAcknowledgement: async () => ({}) } as never)
+    await askCommand({ ...deps, cwd, env }, 'Which environment should I deploy to?',
+      { title: 'Deploy target', wait: true, json: true, ...(choice === undefined ? {} : { choice }) })
+    expect(submit).toHaveBeenCalledTimes(1)
+    expect(io.outLines.join('\n')).not.toContain('open_form')
+    expect(readSessionState('ses_root', env).pending ?? []).toEqual([])
+  })
+
   it('keeps questions off the devices when the User turned them off, waiting or not', async () => {
     const cwd = mkdtempSync(path.join(os.tmpdir(), 'notifai-held-off-'))
     execFileSync('git', ['init', '--quiet', cwd])

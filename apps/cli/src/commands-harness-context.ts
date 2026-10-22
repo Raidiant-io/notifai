@@ -27,6 +27,11 @@ export interface ActiveHarnessSession {
   sessionLabel?: string
   /** The harness has only a temporary placeholder title so far. */
   sessionLabelPending?: boolean
+  /**
+   * OpenCode only: whether its plugin reported this session as a delegated
+   * worker. Absent from a plugin too old to say, which hands back no form.
+   */
+  worker?: boolean
 }
 
 /**
@@ -43,12 +48,14 @@ function harnessEnvCandidates(env: NodeJS.ProcessEnv): ActiveHarnessSession[] {
     const sessionId = env['NOTIFAI_ACTIVE_SESSION_ID']
     const sessionLabel = env['NOTIFAI_ACTIVE_SESSION_LABEL']
     const sessionLabelPending = env['NOTIFAI_ACTIVE_SESSION_LABEL_PENDING'] === '1'
+    const worker = env['NOTIFAI_ACTIVE_SESSION_WORKER']
     candidates.push({
       harness: 'opencode',
       label: 'OpenCode',
       ...(sessionId === undefined || sessionId === '' ? {} : { sessionId }),
       ...(sessionLabel === undefined || sessionLabel === '' ? {} : { sessionLabel }),
       ...(sessionLabelPending ? { sessionLabelPending: true } : {}),
+      ...(worker === '0' ? { worker: false } : worker === '1' ? { worker: true } : {}),
     })
   }
   if (env['NOTIFAI_ACTIVE_HARNESS'] === 'openclaw') {

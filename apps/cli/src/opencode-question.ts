@@ -2,12 +2,22 @@
  * OpenCode's own question form, answerable from the User's devices.
  *
  * OpenCode's `question` tool shows a form and holds the agent's turn until the
- * User answers it or dismisses it. The generated plugin sees the form as a
- * `question.asked` event inside the OpenCode process and starts this command
- * for it. This command registers the form's own questions for the User's
- * devices and waits; it holds the Machine Credential, the plugin never does.
+ * User answers it or dismisses it. The generated plugin starts this command
+ * for a root session's form before OpenCode opens it, with the tool input
+ * (`form` frame), and this command decides first:
  *
- * Whichever answer arrives first settles the form:
+ * - `accepted`: the form reaches the User's devices. It links to the question
+ *   `notifai ask --wait` handed back for it, or to an equal one this session
+ *   has open (the duplicate guard), or registers as a new question.
+ * - `terminal`: the form stays in OpenCode only, and still works there (a
+ *   disabled Project, questions off, a signed-out machine).
+ * - `refused`: the plugin rejects the call before the form opens, with the
+ *   message as the tool error, so the agent asks again the right way.
+ *
+ * An accepted form is then reported as opened (`opened` frame, OpenCode's
+ * question request), and this command carries it: it holds the Machine
+ * Credential, the plugin never does. Whichever answer arrives first settles
+ * the form:
  *
  * - A device answer is returned to the plugin, which checks that this exact
  *   request is still pending for this exact session and replies to it through
@@ -17,6 +27,13 @@
  *   plugin passes it here: an answer is recorded as the native answer so the
  *   devices stop asking and show what was chosen; a dismissal withdraws the
  *   device question.
+ * - A question dismissed on a device, or one whose window ended, closes the
+ *   form unanswered, and the plugin replaces the tool result with context
+ *   that says only that it expired.
+ *
+ * An older plugin starts this command only once the form is open (`ask`
+ * frame). Such a form can no longer be refused: it is carried or left in
+ * OpenCode, as before.
  *
  * The plugin's pipe is the session's lifetime. When OpenCode exits, or the
  * plugin ends this command for a deleted session, the pipe closes and the
@@ -29,30 +46,55 @@
  *
  * Frames are one JSON object per line in each direction.
  */
-import { createHash } from 'node:crypto'
-import { existsSync, readdirSync, readFileSync, rmSync } from 'node:fs'
+import { createHash, randomBytes } from 'node:crypto'
+import { closeSync, existsSync, openSync, readdirSync, readFileSync, readSync, rmSync, statSync } from 'node:fs'
 import path from 'node:path'
 import readline from 'node:readline'
 import type { Readable, Writable } from 'node:stream'
-import type { ListRepliesResponse, ReplyAnswerT, ReplyView } from '@raidiant/notifai-protocol'
+import {
+  CAPABILITIES_V1,
+  NOTIFICATION_IMAGE_MAX_BYTES,
+  validateDraft,
+  type ListRepliesResponse,
+  type MediaItemT,
+  type NotificationDraftT,
+  type QuestionT,
+  type ReplyAnswerT,
+  type ReplyView,
+} from '@raidiant/notifai-protocol'
 import { pickerForm, type PickerForm, type PickerQuestion } from './claude-question-bindings.js'
+import { CLAUDE_PICKER_DISMISSED } from './claude-question-hooks.js'
 import { ApiCallError, isRetryableReplyPollError, type ApiClient } from './client.js'
-import { buildAskDraft } from './commands-ask.js'
 import { log, makeClient, type CommandDeps } from './commands-core.js'
 import { draftForServerCapabilities } from './commands-send.js'
-import { acknowledgementCommand, resolveDraftInvocation } from './commands-send-support.js'
+import { acknowledgementCommand, resolveDraftInvocation, uploadImage } from './commands-send-support.js'
 import { atomicWriteFileSync } from './atomic-file.js'
-import { loadConfig, stateDir } from './config.js'
-import { recordSessionNotified } from './hook-session-state.js'
+import { loadConfig, stateDir, type CliConfig } from './config.js'
+import { QuestionRegistrationChanged, registerQuestion } from './hook-lifecycle.js'
+import { dropPendingQuestion } from './hook-question-state.js'
+import { pendingList, readSessionState, recordSessionNotified, updateSessionState } from './hook-session-state.js'
+import type { OpencodeFormInput, PendingQuestion, QuestionTerminalState, SessionState } from './hook-types.js'
 import type { Logger } from './logging.js'
 import { currentProcessIdentity, processIdentityLiveness, type ProcessIdentity } from './process-identity.js'
 import { projectBinding, projectDisabled } from './project-enablement.js'
+import { sameQuestions } from './question-guard.js'
+import { buildDraft, UNTITLED_FORM_TITLE, type DraftInvocation } from './send.js'
 
 /** What OpenCode's devices-facing acknowledgement says for an answer given in OpenCode. */
 export const OPENCODE_NATIVE_ACKNOWLEDGEMENT = 'Answered in OpenCode.'
 
+/** The tool error for a form Notifai cannot carry, in a session where forms reach the devices. */
+export const OPENCODE_FORM_UNCARRIABLE =
+  'Notifai cannot carry this form to the User\'s devices. To wait for the answer, run `notifai ask --wait`; to keep working, ask in the conversation.'
+
 /** How long the plugin has to send the form after starting this command. */
 const ASK_FRAME_TIMEOUT_MS = 5_000
+
+/** How long an accepted form may take to open before its registration is released. */
+const OPEN_FRAME_TIMEOUT_MS = 15_000
+
+/** The `source` a handed-back form carries: `notifai:<question_id>`. */
+const SOURCE_PATTERN = /^notifai:(q_[A-Za-z0-9_-]{1,64})$/
 
 /** One question as OpenCode's `question.asked` event carries it. */
 export interface OpencodeQuestionInfo {
@@ -68,40 +110,57 @@ export interface OpencodeQuestionRequest {
   id: string
   sessionID: string
   questions: OpencodeQuestionInfo[]
+  /** The tool call that opened it, when a model opened it. */
+  tool?: { messageID: string; callID: string }
 }
 
-type AskFrame = {
-  type: 'ask'
-  session_id: string
-  cwd: string
-  request: OpencodeQuestionRequest
+/** Notifai's own fields in a `question` tool input, which OpenCode never sees. */
+export interface OpencodeFormExtras {
+  title?: string
+  body?: string
+  images?: Array<{ path: string; alt?: string }>
+  source?: string
+}
+
+type SessionLabel = {
   /** OpenCode's own session title, when it has a real one. */
   session_label?: string
   session_label_pending?: boolean
 }
+type AskFrame = { type: 'ask'; session_id: string; cwd: string; request: OpencodeQuestionRequest } & SessionLabel
+type FormFrame = {
+  type: 'form'
+  session_id: string
+  cwd: string
+  call_id: string
+  questions: unknown
+  extras?: unknown
+} & SessionLabel
 type Inbound =
   | AskFrame
+  | FormFrame
+  | { type: 'opened'; request: unknown }
   | { type: 'applied' }
   | { type: 'stale' }
   | { type: 'native'; answers: string[][] }
   | { type: 'dismissed' }
 
 export type OpencodeQuestionOutbound =
+  | { type: 'accepted'; question_id: string }
+  | { type: 'refused'; message: string }
   | { type: 'terminal'; reason: string }
   | { type: 'registered'; request_id: string }
   | { type: 'answer'; request_id: string; answers: string[][]; acknowledgement: string }
+  | { type: 'expired'; context: string }
   | { type: 'done'; outcome: string }
 
 function isString(value: unknown): value is string {
   return typeof value === 'string'
 }
 
-/** The request as OpenCode published it, or null when it is not one. */
-export function opencodeQuestionRequest(value: unknown): OpencodeQuestionRequest | null {
-  if (typeof value !== 'object' || value === null) return null
-  const { id, sessionID, questions } = value as Record<string, unknown>
-  if (!isString(id) || !/^que_[A-Za-z0-9_-]{1,128}$/.test(id) || !isString(sessionID) || sessionID === '' ||
-      !Array.isArray(questions) || questions.length === 0) return null
+/** A form's questions as OpenCode carries them, or null when they are not. */
+function opencodeQuestions(questions: unknown): OpencodeQuestionInfo[] | null {
+  if (!Array.isArray(questions) || questions.length === 0) return null
   const parsed: OpencodeQuestionInfo[] = []
   for (const entry of questions) {
     if (typeof entry !== 'object' || entry === null) return null
@@ -122,17 +181,108 @@ export function opencodeQuestionRequest(value: unknown): OpencodeQuestionRequest
       ...(custom === false ? { custom: false } : {}),
     })
   }
-  return { id, sessionID, questions: parsed }
+  return parsed
+}
+
+/** The request as OpenCode published it, or null when it is not one. */
+export function opencodeQuestionRequest(value: unknown): OpencodeQuestionRequest | null {
+  if (typeof value !== 'object' || value === null) return null
+  const { id, sessionID, questions, tool } = value as Record<string, unknown>
+  if (!isString(id) || !/^que_[A-Za-z0-9_-]{1,128}$/.test(id) || !isString(sessionID) || sessionID === '') return null
+  const parsed = opencodeQuestions(questions)
+  if (parsed === null) return null
+  const call = typeof tool === 'object' && tool !== null ? tool as Record<string, unknown> : null
+  return {
+    id, sessionID, questions: parsed,
+    ...(call !== null && isString(call['messageID']) && isString(call['callID'])
+      ? { tool: { messageID: call['messageID'], callID: call['callID'] } } : {}),
+  }
+}
+
+/** Notifai's fields of a form, or an error naming the one that is malformed. */
+export function opencodeFormExtras(value: unknown): OpencodeFormExtras | { error: string } {
+  if (value === undefined || value === null) return {}
+  if (typeof value !== 'object') return { error: 'the form\'s Notifai fields are malformed.' }
+  const { title, body, images, source } = value as Record<string, unknown>
+  const extras: OpencodeFormExtras = {}
+  if (title !== undefined) {
+    if (!isString(title)) return { error: '"title" must be text.' }
+    if (title.trim() !== '') extras.title = title.trim()
+  }
+  if (body !== undefined) {
+    if (!isString(body)) return { error: '"body" must be Markdown text.' }
+    if (body.trim() !== '') extras.body = body
+  }
+  if (images !== undefined) {
+    if (!Array.isArray(images)) return { error: '"images" must be a list of {"path", "alt"}.' }
+    const list: NonNullable<OpencodeFormExtras['images']> = []
+    for (const image of images) {
+      const { path: file, alt } = typeof image === 'object' && image !== null ? image as Record<string, unknown> : {}
+      if (!isString(file) || file.trim() === '' || (alt !== undefined && !isString(alt))) {
+        return { error: '"images" must be a list of {"path", "alt"}.' }
+      }
+      list.push({ path: file, ...(isString(alt) && alt.trim() !== '' ? { alt: alt.trim() } : {}) })
+    }
+    if (list.length > 0) extras.images = list
+  }
+  if (source !== undefined) {
+    if (!isString(source)) return { error: '"source" must be the value `notifai ask --wait` handed back.' }
+    if (source !== '') extras.source = source
+  }
+  return extras
 }
 
 /** OpenCode's form is Claude Code's picker shape; the device form is built the same way. */
-export function opencodePickerQuestions(request: OpencodeQuestionRequest): PickerQuestion[] {
+export function opencodePickerQuestions(request: Pick<OpencodeQuestionRequest, 'questions'>): PickerQuestion[] {
   return request.questions.map((entry) => ({
     question: entry.question,
     ...(entry.header === undefined ? {} : { header: entry.header }),
     options: entry.options,
     multiSelect: entry.multiple === true,
   }))
+}
+
+/**
+ * The `question` input that asks exactly these registered questions, or null
+ * when the form cannot ask them unchanged: a free-text question, too many
+ * questions or choices, or wording the form would shorten. With one question
+ * its header is the title; with several, each question's own title. A
+ * recommended choice keeps OpenCode's convention: first, and marked
+ * "(Recommended)".
+ */
+export function opencodeHandBackInput(
+  questions: readonly QuestionT[],
+  headers: { title?: string; headers?: string[] },
+  questionId: string,
+): OpencodeFormInput | null {
+  if (questions.some((question) => question.choices === undefined ||
+      question.choices.filter((choice) => choice.recommended === true).length > 1)) return null
+  const input: OpencodeFormInput = {
+    questions: questions.map((question, index) => ({
+      question: question.text,
+      header: (questions.length > 1 ? headers.headers?.[index] : undefined) ?? headers.title ?? `Question ${index + 1}`,
+      options: question.choices!.map((choice) => ({
+        label: choice.recommended === true ? `${choice.label} (Recommended)` : choice.label,
+        description: choice.description ?? '',
+      })),
+      ...(question.multi === true ? { multiple: true } : {}),
+    })),
+    source: `notifai:${questionId}`,
+  }
+  const shape = pickerForm(opencodePickerQuestions(input))
+  if ('error' in shape || !sameQuestions(shape.questions, questions)) return null
+  return input
+}
+
+/** A registration's questions with each recommended choice first, as OpenCode shows it. */
+export function recommendedFirst(questions: readonly QuestionT[]): QuestionT[] {
+  return questions.map((question) => question.choices === undefined ? question : {
+    ...question,
+    choices: [
+      ...question.choices.filter((choice) => choice.recommended === true),
+      ...question.choices.filter((choice) => choice.recommended !== true),
+    ],
+  })
 }
 
 /**
@@ -193,9 +343,30 @@ export function opencodeNativeAnswers(form: PickerForm, answers: unknown): Reply
   return reported
 }
 
-/** One stable identity per OpenCode request, so a restarted command never asks twice. */
-function stableKey(prefix: string, sessionId: string, requestId: string): string {
-  return `${prefix}-${createHash('sha256').update(`${sessionId}\0${requestId}`).digest('base64url').slice(0, 40)}`
+/**
+ * The form as answers travel: the registration's question and choice ids,
+ * with the labels this form shows. A linked form asks the registration's
+ * questions in the same order, so its labels line up by position.
+ */
+function answerForm(registered: readonly QuestionT[], shape: PickerForm): PickerForm {
+  return {
+    ...shape,
+    questions: [...registered],
+    shown: registered.map((question, index) => {
+      const shownQuestion = shape.questions[index]!
+      const labels: Record<string, string> = {}
+      for (const [position, choice] of (question.choices ?? []).entries()) {
+        const label = shape.shown[index]!.labels[shownQuestion.choices![position]!.id]
+        if (label !== undefined) labels[choice.id] = label
+      }
+      return { title: shape.shown[index]!.title, labels }
+    }),
+  }
+}
+
+/** One stable identity per question, so a restarted command never asks twice. */
+function stableKey(prefix: string, sessionId: string, key: string): string {
+  return `${prefix}-${createHash('sha256').update(`${sessionId}\0${key}`).digest('base64url').slice(0, 40)}`
 }
 
 /** Line-framed pipe to the plugin. Malformed or oversized lines are ignored. */
@@ -229,7 +400,7 @@ class PluginPipe {
   }
 
   /** The next frame, or null once the plugin's side is closed. */
-  next(timeoutMs?: number): Promise<Inbound | null> {
+  next(timeoutMs?: number): Promise<Inbound | null | 'timeout'> {
     const queued = this.queued.shift()
     if (queued !== undefined) return Promise.resolve(queued)
     if (this.closed) return Promise.resolve(null)
@@ -243,7 +414,7 @@ class PluginPipe {
       if (timeoutMs !== undefined) {
         timer = setTimeout(() => {
           this.waiters = this.waiters.filter((item) => item !== waiter)
-          resolve(null)
+          resolve('timeout')
         }, timeoutMs)
       }
     })
@@ -334,75 +505,298 @@ export async function sweepAbandonedOpencodeForms(
   return withdrawn
 }
 
-type Registration = {
-  client: ApiClient
-  requestId: string
-  form: PickerForm
-  sessionId: string
-  service: { base_url: string; machine_id: string }
+/** The refusal for a form that is not the question `notifai ask --wait` handed back. */
+function notTheHandBack(questionId: string, input: OpencodeFormInput): string {
+  return `This is not the question \`notifai ask --wait\` handed back (\`${questionId}\`). ` +
+    `To ask that one, open exactly this input: ${JSON.stringify(input)}. ` +
+    'For a different question, run `notifai ask --wait` for it. ' +
+    `If you no longer need \`${questionId}\`, run \`notifai close ${questionId}\`.`
 }
 
-type Prepared = Registration | { reason: string; detail?: Record<string, unknown> }
+function alreadyAnswered(questionId: string): string {
+  return `\`${questionId}\` was already answered, and that answer was delivered to you. Do not ask it again.`
+}
+
+function expiredUnanswered(questionId: string): string {
+  return `\`${questionId}\` has expired without an answer: carry on without it, or ask in the conversation.`
+}
+
+function invalidForm(detail: string): string {
+  return `Notifai cannot carry this form to the User's devices: ${detail} Fix that and open the form again, or ask in the conversation.`
+}
+
+/** The form this command was started for, from whichever plugin started it. */
+interface FormContext {
+  sessionId: string
+  cwd: string
+  questions: OpencodeQuestionInfo[]
+  extras: OpencodeFormExtras
+  /** Notifai's fields were malformed; the form is refused once it would reach the devices. */
+  extrasError?: string
+  label: SessionLabel
+  callId?: string
+  /** Already open: an older plugin started this command for it. It can no longer be refused. */
+  opened?: OpencodeQuestionRequest
+}
+
+/** A form carried to the devices: the registration it claimed, and what submits it. */
+interface Carriage {
+  config: CliConfig
+  client: ApiClient
+  service: { base_url: string; machine_id: string }
+  sessionId: string
+  /** The form as OpenCode shows it. */
+  shape: PickerForm
+  entry: PendingQuestion & { question_id: string }
+  /** This command registered it, so a form that never opens drops it. */
+  created: boolean
+  owner: ProcessIdentity | null
+  /** Checked local images of a self-opened form, uploaded once it is open. */
+  images: Array<{ path: string; alt?: string }>
+}
+
+type Admission =
+  | { kind: 'terminal'; reason: string; detail?: Record<string, unknown> }
+  | { kind: 'refused'; reason: string; message: string; stage?: string; detail?: Record<string, unknown> }
+  | { kind: 'carry'; carriage: Carriage }
+
+const ownerIsLive = (owner: ProcessIdentity | undefined, self: ProcessIdentity | null): boolean =>
+  owner !== undefined && !(self !== null && owner.pid === self.pid && owner.start === self.start) &&
+  processIdentityLiveness(owner) !== 'gone'
 
 /**
- * Register the form's questions for the User's devices. Every refusal leaves
- * the form to OpenCode alone, which always works.
+ * The hand-backs still waiting for their form: registered since the latest
+ * User prompt and not yet carried by a form. A User prompt or Stop ends the
+ * wait; Stop also retires them.
  */
-async function registerForm(
-  deps: CommandDeps,
-  ask: AskFrame,
-  logger: Logger,
-  settledInOpencode: Promise<Inbound | null>,
-): Promise<Prepared> {
-  const { session_id: sessionId, cwd, request } = ask
-  let config
+function waitingHandBacks(state: SessionState, self: ProcessIdentity | null): Array<PendingQuestion & { question_id: string }> {
+  const since = state.last_prompt_at ?? 0
+  return pendingList(state).filter((entry): entry is PendingQuestion & { question_id: string } =>
+    entry.question_id !== undefined && entry.opencode_hand_back !== undefined &&
+    (entry.asked_at ?? 0) >= since && !ownerIsLive(entry.opencode_form_owner, self))
+}
+
+/** Claim an existing registration for this form, unless another live form carries it. */
+function claimRegistration(
+  sessionId: string,
+  env: NodeJS.ProcessEnv,
+  questionId: string,
+  owner: ProcessIdentity | null,
+): (PendingQuestion & { question_id: string }) | 'gone' | 'owned' {
+  let result: (PendingQuestion & { question_id: string }) | 'gone' | 'owned' = 'gone'
+  updateSessionState(sessionId, env, (state) => {
+    const list = pendingList(state)
+    const index = list.findIndex((entry) => entry.question_id === questionId)
+    if (index < 0) return state
+    if (ownerIsLive(list[index]!.opencode_form_owner, owner)) {
+      result = 'owned'
+      return state
+    }
+    const claimed = { ...list[index]!, question_id: questionId, ...(owner === null ? {} : { opencode_form_owner: owner }) }
+    result = claimed
+    const next = [...list]
+    next[index] = claimed
+    return { ...state, pending: next }
+  })
+  return result
+}
+
+/** Let a hand-back wait for its form again, or drop what a form that never opened registered. */
+function releaseRegistration(carriage: Carriage, env: NodeJS.ProcessEnv, state: QuestionTerminalState = 'withdrawn'): void {
+  if (carriage.created) {
+    dropPendingQuestion(carriage.sessionId, env, carriage.entry, state)
+    return
+  }
+  updateSessionState(carriage.sessionId, env, (current) => {
+    const list = pendingList(current)
+    const index = list.findIndex((entry) => entry.question_id === carriage.entry.question_id)
+    if (index < 0 || list[index]!.opencode_form_owner === undefined) return current
+    const rest = { ...list[index]! }
+    delete rest.opencode_form_owner
+    const next = [...list]
+    next[index] = rest
+    return { ...current, pending: next }
+  })
+}
+
+/**
+ * A local image a form names, checked before anything is read in full: a
+ * regular file within the size limit whose content is the image type its
+ * name claims. A form's paths are model-written, and a file whose bytes are
+ * not an image never leaves the machine.
+ */
+export function checkFormImage(cwd: string, file: string): { path: string } | { error: string } {
+  if (/^[a-z][a-z0-9+.-]*:/i.test(file)) return { error: `image "${file}" must be a local file path.` }
+  const absolute = path.resolve(cwd, file)
+  const type = ({ '.png': 'png', '.jpg': 'jpeg', '.jpeg': 'jpeg', '.gif': 'gif' } as const)[path.extname(absolute).toLowerCase()]
+  if (type === undefined) return { error: `image "${file}" must be a JPEG, PNG or GIF file.` }
+  let size: number
+  try {
+    const stat = statSync(absolute)
+    if (!stat.isFile()) return { error: `image "${file}" is not a regular file.` }
+    size = stat.size
+  } catch {
+    return { error: `image "${file}" does not exist.` }
+  }
+  if (size > NOTIFICATION_IMAGE_MAX_BYTES) return { error: `image "${file}" is larger than ${NOTIFICATION_IMAGE_MAX_BYTES} bytes.` }
+  const head = Buffer.alloc(8)
+  let read = 0
+  try {
+    const fd = openSync(absolute, 'r')
+    try { read = readSync(fd, head, 0, head.length, 0) } finally { closeSync(fd) }
+  } catch {
+    return { error: `image "${file}" cannot be read.` }
+  }
+  const bytes = head.subarray(0, read)
+  const matches = type === 'png' ? bytes.equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]))
+    : type === 'jpeg' ? bytes.length >= 3 && bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff
+      : bytes.subarray(0, 6).toString('latin1') === 'GIF87a' || bytes.subarray(0, 6).toString('latin1') === 'GIF89a'
+  if (!matches) return { error: `image "${file}" is not the ${type.toUpperCase()} image its name says.` }
+  return { path: absolute }
+}
+
+/** The draft a carried form submits, validated against the device contract. */
+function formDraft(
+  config: CliConfig,
+  entry: PendingQuestion & { question_id: string },
+  media: MediaItemT[],
+  invocation: DraftInvocation,
+  replyWindowSeconds?: number,
+): { ok: true; draft: NotificationDraftT } | { ok: false; error: string } {
+  const result = buildDraft(config, {
+    title: entry.title ?? invocation.source?.session_label ?? UNTITLED_FORM_TITLE,
+    summary: entry.summary,
+    ...(entry.body === undefined ? {} : { body: entry.body }),
+    ...(entry.project === undefined ? {} : { project: entry.project }),
+    ...(media.length === 0 ? {} : { media }),
+    reply: true,
+    ...(replyWindowSeconds === undefined ? {} : { replyWindow: replyWindowSeconds }),
+    questions: entry.questions ?? [],
+  }, invocation)
+  if (!result.ok) return result
+  const capabilities = CAPABILITIES_V1.describe(result.platform)
+  if (capabilities === null) return { ok: false, error: 'No iOS capability contract is available.' }
+  const validation = validateDraft(result.draft, capabilities)
+  if (!validation.ok) return { ok: false, error: validation.errors.map((issue) => `${issue.path}: ${issue.message}`).join('\n') }
+  return { ok: true, draft: result.draft }
+}
+
+/**
+ * Decide what this form is: carried to the devices (linked or registered),
+ * left in OpenCode, or refused before it opens. Every case that leaves the
+ * form in OpenCode keeps it working there.
+ */
+function admitForm(deps: CommandDeps, form: FormContext): Admission {
+  const { sessionId, cwd } = form
+  let config: CliConfig
   try {
     config = loadConfig({ cwd, env: deps.env, sessionId })
   } catch {
-    return { reason: 'config-invalid' }
+    return { kind: 'terminal', reason: 'config-invalid' }
   }
   // Nothing reaches the devices from a Project the User disabled.
-  if (projectDisabled(projectBinding(cwd, deps.env, config.project.value))) return { reason: 'project-disabled' }
-  if (!config.ask_notifications.value) return { reason: 'question-notifications-off' }
-  const form = pickerForm(opencodePickerQuestions(request))
-  if ('error' in form) return { reason: 'unsupported-form', detail: { shape: form.error } }
+  if (projectDisabled(projectBinding(cwd, deps.env, config.project.value))) return { kind: 'terminal', reason: 'project-disabled' }
+  if (!config.ask_notifications.value) return { kind: 'terminal', reason: 'question-notifications-off' }
   const credential = deps.store.load()
-  if (credential === null) return { reason: 'not-signed-in' }
+  if (credential === null) return { kind: 'terminal', reason: 'not-signed-in' }
+  if (form.extrasError !== undefined) return { kind: 'refused', reason: 'invalid-fields', message: invalidForm(form.extrasError) }
+  const shape = pickerForm(opencodePickerQuestions(form))
+  const owner = currentProcessIdentity()
+  const state = readSessionState(sessionId, deps.env)
+  const service = { base_url: credential.baseUrl, machine_id: credential.machineId }
   const client = makeClient(deps, credential.baseUrl, `Bearer nfm_${credential.machineId}.${credential.secret}`)
-  // Hook stderr reaches nobody; a fallback-label heads-up has no reader here.
+  const carry = (entry: PendingQuestion & { question_id: string }, created: boolean, images: Carriage['images'] = []): Admission =>
+    'error' in shape ? { kind: 'terminal', reason: 'unsupported-form' }
+      : { kind: 'carry', carriage: { config, client, service, sessionId, shape, entry, created, owner, images } }
+  const link = (questionId: string): Admission => {
+    const claimed = claimRegistration(sessionId, deps.env, questionId, owner)
+    if (claimed === 'gone') return { kind: 'terminal', reason: 'question-closed' }
+    if (claimed === 'owned') return { kind: 'terminal', reason: 'question-on-another-form' }
+    return carry(claimed, false)
+  }
+  const sameAsShape = (entry: PendingQuestion) => !('error' in shape) && sameQuestions(entry.questions, shape.questions)
+
+  // The question `notifai ask --wait` handed back, named by its source.
+  const named = form.extras.source === undefined ? undefined : SOURCE_PATTERN.exec(form.extras.source)?.[1]
+  if (named !== undefined) {
+    const pending = pendingList(state).find((entry) => entry.question_id === named)
+    if (pending?.opencode_hand_back !== undefined) {
+      if (sameAsShape(pending)) return link(named)
+      return { kind: 'refused', reason: 'not-the-hand-back', message: notTheHandBack(named, pending.opencode_hand_back),
+        detail: { question_id: named } }
+    }
+    const ended = (state.question_history ?? []).find((entry) => entry.question_id === named)
+    if (pending === undefined && ended !== undefined) {
+      return ended.state === 'answered'
+        ? { kind: 'refused', reason: 'already-answered', message: alreadyAnswered(named), detail: { question_id: named } }
+        : { kind: 'refused', reason: 'expired', message: expiredUnanswered(named), detail: { question_id: named } }
+    }
+  }
+  const waiting = waitingHandBacks(state, owner)
+  const match = waiting.find(sameAsShape)
+  if (match !== undefined) return link(match.question_id)
+  if (waiting.length > 0) {
+    const latest = waiting[waiting.length - 1]!
+    return { kind: 'refused', reason: 'not-the-hand-back', message: notTheHandBack(latest.question_id, latest.opencode_hand_back!),
+      detail: { question_id: latest.question_id } }
+  }
+  if ('error' in shape) {
+    return { kind: 'refused', reason: 'unlinkable', stage: 'form-refused-unlinkable', message: OPENCODE_FORM_UNCARRIABLE,
+      detail: { shape: shape.error } }
+  }
+
+  // A form the agent opened itself: titled by its own title, else its headers,
+  // else the Agent Session name; its Body and images are checked before it opens.
+  const images: Carriage['images'] = []
+  for (const image of form.extras.images ?? []) {
+    const checked = checkFormImage(cwd, image.path)
+    if ('error' in checked) return { kind: 'refused', reason: 'invalid-image', message: invalidForm(checked.error) }
+    images.push({ path: checked.path, ...(image.alt === undefined ? {} : { alt: image.alt }) })
+  }
   const silent = { ...deps, cwd, io: { ...deps.io, err: () => undefined } }
   const source = resolveDraftInvocation(silent, {}, {
     harness: 'opencode', label: 'OpenCode', sessionId,
-    ...(isString(ask.session_label) && ask.session_label.trim() !== '' ? { sessionLabel: ask.session_label } : {}),
-    ...(ask.session_label_pending === true ? { sessionLabelPending: true } : {}),
+    ...(isString(form.label.session_label) && form.label.session_label.trim() !== '' ? { sessionLabel: form.label.session_label } : {}),
+    ...(form.label.session_label_pending === true ? { sessionLabelPending: true } : {}),
   })
-  if (!source.ok) return { reason: 'source-invalid' }
-  const draft = buildAskDraft(config, form, {}, source.invocation, [])
-  if (!draft.ok) return { reason: 'invalid-draft', detail: { error: draft.error } }
-  // The terminal-first delay: answered or dismissed in OpenCode first, the
-  // form never reaches the devices.
-  if (await settlesWithin(settledInOpencode, config.ask_grace_seconds.value * 1000, deps)) {
-    return { reason: 'settled-in-opencode' }
+  if (!source.ok) return { kind: 'terminal', reason: 'source-invalid' }
+  const body = [form.extras.body, shape.body].filter((part): part is string => part !== undefined).join('\n\n')
+  const title = form.extras.title ?? shape.title
+  const entry: PendingQuestion & { question_id: string } = {
+    question_id: `q_${randomBytes(12).toString('base64url')}`,
+    question: shape.questions[0]!.text,
+    ...(title === undefined ? {} : { title }),
+    summary: shape.summary,
+    service_identity: service,
+    questions: shape.questions,
+    ...(body === '' ? {} : { body }),
+    ...(source.invocation.source === undefined ? {} : { source: source.invocation.source }),
+    ...(owner === null ? {} : { opencode_form_owner: owner }),
   }
+  const placeholders = images.map((image, index) => ({ media_id: `med_pending_${index + 1}`, ...(image.alt === undefined ? {} : { alt: image.alt }) }))
+  const preflight = formDraft(config, entry, placeholders, source.invocation)
+  if (!preflight.ok) {
+    return form.opened === undefined && (form.extras.body !== undefined || form.extras.title !== undefined || images.length > 0)
+      ? { kind: 'refused', reason: 'invalid-draft', message: invalidForm(preflight.error.split('\n')[0]!) }
+      : { kind: 'terminal', reason: 'invalid-draft', detail: { error: preflight.error } }
+  }
+  const frozen = { ...entry, title: preflight.draft.presentation.title,
+    ...(preflight.draft.project === undefined ? {} : { project: preflight.draft.project }) }
+  let registered
   try {
-    const capabilities = await client.capabilities()
-    const receipt = await client.submit({
-      idempotency_key: stableKey('opencode-question', sessionId, request.id),
-      draft: draftForServerCapabilities(draft.draft, capabilities),
-    }, 0)
-    recordSessionNotified(sessionId, deps.env, (deps.now ?? Date.now)())
-    logger.info('ask.registered', {
-      ok: true, origin: 'opencode-question', session: sessionId, request_id: receipt.request_id,
-      questions: form.questions.length, overall: receipt.overall,
+    registered = registerQuestion(sessionId, deps.env, frozen, (deps.now ?? Date.now)(), undefined, {
+      machineStillMatches: () => {
+        const current = deps.store.load()
+        return current !== null && current.machineId === service.machine_id && current.baseUrl === service.base_url
+      },
     })
-    return { client, requestId: receipt.request_id, form, sessionId,
-      service: { base_url: credential.baseUrl, machine_id: credential.machineId } }
   } catch (err) {
-    return { reason: 'submission-failed', detail: {
-      error: err instanceof Error ? err.message : String(err),
-      ...(err instanceof ApiCallError ? { status: err.status, code: err.code } : {}),
-    } }
+    return { kind: 'terminal', reason: err instanceof QuestionRegistrationChanged ? 'session-changed' : 'registration-failed',
+      detail: { error: err instanceof Error ? err.message : String(err) } }
   }
+  // The duplicate guard found this question already open in this session.
+  if (!registered.registered) return link(registered.question_id)
+  return carry(frozen, true, images)
 }
 
 async function settlesWithin(frame: Promise<unknown>, ms: number, deps: Pick<CommandDeps, 'sleep'>): Promise<boolean> {
@@ -416,7 +810,45 @@ async function settlesWithin(frame: Promise<unknown>, ms: number, deps: Pick<Com
   }
 }
 
-async function closeQuietly(registration: Registration, logger: Logger): Promise<void> {
+type Submitted = Carriage & { requestId: string; form: PickerForm }
+
+/** Upload a self-opened form's images, then submit the registration for the User's devices. */
+async function submitForm(
+  deps: CommandDeps,
+  carriage: Carriage,
+  logger: Logger,
+): Promise<Submitted | { reason: string; detail?: Record<string, unknown> }> {
+  const media: MediaItemT[] = [...(carriage.entry.media ?? [])]
+  for (const image of carriage.images) {
+    const uploaded = await uploadImage({ ...deps, io: { ...deps.io, err: () => undefined } }, carriage.client, image.path)
+    if (!uploaded.ok) return { reason: 'media-upload-failed', ...(uploaded.error === null ? {} : { detail: { error: uploaded.error } }) }
+    media.push({ media_id: uploaded.mediaId, ...(image.alt === undefined ? {} : { alt: image.alt }) })
+  }
+  const draft = formDraft(carriage.config, carriage.entry, media,
+    carriage.entry.source === undefined ? {} : { source: carriage.entry.source })
+  if (!draft.ok) return { reason: 'invalid-draft', detail: { error: draft.error } }
+  try {
+    const capabilities = await carriage.client.capabilities()
+    const receipt = await carriage.client.submit({
+      idempotency_key: stableKey('opencode-question', carriage.sessionId, carriage.entry.question_id),
+      draft: draftForServerCapabilities(draft.draft, capabilities),
+    }, 0)
+    recordSessionNotified(carriage.sessionId, deps.env, (deps.now ?? Date.now)())
+    logger.info('ask.registered', {
+      ok: true, origin: 'opencode-question', session: carriage.sessionId, question_id: carriage.entry.question_id,
+      request_id: receipt.request_id, questions: carriage.shape.questions.length, overall: receipt.overall,
+      linked: !carriage.created, ...(carriage.entry.opencode_hand_back === undefined ? {} : { hand_back: true }),
+    })
+    return { ...carriage, requestId: receipt.request_id, form: answerForm(carriage.entry.questions ?? [], carriage.shape) }
+  } catch (err) {
+    return { reason: 'submission-failed', detail: {
+      error: err instanceof Error ? err.message : String(err),
+      ...(err instanceof ApiCallError ? { status: err.status, code: err.code } : {}),
+    } }
+  }
+}
+
+async function closeQuietly(registration: Submitted, logger: Logger): Promise<void> {
   try {
     await registration.client.closeReplies(registration.requestId, 'retire')
   } catch (err) {
@@ -426,7 +858,7 @@ async function closeQuietly(registration: Registration, logger: Logger): Promise
 }
 
 /** Record an answer given in OpenCode, so the devices show it and stop asking. */
-async function reportNativeAnswer(registration: Registration, answers: unknown, logger: Logger): Promise<string> {
+async function reportNativeAnswer(registration: Submitted, answers: unknown, logger: Logger): Promise<string> {
   const reported = opencodeNativeAnswers(registration.form, answers)
   if (reported === null) {
     await closeQuietly(registration, logger)
@@ -458,11 +890,12 @@ type PollResult =
   | { kind: 'expired' }
 
 /**
- * Long-poll the reply window until an answer arrives or the window ends.
+ * Long-poll the reply window until an answer arrives or the window ends,
+ * whether by time or because a device dismissed the question.
  * `stopped` is checked between polls; a frame from the plugin wins at once.
  */
 async function pollForAnswer(
-  registration: Registration,
+  registration: Submitted,
   stopped: () => boolean,
   deps: Pick<CommandDeps, 'now' | 'sleep'>,
 ): Promise<PollResult | null> {
@@ -503,40 +936,120 @@ export async function opencodeQuestionCommand(
   }
 }
 
+function sessionLabel(frame: SessionLabel): SessionLabel {
+  return {
+    ...(isString(frame.session_label) && frame.session_label.length <= 512 ? { session_label: frame.session_label } : {}),
+    ...(frame.session_label_pending === true ? { session_label_pending: true } : {}),
+  }
+}
+
+/** The form from the first frame, or an error frame's reason. */
+function formContext(first: Inbound | null | 'timeout'): FormContext | { error: string } {
+  if (first === null || first === 'timeout') return { error: 'invalid-form' }
+  if (first.type === 'ask') {
+    const request = opencodeQuestionRequest(first.request)
+    if (request === null || first.session_id !== request.sessionID || !isString(first.cwd) ||
+        !path.isAbsolute(first.cwd) || !existsSync(first.cwd)) return { error: 'invalid-form' }
+    return { sessionId: request.sessionID, cwd: first.cwd, questions: request.questions, extras: {}, label: sessionLabel(first),
+      ...(request.tool === undefined ? {} : { callId: request.tool.callID }), opened: request }
+  }
+  if (first.type !== 'form') return { error: 'invalid-form' }
+  const questions = opencodeQuestions(first.questions)
+  if (questions === null || !isString(first.session_id) || first.session_id === '' || !isString(first.call_id) ||
+      !isString(first.cwd) || !path.isAbsolute(first.cwd) || !existsSync(first.cwd)) return { error: 'invalid-form' }
+  const extras = opencodeFormExtras(first.extras)
+  return {
+    sessionId: first.session_id, cwd: first.cwd, questions, label: sessionLabel(first), callId: first.call_id,
+    ...('error' in extras ? { extras: {}, extrasError: extras.error } : { extras }),
+  }
+}
+
+/** The `opened` frame for this exact form, or null when it never opened. */
+async function awaitOpened(pipe: PluginPipe, form: FormContext): Promise<OpencodeQuestionRequest | null> {
+  const frame = await pipe.next(OPEN_FRAME_TIMEOUT_MS)
+  if (frame === null || frame === 'timeout' || frame.type !== 'opened') return null
+  const request = opencodeQuestionRequest(frame.request)
+  if (request === null || request.sessionID !== form.sessionId || request.tool?.callID !== form.callId) return null
+  const opened = pickerForm(opencodePickerQuestions(request))
+  const checked = pickerForm(opencodePickerQuestions(form))
+  if ('error' in opened || 'error' in checked || !sameQuestions(opened.questions, checked.questions)) return null
+  return request
+}
+
 async function runForm(deps: CommandDeps, pipe: PluginPipe): Promise<number> {
   const logger = log(deps)
-  const first = await pipe.next(ASK_FRAME_TIMEOUT_MS)
-  const request = first?.type === 'ask' ? opencodeQuestionRequest(first.request) : null
-  if (first?.type !== 'ask' || request === null || first.session_id !== request.sessionID ||
-      !isString(first.cwd) || !path.isAbsolute(first.cwd) || !existsSync(first.cwd)) {
-    pipe.send({ type: 'terminal', reason: 'invalid-form' })
+  const form = formContext(await pipe.next(ASK_FRAME_TIMEOUT_MS))
+  if ('error' in form) {
+    pipe.send({ type: 'terminal', reason: form.error })
     pipe.close()
     return 0
   }
-  const ask: AskFrame = {
-    type: 'ask', session_id: first.session_id, cwd: first.cwd, request,
-    ...(isString(first.session_label) && first.session_label.length <= 512 ? { session_label: first.session_label } : {}),
-    ...(first.session_label_pending === true ? { session_label_pending: true } : {}),
+  logger.bind({ cmd: 'hook opencode-question', session: form.sessionId })
+  let admission = admitForm(deps, form)
+  // A form already open can only be carried or left in OpenCode.
+  if (admission.kind === 'refused' && form.opened !== undefined) {
+    admission = { kind: 'terminal', reason: admission.reason === 'unlinkable' ? 'unsupported-form' : admission.reason,
+      ...(admission.detail === undefined ? {} : { detail: admission.detail }) }
   }
-  logger.bind({ cmd: 'hook opencode-question', session: ask.session_id })
+  if (admission.kind === 'refused') {
+    logger.info('hook.gate', { hook: 'opencode-question', reason: admission.reason, ...admission.detail,
+      stage: admission.stage ?? 'form-refused' })
+    pipe.send({ type: 'refused', message: admission.message })
+    pipe.close()
+    return 0
+  }
+  if (admission.kind === 'terminal') {
+    logger.info('hook.gate', { hook: 'opencode-question', reason: admission.reason, ...admission.detail, stage: 'form-terminal-only' })
+    pipe.send({ type: 'terminal', reason: admission.reason })
+    pipe.close()
+    return 0
+  }
+  const carriage = admission.carriage
+  if (form.opened === undefined) {
+    pipe.send({ type: 'accepted', question_id: carriage.entry.question_id })
+    if (await awaitOpened(pipe, form) === null) {
+      releaseRegistration(carriage, deps.env)
+      logger.info('hook.end', { hook: 'opencode-question', outcome: 'form-not-opened', question_id: carriage.entry.question_id })
+      pipe.send({ type: 'done', outcome: 'form-not-opened' })
+      pipe.close()
+      return 0
+    }
+  }
   await sweepAbandonedOpencodeForms(deps)
   let settled: Inbound | null | undefined
-  const frame = pipe.next().then((value) => { settled = value; return value })
-  const prepared = await registerForm(deps, ask, logger, frame)
-  if ('reason' in prepared) {
-    logger.info('hook.gate', { hook: 'opencode-question', reason: prepared.reason, ...prepared.detail, stage: 'form-terminal-only' })
-    pipe.send({ type: 'terminal', reason: prepared.reason })
+  const frame = pipe.next().then((value) => {
+    const inbound = value === 'timeout' ? null : value
+    settled = inbound
+    return inbound
+  })
+  // The terminal-first delay runs from registration: a hand-back registered
+  // a while ago has already served part of it.
+  const now = (deps.now ?? Date.now)()
+  const dueAt = Math.min(carriage.entry.asked_at ?? now, now) + carriage.config.ask_grace_seconds.value * 1000
+  if (await settlesWithin(frame, dueAt - now, deps)) {
+    releaseRegistration(carriage, deps.env, settled?.type === 'native' ? 'answered' : 'withdrawn')
+    logger.info('hook.gate', { hook: 'opencode-question', reason: 'settled-in-opencode', stage: 'form-terminal-only' })
+    pipe.send({ type: 'terminal', reason: 'settled-in-opencode' })
     pipe.close()
     return 0
   }
-  const registration = prepared
-  const owner = currentProcessIdentity()
-  if (owner !== null) {
-    recordOpenForm(deps.env, { request_id: registration.requestId, session_id: registration.sessionId, ...registration.service, owner })
+  const submitted = await submitForm(deps, carriage, logger)
+  if ('reason' in submitted) {
+    releaseRegistration(carriage, deps.env)
+    logger.info('hook.gate', { hook: 'opencode-question', reason: submitted.reason, ...submitted.detail, stage: 'form-terminal-only' })
+    pipe.send({ type: 'terminal', reason: submitted.reason })
+    pipe.close()
+    return 0
+  }
+  const registration = submitted
+  if (registration.owner !== null) {
+    recordOpenForm(deps.env, { request_id: registration.requestId, session_id: registration.sessionId, ...registration.service,
+      owner: registration.owner })
   }
   pipe.send({ type: 'registered', request_id: registration.requestId })
 
   let outcome = 'withdrawn'
+  let terminal: QuestionTerminalState = 'retired'
   try {
     for (;;) {
       const raced = await Promise.race([
@@ -557,8 +1070,13 @@ async function runForm(deps: CommandDeps, pipe: PluginPipe): Promise<number> {
       const result = raced.value
       if (result === null) continue
       if (result.kind === 'expired') {
+        // Dismissed on a device, or its window ended: the form closes
+        // unanswered, and the agent reads only that the question expired.
         await closeQuietly(registration, logger)
-        outcome = 'expired'
+        pipe.send({ type: 'expired', context: CLAUDE_PICKER_DISMISSED })
+        const verdict = await frame
+        if (verdict?.type === 'native') outcome = await reportNativeAnswer(registration, verdict.answers, logger)
+        else outcome = verdict?.type === 'applied' ? 'expired' : verdict?.type === 'stale' ? 'form-already-settled' : 'session-closed'
         break
       }
       // Close under the reply fence before handing an answer over, so a
@@ -589,8 +1107,11 @@ async function runForm(deps: CommandDeps, pipe: PluginPipe): Promise<number> {
       error: err instanceof Error ? err.message : String(err) })
     await closeQuietly(registration, logger)
   }
+  if (outcome === 'device-answer-delivered' || outcome === 'native-answer-recorded') terminal = 'answered'
+  dropPendingQuestion(registration.sessionId, deps.env, registration.entry, terminal)
   dropOpenForm(deps.env, registration.requestId)
-  logger.info('hook.end', { hook: 'opencode-question', outcome, request_id: registration.requestId })
+  logger.info('hook.end', { hook: 'opencode-question', outcome, request_id: registration.requestId,
+    question_id: registration.entry.question_id })
   pipe.send({ type: 'done', outcome })
   pipe.close()
   return 0

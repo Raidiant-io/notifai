@@ -412,6 +412,29 @@ export interface PendingQuestion {
   owner_deadline_at?: number
   /** Frozen before the first network byte, so an ambiguous submit is replayable. */
   submission?: PendingSubmissionIntent
+  /**
+   * OpenCode only: the `question` form input `notifai ask --wait` handed back
+   * for this question. The agent opens it unchanged, and only that form links.
+   */
+  opencode_hand_back?: OpencodeFormInput
+  /**
+   * OpenCode only: the form command carrying this question to the User's
+   * devices. It submits and settles the question itself, so no other owner
+   * may submit it while that process lives.
+   */
+  opencode_form_owner?: ProcessIdentity
+}
+
+/** The input of OpenCode's `question` tool, as Notifai hands it back. */
+export interface OpencodeFormInput {
+  questions: Array<{
+    question: string
+    header: string
+    options: Array<{ label: string; description: string }>
+    multiple?: boolean
+  }>
+  /** `notifai:<question_id>`: names the registration this form carries. */
+  source: string
 }
 
 export type QuestionDeliveryState =

@@ -20,15 +20,15 @@ context; enabling one takes effect from the next User prompt in the same Agent
 Session.
 
 Nothing can yet bring an answer back once an OpenCode session goes idle, so
-ask in a way that waits: OpenCode's own `question` tool, or
-`notifai ask --wait` when the question needs a Body or images.
+ask in a way that waits. To wait, run `notifai ask --wait`: it hands back the
+`question` form with your title, Body and images; open it unchanged. In a
+worker it waits in the command instead.
 
 ## Question form
 
-OpenCode's own `question` tool reaches the User's devices by itself; never
-also register it with `notifai ask`, or the User is asked twice. The form
-keeps
-your turn open and takes whichever answer comes first:
+A `question` form you open yourself reaches the User's devices by itself;
+never also register it with `notifai ask`, or the User is asked twice. The
+form keeps your turn open and takes whichever answer comes first:
 
 - **A device answer** is the form's own result. The next system context names
   `notifai acknowledge req_…`; run it before the work the answer causes.
@@ -36,11 +36,13 @@ your turn open and takes whichever answer comes first:
   devices stop asking.
 - **A form dismissed in OpenCode** withdraws the device question: continue in
   the conversation.
+- **A question that expired on the devices** closes the form unanswered, with
+  Notifai context that says so: carry on without it.
 
 Closing OpenCode or deleting the session withdraws the device question; a
 later device answer reaches nobody. A form on a signed-out machine, with
-question notifications off, in a project the User disabled, or in a shape the
-devices cannot show stays in OpenCode only and still works there.
+question notifications off, or in a project the User disabled stays in
+OpenCode only and still works there.
 
 ## After a Notifai update
 

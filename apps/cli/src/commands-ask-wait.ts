@@ -155,7 +155,11 @@ export function heldWaitRoute(
 
 /** The remedy plain `ask` prints where it cannot return an answer: the held wait, and in OpenCode the form too. */
 export function answerCannotReturnRemedy(route: HeldWaitRoute): string {
-  if (route.active?.harness === 'opencode') {
+  if (route.active?.harness === 'opencode' && route.active.worker === false) {
+    return 'to wait for the answer, run `notifai ask --wait`: it hands back OpenCode\'s `question` form, which reaches the User\'s devices; to keep working, ask in the conversation, which the devices do not see'
+  }
+  // A plugin too old to say whether this is a worker hands back no form.
+  if (route.active?.harness === 'opencode' && route.active.worker === undefined) {
     return 'to wait for the answer, open OpenCode\'s `question` form, which reaches the User\'s devices, or run `notifai ask --wait`, which waits in this command; to keep working, ask in the conversation, which the devices do not see'
   }
   return 'run `notifai ask --wait` for this question: the command itself waits for the answer'

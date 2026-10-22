@@ -35,6 +35,7 @@ import { openclawGatewayReady } from './openclaw-gateway-readiness.js'
 import { enableProjectUnlessDisabled, inferredProjectName, projectBinding } from './project-enablement.js'
 import { spawnQuestionSettlement } from './question-settlement-process.js'
 import { answerCannotReturnRemedy, heldAskWait, heldWaitRoute } from './commands-ask-wait.js'
+import { opencodeHandBack } from './opencode-hand-back.js'
 import {
   buildDraft,
   parseChoices,
@@ -913,8 +914,9 @@ export function askCommand(
   const { active, contested } = resolveActiveHarness(deps.env, deps.cwd, now)
   // Where no later answer can come back (no harness, conflicting markers,
   // Cursor, OpenCode, OpenClaw off macOS, Hermes off its classic CLI), plain
-  // `ask` is refused and `ask --wait` holds in this command.
-  // Questions off keeps every route off the devices first (D11).
+  // `ask` is refused and `ask --wait` holds in this command; an OpenCode root
+  // session's `ask --wait` hands back its `question` form instead.
+  // Questions off keeps every route off the devices first.
   const held = heldWaitRoute(active, contested, deps.hookPlatform ?? process.platform)
   if (held !== null) {
     if (!explicitUseConfig.ask_notifications.value) return questionsOff(deps, flags)
@@ -925,7 +927,8 @@ export function askCommand(
         answerCannotReturnRemedy(held),
       )
     }
-    return heldAskWait(deps, { question, built, flags, config: explicitUseConfig, route: held })
+    const waitInput = { question, built, flags, config: explicitUseConfig, route: held }
+    return opencodeHandBack(deps, waitInput) ?? heldAskWait(deps, waitInput)
   }
   // From here the harness has a return path. Its routing must be ready, for
   // `ask` and `ask --wait` alike: a wait is never a way round admission.
