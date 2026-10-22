@@ -8,6 +8,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 This project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 and [Conventional Commits](https://www.conventionalcommits.org/en/v1.0.0/).
 
+## [9.0.0-beta.1](https://github.com/Raidiant-io/notifai/compare/protocol-v8.5.0...protocol-v9.0.0-beta.1) (2026-10-22)
+
+### Breaking changes
+
+* Remove the obsolete `CLOSED_CHOICE_BANNER_AFFORDANCE` export. Content responses now include their accepted questions.
+
+### Features
+
+* Add choice descriptions, full-content batch and delivery-content contracts, and bounded push content with fetchable detail.
+* Carry dismissed-question history and additional Agent Session context without changing existing delivery routes.
+
 ## [8.5.0](https://github.com/Raidiant-io/notifai/compare/protocol-v8.4.0...protocol-v8.5.0) (2026-10-21)
 
 
