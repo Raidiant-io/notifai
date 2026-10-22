@@ -173,7 +173,7 @@ function pendingHeldUpdateNotice(options: { env: NodeJS.ProcessEnv; now: number;
     const owed = (state: NoticeState): boolean => !recent(state.notified_at, options.now, NOTICE_INTERVAL_MS)
     if (!owed(readState(file))) return undefined
     const why = held.reason === 'starved'
-      ? 'questions or answers have kept it waiting on this machine for a week'
+      ? 'it has stayed staged on this machine for a week without activating'
       : held.waiting_for.filter(reason => HELD_REASONS[reason] !== undefined).map(reason => HELD_REASONS[reason]).join('; ')
     return {
       text: `${CLI_UPDATE_AVAILABLE} Notifai ${held.version} is downloaded but automatic updates are holding it back: ${why}. ` +

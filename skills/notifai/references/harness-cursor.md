@@ -30,6 +30,7 @@ Request ownership; Cursor starts no separately activated context for it.
 Cursor does not tell Notifai which conversation ran a command, so no answer
 can come back later: ask with `notifai ask --wait` in the foreground, and let
 it run until it returns with the answer or says the question ended.
+`notifai doctor` reports that as a Cursor limit, not a fault to repair.
 
 ## After a Notifai update
 

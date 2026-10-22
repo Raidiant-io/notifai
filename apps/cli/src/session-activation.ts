@@ -14,7 +14,7 @@ export const WORKER_ACTIVATION_CONTEXT =
   'Notifai worker context: report Agent Events (work finished, failed, blocked, or needing the User) to your parent, which decides what reaches the User. Send no Notification Request yourself unless your assignment delegates them to you; then load the Notifai skill and run `notifai guidance` before your first one.'
 
 export const MISSING_LIFECYCLE_GUIDANCE_CONTEXT =
-  'Notifai lifecycle guidance could not be loaded, so Project Enablement is unverified. Run `notifai init --json` to check setup, then `notifai guidance` before deciding whether or how to notify.'
+  'Notifai lifecycle guidance could not be loaded, so Project Enablement is unverified. Run `notifai doctor --json` to check setup, then `notifai guidance` before deciding whether or how to notify.'
 
 const bytes = (text: string): number => Buffer.byteLength(text, 'utf8')
 
@@ -91,8 +91,13 @@ function hermesRootSections(cwd: string, env: NodeJS.ProcessEnv, notices: readon
 
 /** Grok caps model-visible hook feedback at 10,000 characters. Leave room for
  * the harness wrapper and bound the effective guidance before serialization. */
-export function grokActivationContext(cwd: string, env: NodeJS.ProcessEnv, worker: boolean): string {
-  return worker ? WORKER_ACTIVATION_CONTEXT : rootActivationContext(cwd, env, [], 9_000)
+export const GROK_ACTIVATION_MAX_BYTES = 9_000
+
+/** Grok's activation, with the notices that fit after the guidance, as every
+ * other harness's SessionStart context. A notice without room stays due. */
+export function grokActivationContext(cwd: string, env: NodeJS.ProcessEnv, worker: boolean,
+  notices: readonly PendingNotice[] = []): string {
+  return worker ? WORKER_ACTIVATION_CONTEXT : rootActivationContext(cwd, env, notices, GROK_ACTIVATION_MAX_BYTES)
 }
 
 /** One lifecycle meaning, encoded for each harness output contract. */

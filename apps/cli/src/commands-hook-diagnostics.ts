@@ -89,6 +89,28 @@ export const CODEX_STOP_DEFINITION_NOT_SINGULAR_PROBLEM =
   'the active Codex configuration does not contain exactly one Notifai Stop definition, so no singular turn-end owner can be proven'
 
 /**
+ * The admission problems that are the harness's design, not a fault. Where no
+ * later answer can come back (Cursor, OpenCode, OpenClaw off macOS), plain
+ * `ask` is refused and `ask --wait` waits in the command instead, so nothing
+ * here is repaired; `doctor` reports these as a capability limit. Empty where
+ * the harness has a later answer route, whose every problem stays repairable.
+ */
+export function questionRouteLimits(deps: CommandDeps, active: ActiveHarnessSession): string[] {
+  const capability = isHookInstallableHarness(active.harness)
+    ? questionRoutingCapability(active.harness, deps.hookPlatform ?? process.platform)
+    : HERMES_QUESTION_ROUTING_UNAVAILABLE
+  if (capability.stopContinuation !== 'unsupported') return []
+  return [
+    ...(active.sessionId === undefined ? [noExactSessionProblem(active)] : []),
+    `${active.label}: ${capability.deliveryContract}`,
+  ]
+}
+
+function noExactSessionProblem(active: ActiveHarnessSession): string {
+  return `the active ${active.label} shell does not expose an exact session id; a project-level last-writer pointer can cross-wire two sessions. Use \`notifai ask --wait\``
+}
+
+/**
  * One fail-closed admission gate shared by every active harness route.
  * Finding a file is not readiness: the exact session, one current definition,
  * the stable adapter, a long enough Stop owner, and (for Codex) trust must all
@@ -99,18 +121,10 @@ export function activeQuestionRouteProblems(
   active: ActiveHarnessSession,
   installations: Installation[],
 ): string[] {
-  const problems: string[] = []
-  if (active.sessionId === undefined) {
-    problems.push(
-      `the active ${active.label} shell does not expose an exact session id; a project-level last-writer pointer can cross-wire two sessions. Use \`notifai ask --wait\``,
-    )
-  }
-  const capability = isHookInstallableHarness(active.harness)
-    ? questionRoutingCapability(active.harness, deps.hookPlatform ?? process.platform)
-    : HERMES_QUESTION_ROUTING_UNAVAILABLE
-  if (capability.stopContinuation === 'unsupported') {
-    problems.push(`${active.label}: ${capability.deliveryContract}`)
-  }
+  const limits = questionRouteLimits(deps, active)
+  const problems: string[] = active.sessionId === undefined && limits.length === 0
+    ? [noExactSessionProblem(active)]
+    : [...limits]
   const matching = installations.filter(
     (installation) => installation.harness === active.harness,
   )

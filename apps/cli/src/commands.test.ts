@@ -43,6 +43,7 @@ import { readPendingPairing } from './pending-pairing.js'
 import type { ReadinessState } from './readiness.js'
 import * as installHooksModule from './install-hooks.js'
 import * as atomicFileModule from './atomic-file.js'
+import * as automaticUpdateModule from './automatic-update.js'
 import { ApiCallError, NetworkError, type ApiClient } from './client.js'
 import type { ClaudeWakeAdapters } from './claude-wake.js'
 import { MISSING_TITLE_NOTE } from './commands-ask.js'
@@ -4581,7 +4582,9 @@ describe('harness activation guidance', () => {
     io.outLines = []
     expect(await cliUpdateCheckCommand(deps, { json: true })).toBe(EXIT.ok)
     const report = JSON.parse(io.outLines[0]!)
-    expect(report.session, JSON.stringify(report.session)).toMatchObject({ harness, assessment: harness === 'cursor' ? 'needs_attention' : 'continue', restart_required: harness === 'cursor' ? null : false })
+    // Cursor cannot name the conversation running a shell; that limit is
+    // reported, never held against continuing after an update.
+    expect(report.session, JSON.stringify(report.session)).toMatchObject({ harness, assessment: 'continue', restart_required: false })
     for (const check of report.session.diagnostics.filter((s: { id: string }) => ['hooks-question-admission', 'hooks-answer-continuation'].includes(s.id))) {
       expect(check).not.toHaveProperty('remedy')
     }
@@ -4604,6 +4607,22 @@ describe('harness activation guidance', () => {
     expect(session).toMatchObject({ harness: 'openclaw', assessment: 'needs_attention' })
     expect(session.diagnostics.find((s: { id: string }) => s.id === 'hooks-answer-continuation'))
       .toMatchObject({ status: 'gap', remedy: expect.any(Object) })
+  })
+
+  it('tells agents that automatic updates never wait for questions', async () => {
+    const cwd = mkdtempSync(path.join(os.tmpdir(), 'notifai-automatic-next-step-'))
+    const io = new CapturedIo()
+    const deps = { ...makeDeps(io, {} as ApiClient), cwd, env: isolatedEnv(cwd) }
+    const runsHere = vi.spyOn(automaticUpdateModule, 'automaticUpdatesRunHere').mockReturnValue(true)
+    try {
+      expect(await cliUpdateCheckCommand(deps, { json: true })).toBe(EXIT.ok)
+    } finally {
+      runsHere.mockRestore()
+    }
+    const first = (JSON.parse(io.outLines[0]!) as { next_steps: string[] }).next_steps[0]!
+    expect(first).toMatch(/^Automatic updates are on/)
+    expect(first).toMatch(/does not wait for questions or answers/)
+    expect(first).not.toMatch(/once no question/)
   })
 
   it('does not call an unactivated Claude session safe to continue', async () => {
@@ -8500,6 +8519,123 @@ describe('init', () => {
     expect(healthCalls).toBe(1)
     expect(compatibilityCalls).toBe(1)
     expect(deviceCalls).toBe(1)
+  })
+
+  describe('a User choice or a harness limit is information, not a gap', () => {
+    type Report = { ok?: boolean; question_routing_ready: boolean; states: Array<Record<string, unknown> & { id: string; applies_here: boolean }> }
+    const stateOf = (report: Report, id: string) => report.states.find((state) => state.id === id)
+    async function doctorJson(deps: CommandDeps): Promise<{ exit: number; report: Report }> {
+      const io = new CapturedIo()
+      const exit = await doctorCommand({ ...deps, io }, { json: true })
+      return { exit, report: JSON.parse(io.outLines.join('\n')) as Report }
+    }
+    async function initJson(deps: CommandDeps): Promise<{ exit: number; report: Report }> {
+      const io = new CapturedIo()
+      const exit = await initCommand({ ...deps, io }, { json: true, hooks: false, skills: false })
+      return { exit, report: JSON.parse(io.outLines.at(-1) ?? '{}') as Report }
+    }
+    function project(prefix: string): string {
+      const cwd = mkdtempSync(path.join(os.tmpdir(), prefix))
+      execFileSync('git', ['init', '--quiet', cwd])
+      return cwd
+    }
+
+    it('reports questions the User turned off without a remedy that turns them back on', async () => {
+      const cwd = project('notifai-questions-off-')
+      const deps = setupReadyDeps(new CapturedIo(), cwd, inertSkills, { submit: 0 })
+      writeProjectSettings(cwd, deps.env, 'ask_notifications = false\n')
+
+      const init = await initJson(deps)
+      expect(init.exit).toBe(EXIT.ok)
+      const doctor = await doctorJson(deps)
+      expect(doctor.exit).toBe(EXIT.ok)
+      expect(doctor.report).toMatchObject({ ok: true, question_routing_ready: false })
+      for (const { report } of [init, doctor]) {
+        expect(stateOf(report, 'question-routing-settings'))
+          .toMatchObject({ status: 'optional-gap', informational: 'user-choice', remedy: null })
+        expect(JSON.stringify(report)).not.toContain('ask_notifications true')
+      }
+      expect(loadConfig({ cwd, env: deps.env }).ask_notifications.value).toBe(false)
+    })
+
+    it.each([
+      ['cursor', 'darwin', { CURSOR_AGENT: '1' }],
+      ['opencode', 'darwin', { NOTIFAI_ACTIVE_HARNESS: 'opencode', NOTIFAI_ACTIVE_SESSION_ID: 'limited-session' }],
+      ['openclaw', 'linux', { NOTIFAI_ACTIVE_HARNESS: 'openclaw', NOTIFAI_ACTIVE_SESSION_ID: 'limited-session' }],
+    ] as const)('reports %s on %s without answer continuation as a harness limit that passes doctor', async (harness, hookPlatform, markers) => {
+      const cwd = project(`notifai-limit-${harness}-`)
+      const base = setupReadyDeps(new CapturedIo(), cwd, inertSkills, { submit: 0 })
+      const deps = { ...base, env: { ...base.env, ...markers }, hookPlatform }
+      expect(hooksInstallCommand(deps, { harness, execPath: process.execPath, scriptPath: fileURLToPath(import.meta.url) })).toBe(EXIT.ok)
+      const first = await initJson(deps)
+      expect(first.exit, JSON.stringify(first.report.states?.filter((state) => state['status'] === 'gap'))).toBe(EXIT.ok)
+      // The harness's prompt hook ran in this Project.
+      const now = Date.now()
+      writeProjectSession(cwd, deps.env, 'limited-session', now, harness)
+      writeSessionState('limited-session', deps.env, { harness, last_prompt_at: now })
+
+      const doctor = await doctorJson(deps)
+      const limits = ['hooks-question-admission', 'hooks-answer-continuation',
+        ...(harness === 'cursor' ? ['hooks-active-session'] : [])]
+      for (const id of limits) {
+        expect(stateOf(doctor.report, id), id).toMatchObject({ status: 'optional-gap', informational: 'harness-capability', remedy: null })
+      }
+      expect(JSON.stringify(doctor.report.states.filter((state) => state.applies_here))).not.toContain('hooks install')
+      expect(doctor.report).toMatchObject({ ok: true, question_routing_ready: true })
+      expect(doctor.exit).toBe(EXIT.ok)
+      const init = await initJson(deps)
+      expect(init.exit).toBe(EXIT.ok)
+      expect(init.report).toMatchObject({ question_routing_ready: true })
+    })
+
+    it('keeps a repairable problem a gap on a harness without answer continuation', async () => {
+      const cwd = project('notifai-limit-repairable-')
+      const base = setupReadyDeps(new CapturedIo(), cwd, inertSkills, { submit: 0 })
+      const deps = { ...base, env: { ...base.env, NOTIFAI_ACTIVE_HARNESS: 'opencode', NOTIFAI_ACTIVE_SESSION_ID: 'limited-session' }, hookPlatform: 'darwin' as const }
+      expect(hooksInstallCommand(deps, { harness: 'opencode', execPath: process.execPath, scriptPath: fileURLToPath(import.meta.url) })).toBe(EXIT.ok)
+      const plugin = path.join(deps.env.OPENCODE_CONFIG_DIR!, 'plugins', 'notifai.js')
+      writeFileSync(plugin, readFileSync(plugin, 'utf8').replace(/^const ADAPTER_VERSION = .*\n/m, ''))
+
+      const { exit, report } = await doctorJson(deps)
+      expect(exit).toBe(EXIT.failed)
+      const admission = stateOf(report, 'hooks-question-admission')
+      expect(admission).toMatchObject({ status: 'gap', informational: null, remedy: expect.objectContaining({ command: expect.stringContaining('hooks install') }) })
+      expect(String(admission?.['detail'])).toContain('obsolete OpenCode event wiring')
+      expect(String(admission?.['detail'])).not.toContain('no proven answer continuation')
+    })
+
+    it.skipIf(process.platform === 'win32')('reports a Hermes version the plugin does not support without a remedy that cannot help', async () => {
+      const cwd = project('notifai-hermes-version-')
+      const bin = path.join(cwd, 'bin')
+      mkdirSync(bin)
+      const versionFile = path.join(cwd, 'hermes-version')
+      writeFileSync(versionFile, '0.21.5')
+      writeFileSync(path.join(bin, 'hermes'), `#!${process.execPath}
+const fs = require('node:fs'), path = require('node:path'), url = require('node:url');
+const args = process.argv.slice(2), target = path.join(process.env.HERMES_HOME, 'plugins', 'notifai');
+if (args[0] === '--version') console.log('Hermes Agent v' + fs.readFileSync(${JSON.stringify(versionFile)}, 'utf8'));
+else if (args[1] === 'list') { if (fs.existsSync(target)) console.log('enabled local 1.0.0 notifai'); }
+else if (args[1] === 'install') {
+  fs.mkdirSync(target, { recursive: true });
+  for (const name of ['__init__.py', 'plugin.yaml']) fs.copyFileSync(path.join(url.fileURLToPath(args[2]), name), path.join(target, name));
+}
+`, { mode: 0o700 })
+      const base = setupReadyDeps(new CapturedIo(), cwd, inertSkills, { submit: 0 })
+      const deps = { ...base, env: { ...base.env, HERMES_HOME: path.join(cwd, 'hermes'), PATH: [bin, '/usr/bin', '/bin'].join(path.delimiter) } }
+      const first = await initJson(deps)
+      expect(first.exit, JSON.stringify(first.report.states?.filter((state) => state['status'] === 'gap'))).toBe(EXIT.ok)
+      const installIo = new CapturedIo()
+      expect(hooksInstallCommand({ ...deps, io: installIo }, { harness: 'hermes', execPath: process.execPath, scriptPath: fileURLToPath(import.meta.url) }), installIo.errLines.join('\n')).toBe(EXIT.ok)
+      expect(stateOf((await doctorJson(deps)).report, 'hooks-hermes-plugin')).toMatchObject({ status: 'ready' })
+
+      writeFileSync(versionFile, '0.22.0')
+      const { exit, report } = await doctorJson(deps)
+      const plugin = stateOf(report, 'hooks-hermes-plugin')
+      expect(plugin).toMatchObject({ status: 'optional-gap', informational: 'harness-capability', remedy: null })
+      expect(String(plugin?.['detail'])).toMatch(/v0\.22\.0.*v0\.21\.5/)
+      expect(JSON.stringify(report)).not.toContain('hermes plugins enable')
+      expect(exit).toBe(EXIT.ok)
+    })
   })
 })
 

@@ -6,6 +6,11 @@ authorization and deferrals, and exact-session tool-boundary Note evidence.
 An optional newer release is separate from a fault in installed integration.
 Doctor judges the `harness` running it: a state with `applies_here: false`
 belongs to another harness, so report it and do not act on it for this session.
+A state with `informational` set is not a gap and has no remedy:
+`user-choice` is the User's own setting, such as questions turned off, and
+`harness-capability` is something this harness cannot do by design, such as
+returning a later answer in Cursor. Report it when it matters; never change the
+setting or reinstall to clear it.
 
 When something did not happen and you cannot see why — especially after `ask`,
 which schedules background submission — inspect the local log.

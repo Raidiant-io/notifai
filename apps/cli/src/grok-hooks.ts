@@ -4,6 +4,7 @@ import { createHash } from 'node:crypto'
 import type { ContinuationEvent, EscalationDeliveryRoute, HookEnvelope } from './hook-types.js'
 import { updateSessionState } from './hook-session-state.js'
 import { grokActivationContext } from './session-activation.js'
+import type { PendingNotice } from './pending-notice.js'
 import { stopAnswerOutput } from './hook-acknowledgements.js'
 import { GrokLeaderSession } from './grok-leader.js'
 
@@ -33,11 +34,21 @@ export function resetGrokActivation(sessionId: string, env: NodeJS.ProcessEnv): 
   })
 }
 
+/** A Grok subagent: it reports to its parent and gets the worker context. */
+export function grokWorker(envelope: HookEnvelope): boolean {
+  return typeof envelope.subagentType === 'string' && envelope.subagentType !== ''
+}
+
 /** The digest deduplicates unchanged guidance while allowing current User
- * guidance and role changes to reach the model at its next tool boundary. */
-export function claimGrokActivation(envelope: HookEnvelope, cwd: string, env: NodeJS.ProcessEnv): string | undefined {
+ * guidance and role changes to reach the model at its next tool boundary.
+ * It covers the guidance alone: a notice is shown once, so it must neither
+ * repeat unchanged guidance nor be spent by an activation that is not shown.
+ * A root activation carries the due notices that fit; a worker's carries none. */
+export function claimGrokActivation(envelope: HookEnvelope, cwd: string, env: NodeJS.ProcessEnv,
+  notices: readonly PendingNotice[] = []): string | undefined {
   if (envelope.session_id === undefined) return undefined
-  const context = grokActivationContext(cwd, env, typeof envelope.subagentType === 'string' && envelope.subagentType !== '')
+  const worker = grokWorker(envelope)
+  const context = grokActivationContext(cwd, env, worker)
   const digest = createHash('sha256').update(context).digest('hex')
   let claimed = false
   updateSessionState(envelope.session_id, env, current => {
@@ -45,7 +56,8 @@ export function claimGrokActivation(envelope: HookEnvelope, cwd: string, env: No
     claimed = true
     return { ...current, grok_activation_context: digest }
   })
-  return claimed ? context : undefined
+  if (!claimed) return undefined
+  return worker || notices.length === 0 ? context : grokActivationContext(cwd, env, worker, notices)
 }
 
 /** Grok clips Stop feedback. Large answers travel by their immutable request

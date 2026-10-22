@@ -423,11 +423,20 @@ function hermesCommand(args: string[], env: NodeJS.ProcessEnv): string {
   return result.stdout
 }
 
-export function hermesVersionSupported(env: NodeJS.ProcessEnv = process.env): boolean {
+/** The one Hermes release whose plugin activation path was proven; install refuses any other. */
+export const HERMES_SUPPORTED_VERSION = '0.21.5'
+
+/** The version `hermes --version` reports, or null when it cannot be read. */
+export function hermesVersion(env: NodeJS.ProcessEnv = process.env): string | null {
   const result = spawnSync('hermes', ['--version'], {
     env, encoding: 'utf8', timeout: 10_000, maxBuffer: 64 * 1024,
   })
-  return result.status === 0 && /^Hermes Agent v0\.21\.5\b/m.test(result.stdout)
+  if (result.status !== 0) return null
+  return /^Hermes Agent v(\d+\.\d+\.\d+)\b/m.exec(result.stdout)?.[1] ?? null
+}
+
+export function hermesVersionSupported(env: NodeJS.ProcessEnv = process.env): boolean {
+  return hermesVersion(env) === HERMES_SUPPORTED_VERSION
 }
 
 export function hermesPluginListed(env: NodeJS.ProcessEnv = process.env): boolean {
@@ -442,7 +451,7 @@ export function preflightHermesPlugin(env: NodeJS.ProcessEnv = process.env): voi
     throw new Error('Hermes already has a foreign plugin named notifai; leave it unchanged')
   }
   if (!hermesVersionSupported(env)) {
-    throw new Error('Hermes v0.21.5 is required for the proven Notifai plugin integration')
+    throw new Error(`Hermes v${HERMES_SUPPORTED_VERSION} is required for the proven Notifai plugin integration`)
   }
   if (!existsSync(installed) && hermesCommand(['list', '--plain'], env)
     .split(/\r?\n/)

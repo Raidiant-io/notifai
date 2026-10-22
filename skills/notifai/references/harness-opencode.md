@@ -24,7 +24,8 @@ context; enabling one takes effect from the next User prompt in the same Agent
 Session.
 
 Nothing can yet bring an answer back once an OpenCode session goes idle, so
-ask in a way that waits. To wait, run `notifai ask --wait`: it hands back the
+ask in a way that waits; `notifai doctor` reports that as an OpenCode limit,
+not a fault to repair. To wait, run `notifai ask --wait`: it hands back the
 `question` form with your title, Body and images; open it unchanged. In a
 worker it waits in the command instead.
 

@@ -2386,3 +2386,8 @@ describe('Codex hook trust summary', () => {
     expect(summarizeCodexTrustFindings([])).toEqual([])
   })
 })
+
+it('points a harness that could not load guidance at a read-only check', () => {
+  expect(MISSING_LIFECYCLE_GUIDANCE_CONTEXT).toContain('`notifai doctor --json`')
+  expect(MISSING_LIFECYCLE_GUIDANCE_CONTEXT).not.toContain('notifai init')
+})

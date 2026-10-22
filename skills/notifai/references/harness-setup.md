@@ -65,7 +65,9 @@ A machine-wide Notifai skill is guidance, not routing evidence. The active
 harness needs its installed hook and a current session pointer.
 
 In the `init --json` result, `question_routing_ready` says whether questions
-can come back to this Agent Session. `direct_wake_ready` says whether an
+can come back to this Agent Session. Where the harness has no later answer route
+(Cursor, OpenCode, OpenClaw off macOS) it judges the route that harness has,
+`notifai ask --wait`; the missing later route is `informational`, not a gap. `direct_wake_ready` says whether an
 answer can start a turn on its own; it is optional when a held turn or
 recovery owns the answer, and `null` when nothing assessed it.
 
@@ -144,6 +146,7 @@ Nothing in the repository configures Notifai.
 
 With “Send questions to my devices” (`ask_notifications`) off, ask in the
 conversation, or in your own question form, which stays in the terminal.
+`doctor` reports that setting as the User's choice, not as a gap.
 
 `NOTIFAI_NO_INPUT=1` guarantees no command will ever prompt, which is what you
 want in CI or any shell with nobody at it. `NOTIFAI_CREDENTIALS=file` stores the
