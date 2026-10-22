@@ -3,6 +3,7 @@
  * the current pending inputs and claims one bounded batch immediately before
  * presentation. A late wake therefore cannot resurrect an acknowledged answer.
  */
+import { codexCardAnswerHeld } from './codex-card-handback.js'
 import { randomUUID } from 'node:crypto'
 import { isDeepStrictEqual } from 'node:util'
 import { markCodexOrdinaryPresentation } from './codex-question-bindings.js'
@@ -276,6 +277,7 @@ function pendingSessionInputs(sessionId: string, env: NodeJS.ProcessEnv, lease: 
     .map((entry) => entry.subject.type === 'answer' ? entry.subject.request_id : entry.subject.message_id))
   const owed = new Set(state.acknowledgement_due?.map((entry) => entry.request_id))
   const answers = (state.waiting_answers ?? []).filter((answer) =>
+    !codexCardAnswerHeld(state, answer.pending.question_id) &&
     answer.pending.request_id !== undefined && !written.has(answer.pending.request_id) &&
     owed.has(answer.pending.request_id)).slice(0, 20)
   // Answers precede their edits; notes retain the service's immutable order.
@@ -393,7 +395,7 @@ export interface NativeInputAnswers {
 }
 
 function samePendingAnswer(state: SessionState, answer: AnsweredPending): boolean {
-  return state.acknowledgement_due?.some(entry => entry.request_id === answer.pending.request_id) === true &&
+  return !codexCardAnswerHeld(state, answer.pending.question_id) && state.acknowledgement_due?.some(entry => entry.request_id === answer.pending.request_id) === true &&
     state.waiting_answers?.some(entry => isDeepStrictEqual(entry, answer)) === true
 }
 

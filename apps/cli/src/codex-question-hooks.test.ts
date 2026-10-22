@@ -1,3 +1,6 @@
+import { cardShown, releaseCodexCardHandbacks } from './codex-card-handback.js'
+import { registerQuestion } from './hook-lifecycle.js'
+import { hasSessionInputs } from './session-inputs.js'
 import { execFileSync } from 'node:child_process'
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import os from 'node:os'
@@ -8,7 +11,7 @@ import type { ApiClient } from './client.js'
 import type { CommandDeps } from './commands-core.js'
 import { hookRunCommand } from './commands-hook-run.js'
 import { admitBoundNativeAnswer } from './codex-question-bindings.js'
-import { beginSessionIncarnation, lifecycleStamp, markSessionEnded, readSessionIncarnation, readSessionState, writeSessionState } from './hook-session-state.js'
+import { beginSessionIncarnation, lifecycleStamp, markSessionEnded, readSessionIncarnation, readSessionState, updateSessionState, writeSessionState } from './hook-session-state.js'
 import { recordTurnStart } from './session-attendant-state.js'
 import { fileURLToPath } from 'node:url'
 import { hookAdapterPath, installHookAdapter } from './hook-adapter.js'
@@ -93,12 +96,11 @@ it('registers the card in a Project with no record, and leaves the Project as it
   expect(projectEnablementState(projectBinding(h.root, h.env))).toBe('unset')
 })
 
-it.each(['disabled', 'signed-out', 'routing-off', 'unsupported', 'subagent', 'wrong-process', 'untrusted', 'narrowed-post-hook'] as const)(
+it.each(['disabled', 'signed-out', 'routing-off', 'subagent', 'wrong-process', 'untrusted', 'narrowed-post-hook'] as const)(
   'leaves a card untouched when Notifai would not route it: %s', async mode => {
     const h = setup({ disabled: mode === 'disabled', signedIn: mode !== 'signed-out', routing: mode !== 'routing-off' })
     const envelope = { ...h.envelope,
       ...(mode === 'subagent' ? { agent_id: 'child' } : {}),
-      ...(mode === 'unsupported' ? { tool_input: { questions: [{ title: 'Control?', options: ['1', '2', '3', '4', '5', '6', '7'] }] } } : {}),
     }
     if (mode === 'wrong-process') h.env.NOTIFAI_HOOK_SOURCE_PID = '1'
     if (mode === 'untrusted') writeFileSync(path.join(h.env.CODEX_HOME, 'config.toml'), '')
@@ -201,3 +203,107 @@ it('registers one question for the same tool invocation, and for an identical ca
   expect(pending[0]!.title).not.toBe('Which environment?')
   expect(h.output.map(line => JSON.parse(line).hookSpecificOutput.permissionDecision)).toEqual(['deny', 'deny', 'deny'])
 })
+
+it('refuses an unsupported card in a routed session without registering it', async () => {
+  const h = setup({ transport: true })
+  await hookRunCommand(h.deps, 'pre-tool-use', async () => JSON.stringify({ ...h.envelope,
+    tool_input: { questions: [{ title: 'Control?', options: ['1', '2', '3', '4', '5', '6', '7'] }] } }), 'codex')
+  expect(JSON.parse(h.output.join('\n')).hookSpecificOutput).toMatchObject({ permissionDecision: 'deny',
+    permissionDecisionReason: expect.stringContaining('Notifai cannot carry this card') })
+  expect(readSessionState(SESSION, h.env).pending ?? []).toHaveLength(0)
+})
+
+function handedBack(h: ReturnType<typeof setup>) {
+  const owner = readSessionIncarnation(SESSION, h.env)!
+  recordTurnStart(SESSION, h.env, owner.key, TURN)
+  const service = { machine_id: 'mac_test', base_url: 'https://test.notifai.invalid' }
+  const questions = [{ id: 'environment', text: CARD.questions[0]!.title, choices: [
+    { id: 'staging', label: 'Staging', description: 'No customer impact.' },
+    { id: 'production', label: 'Production', description: 'Customers see it.' },
+  ] }]
+  const { question_id: id } = registerQuestion(SESSION, h.env, { question: questions[0]!.text, title: 'Deployment destination',
+    summary: questions[0]!.text, body: 'Deployment evidence: ![result](media:1)', media: ['med_evidence'],
+    service_identity: service, questions }, Date.now(), { owner_key: owner.key, turn_id: TURN, service, handback: cardShown(questions) })
+  const pre = () => hookRunCommand(h.deps, 'pre-tool-use', async () => JSON.stringify(h.envelope), 'codex')
+  const post = () => hookRunCommand(h.deps, 'post-tool-use',
+    async () => JSON.stringify({ ...h.envelope, hook_event_name: 'PostToolUse', tool_response: '{"accepted":true}' }), 'codex')
+  const state = () => readSessionState(SESSION, h.env)
+  const answer = () => {
+    const pending = { ...state().pending![0]!, request_id: 'req_early' }
+    const reply = { reply_id: 'reply_early', seq: 1, delivery_id: 'delivery_test', device_id: 'device_test', device_name: 'Test',
+      text: 'Production', answers: [{ question_id: 'environment', choice_ids: ['production'], text: null }], source: null,
+      created_at: new Date().toISOString() }
+    updateSessionState(SESSION, h.env, state => ({ ...state, pending: [], waiting_answers: [{ pending, reply, replies: [reply],
+      agent_acknowledgement_required: true, delivery_claim: true }],
+      acknowledgement_due: [{ request_id: 'req_early', recorded_at: Date.now(), text_required: true }],
+      codex_question_bindings: state.codex_question_bindings!.map(item => ({ ...item, confirmed_request_id: 'req_early' })) }))
+  }
+  return { id, state, pre, post, answer }
+}
+
+it('links the exact card to registered content, preserving descriptions and media', async () => {
+  const h = setup({ transport: true }); const q = handedBack(h)
+  await q.pre()
+  expect(q.state().codex_question_bindings![0]!.card_accept_until).toBeGreaterThan(Date.now())
+  await q.post()
+  expect(q.state().pending).toHaveLength(1)
+  expect(q.state().pending![0]).toMatchObject({ title: 'Deployment destination', media: ['med_evidence'],
+    body: 'Deployment evidence: ![result](media:1)', questions: [{ choices: [{ description: 'No customer impact.' }, { description: 'Customers see it.' }] }] })
+  expect(q.state().codex_question_bindings![0]).toMatchObject({ question_id: q.id,
+    questions: [{ verified: true, native: { turn_id: TURN, call_id: 'call_card', index: 0 } }] })
+  expect(q.state().codex_question_bindings![0]).not.toHaveProperty('card_accept_until')
+  expect(h.launch).not.toHaveBeenCalled()
+})
+
+it.each(['character', 'order', 'unsupported'] as const)('keeps one plain question when the card changes: %s', async change => {
+  const h = setup({ transport: true }); const q = handedBack(h)
+  const input = { questions: [{ ...CARD.questions[0]!, ...(change === 'character' ? { title: 'Which environment!' }
+    : { options: change === 'order' ? ['Production', 'Staging'] : ['1', '2', '3', '4', '5', '6', '7'] }) }] }
+  await hookRunCommand(h.deps, 'pre-tool-use', async () => JSON.stringify({ ...h.envelope, tool_input: input }), 'codex')
+  const denial = JSON.parse(h.output.at(-1)!).hookSpecificOutput
+  expect(denial.permissionDecision).toBe('deny')
+  expect(denial.permissionDecisionReason).toContain(`This card does not match the question registered as ${q.id}`)
+  expect(denial.permissionDecisionReason).toContain('Which environment?\n- Staging\n- Production')
+  expect(denial.permissionDecisionReason).not.toContain('open exactly')
+  expect(q.state().pending).toHaveLength(1)
+  expect(q.state().pending![0]!.media).toEqual(['med_evidence'])
+  await q.pre()
+  expect(JSON.parse(h.output.at(-1)!).hookSpecificOutput.permissionDecision).toBe('deny')
+})
+
+it('refuses an answered hand-back before opening the card', async () => {
+  const h = setup({ transport: true }); const q = handedBack(h); q.answer()
+  await q.pre()
+  expect(JSON.parse(h.output.at(-1)!).hookSpecificOutput.permissionDecisionReason).toContain('already answered; it arrives as your next input')
+  expect(hasSessionInputs(SESSION, h.env, null)).toBe(true)
+})
+
+it('holds an early answer until the card accepts it', async () => {
+  const h = setup({ transport: true }); const q = handedBack(h)
+  await q.pre(); q.answer()
+  expect(hasSessionInputs(SESSION, h.env, null)).toBe(false)
+  await q.post()
+  expect(hasSessionInputs(SESSION, h.env, null)).toBe(true)
+  expect(q.state().codex_question_bindings![0]!.questions[0]!.verified).toBe(true)
+})
+
+it.each(['post-tool-use', 'stop', 'interrupt', 'user-prompt-submit', 'timeout'])(
+  'releases a held answer at %s and rejects late acceptance', async event => {
+    const h = setup({ transport: true }); const q = handedBack(h)
+    await q.pre(); q.answer()
+    expect(hasSessionInputs(SESSION, h.env, null)).toBe(false)
+    if (event === 'timeout') {
+      const deadline = q.state().codex_question_bindings![0]!.card_accept_until!
+      vi.spyOn(Date, 'now').mockReturnValue(deadline)
+      expect(hasSessionInputs(SESSION, h.env, null)).toBe(true)
+      await q.post()
+      vi.restoreAllMocks()
+    } else {
+      releaseCodexCardHandbacks(SESSION, h.env, { ...h.envelope, tool_response: { accepted: false } }, event)
+      expect(hasSessionInputs(SESSION, h.env, null)).toBe(true)
+      await q.post()
+    }
+    expect(q.state().codex_question_bindings![0]!.ordinary_only).toBe(true)
+    expect(q.state().codex_question_bindings![0]!.questions[0]!.native).toBeUndefined()
+  },
+)

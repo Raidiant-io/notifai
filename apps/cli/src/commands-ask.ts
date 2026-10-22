@@ -25,9 +25,10 @@ import { captureCandidates, findOpenEqualQuestion } from './question-guard.js'
 import { readSessionIncarnation, readSessionState, sessionHasEnded } from './hook-session-state.js'
 import { processIdentityLiveness } from './process-identity.js'
 import { connectCodexAnswerControl, type CodexAnswerUnavailable } from './codex-answer-control.js'
-import { currentCodexQuestionContext, nativeQuestionTitle, type NativeQuestionAdmission } from './codex-question-bindings.js'
+import { currentCodexQuestionContext, type NativeQuestionAdmission } from './codex-question-bindings.js'
 import { hermesQuestionRouteReady } from './session-attendant-state.js'
 import { codexRoutingTrustProblems, findInstallations } from './install-hooks.js'
+import { cardHandbackInput, cardShown } from './codex-card-handback.js'
 import { CODEX_CARD_VERSION_FLOOR, codexCardHooksReady, codexCardToolOffered } from './codex-card-capability.js'
 import { activeOpenclawGeneration } from './openclaw-session-access.js'
 import { openclawGatewayReady } from './openclaw-gateway-readiness.js'
@@ -432,7 +433,7 @@ function recordRegisteredQuestion(
   // A wait ends the turn, and Codex drops every open card at turn end, so a
   // waiting ask never links one.
   if (wait) return ordinary()
-  if (codexCardOwner(deps, sessionId) !== null) return ordinary()
+  if (!codexCardAsks(deps, sessionId) || built.questions.length > 10) return ordinary()
   if (built.questions.some(question => question.multi === true)) return ordinary()
   const local = currentCodexQuestionContext(readSessionState(sessionId, deps.env), sessionId, deps.env)
   if (local === null) return ordinary()
@@ -466,7 +467,7 @@ function recordRegisteredQuestion(
     return true
   }, () => false)
   return Promise.all([supported, reachable]).then(([service_ok, transport_ok]) => persist(
-    service_ok && transport_ok ? { owner_key: local.owner_key, turn_id: local.snapshot.latest.id, service } : undefined,
+    service_ok && transport_ok ? { owner_key: local.owner_key, turn_id: local.snapshot.latest.id, service, handback: cardShown(built.questions) } : undefined,
     service_ok && !transport_ok ? unavailable : undefined,
   ))
 }
@@ -487,8 +488,7 @@ function nativeUnavailableDetail(unavailable: NativeUnavailable): string {
 }
 
 /**
- * A trusted native card hook replaces the agent's registration/copy step:
- * any card this session opens registers itself, so `ask` never links one.
+ * Only trusted card hooks can attach a hand-back to its accepted invocation.
  */
 function codexCardOwner(deps: CommandDeps, sessionId: string): string | null {
   if (readSessionState(sessionId, deps.env).harness !== 'codex') return null
@@ -668,8 +668,10 @@ function persistRegisteredQuestion(
       : 'Background submission is scheduled; this does not confirm submission or delivery, so check status before reporting either. Continue independent work: the answer comes back into this Agent Session.'
     : 'Background startup failed. Keep this registration; ordinary lifecycle hooks can recover it. Inspect status before relying on submission.'
   const native = readSessionState(sessionId, deps.env).codex_question_bindings?.find(binding =>
-    binding.question_id === questionId && binding.owner_key === readSessionIncarnation(sessionId, deps.env)?.key)
-  const nativeInstruction = `Only if your tools include request_user_input_async: open it with these titles and options exactly, in this turn. Notifai records a terminal answer itself; an answer from the User's devices arrives in the card with its own acknowledgement command. If they answer in the conversation instead, run notifai close ${questionId}.`
+    binding.question_id === questionId && binding.card_handback === true && binding.ordinary_only !== true &&
+    binding.owner_key === readSessionIncarnation(sessionId, deps.env)?.key)
+  const nativeInstruction = 'Open the handed-back card unchanged after saying what each answer will make you do. It is your question in the conversation; never also ask it in prose. Notifai records a terminal answer itself; acknowledge a device answer with the command it carries.'
+  const openForm = native === undefined ? undefined : { tool: 'request_user_input_async', input: cardHandbackInput(native) }
   // The block below is the densest guidance this CLI prints, and until now it
   // was prose only: an agent could not read back the choice ids it must branch
   // on without asking the server for them. The JSON form carries the same
@@ -691,12 +693,7 @@ function persistRegisteredQuestion(
             ...(entry.choices === undefined ? {} : { choices: entry.choices }),
             ...(entry.multi === true ? { multi: true } : {}),
           })),
-          ...(native === undefined ? {} : { native_question: {
-            tool: 'request_user_input_async',
-            questions: native.questions.map(binding => ({ question_id: binding.question.id, title: nativeQuestionTitle(binding),
-              ...(binding.question.choices === undefined ? {} : { options: binding.question.choices.map(choice => choice.label) }) })),
-            instructions: nativeInstruction,
-          } }),
+          ...(openForm === undefined ? {} : { open_form: openForm }),
           ...(native === undefined && nativeUnavailable !== undefined ? { native_question_unavailable: {
             reason: nativeUnavailable.reason, detail: nativeUnavailableDetail(nativeUnavailable),
             ...('version' in nativeUnavailable && nativeUnavailable.version !== undefined ? { codex_version: nativeUnavailable.version } : {}),
@@ -708,7 +705,7 @@ function persistRegisteredQuestion(
             end_turn: wait,
             in_this_turn: wait
               ? `${END_TURN} ${nextStep}`
-              : `Ask the question in the conversation and explain what each answer will change. ${nextStep}`,
+              : `${native === undefined ? 'Ask the question in the conversation and explain what each answer will change.' : nativeInstruction} ${nextStep}`,
             route_neutral: ROUTE_NEUTRAL,
             keep_session_open: KEEP_SESSION_OPEN,
             on_answer: ON_ANSWER,
@@ -744,7 +741,7 @@ function persistRegisteredQuestion(
   deps.io.out(KEEP_SESSION_OPEN)
   deps.io.out(wait
     ? 'Ask it in the conversation and say what each answer will make you do:'
-    : 'Ask in the conversation and explain what each answer will change:')
+    : native === undefined ? 'Ask in the conversation and explain what each answer will change:' : 'Before opening the card, explain what each answer will change:')
   for (const [index, entry] of built.questions.entries()) {
     const questionPrefix = built.questions.length > 1 ? `Question ${index + 1}, ` : ''
     if (entry.choices !== undefined) {
@@ -775,10 +772,8 @@ function persistRegisteredQuestion(
   }
   if (native !== undefined) {
     deps.io.out(nativeInstruction)
-    deps.io.out(JSON.stringify({ native_questions: native.questions.map(binding => ({ title: nativeQuestionTitle(binding),
-      question_id: binding.question.id, ...(binding.question.choices === undefined ? {} : { options: binding.question.choices.map(choice => choice.label) }),
-      ...(binding.question.choices === undefined ? {} : { choice_ids: binding.question.choices.map(choice => choice.id) }),
-    })) }))
+    deps.io.out(`Open ${openForm!.tool} with this input:`)
+    deps.io.out(JSON.stringify(openForm!.input))
   } else {
     if (nativeUnavailable !== undefined) deps.io.out(nativeUnavailableDetail(nativeUnavailable))
     deps.io.out(`If they answer in this conversation instead, retire it with \`notifai close ${questionId}\`.`)
@@ -1051,20 +1046,6 @@ export function askCommand(
     )
   }
   if (!routingConfig.ask_notifications.value) return questionsOff(deps, flags)
-  // The card shows titles and option labels only; a question that carries
-  // more keeps ordinary ask so nothing the agent wrote is lost.
-  if (flags.wait !== true && flags.body === undefined && flags.image === undefined && built.body === undefined &&
-      built.questions.every(question => question.multi !== true && (question.choices ?? []).every(choice =>
-        choice.description === undefined && choice.recommended !== true)) && codexCardAsks(deps, sessionId)) {
-    const card = { questions: built.questions.map(question => ({ title: question.text,
-      ...(question.choices === undefined ? {} : { options: question.choices.map(choice => choice.label) }) })) }
-    return reportAskFailure(deps, flags, {
-      code: 'use_question_card', check_id: 'question_card', exit_code: EXIT.usage,
-      message: 'Nothing was registered. The Codex question card is the question: Notifai registers its actual questions for the user\'s devices. When a linked card cannot be supported, the tool context supplies the registered plain-conversation question instead.',
-      remedy: `Call request_user_input_async with ${JSON.stringify(card)}. Follow its tool context for acknowledgement or the plain-conversation fallback.`,
-      request_user_input_async: card,
-    })
-  }
   const source = resolveDraftInvocation(deps, flags, active!)
   if (!source.ok) {
     return askFailure(

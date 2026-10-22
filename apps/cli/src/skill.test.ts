@@ -342,15 +342,15 @@ describe('Notifai agent skill', () => {
 
   it('says a self-opened form reaches devices only where linked', () => {
     const ask = section('## Ask a question')
-    // `ask` hands back no form yet.
-    expect(ask).not.toMatch(/hands back/i)
+    // A handed-back card is the already registered question.
+    expect(ask).toMatch(/hands back a question form, open it unchanged/i)
     // A form the agent opens itself carries only its own fields (no Body or
     // images from `ask`), and many reach no device; a form's tool context is
     // the proof where it has one.
-    expect(ask).toMatch(/a question form you open yourself carries only its own fields, and reaches the\s+User's devices only where Notifai links it/i)
+    expect(ask).toMatch(/a question form you open\s+yourself carries only its own fields, and reaches the\s+User's devices only where Notifai links it/i)
     expect(ask).toMatch(/when its tool context says Notifai\s+registered it, never also `ask` it/i)
     expect(ask).toMatch(/keep this Agent Session open: closing, clearing or\s+switching it ends the question/i)
-    expect(loose(ask)).toMatch(/In the same turn, ask the question in the conversation and say what each answer will make you do, before you start a wait\. After plain `ask`, continue independent work/)
+    expect(ask).toMatch(/Say what each answer will make\s+you do before you open a handed-back form or start a wait/i)
     expect(loose(ask)).toMatch(/When `ask --wait` says to end your turn, end it\./)
     expect(ask).toMatch(/never restate the choices in the Body/i)
   })
@@ -485,24 +485,21 @@ describe('Notifai agent skill', () => {
 
   it('records Codex terminal answers itself and keeps the Codex card flow in its references', () => {
     // Notifai records a Codex terminal answer, so no reference teaches a
-    // report command; the native questions reference stays for the marker
-    // fallback `ask` still returns. Notes and edits are taught by their own text.
+    // report command; the native questions reference stays for older installs. Notes and edits are taught by their own text.
     expect(existsSync(new URL('native-questions.md', referencesDir))).toBe(true)
     expect(existsSync(new URL('notes-and-edits.md', referencesDir))).toBe(false)
-    expect(skill).toMatch(/native_question[\s\S]*references\/native-questions\.md/)
+    expect(skill).toMatch(/hands back a question form, open it unchanged/)
     expect(skill).not.toMatch(/native answers/i)
-    expect(loose(nativeQuestionsReference)).toMatch(/A terminal answer needs nothing from you: Notifai records it, so the devices stop asking/)
+    expect(loose(nativeQuestionsReference)).toMatch(/A terminal answer needs nothing from you: Notifai records it/)
     expect(nativeQuestionsReference).not.toMatch(/--native-answers|--operation-id|notifai acknowledge q_|operation ID|app answer watcher/)
     const codex = harnessFile('codex').replace(/\s+/g, ' ')
     expect(codex).toMatch(/terminal answer\*\* needs nothing from you\. Notifai records it, so the devices stop asking/i)
-    // The card outcomes below are the one home of the terminal answer and the
-    // plain-question fallback, and the duplicate guard makes a second `ask`
-    // of the card's question register nothing.
     expect(codex.match(/terminal answer needs nothing from you|terminal answer\*\* needs nothing from you/gi)?.length).toBe(1)
     expect(codex).not.toMatch(/would duplicate them/i)
+    expect(codex).toMatch(/A card whose text no longer matches is refused/i)
     expect(codex).not.toMatch(/--native-answers|report a terminal answer/i)
     expect(codex).toMatch(/device answer\*\* arrives in the card with its own `notifai acknowledge req_…` command/i)
-    expect(codex).not.toMatch(/hands back/i)
+    expect(codex).toMatch(/hands back the exact card to open/i)
     // The card cannot outlive the turn, so the waiting mode never opens one.
     expect(codex).toMatch(/`notifai ask --wait`\. It never opens a card, because Codex drops open cards when your turn ends/i)
     // Cards that stay in the terminal on purpose get their own outcome, never
@@ -510,7 +507,7 @@ describe('Notifai agent skill', () => {
     // (signed out).
     expect(codex).toMatch(/with question notifications off, or in a project the User disabled, the card is your question and stays in the terminal, as a card on a signed-out machine does; it still works there/i)
     expect(codex).not.toMatch(/Project that is not enabled|notifai project enable/i)
-    expect(codex).toMatch(/any other card without that context, such as one in a shape the devices cannot show, stays on this machine: if it is still unanswered, `ask` the question too/i)
+    expect(codex).toMatch(/any other card without that context stays on this machine: if it is still unanswered, `ask` the question too/i)
     expect(codex).not.toMatch(/subagent's card/i)
     const opencode = harnessFile('opencode').replace(/\s+/g, ' ')
     expect(opencode).not.toMatch(/worker session's form/i)

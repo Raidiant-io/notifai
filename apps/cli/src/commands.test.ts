@@ -9054,7 +9054,7 @@ describe('asking before the hooks have ever run', () => {
     expect(projectEnabled(binding!)).toBe(true)
   })
 
-  it.each(['card-hook', 'card-hook-unproven', 'card-hook-other-model', 'supported', 'no-transport', 'old-codex', 'missing', 'malformed', 'unavailable', 'changed-turn', 'lost-machine', 'changed-machine', 'changed-service', 'machine-lost-in-lock', 'ended', 'ended-unavailable', 'replaced-owner'] as const)('gates native registration on service support and answer transport: %s', async mode => {
+  it.each(['card-hook', 'legacy-hook', 'card-hook-unproven', 'card-hook-other-model', 'supported', 'no-transport', 'old-codex', 'missing', 'malformed', 'unavailable', 'changed-turn', 'lost-machine', 'changed-machine', 'changed-service', 'machine-lost-in-lock', 'ended', 'ended-unavailable', 'replaced-owner'] as const)('gates native registration on service support and answer transport: %s', async mode => {
     const cwd = scratchDir('notifai-native-ask-output-')
     const sessionId = '019ff69d-a07f-7161-ab6e-bd06b3b93c8e'
     const env = { HOME: cwd, XDG_CONFIG_HOME: cwd, XDG_STATE_HOME: cwd, CODEX_HOME: path.join(cwd, 'codex'), CODEX_THREAD_ID: sessionId }
@@ -9091,9 +9091,9 @@ describe('asking before the hooks have ever run', () => {
     const deps = { ...makeDeps(io, { compatibility } as unknown as ApiClient), cwd, env, now: () => 42, spawnQuestionSettlement: spawn, codexAnswerControl }
     writeProjectSettings(cwd, env, 'project = "native-ask-test"\n')
     expect(hooksInstallCommand(deps, { harness: 'codex', execPath, scriptPath })).toBe(EXIT.ok)
-    const cardHooks = mode.startsWith('card-hook')
+    const cardHooks = mode !== 'legacy-hook'
     if (!cardHooks) {
-      // The marker route remains the fallback for a host without the card hook.
+      // Older hook installs still register ordinary questions without a hand-back.
       const hookFile = path.join(env.CODEX_HOME, 'hooks.json')
       const document = JSON.parse(readFileSync(hookFile, 'utf8'))
       delete document.hooks.PreToolUse
@@ -9119,45 +9119,13 @@ describe('asking before the hooks have ever run', () => {
     io.outLines = []
     const machineChanged = ['lost-machine', 'changed-machine', 'changed-service', 'machine-lost-in-lock'].includes(mode)
     const ownerChanged = ['ended', 'ended-unavailable', 'replaced-owner'].includes(mode)
-    expect(await askCommand(deps, 'Where?', { title: 'Decision', choice: ['Staging', 'Production'], json: true })).toBe(mode === 'card-hook' ? EXIT.usage : machineChanged ? EXIT.auth : ownerChanged ? EXIT.failed : EXIT.ok)
+    expect(await askCommand(deps, 'Where?', { title: 'Decision', choice: ['Staging', 'Production'], json: true })).toBe(machineChanged ? EXIT.auth : ownerChanged ? EXIT.failed : EXIT.ok)
     const output = JSON.parse(io.outLines.join('\n'))
-    if (mode === 'card-hook') {
-      expect(output.code).toBe('use_question_card')
-      expect(output.request_user_input_async).toEqual({ questions: [{ title: 'Where?', options: ['Staging', 'Production'] }] })
-      expect(readSessionState(sessionId, env).pending).toBeUndefined()
-      expect(spawn).not.toHaveBeenCalled()
-      expect(compatibility).not.toHaveBeenCalled()
-      // A wait ends the turn, and Codex drops open cards at turn end, so
-      // `ask --wait` never takes the card: it registers and says to end the turn.
-      io.outLines = []
-      expect(await askCommand(deps, 'Where?', { title: 'Decision', choice: ['Staging', 'Production'], wait: true, json: true })).toBe(EXIT.ok)
-      const waited = JSON.parse(io.outLines.join('\n'))
-      expect(waited).toMatchObject({ registered: true, next: { end_turn: true, in_this_turn: expect.stringMatching(/^Ask it in the conversation, say what each answer will make you do, then end your turn\. The answer arrives as your next message\./) } })
-      expect(waited).not.toHaveProperty('native_question')
-      expect(readSessionState(sessionId, env).pending).toHaveLength(1)
-      expect(readSessionState(sessionId, env).codex_question_bindings).toBeUndefined()
-      expect(await closeCommand(deps, waited.question_id, {})).toBe(EXIT.ok)
-      // The card shows labels only; a described choice keeps ordinary ask.
-      io.outLines = []
-      expect(await askCommand(deps, 'Where?', {
-        title: 'Decision',
-        choice: ['Staging', 'Production'], choiceDescription: [{ after: 2, text: 'Customers see it.' }], json: true,
-      })).toBe(EXIT.ok)
-      expect(JSON.parse(io.outLines.join('\n')).questions[0].choices[1]).toEqual({
-        id: 'production', label: 'Production', description: 'Customers see it.',
-      })
-      return
-    }
-    if (cardHooks) {
-      // Without proof that this session can call the card, as in a terminal
-      // whose model has no card, the question is an ordinary one. The card
-      // hooks would register any card itself, so nothing points at the card.
+    if (['legacy-hook', 'card-hook-unproven', 'card-hook-other-model'].includes(mode)) {
       expect(output.registered).toBe(true)
+      expect(output.open_form).toBeUndefined()
       expect(output.native_question).toBeUndefined()
-      expect(output.native_question_unavailable).toBeUndefined()
-      expect(JSON.stringify(output)).not.toContain('request_user_input')
-      expect(readSessionState(sessionId, env).pending).toHaveLength(1)
-      expect(spawn).toHaveBeenCalledTimes(1)
+      expect(readSessionState(sessionId, env).codex_question_bindings).toBeUndefined()
       expect(compatibility).not.toHaveBeenCalled()
       return
     }
@@ -9188,7 +9156,7 @@ describe('asking before the hooks have ever run', () => {
       expect(readSessionState(sessionId, env).pending).toHaveLength(1)
       return
     }
-    if (mode !== 'supported') {
+    if (mode !== 'supported' && mode !== 'card-hook') {
       expect(output.native_question).toBeUndefined()
       expect(output.native_question_unavailable).toBeUndefined()
       expect(readSessionState(sessionId, env).codex_question_bindings).toBeUndefined()
@@ -9197,15 +9165,23 @@ describe('asking before the hooks have ever run', () => {
     }
     expect(close).toHaveBeenCalled()
     expect(output.native_question_unavailable).toBeUndefined()
-    expect(output.native_question).toMatchObject({ tool: 'request_user_input_async',
-      questions: [{ question_id: output.questions[0].id, title: '[nf:001] Where?', options: ['Staging', 'Production'] }],
+    expect(output.open_form).toEqual({ tool: 'request_user_input_async',
+      input: { questions: [{ title: 'Where?', options: ['Staging', 'Production'] }] },
     })
-    // Notifai records a terminal answer itself: the instruction names no
-    // report command, only the card to open and the close for a conversation answer.
-    expect(output.native_question.instructions).toMatch(/^Only if your tools include request_user_input_async: open it with these titles and options exactly, in this turn\. Notifai records a terminal answer itself; an answer from the User's devices arrives in the card with its own acknowledgement command\./)
-    expect(output.native_question.instructions).toContain(`notifai close ${output.question_id}`)
-    expect(output.native_question.instructions).not.toMatch(/--native-answers|--operation-id|notifai acknowledge/)
+    expect(output.native_question).toBeUndefined()
+    expect(output.next.in_this_turn).toContain('Open the handed-back card unchanged')
+    expect(output.next.answered_outside_notifai).not.toMatch(/--native-answers|--operation-id/)
     expect(readSessionState(sessionId, env).codex_question_bindings?.[0]?.question_id).toBe(output.question_id)
+    io.outLines = []
+    expect(await askCommand(deps, 'Which release?', { title: 'Release choice', body: 'Release notes.',
+      choice: ['Canary', 'Stable'], choiceDescription: [{ after: 2, text: 'For everyone.' }], recommended: ['Stable'], json: true })).toBe(EXIT.ok)
+    const described = JSON.parse(io.outLines.join('\n'))
+    expect(described.open_form.input).toEqual({ questions: [{ title: 'Which release?', options: ['Stable', 'Canary'] }] })
+    expect(described.questions[0].choices[1]).toMatchObject({ label: 'Stable', description: 'For everyone.', recommended: true })
+    io.outLines = []
+    expect(await askCommand(deps, 'Where?', { title: 'Deployment', choice: ['Staging', 'Production'], wait: true, json: true })).toBe(EXIT.ok)
+    expect(JSON.parse(io.outLines.join('\n'))).toMatchObject({ registered: false, next: { end_turn: true } })
+    expect(JSON.parse(io.outLines.join('\n')).open_form).toBeUndefined()
     io.outLines = []
     expect(askCommand(deps, 'Combine?', { title: 'Decision', choice: ['One', 'Two'], multi: true, json: true })).toBe(EXIT.ok)
     expect(JSON.parse(io.outLines.join('\n')).native_question).toBeUndefined()
@@ -9213,7 +9189,7 @@ describe('asking before the hooks have ever run', () => {
     io.outLines = []
     expect(askCommand(deps, 'Ordinary?', { title: 'Decision', json: true })).toBe(EXIT.ok)
     expect(JSON.parse(io.outLines.join('\n')).native_question).toBeUndefined()
-    expect(compatibility).toHaveBeenCalledTimes(1)
+    expect(compatibility).toHaveBeenCalledTimes(2)
   })
 
   it('registers a first-turn question from a linked worktree with account-specific Codex state', async () => {

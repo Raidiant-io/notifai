@@ -4,7 +4,7 @@ import type { QuestionT, ReplyAnswerT } from '@raidiant/notifai-protocol'
 import type { ServiceIdentity } from './credentials.js'
 import type { PendingQuestion, SessionState } from './hook-types.js'
 import type { NativeTurnSnapshot } from './codex-native-turn.js'
-import { readNativeQuestionSnapshot } from './codex-native-turn.js'
+import { readNativeTurnSnapshot } from './codex-native-turn.js'
 import { readSessionIncarnation, sessionHasEnded } from './hook-session-state.js'
 import { currentCodexTurn } from './session-attendant-state.js'
 import { processIdentityLiveness } from './process-identity.js'
@@ -39,6 +39,10 @@ export interface CodexQuestionRegistration {
   questions: CodexQuestionBinding[]
   /** Exact invocation from a root tool callback; no content matching. */
   card_call_id?: string
+  /** Exact card handed back by ask; old marker registrations remain readable. */
+  card_handback?: true
+  /** Wall-clock deadline for the accepted tool result. */
+  card_accept_until?: number
   /** Absent for a card prevented before display because transport was missing. */
   card_allowed?: true
   /** Positive receipt evidence only; never an unconfirmed reserved ID. */
@@ -66,6 +70,7 @@ export interface NativeQuestionAdmission {
   service: ServiceIdentity
   /** A Claude Code picker that is this question, one entry per question. */
   picker?: NativeQuestionShown[]
+  handback?: NativeQuestionShown[]
   card?: { call_id: string; shown: NativeQuestionShown[]; allow: boolean; accepted?: true }
 }
 
@@ -78,7 +83,7 @@ export function currentCodexQuestionContext(state: SessionState, sessionId: stri
       owner.harness_process === undefined || processIdentityLiveness(owner.harness_process) !== 'alive' ||
       state.codex_tool_hook?.incarnation !== owner.incarnation || state.codex_tool_hook.root_observed?.turn_id !== proof.turn_id ||
       currentCodexTurn(sessionId, env, owner.key) !== proof.turn_id) return null
-  const snapshot = readNativeQuestionSnapshot(proof.transcript_path, sessionId, env)
+  const snapshot = readNativeTurnSnapshot(proof.transcript_path, sessionId, env)
   if (snapshot === null || snapshot.latest.id !== proof.turn_id || snapshot.latest.ended) return null
   return { owner_key: owner.key, snapshot }
 }
@@ -89,6 +94,20 @@ export function currentCodexQuestionContext(state: SessionState, sessionId: stri
 export function reserveCurrentCodexQuestion(state: SessionState, pending: PendingQuestion, sessionId: string, env: NodeJS.ProcessEnv,
   admission?: NativeQuestionAdmission): SessionState {
   if (admission === undefined || !isDeepStrictEqual(admission.service, pending.service_identity)) return state
+  if (admission.handback !== undefined) {
+    const owner = readSessionIncarnation(sessionId, env)
+    if (state.harness !== 'codex' || owner?.key !== admission.owner_key || sessionHasEnded(sessionId, env) ||
+        currentCodexTurn(sessionId, env, owner.key) !== admission.turn_id || pending.question_id === undefined ||
+        pending.questions?.length !== admission.handback.length ||
+        state.codex_question_bindings?.some(item => item.question_id === pending.question_id)) return state
+    return { ...state, codex_question_bindings: [...(state.codex_question_bindings ?? []), {
+      question_id: pending.question_id, owner_key: owner.key, registration_turn_id: admission.turn_id,
+      transcript: { file: '', identity: 'codex-card-hook', registered_offset: 0 },
+      service_identity: { ...admission.service }, card_handback: true,
+      questions: pending.questions.map((question, index) => ({ question: structuredClone(question),
+        card: structuredClone(admission.handback![index]!) })),
+    }] }
+  }
   if (admission.card !== undefined) {
     const owner = readSessionIncarnation(sessionId, env)
     if (state.harness !== 'codex' || owner?.key !== admission.owner_key || sessionHasEnded(sessionId, env) ||
@@ -107,47 +126,8 @@ export function reserveCurrentCodexQuestion(state: SessionState, pending: Pendin
       })),
     }] }
   }
-  const current = currentCodexQuestionContext(state, sessionId, env)
-  if (current === null || current.owner_key !== admission.owner_key || current.snapshot.latest.id !== admission.turn_id) return state
-  return reserveCodexQuestion(state, pending, current.owner_key, current.snapshot)
-}
-
-/** Caller holds the registration transaction and has proved the current owner.
- * Reservation and pending registration must be saved in that single write.
- * This creates no native question; only the agent's real tool call can do that.
- */
-export function reserveCodexQuestion(
-  state: SessionState, pending: PendingQuestion, key: string, snapshot: NativeTurnSnapshot,
-): SessionState {
-  if (state.harness !== 'codex' || pending.question_id === undefined || pending.service_identity === undefined ||
-      snapshot.latest.ended || snapshot.questions === undefined || !snapshot.positions.has(snapshot.latest.id) ||
-      pending.questions === undefined || pending.questions.length === 0 ||
-      pending.questions.some(question => question.multi === true) ||
-      state.codex_question_bindings?.some(item => item.question_id === pending.question_id)) return state
-  const used = new Set((state.codex_question_bindings ?? []).flatMap(item => item.questions.map(q => q.marker)))
-  // Avoid even an unrelated previously emitted marker visible in this turn.
-  for (const emission of snapshot.questions) {
-    for (const match of emission.title.matchAll(/\[nf:([0-9A-Z]+)\]/g)) used.add(match[1]!)
-  }
-  let counter = state.codex_question_marker_counter ?? 0
-  if (!Number.isSafeInteger(counter) || counter < 0) return state
-  const questions: CodexQuestionBinding[] = []
-  for (const question of pending.questions) {
-    let marker: string
-    do {
-      if (counter >= Number.MAX_SAFE_INTEGER) return state
-      marker = (++counter).toString(36).toUpperCase().padStart(3, '0')
-    } while (used.has(marker))
-    used.add(marker)
-    questions.push({ question: structuredClone(question), marker })
-  }
-  return { ...state, codex_question_marker_counter: counter, codex_question_bindings: [
-    ...(state.codex_question_bindings ?? []), {
-      question_id: pending.question_id, owner_key: key, registration_turn_id: snapshot.latest.id,
-      transcript: { file: snapshot.file, identity: snapshot.identity, registered_offset: snapshot.size },
-      service_identity: { ...pending.service_identity }, questions,
-    },
-  ] }
+  // Read existing marker bindings for installed older skills, but issue none.
+  return state
 }
 
 /** Count every marker occurrence before shape filtering. A changed-options
@@ -159,7 +139,7 @@ export function observeCodexQuestions(state: SessionState, key: string, snapshot
   return { ...state, codex_question_bindings: state.codex_question_bindings.map(registration => {
     // A hook-sourced card is verified by its exact PostToolUse acceptance
     // receipt. A bounded transcript is neither its identity nor its authority.
-    if (registration.card_call_id !== undefined) return registration
+    if (registration.card_call_id !== undefined || registration.card_handback === true) return registration
     const covered = registration.terminated !== true && registration.owner_key === key && snapshot !== null &&
       snapshot.file === registration.transcript.file && snapshot.identity === registration.transcript.identity &&
       snapshot.size >= registration.transcript.registered_offset && snapshot.positions.has(registration.registration_turn_id)

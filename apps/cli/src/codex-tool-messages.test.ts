@@ -32,7 +32,7 @@ import { attendantClaimPath, attendantStatusPath, currentCodexTurn, recordTurnEn
 import { acquireDeliveryLock, readDeliveryJournal, deliveryJournalPath, recoverDeliveryJournal } from './session-delivery.js'
 import { handOffSessionMessages } from './session-message-handoff.js'
 import { localIntegrationAssessment, refreshIntegrationHealth } from './integration-health.js'
-import { nativeQuestionTitle, reserveCodexQuestion } from './codex-question-bindings.js'
+import { nativeQuestionTitle } from './codex-question-bindings.js'
 import { readNativeQuestionSnapshot } from './codex-native-turn.js'
 
 const roots: string[] = []
@@ -128,7 +128,11 @@ function reserveBinding(h: ReturnType<typeof setup>, questions: QuestionT[] = [{
   append('event_msg', { type: 'task_started', turn_id: 'turn-1' })
   const pending = { question_id: 'q_bound', question: 'Continue?', summary: 'Continue?', request_id: 'req_bound', collapse_key: 'bound', device_ids: ['dev_test'],
     service_identity: { base_url: 'https://test.notifai.invalid', machine_id: 'mac_test' }, questions }
-  updateSessionState(SESSION, h.env, state => reserveCodexQuestion({ ...state, harness: 'codex' }, pending, h.incarnation.key, readNativeQuestionSnapshot(file, SESSION, h.env)!))
+  updateSessionState(SESSION, h.env, state => ({ ...state, harness: 'codex', codex_question_bindings: [{
+    question_id: pending.question_id, owner_key: h.incarnation.key, registration_turn_id: 'turn-1', service_identity: pending.service_identity,
+    transcript: { file: readNativeQuestionSnapshot(file, SESSION, h.env)!.file, identity: readNativeQuestionSnapshot(file, SESSION, h.env)!.identity, registered_offset: readNativeQuestionSnapshot(file, SESSION, h.env)!.size },
+    questions: questions.map((question, index) => ({ question, marker: `00${index + 1}` })),
+  }] }))
   let emissions = 0
   const emit = () => {
     const callId = emissions++ === 0 ? 'bound_call' : `bound_call_${emissions}`
@@ -443,7 +447,8 @@ describe('Codex tool-boundary Session Messages', () => {
       question: 'First question?', questions: [{ id: 'q1', text: 'First question?' }],
       service_identity: { base_url: 'https://test.notifai.invalid', machine_id: 'mac_test' },
     }, Date.now(), { owner_key: h.incarnation.key, turn_id: 'turn-1',
-      service: { base_url: 'https://test.notifai.invalid', machine_id: 'mac_test' } })
+      service: { base_url: 'https://test.notifai.invalid', machine_id: 'mac_test' },
+      handback: [{ title: 'First question?', labels: {} }] })
     expect(readSessionState(SESSION, h.env).codex_question_bindings).toMatchObject([
       { question_id: questionId, registration_turn_id: 'turn-1', owner_key: h.incarnation.key },
     ])

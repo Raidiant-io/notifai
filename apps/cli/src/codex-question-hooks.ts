@@ -1,4 +1,5 @@
 /** Codex's structured card is the source of its device question. */
+import { matchCodexCardHandback } from './codex-card-handback.js'
 import { buildAskDraft, buildQuestions } from './commands-ask.js'
 import { makeClient, type CommandDeps } from './commands-core.js'
 import { connectCodexAnswerControl } from './codex-answer-control.js'
@@ -36,19 +37,47 @@ async function routeCard(deps: CommandDeps, envelope: HookEnvelope, logger: Logg
   if (projectDisabled(projectBinding(cwd, deps.env, config.project.value)) || !config.ask_notifications.value) return null
   const credential = deps.store.load()
   if (credential === null) return null
+  recordTurnStart(sessionId, deps.env, owner.key, envelope.turn_id)
+  const service = { machine_id: credential.machineId, base_url: credential.baseUrl }
+  const handback = matchCodexCardHandback(sessionId, deps.env, envelope, owner.key, service, accepted, (deps.now ?? Date.now)())
+  if (handback !== null) {
+    const id = handback.registration.question_id
+    if (handback.reason !== undefined) {
+      if (accepted) return null
+      const text = handback.registration.questions.map(({ question }) =>
+        [question.text, ...(question.choices ?? []).map(choice => `- ${choice.label}`)].join('\n')).join('\n\n')
+      const reason = handback.reason === 'expired' ? `${id} has expired without an answer: carry on without it, or ask in the conversation.`
+        : handback.reason === 'answered' ? `${id} was already answered; it arrives as your next input. Do not ask it again.`
+        : handback.reason === 'delivered' ? `${id} was already answered, and that answer was delivered to you. Do not ask it again.`
+        : `${handback.reason === 'mismatch' ? 'This card does not match' : 'Open no card for'} the question registered as ${id}, which is on the User's devices with your title, Body and images. Ask it in plain conversation text with these same choices and continue independent work; dependent work waits for the answer. Do not register it again with notifai ask. If the User answers in the conversation, run notifai close ${id} to retire the device question. For a different question, run notifai ask for it.\n\n${text}`
+      deps.io.out(JSON.stringify({ hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'deny', permissionDecisionReason: reason } }))
+      return null
+    }
+    const context = `This card is registered as ${id} on the User's devices; never also notifai ask it. Notifai records a terminal answer itself. An answer from a device arrives in the card with its own acknowledgement command; run it before dependent work.`
+    if (accepted) return context
+    deps.io.out(JSON.stringify({ hookSpecificOutput: { hookEventName: 'PreToolUse', additionalContext: context } }))
+    return null
+  }
+  const unsupported = () => {
+    if (!accepted) {
+      logger.info('hook.gate', { stage: 'form-refused-unlinkable', form: 'codex-card', reason: 'unsupported-shape', session: sessionId })
+      deps.io.out(JSON.stringify({ hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'deny',
+        permissionDecisionReason: "Notifai cannot carry this card to the User's devices. Run notifai ask for this question instead: it registers the question and tells you what to open or ask." } }))
+    }
+    return null
+  }
   const raw = (envelope.tool_input as { questions?: unknown } | null)?.questions
   if (!Array.isArray(raw) || raw.length === 0 || !raw.every(entry => typeof entry?.title === 'string' &&
-      (entry.options === undefined || (Array.isArray(entry.options) && entry.options.every((option: unknown) => typeof option === 'string'))))) return null
+      (entry.options === undefined || (Array.isArray(entry.options) && entry.options.every((option: unknown) => typeof option === 'string'))))) return unsupported()
   // A card has no heading and no headers, so the draft titles it by the Agent Session name.
   const form = buildQuestions({ form: JSON.stringify({ summary: raw[0].title,
     questions: raw.map(entry => ({ text: entry.title, ...(entry.options === undefined ? {} : { choices: entry.options }) })) }) }, undefined,
   { selfOpened: true })
-  if (!form.ok) return null
+  if (!form.ok) return unsupported()
   const source = resolveDraftInvocation({ ...deps, cwd }, {}, { harness: 'codex', label: 'Codex', sessionId })
   if (!source.ok) return null
   const draft = buildAskDraft(config, form, {}, source.invocation, [])
   if (!draft.ok) return null
-  const service = { machine_id: credential.machineId, base_url: credential.baseUrl }
   recordTurnStart(sessionId, deps.env, owner.key, envelope.turn_id)
   if (currentCodexTurn(sessionId, deps.env, owner.key) !== envelope.turn_id) return null
   const [supported, transport] = await Promise.all([
