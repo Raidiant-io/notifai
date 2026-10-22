@@ -10,11 +10,13 @@ installs and enables Notifai's native plugin through `hermes plugins`. Start a
 fresh local classic CLI Agent Session after installation. Install the Notifai skill through
 the built-in Notifai skill installer; the Hermes plugin does not include a copy.
 
-The plugin's bounded system prompt section checks Project Enablement and gives
-root or worker guidance. Hermes's prompt budget holds the trust text and terms
-but no guidance topic, so the section directs you to run `notifai guidance`
-before deciding whether or how to notify; on Hermes that output also carries
-any update notice. Notifai
+The plugin checks Project Enablement and gives root or worker guidance, the
+same session guidance other harnesses receive, in two system prompt sections:
+the activation and notices, then the trust text, terms and topics. If the
+second is missing, the first says to run `notifai guidance`. On a Hermes older
+than v0.21.5 one section carries the trust text and terms but no guidance
+topic, so it directs you to run `notifai guidance` before deciding whether or
+how to notify. Notifai
 reads exact `HERMES_SESSION_ID` for Source Context and takes git branch and
 worktree from the directory each command runs in. Nested inherited harness
 markers fail closed.

@@ -707,7 +707,7 @@ export async function hookRunCommand(
     // assessment at turn end and by the Session Attendant. They are claimed
     // only if the activation below prints them.
     const updateNotice = guidanceOn && event === 'session-start' &&
-      ['claude-code', 'codex', 'cursor', 'opencode', 'openclaw'].includes(harness ?? '')
+      ['claude-code', 'codex', 'cursor', 'opencode', 'openclaw', 'hermes'].includes(harness ?? '')
       ? pendingAgentUpdateNotice({ env: deps.env, now: now(), updateCommand: updateCliCommand(deps) })
       : undefined
     const faultNotice = guidanceOn && event === 'session-start' && harness !== undefined && harness !== 'grok'
@@ -772,6 +772,7 @@ export async function hookRunCommand(
         cwd,
         deps.env,
         notices,
+        envelope.hermes_prompt_sections === 2,
       )
       : undefined
     if (stdout !== undefined) deps.io.out(stdout)

@@ -4,7 +4,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { afterAll, describe, expect, it } from 'vitest'
 import { personalProjectConfigPath } from './config.js'
-import { disableProject, enableProject, projectBinding } from './project-enablement.js'
+import { enableProject, projectBinding } from './project-enablement.js'
 import type { CommandDeps } from './commands-core.js'
 import {
   guidanceSetCommand,
@@ -12,6 +12,7 @@ import {
   guidanceUnsetCommand,
 } from './commands-guidance.js'
 import {
+  AGENT_TERMS_PREAMBLE,
   GUIDANCE_TRUST_PREAMBLE,
   SHIPPED_GUIDANCE,
   shippedGuidanceTopic,
@@ -23,7 +24,14 @@ import {
 } from './guidance.js'
 import { FIRST_USE_TOPICS, GUIDANCE_CONTEXT_MAX_BYTES, lifecycleGuidance, renderGuidance } from './guidance-render.js'
 import type { PendingNotice } from './pending-notice.js'
-import { grokActivationContext, sessionActivationOutput } from './session-activation.js'
+import {
+  HERMES_GUIDANCE_MISSING_POINTER,
+  HERMES_SECTIONS_MAX_BYTES,
+  HERMES_SECTION_MAX_BYTES,
+  WORKER_ACTIVATION_CONTEXT,
+  grokActivationContext,
+  sessionActivationOutput,
+} from './session-activation.js'
 
 const tmp = mkdtempSync(path.join(os.tmpdir(), 'notifai-guidance-'))
 afterAll(() => rmSync(tmp, { recursive: true, force: true }))
@@ -314,7 +322,7 @@ function makeDeps(env: NodeJS.ProcessEnv, cwd: string, confirmAnswer = false) {
 }
 
 describe('guidance commands', () => {
-  it('gives a Hermes owner the shared weekly update offer without changing guidance topics', async () => {
+  it('prints guidance only: Hermes, like every harness, gets the update notice at session start', async () => {
     const { env, cwd } = setup()
     env.HERMES_SESSION_ID = 'hermes-update-test'
     const projectFile = personalProjectConfigPath(cwd, env)
@@ -327,15 +335,10 @@ describe('guidance commands', () => {
     deps.fetchImpl = async () => new Response('{"latest":"99.0.0"}')
     deps.now = () => 1_800_000_000_000
     await guidanceShowCommand(deps, { json: true })
-    expect(JSON.parse(captured.out[0]!).update_notice).toContain('offer to perform the update')
-    captured.out = []
-    await guidanceShowCommand(deps, { json: true })
     expect(JSON.parse(captured.out[0]!)).not.toHaveProperty('update_notice')
-    disableProject(binding)
-    deps.now = () => 1_900_000_000_000
     captured.out = []
-    await guidanceShowCommand(deps, { json: true })
-    expect(JSON.parse(captured.out[0]!)).not.toHaveProperty('update_notice')
+    await guidanceShowCommand(deps, {})
+    expect(captured.out.join('\n')).not.toContain('offer to perform the update')
   })
 
   it('shows every topic under a marker naming who supplied it', async () => {
@@ -421,7 +424,8 @@ describe('guidance commands', () => {
 })
 
 describe('lifecycle guidance budget', () => {
-  it('keeps Hermes root activation inside its 4,000-character prompt-section limit', () => {
+  it('keeps one-section Hermes activation inside its 4,000-character prompt-section limit', () => {
+    // An earlier plugin, or an older Hermes, renders one section.
     const root = mkdtempSync(path.join(os.tmpdir(), 'notifai-hermes-guidance-'))
     const env = { HOME: root, XDG_CONFIG_HOME: path.join(root, 'config') }
     const context = sessionActivationOutput('hermes', 'SessionStart', root, env)!
@@ -429,6 +433,26 @@ describe('lifecycle guidance budget', () => {
     expect(context).toContain('Notifai is enabled for this Project')
     expect(context).toContain('run `notifai guidance` once')
     expect(sessionActivationOutput('hermes', 'SubagentStart', root, env)).toContain('Notifai worker context:')
+  })
+
+  it('splits Hermes root activation into two sections, each safe if Hermes leaves the other out', () => {
+    const root = mkdtempSync(path.join(os.tmpdir(), 'notifai-hermes-guidance-'))
+    const env = { HOME: root, XDG_CONFIG_HOME: path.join(root, 'config') }
+    const sections = hermesSections(root, env)
+    for (const part of [sections.activation, sections.guidance]) expect(bytes(part)).toBeLessThanOrEqual(HERMES_SECTION_MAX_BYTES)
+    // The first section carries ownership and points to the guidance; it holds
+    // no topic, so no topic can render without the trust text.
+    expect(sections.activation).toMatch(/^Notifai is enabled for this Project/)
+    expect(sections.activation.endsWith(HERMES_GUIDANCE_MISSING_POINTER)).toBe(true)
+    expect(sections.activation).not.toContain('<!-- notifai:guidance')
+    // The second is a whole lifecycle rendering, trust text first, with the
+    // same topics and pointer every other harness carries.
+    expect(sections.guidance.startsWith(`${GUIDANCE_TRUST_PREAMBLE}\n\n${AGENT_TERMS_PREAMBLE}`)).toBe(true)
+    expect(sections.guidance).toContain(marker('questions'))
+    expect(sections.guidance).toMatch(/run `notifai guidance` once/i)
+    expect(rootContext('claude-code', root, env).endsWith(sections.guidance)).toBe(true)
+    const worker = JSON.parse(sessionActivationOutput('hermes', 'SubagentStart', root, env, [], true)!) as unknown
+    expect(worker).toEqual({ activation: WORKER_ACTIVATION_CONTEXT, guidance: '' })
   })
 
   it('reaches the worked examples from fixed skill text, not an overridable topic', () => {
@@ -488,6 +512,11 @@ function rootContext(harness: RootHarness, cwd: string, env: NodeJS.ProcessEnv, 
   }
   if (harness === 'cursor') return (JSON.parse(output) as { additional_context: string }).additional_context
   return output
+}
+
+/** The two Hermes prompt sections a current plugin asks for. */
+function hermesSections(cwd: string, env: NodeJS.ProcessEnv, notices: PendingNotice[] = []): { activation: string; guidance: string } {
+  return JSON.parse(sessionActivationOutput('hermes', 'SessionStart', cwd, env, notices, true)!) as { activation: string; guidance: string }
 }
 
 /** A provenance marker, up to the optional file attribute. */
@@ -581,6 +610,35 @@ describe('session-start guidance', () => {
 
 
 
+  it('fits both lifecycle notices, at their longest, in the first Hermes section', () => {
+    const { env, cwd } = setup()
+    const notices = [notice(UPDATE_NOTICE_TEXT), notice(FAULT_NOTICE_TEXT)]
+    const sections = hermesSections(cwd, env, notices)
+    expect(notices.map((pending) => pending.claims)).toEqual([1, 1])
+    for (const part of [sections.activation, sections.guidance]) expect(bytes(part)).toBeLessThanOrEqual(HERMES_SECTION_MAX_BYTES)
+    for (const pending of notices) {
+      expect(sections.activation.indexOf(pending.text)).toBeGreaterThan(0)
+      expect(sections.activation.indexOf(pending.text)).toBeLessThan(sections.activation.indexOf(HERMES_GUIDANCE_MISSING_POINTER))
+    }
+    expect(sections.guidance).toContain(marker('questions'))
+  })
+
+  it('keeps both Hermes sections within the budget every plugin shares, notices last to fit', () => {
+    // At most 3,900 bytes of guidance; notices take only what the shared
+    // budget leaves, so Notifai's two sections never crowd each other out.
+    const { env, cwd } = setup({
+      global: { 'when-to-notify.md': `${'w'.repeat(1_800)}\n`, 'questions.md': `${'q'.repeat(1_800)}\n` },
+    })
+    const notices = [notice(UPDATE_NOTICE_TEXT), notice(FAULT_NOTICE_TEXT), notice(`Notice. ${'n'.repeat(1_500)}`)]
+    const sections = hermesSections(cwd, env, notices)
+    expect(bytes(sections.activation) + bytes(sections.guidance)).toBeLessThanOrEqual(HERMES_SECTIONS_MAX_BYTES)
+    for (const part of [sections.activation, sections.guidance]) expect(bytes(part)).toBeLessThanOrEqual(HERMES_SECTION_MAX_BYTES)
+    for (const [index, pending] of notices.entries()) {
+      expect(pending.claims > 0, `notice ${index}`).toBe(sections.activation.includes(pending.text))
+    }
+    expect(notices.at(-1)!.claims).toBe(0)
+  })
+
   it('sizes notices after the guidance, so a notice without room is neither shown nor claimed', () => {
     const { env, cwd } = setup()
     const alone = rootContext('codex', cwd, env)
@@ -621,8 +679,12 @@ describe('session-start guidance', () => {
     expect(grok).toContain(marker('questions'))
     // Hermes caps a prompt section at 4,000 characters.
     const hermes = sessionActivationOutput('hermes', 'SessionStart', cwd, env)!
-    expect(bytes(hermes)).toBeLessThanOrEqual(3_900)
+    expect(bytes(hermes)).toBeLessThanOrEqual(HERMES_SECTION_MAX_BYTES)
     expect(hermes.indexOf(GUIDANCE_TRUST_PREAMBLE)).toBeGreaterThan(0)
+    // Split, each section holds every session topic or the pointer to them.
+    const sections = hermesSections(cwd, env)
+    expect(bytes(sections.activation) + bytes(sections.guidance)).toBeLessThanOrEqual(HERMES_SECTIONS_MAX_BYTES * 0.7)
+    expect(sections.guidance).toContain(marker('questions'))
   })
 
   it('counts bytes, so multi-byte guidance never exceeds the Claude Code character cap', () => {
