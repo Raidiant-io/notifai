@@ -1150,7 +1150,7 @@ async function codexCommandStates(deps: CommandDeps): Promise<ReadinessState[]> 
 }
 
 function hookStates(deps: CommandDeps): ReadinessState[] {
-  const detected = detectedHarnesses(deps.cwd, deps.env)
+  const detected = detectedHarnesses(deps.env)
   return hookStatesWithContext(deps).map((state) => state.id === 'hooks'
     ? { ...state, technical: { ...(typeof state.technical === 'object' && state.technical !== null ? state.technical : {}), detected } }
     : state)
@@ -1439,7 +1439,7 @@ function hookChecks(deps: CommandDeps): HookCheck[] {
   }
 
   const wired = new Set(installations.map((installation) => installation.harness))
-  const unwired = detectedHarnesses(deps.cwd, deps.env).filter((harness) => !wired.has(harness))
+  const unwired = detectedHarnesses(deps.env).filter((harness) => !wired.has(harness))
   if (unwired.length > 0) {
     checks.push({
       name: 'hooks (detected)',

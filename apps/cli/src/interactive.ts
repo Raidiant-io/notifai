@@ -706,7 +706,7 @@ async function routingScreen(deps: CommandDeps, readiness: Readiness): Promise<b
   const action = await clack.select<RoutingAction>({
     message: 'Question routing',
     options: routingHookActions({
-      canInstall: detectedHarnesses(deps.cwd, deps.env).length > 0,
+      canInstall: detectedHarnesses(deps.env).length > 0,
       installations,
       hooksReady: hooks?.status === 'ready',
     }),

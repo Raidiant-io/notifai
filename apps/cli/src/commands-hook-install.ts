@@ -196,7 +196,7 @@ export function hooksInstallCommand(deps: CommandDeps, flags: HooksInstallFlags)
  * later harness cannot silently adopt a generation activated in between. */
 function installHooks(deps: CommandDeps, flags: HooksInstallFlags, publish: IntegrationPublication): number {
   if (flags.harness === undefined) {
-    const detected = detectedHarnesses(deps.cwd, deps.env)
+    const detected = detectedHarnesses(deps.env)
     if (detected.length === 0) {
       deps.io.err(`Could not tell which harness you mean — pass --harness <${HOOK_INSTALLABLE_HARNESSES.join('|')}>.`)
       return EXIT.usage
@@ -1002,7 +1002,7 @@ function resolveHarness(deps: CommandDeps, requested: string | undefined): HookI
     )
     return null
   }
-  const detected = detectHarness(deps.cwd, deps.env)
+  const detected = detectHarness(deps.env)
   if (!detected) {
     deps.io.err(`Could not tell which harness to install for — pass --harness <${HOOK_INSTALLABLE_HARNESSES.join('|')}>.`)
     return null
@@ -1023,7 +1023,7 @@ export async function pickHarnessesToInstall(
     const harness = resolveHarness(deps, requested)
     return harness === null ? null : [harness]
   }
-  const detected = detectedHarnesses(deps.cwd, deps.env)
+  const detected = detectedHarnesses(deps.env)
   if (detected.length === 1) return detected
   if (deps.io.interactive === true && deps.io.multiselect) {
     const picked = await deps.io.multiselect(
