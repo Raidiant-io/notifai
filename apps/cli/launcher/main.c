@@ -415,6 +415,7 @@ static int owned_path(const char *file, int directory) {
 #include "posix-file-users.h"
 #include "session-child.h"
 #include "cursor-imported-hook.h"
+#include "grok-imported-hook.h"
 #include "hook-ingress.h"
 #include "power-watch.h"
 #include "reopen-guard.h"
@@ -473,7 +474,9 @@ static int uninstall_pending(const char *executable) {
 
 int main(int argc, char **argv) {
     /* Cursor's copy of a Claude Code hook: nothing to do, so nothing starts. */
-    if (cursor_imported_claude_hook(argc, argv)) { cursor_discard_input(); return 0; }
+    if (cursor_imported_claude_hook(argc, argv)) { imported_hook_discard_input(); return 0; }
+    /* Grok's copy of a Claude Code or Cursor hook: the same, for Grok. */
+    if (grok_imported_hook(argc, argv)) { imported_hook_discard_input(); return 0; }
     if (argc == 2 && !strcmp(argv[1], "--internal-account-home")) return account_home();
     if (argc == 2 && !strcmp(argv[1], "--internal-peer-credentials")) return peer_credentials();
     if (argc == 2 && !strcmp(argv[1], "--internal-boot-identity")) return print_boot_identity();

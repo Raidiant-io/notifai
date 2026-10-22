@@ -16,8 +16,8 @@
  * agent shells and terminals do not either. A bare run also needs input that
  * is not a terminal, so a person typing `notifai` gets the app as before. */
 
-#define CURSOR_COPY_INPUT_WAIT_MS 500
-#define CURSOR_COPY_INPUT_MAX 4000000
+#define IMPORTED_HOOK_INPUT_WAIT_MS 500
+#define IMPORTED_HOOK_INPUT_MAX 4000000
 
 static int cursor_hook_environment(void) {
     const char *version = getenv("CURSOR_VERSION");
@@ -32,14 +32,15 @@ static int cursor_imported_claude_hook(int argc, char **argv) {
         harness_argument(argc, argv, harness, sizeof(harness)) && !strcmp(harness, "claude-code");
 }
 
-/* Take the hook input Cursor writes, so a writer never meets a closed pipe,
- * within a short bound: input that does not end in time is left behind. */
-static void cursor_discard_input(void) {
+/* Take the hook input Cursor or Grok writes to a copy, so a writer never
+ * meets a closed pipe, within a short bound: input that does not end in time
+ * is left behind. */
+static void imported_hook_discard_input(void) {
     if (isatty(0)) return;
-    long long deadline = (long long)(monotonic_ns() / 1000000ULL) + CURSOR_COPY_INPUT_WAIT_MS;
+    long long deadline = (long long)(monotonic_ns() / 1000000ULL) + IMPORTED_HOOK_INPUT_WAIT_MS;
     size_t total = 0;
     char chunk[65536];
-    while (total < CURSOR_COPY_INPUT_MAX) {
+    while (total < IMPORTED_HOOK_INPUT_MAX) {
         long long left = deadline - (long long)(monotonic_ns() / 1000000ULL);
         if (left <= 0) return;
         struct pollfd wait = { 0, POLLIN, 0 };
