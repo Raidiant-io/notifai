@@ -232,13 +232,13 @@ describe('redaction', () => {
     const inlineTitle = 'private title words'
     const inlineBody = 'private body words'
     expect(
-      argvFlagNames(['send', `--title=${inlineTitle}`, `--body=${inlineBody}`, '--reply', '--']),
-    ).toEqual(['--title', '--body', '--reply'])
+      argvFlagNames(['ask', `--title=${inlineTitle}`, `--body=${inlineBody}`, '--wait', '--']),
+    ).toEqual(['--title', '--body', '--wait'])
 
     const env = sandbox()
     const logger = createLogger({ env, settings: { level: 'debug' } })
     logger.debug('cli.start', {
-      argv: ['send', `--title=${inlineTitle}`, `--body=${inlineBody}`, 'plain'],
+      argv: ['ask', `--title=${inlineTitle}`, `--body=${inlineBody}`, 'plain'],
     })
 
     const raw = readFileSync(activeLogPath(env), 'utf8')

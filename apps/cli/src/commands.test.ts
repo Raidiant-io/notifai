@@ -37,6 +37,7 @@ import type {
 } from '@raidiant/notifai-protocol'
 import { parse as parseToml } from 'smol-toml'
 import { afterEach, describe, expect, it, vi } from 'vitest'
+import { PROGRAM_RECEIPT, heldWaitSeconds } from './commands-ask-wait.js'
 import { configInfo } from './config-schema.js'
 import { readPendingPairing } from './pending-pairing.js'
 import type { ReadinessState } from './readiness.js'
@@ -84,6 +85,7 @@ import {
 } from './commands.js'
 import type { SendFlags } from './send.js'
 import type { AskFlags } from './commands-ask.js'
+import { REPLIES_WAIT_DEPRECATED, SEND_REPLY_DEPRECATED } from './commands-send.js'
 import {
   applyPlan,
   buildHookConfig,
@@ -190,8 +192,7 @@ function sendCommand(
   flags: Omit<SendFlags, 'summary'> & {
     summary?: string
     json?: boolean
-    wait?: number
-    noWait?: boolean
+    deliveryTimeout?: number
     replyTimeout?: number
     idempotencyKey?: string
     retry?: boolean
@@ -1766,6 +1767,31 @@ describe('command contracts', () => {
     expect(io.errLines.join('\n')).toContain('--kind done cannot be combined with --reply')
   })
 
+  it('refuses --kind question without the deprecated --reply: a question is `notifai ask`', async () => {
+    const io = new CapturedIo()
+    const submit = vi.fn(async () => receipt)
+    expect(await sendCommand(makeDeps(io, { submit } as unknown as ApiClient), {
+      title: 'Ship it?', body: 'Should I ship this build?', kind: 'question',
+    })).toBe(EXIT.usage)
+    expect(submit).not.toHaveBeenCalled()
+    expect(io.errLines.join('\n')).toContain('Use `notifai ask` for a question the User should answer.')
+    expect(io.errLines.join('\n')).not.toContain('--reply')
+  })
+
+  it('keeps the deprecated send --reply working, naming `notifai ask --wait` once', async () => {
+    const io = new CapturedIo()
+    const client = {
+      submit: async () => receipt,
+      replies: async () => replyResponse([reply]),
+      closeReplies: async () => claimedReplyResponse([reply]),
+    } as unknown as ApiClient
+    expect(await sendCommand(makeDeps(io, client), { title: 'Question', body: 'Deploy?', reply: true, replyTimeout: 30, json: true })).toBe(EXIT.ok)
+    expect(io.errLines.filter(line => line === SEND_REPLY_DEPRECATED)).toHaveLength(1)
+    expect(SEND_REPLY_DEPRECATED).toContain('`notifai ask --wait`')
+    // Its JSON keeps the shape shipped callers parse.
+    expect(JSON.parse(io.outLines.join('\n'))).toMatchObject({ type: 'reply_result', replies: [{ text: reply.text }] })
+  })
+
   it.each([
     {
       flags: { kind: 'update', title: 'A title that is deliberately longer than forty characters', body: 'Plain.' },
@@ -1825,7 +1851,18 @@ describe('command contracts', () => {
     }
     expect(sendGrammar).toContain(".option('--session-id")
     expect(sendGrammar).toContain(".option('--retry'")
+    expect(sendGrammar).toContain(".option('--delivery-timeout")
     expect(askGrammar).not.toContain(".option('--session-id")
+    // Waiting for an answer is `ask --wait`. The deprecated send and replies
+    // flags keep working for shipped callers but are hidden from help.
+    for (const deprecated of ["'--reply'", "'--reply-timeout", "'--reply-window", "'--choice <", "'--multi'", "'--no-wait'", "'--wait <seconds>'"]) {
+      expect(sendGrammar, deprecated).not.toContain(`.option(${deprecated}`)
+      expect(sendGrammar, deprecated).toMatch(new RegExp(`new Option\\(${deprecated.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}[^\\n]*\\.hideHelp\\(\\)`))
+    }
+    expect(askGrammar).toContain("'--wait'")
+    const repliesGrammar = source.slice(source.indexOf(".command('replies"), source.indexOf(".command('receive"))
+    expect(repliesGrammar).not.toContain(".option('--wait")
+    expect(repliesGrammar).toMatch(/new Option\('--wait <seconds>'[^\n]*\.hideHelp\(\)/)
     // Kind now selects the sound, so the help must say so — and must not carry
     // the retired separation it replaced.
     expect(source).toContain('Kind is required, and it selects the sound')
@@ -1936,7 +1973,8 @@ describe('command contracts', () => {
         replyTimeout: 30,
       }),
     ).toBe(EXIT.ok)
-    expect(io.errLines).toEqual([])
+    // Only the deprecation line: a question that asks is not warned about.
+    expect(io.errLines).toEqual([SEND_REPLY_DEPRECATED])
   })
 
   it('rejects --choice without the --reply action it configures', async () => {
@@ -2767,6 +2805,21 @@ describe('command contracts', () => {
     expect(io.outLines.join('\n')).not.toContain('notifai acknowledge')
   })
 
+  it('keeps the deprecated replies --wait polling, naming its replacement', async () => {
+    const io = new CapturedIo()
+    let polls = 0
+    let clock = Date.parse('2026-10-22T00:00:00.000Z')
+    const client = {
+      replies: async () => (++polls < 3 ? replyResponse([]) : replyResponse([reply])),
+    } as unknown as ApiClient
+    const deps = { ...makeDeps(io, client), now: () => clock, sleep: async (ms: number) => { clock += ms } }
+
+    expect(await repliesCommand(deps, receipt.request_id, { wait: 60, json: true })).toBe(EXIT.ok)
+    expect(polls).toBe(3)
+    expect(io.errLines).toEqual([REPLIES_WAIT_DEPRECATED])
+    expect(JSON.parse(io.outLines.join('\n'))).toMatchObject({ type: 'reply_result', replies: [{ text: reply.text }] })
+  })
+
   it('requires acknowledgement for an answer despite a legacy disabled flag', async () => {
     const io = new CapturedIo()
     const client = {
@@ -3141,12 +3194,10 @@ describe('command contracts', () => {
   it('attributes a degraded multi-request wait only to the request whose polls failed', async () => {
     const io = new CapturedIo()
     let now = 0
-    let failedPolls = 0
     const client = {
       replies: async (requestId: string) => {
         if (requestId !== 'req_degraded') return replyResponse([reply])
-        failedPolls += 1
-        if (failedPolls === 1) return replyResponse([])
+        // `replies` reads once, so the one read failing is the whole wait failing.
         throw new NetworkError('temporary disconnect')
       },
     } as unknown as ApiClient
@@ -3171,7 +3222,7 @@ describe('command contracts', () => {
     })
     writeProjectSession(root, deps.env, 'pending-degraded-log', Date.now(), 'codex')
 
-    expect(await repliesCommand(deps, undefined, { pending: true, wait: 1 })).toBe(EXIT.network)
+    expect(await repliesCommand(deps, undefined, { pending: true })).toBe(EXIT.network)
 
     io.outLines = []
     io.errLines = []
@@ -3200,15 +3251,10 @@ describe('command contracts', () => {
   it('records earlier degraded requests before a later pending wait throws', async () => {
     const io = new CapturedIo()
     let now = 0
-    let degradedPolls = 0
     const client = {
       replies: async (requestId: string) => {
         if (requestId === 'req_success') return replyResponse([reply])
-        if (requestId === 'req_degraded') {
-          degradedPolls += 1
-          if (degradedPolls === 1) return replyResponse([])
-          throw new NetworkError('temporary disconnect')
-        }
+        if (requestId === 'req_degraded') throw new NetworkError('temporary disconnect')
         if (requestId === 'req_failed') {
           throw new ApiCallError(404, 'not_found', 'That notification request does not exist.')
         }
@@ -3237,7 +3283,7 @@ describe('command contracts', () => {
     })
     writeProjectSession(root, deps.env, 'pending-mixed-log', Date.now(), 'codex')
 
-    expect(await repliesCommand(deps, undefined, { pending: true, wait: 1 })).toBe(EXIT.failed)
+    expect(await repliesCommand(deps, undefined, { pending: true })).toBe(EXIT.failed)
 
     const recordsFor = (requestId: string): Array<Record<string, unknown>> => {
       io.outLines = []
@@ -8569,14 +8615,12 @@ describe('an outage is not an answer', () => {
     }
   }
 
-  it('does not report an unreachable server as "no reply yet"', async () => {
+  const askWait = (deps: CommandDeps, flags: Partial<AskFlags> = {}) =>
+    askCommand(deps, 'Deploy to production?', { title: 'Production deploy', wait: true, ...flags })
+
+  it('does not report an unreachable server as "no answer"', async () => {
     const io = new CapturedIo()
-    const exit = await sendCommand(outageAfterFirstPoll(io), {
-      title: 'Question',
-      body: 'Deploy to production?',
-      reply: true,
-      replyTimeout: 10,
-    })
+    const exit = await askWait(outageAfterFirstPoll(io))
 
     // Whatever code this is, it must not be the one that means "asked, and the
     // user stayed silent".
@@ -8584,20 +8628,16 @@ describe('an outage is not an answer', () => {
     expect(exit).toBe(EXIT.network)
     expect(io.errLines.join('\n')).toContain('could not find out')
     expect(io.errLines.join('\n')).toContain(receipt.request_id)
+    // The typed recovery: the answer may still be waiting until the deadline.
+    expect(io.errLines.at(-1)).toBe(`The service was unreachable at the end of the wait. An answer may be waiting until ${receipt.reply_expires_at}: \`notifai replies ${receipt.request_id}\`; the question expires then by itself.`)
   })
 
   it('treats a late internal_error outage the same as a network outage', async () => {
     const io = new CapturedIo()
-    const exit = await sendCommand(
+    const exit = await askWait(
       outageAfterFirstPoll(io, () => {
         throw new ApiCallError(500, 'internal_error', 'An unexpected server error occurred.')
       }),
-      {
-        title: 'Question',
-        body: 'Deploy to production?',
-        reply: true,
-        replyTimeout: 10,
-      },
     )
 
     expect(exit).not.toBe(EXIT.noReply)
@@ -8608,25 +8648,20 @@ describe('an outage is not an answer', () => {
 
   it('marks the JSON so an agent reading it programmatically can tell', async () => {
     const io = new CapturedIo()
-    await sendCommand(outageAfterFirstPoll(io), {
-      title: 'Question',
-      body: 'Deploy?',
-      reply: true,
-      replyTimeout: 10,
-      json: true,
-    })
+    await askWait(outageAfterFirstPoll(io), { json: true })
 
     expect(io.outLines).toHaveLength(1)
     const payload = JSON.parse(io.outLines[0] ?? '{}') as { degraded: boolean }
     expect(payload.degraded).toBe(true)
   })
 
-  it('still reports a genuine silence as no-reply', async () => {
+  it('still reports a genuine silence as ended unanswered', async () => {
     const io = new CapturedIo()
     let now = 0
     const client = {
       submit: async () => receipt,
       replies: async () => replyResponse([]),
+      closeReplies: async () => ({ ...replyResponse(), close_disposition: 'retire', delivered_reply_seq: null }),
     } as unknown as ApiClient
     const deps = {
       ...makeDeps(io, client),
@@ -8636,9 +8671,271 @@ describe('an outage is not an answer', () => {
       },
     }
 
-    expect(
-      await sendCommand(deps, { title: 'Q', body: 'B', reply: true, replyTimeout: 5 }),
-    ).toBe(EXIT.noReply)
+    expect(await askWait(deps)).toBe(EXIT.noReply)
+  })
+})
+
+describe('a held ask --wait', () => {
+  const windowConfig = (seconds: number) => ({ reply_window_seconds: { value: seconds } }) as Parameters<typeof heldWaitSeconds>[2]
+
+  it('lasts the harness limit minus 10 s, or the answer window with no harness', () => {
+    const day = windowConfig(86_400)
+    expect(heldWaitSeconds([], {}, day)).toBe(86_400)
+    expect(heldWaitSeconds(['claude-code'], {}, day)).toBe(110)
+    expect(heldWaitSeconds(['claude-code'], { BASH_DEFAULT_TIMEOUT_MS: '300000' }, day)).toBe(290)
+    expect(heldWaitSeconds(['claude-code'], { BASH_DEFAULT_TIMEOUT_MS: 'nonsense' }, day)).toBe(110)
+    expect(heldWaitSeconds(['cursor'], {}, day)).toBe(590)
+    expect(heldWaitSeconds(['opencode'], {}, day)).toBe(110)
+    expect(heldWaitSeconds(['hermes'], {}, day)).toBe(110)
+    // Conflicting markers: either harness could own the shell, so the shortest limit.
+    expect(heldWaitSeconds(['cursor', 'claude-code'], {}, day)).toBe(110)
+    // Never shorter than the shortest answer window the service accepts.
+    expect(heldWaitSeconds(['claude-code'], { BASH_DEFAULT_TIMEOUT_MS: '30000' }, day)).toBe(60)
+    expect(heldWaitSeconds([], {}, windowConfig(600))).toBe(600)
+  })
+
+  /** A script's shell: no harness marker, so no later answer could return. */
+  function scriptDeps(io: CapturedIo, client: Partial<ApiClient>, start = 1_000_000) {
+    let now = start
+    const deps: CommandDeps = {
+      ...makeDeps(io, client as ApiClient),
+      now: () => now,
+      sleep: async (milliseconds: number) => {
+        now += milliseconds
+      },
+    }
+    return { deps, clock: { get now() { return now }, advance: (ms: number) => { now += ms } } }
+  }
+
+  const ask = (deps: CommandDeps, flags: Partial<AskFlags> = {}) =>
+    askCommand(deps, 'Deploy to production?', { title: 'Production deploy', wait: true, ...flags })
+
+  it('submits at once for the answer window, prints the answer and records the fixed receipt', async () => {
+    const io = new CapturedIo()
+    const submit = vi.fn(async (_body: SubmitNotificationRequestT, _wait: number) => receipt)
+    const closeReplies = vi.fn(async () => claimedReplyResponse([reply]))
+    const putAgentAcknowledgement = vi.fn(async () => ({
+      agent_acknowledgement: { text: PROGRAM_RECEIPT, recorded_at: '2026-08-01T18:01:01.000Z' },
+    }))
+    const { deps } = scriptDeps(io, { submit, replies: async () => replyResponse([reply]), closeReplies, putAgentAcknowledgement } as never)
+
+    expect(await ask(deps)).toBe(EXIT.ok)
+    expect(submit).toHaveBeenCalledTimes(1)
+    // The service owns the end: the window is the wait.
+    expect(submit.mock.calls[0]![0].draft.reply?.expires_in_seconds).toBe(86_400)
+    // Returns at acceptance: no provider-outcome wait inside the limit.
+    expect(submit.mock.calls[0]![1]).toBe(0)
+    expect(closeReplies).toHaveBeenCalledWith(receipt.request_id, 'deliver')
+    expect(putAgentAcknowledgement).toHaveBeenCalledWith(receipt.request_id, { text: PROGRAM_RECEIPT })
+    expect(PROGRAM_RECEIPT).toBe('Received by the program that asked.')
+    expect(io.outLines[0]).toMatch(/^Question submitted as req_reply_test; waiting up to 86400s for the answer \(until .+\)\. Keep this command running until it returns\.$/)
+    expect(io.outLines).toContain(`reply from iPhone: ${reply.text}`)
+  })
+
+  it('prints one answer_result object with --json, and states the wait on stderr', async () => {
+    const io = new CapturedIo()
+    const { deps } = scriptDeps(io, {
+      submit: async () => receipt,
+      replies: async () => replyResponse([reply]),
+      closeReplies: async () => claimedReplyResponse([reply]),
+      putAgentAcknowledgement: async () => ({ agent_acknowledgement: { text: PROGRAM_RECEIPT, recorded_at: '2026-08-01T18:01:01.000Z' } }),
+    } as never)
+
+    expect(await ask(deps, { json: true })).toBe(EXIT.ok)
+    expect(io.outLines).toHaveLength(1)
+    expect(JSON.parse(io.outLines[0]!)).toMatchObject({
+      type: 'answer_result',
+      request_id: receipt.request_id,
+      replies: [{ text: reply.text }],
+      agent_acknowledgement: { text: PROGRAM_RECEIPT },
+      acknowledgement_command: null,
+      degraded: false,
+    })
+    expect(io.errLines.join('\n')).toContain('Keep this command running until it returns.')
+  })
+
+  it('inside a harness with no return path, leaves the acknowledgement to the agent and waits 590 s on Cursor', async () => {
+    const cwd = mkdtempSync(path.join(os.tmpdir(), 'notifai-held-cursor-'))
+    const io = new CapturedIo()
+    const submit = vi.fn(async (_body: SubmitNotificationRequestT) => receipt)
+    const putAgentAcknowledgement = vi.fn()
+    const { deps } = scriptDeps(io, {
+      submit, replies: async () => replyResponse([reply]), closeReplies: async () => claimedReplyResponse([reply]), putAgentAcknowledgement,
+    } as never)
+    const env = { ...isolatedEnv(cwd), CURSOR_AGENT: '1' }
+
+    expect(await ask({ ...deps, cwd, env }, { json: true })).toBe(EXIT.ok)
+    expect(submit.mock.calls[0]![0].draft.reply?.expires_in_seconds).toBe(590)
+    expect(putAgentAcknowledgement).not.toHaveBeenCalled()
+    expect(JSON.parse(io.outLines[0]!).acknowledgement_command).toContain(`notifai acknowledge ${receipt.request_id}`)
+  })
+
+  it('skips the terminal-first delay: nobody can answer it in the terminal', async () => {
+    const cwd = mkdtempSync(path.join(os.tmpdir(), 'notifai-held-grace-'))
+    execFileSync('git', ['init', '--quiet', cwd])
+    const io = new CapturedIo()
+    const env = isolatedEnv(cwd)
+    writeProjectSettings(cwd, env, 'ask_grace_seconds = 300\n')
+    const sleeps: number[] = []
+    let submittedAfterSleeping: number | undefined
+    const { deps } = scriptDeps(io, {
+      submit: async () => {
+        submittedAfterSleeping = sleeps.length
+        return receipt
+      },
+      replies: async () => replyResponse([reply]),
+      closeReplies: async () => claimedReplyResponse([reply]),
+      putAgentAcknowledgement: async () => ({ agent_acknowledgement: null }),
+    } as never)
+    const base = deps.sleep!
+    expect(await ask({ ...deps, cwd, env, sleep: async (ms) => { sleeps.push(ms); await base(ms) } })).toBe(EXIT.ok)
+    expect(submittedAfterSleeping).toBe(0)
+  })
+
+  it('ends unanswered with exit 3 and takes the question off the devices', async () => {
+    const io = new CapturedIo()
+    const closeReplies = vi.fn(async () => ({ ...replyResponse(), close_disposition: 'deliver' as const, delivered_reply_seq: null }))
+    const { deps } = scriptDeps(io, { submit: async () => receipt, replies: async () => replyResponse([]), closeReplies } as never)
+
+    expect(await ask(deps, { json: true })).toBe(EXIT.noReply)
+    expect(closeReplies).toHaveBeenCalledTimes(1)
+    expect(io.errLines).toContain('No answer: the question ended unanswered, and it is off the User\'s devices. Carry on without the answer, or ask in the conversation.')
+    expect(io.errLines.join('\n')).not.toMatch(/ask (it )?again|re-?ask|retry/i)
+    expect(JSON.parse(io.outLines[0]!)).toMatchObject({ type: 'answer_result', replies: [], degraded: false })
+  })
+
+  it('hands over an answer that lands as the wait ends, under the reply fence', async () => {
+    const io = new CapturedIo()
+    const { deps } = scriptDeps(io, {
+      submit: async () => receipt,
+      replies: async () => replyResponse([]),
+      closeReplies: async () => claimedReplyResponse([reply]),
+      putAgentAcknowledgement: async () => ({ agent_acknowledgement: null }),
+    } as never)
+    expect(await ask(deps)).toBe(EXIT.ok)
+    expect(io.outLines).toContain(`reply from iPhone: ${reply.text}`)
+  })
+
+  it('ends at once with exit 3 when the User dismisses the question', async () => {
+    const io = new CapturedIo()
+    const closeReplies = vi.fn()
+    const { deps, clock } = scriptDeps(io, {
+      submit: async () => receipt,
+      // The window was pulled back to now: closed early, with no answer.
+      replies: async () => ({ ...replyResponse([]), reply_expires_at: new Date(clock.now - 1_000).toISOString() }),
+      closeReplies,
+    } as never, Date.parse('2026-08-01T18:00:00.000Z'))
+    expect(await ask(deps)).toBe(EXIT.noReply)
+    expect(closeReplies).not.toHaveBeenCalled()
+    expect(io.errLines.join('\n')).not.toMatch(/dismiss/i)
+  })
+
+  it('measures the wait from the command start, so a slow submission cannot outlast the harness limit', async () => {
+    const cwd = mkdtempSync(path.join(os.tmpdir(), 'notifai-held-slow-'))
+    const io = new CapturedIo()
+    let startedAt = 0
+    const holder: { advance?: (ms: number) => void } = {}
+    const { deps, clock } = scriptDeps(io, {
+      submit: async () => {
+        holder.advance!(20_000)
+        return receipt
+      },
+      replies: async () => replyResponse([]),
+      closeReplies: async () => ({ ...replyResponse(), close_disposition: 'deliver' as const, delivered_reply_seq: null }),
+    } as never)
+    holder.advance = clock.advance
+    startedAt = clock.now
+    expect(await ask({ ...deps, cwd, env: { ...isolatedEnv(cwd), CURSOR_AGENT: '1' } })).toBe(EXIT.noReply)
+    expect(clock.now - startedAt).toBeLessThanOrEqual(590_000)
+  })
+
+  it('withdraws the question at once on a signal', async () => {
+    for (const signal of ['SIGINT', 'SIGTERM', 'SIGHUP'] as const) {
+      const io = new CapturedIo()
+      let fire: ((s: typeof signal) => void) | undefined
+      const unsubscribe = vi.fn()
+      const closeReplies = vi.fn(async () => ({ ...replyResponse(), close_disposition: 'retire' as const, delivered_reply_seq: null }))
+      const { deps } = scriptDeps(io, {
+        submit: async () => receipt,
+        replies: async () => {
+          fire!(signal)
+          return new Promise<never>(() => {})
+        },
+        closeReplies,
+      } as never)
+      const exit = await ask({ ...deps, heldWaitSignals: (handler) => ((fire = handler), unsubscribe) })
+      expect(exit, signal).toBe(EXIT.noReply)
+      expect(closeReplies).toHaveBeenCalledWith(receipt.request_id, 'retire')
+      expect(io.errLines.join('\n')).toContain(`Interrupted (${signal}): the question is withdrawn from the User's devices.`)
+      expect(unsubscribe).toHaveBeenCalledTimes(1)
+    }
+  })
+
+  it('reports exit 5 when the closing read loses the service, naming the request', async () => {
+    const io = new CapturedIo()
+    const { deps } = scriptDeps(io, {
+      submit: async () => receipt,
+      replies: async () => replyResponse([]),
+      closeReplies: async () => { throw new NetworkError('link went down') },
+    } as never)
+    expect(await ask(deps)).toBe(EXIT.network)
+    expect(io.errLines.at(-1)).toContain(`\`notifai replies ${receipt.request_id}\`; the question expires then by itself.`)
+  })
+
+  it('asks a new question when run again: a rerun never re-attaches', async () => {
+    const io = new CapturedIo()
+    const submit = vi.fn(async (_body: SubmitNotificationRequestT) => receipt)
+    const { deps } = scriptDeps(io, {
+      submit,
+      replies: async () => replyResponse([]),
+      closeReplies: async () => ({ ...replyResponse(), close_disposition: 'deliver' as const, delivered_reply_seq: null }),
+    } as never)
+    expect(await ask(deps)).toBe(EXIT.noReply)
+    expect(await ask(deps)).toBe(EXIT.noReply)
+    expect(submit).toHaveBeenCalledTimes(2)
+    expect(submit.mock.calls[0]![0].idempotency_key).not.toBe(submit.mock.calls[1]![0].idempotency_key)
+  })
+
+  it('refuses plain ask with its shipped code and names the held wait, registering and submitting nothing', async () => {
+    const io = new CapturedIo()
+    const submit = vi.fn()
+    const { deps } = scriptDeps(io, { submit } as never)
+    expect(await askCommand(deps, 'Deploy?', { title: 'Production deploy', json: true })).toBe(EXIT.usage)
+    expect(submit).not.toHaveBeenCalled()
+    expect(JSON.parse(io.outLines[0]!)).toMatchObject({
+      code: 'session_identity_missing',
+      check_id: 'exact_session',
+      remedy: 'run `notifai ask --wait` for this question: the command itself waits for the answer',
+    })
+  })
+
+  it('offers OpenCode both the form and the conversation when plain ask cannot return', async () => {
+    const cwd = mkdtempSync(path.join(os.tmpdir(), 'notifai-held-opencode-'))
+    const io = new CapturedIo()
+    const { deps } = scriptDeps(io, {} as never)
+    const env = { ...isolatedEnv(cwd), NOTIFAI_ACTIVE_HARNESS: 'opencode', NOTIFAI_ACTIVE_SESSION_ID: 'ses_opencode' }
+    expect(await askCommand({ ...deps, cwd, env }, 'Deploy?', { title: 'Production deploy', json: true })).toBe(EXIT.usage)
+    const refusal = JSON.parse(io.outLines[0]!) as { code: string; remedy: string }
+    expect(refusal.code).toBe('question_routing_unavailable')
+    expect(refusal.remedy).toContain('`question` form')
+    expect(refusal.remedy).toContain('`notifai ask --wait`')
+    expect(refusal.remedy).toContain('ask in the conversation')
+  })
+
+  it('keeps questions off the devices when the User turned them off, waiting or not', async () => {
+    const cwd = mkdtempSync(path.join(os.tmpdir(), 'notifai-held-off-'))
+    execFileSync('git', ['init', '--quiet', cwd])
+    const io = new CapturedIo()
+    const env = isolatedEnv(cwd)
+    writeProjectSettings(cwd, env, 'ask_notifications = false\n')
+    const submit = vi.fn()
+    const { deps } = scriptDeps(io, { submit } as never)
+    for (const wait of [true, false]) {
+      io.outLines = []
+      expect(await askCommand({ ...deps, cwd, env }, 'Deploy?', { title: 'Production deploy', wait, json: true })).toBe(EXIT.usage)
+      expect(JSON.parse(io.outLines[0]!).code).toBe('question_routing_disabled')
+    }
+    expect(submit).not.toHaveBeenCalled()
   })
 })
 
@@ -8828,6 +9125,16 @@ describe('asking before the hooks have ever run', () => {
       expect(readSessionState(sessionId, env).pending).toBeUndefined()
       expect(spawn).not.toHaveBeenCalled()
       expect(compatibility).not.toHaveBeenCalled()
+      // A wait ends the turn, and Codex drops open cards at turn end, so
+      // `ask --wait` never takes the card: it registers and says to end the turn.
+      io.outLines = []
+      expect(await askCommand(deps, 'Where?', { title: 'Decision', choice: ['Staging', 'Production'], wait: true, json: true })).toBe(EXIT.ok)
+      const waited = JSON.parse(io.outLines.join('\n'))
+      expect(waited).toMatchObject({ registered: true, next: { end_turn: true, in_this_turn: expect.stringMatching(/^Ask it in the conversation, say what each answer will make you do, then end your turn\. The answer arrives as your next message\./) } })
+      expect(waited).not.toHaveProperty('native_question')
+      expect(readSessionState(sessionId, env).pending).toHaveLength(1)
+      expect(readSessionState(sessionId, env).codex_question_bindings).toBeUndefined()
+      expect(await closeCommand(deps, waited.question_id, {})).toBe(EXIT.ok)
       // The card shows labels only; a described choice keeps ordinary ask.
       io.outLines = []
       expect(await askCommand(deps, 'Where?', {
@@ -9398,6 +9705,71 @@ describe('asking before the hooks have ever run', () => {
     expect(readSessionState('claude-closed', env).pending).toHaveLength(2)
   })
 
+  it('ends the turn for `ask --wait` where the answer can come back, and again for a repeat', async () => {
+    // Claude Code has a return path (the inbox wake), so a wait is the agent's
+    // own wait: it registers at once and ends its turn; nothing is held.
+    const cwd = scratchDir('notifai-claude-ask-wait-')
+    const io = new CapturedIo()
+    const env = { ...isolatedEnv(cwd), CLAUDECODE: '1', CLAUDE_CODE_SESSION_ID: 'claude-wait' }
+    const client = { submit: vi.fn(), replies: vi.fn() } as unknown as ApiClient
+    const deps = { ...makeDeps(io, client), cwd, env, now: () => 42, spawnQuestionSettlement: vi.fn() }
+    expect(hooksInstallCommand(deps, { harness: 'claude-code', execPath, scriptPath })).toBe(EXIT.ok)
+    beginSessionIncarnation('claude-wait', env, { stamp: lifecycleStamp(), harnessProcess: currentProcessIdentity()! })
+    writeSessionState('claude-wait', env, { harness: 'claude-code', last_prompt_at: 42, last_stop_at: 41 })
+    writeProjectSession(cwd, env, 'claude-wait', 42, 'claude-code')
+    io.outLines = []
+    expect(await askCommand(deps, 'Which name?', { title: 'Release name', wait: true, json: true })).toBe(EXIT.ok)
+    const first = JSON.parse(io.outLines.join('\n'))
+    expect(first).toMatchObject({
+      registered: true,
+      next: {
+        end_turn: true,
+        in_this_turn: expect.stringMatching(/^Ask it in the conversation, say what each answer will make you do, then end your turn\. The answer arrives as your next message\./),
+        keep_session_open: expect.stringMatching(/Keep this Agent Session open/),
+      },
+    })
+    expect(readSessionState('claude-wait', env).pending).toHaveLength(1)
+    expect(deps.spawnQuestionSettlement).toHaveBeenCalledTimes(1)
+    // Nothing held: no submission or poll ran in this process.
+    expect(client.submit).not.toHaveBeenCalled()
+    expect(client.replies).not.toHaveBeenCalled()
+
+    // A repeated wait re-attaches to the open question and says to end the turn again.
+    io.outLines = []
+    expect(await askCommand(deps, 'Which name?', { title: 'Release name', wait: true, json: true })).toBe(EXIT.ok)
+    expect(JSON.parse(io.outLines.join('\n'))).toMatchObject({
+      registered: false, already_open: { question_id: first.question_id }, next: { end_turn: true, in_this_turn: expect.stringContaining('end your turn') },
+    })
+    expect(deps.spawnQuestionSettlement).toHaveBeenCalledTimes(1)
+
+    // The human output says the same.
+    io.outLines = []
+    expect(await askCommand(deps, 'Which colour?', { title: 'Release colour', wait: true })).toBe(EXIT.ok)
+    expect(io.outLines.at(-1)).toBe('Then end your turn: the answer arrives as your next message.')
+    expect(io.outLines.join('\n')).not.toContain('Continue independent work')
+  })
+
+  it('refuses `ask --wait` in a hooked session that is not ready, and never holds it', async () => {
+    // Admission comes first: a harness with a return path whose routing is not
+    // ready is refused, so the wait cannot become a bypass of the hooks.
+    const cwd = scratchDir('notifai-claude-wait-not-ready-')
+    const io = new CapturedIo()
+    const env = { ...isolatedEnv(cwd), CLAUDECODE: '1', CLAUDE_CODE_SESSION_ID: 'claude-unready' }
+    const client = { submit: vi.fn(), replies: vi.fn() } as unknown as ApiClient
+    const deps = { ...makeDeps(io, client), cwd, env, now: () => 42 }
+    expect(await askCommand(deps, 'Which name?', { title: 'Release name', wait: true, json: true })).toBe(EXIT.usage)
+    expect(JSON.parse(io.outLines.at(-1)!)).toMatchObject({ code: 'hooks_not_installed', registered: false })
+    expect(client.submit).not.toHaveBeenCalled()
+    expect(readSessionState('claude-unready', env).pending).toBeUndefined()
+
+    // Hooks installed, but this session has not fired UserPromptSubmit yet.
+    expect(hooksInstallCommand(deps, { harness: 'claude-code', execPath, scriptPath })).toBe(EXIT.ok)
+    io.outLines = []
+    expect(await askCommand(deps, 'Which name?', { title: 'Release name', wait: true, json: true })).toBe(EXIT.usage)
+    expect(JSON.parse(io.outLines.at(-1)!)).toMatchObject({ code: 'session_not_activated' })
+    expect(client.submit).not.toHaveBeenCalled()
+  })
+
   it('registers a question again once its earlier answer was handed to the agent', async () => {
     const cwd = scratchDir('notifai-claude-consumed-ask-')
     const io = new CapturedIo()
@@ -9710,7 +10082,7 @@ describe('asking before the hooks have ever run', () => {
   // two markers can be right, and both nestings are ordinary: an orchestrator
   // running inside Claude Code starts Codex, and the reverse happens just as
   // often. Neither a pointer nor the newest timestamp proves shell ownership.
-  it('rejects ambiguous inherited markers even when only Codex has lifecycle evidence', () => {
+  it('rejects ambiguous inherited markers even when only Codex has lifecycle evidence', async () => {
     const cwd = mkdtempSync(path.join(os.tmpdir(), 'notifai-codex-under-claude-'))
     const io = new CapturedIo()
     const env = {
@@ -9736,13 +10108,16 @@ describe('asking before the hooks have ever run', () => {
     writeProjectSession(cwd, env, 'codex-current-thread', 42, 'codex')
     io.outLines = []
 
-    expect(askCommand(deps, 'Ship it?', { title: 'Decision', json: true })).toBe(EXIT.usage)
-    expect(JSON.parse(io.outLines[0]!).code).toBe('session_identity_ambiguous')
+    expect(await askCommand(deps, 'Ship it?', { title: 'Decision', json: true })).toBe(EXIT.usage)
+    const refusal = JSON.parse(io.outLines[0]!)
+    expect(refusal.code).toBe('session_identity_ambiguous')
+    expect(refusal.message).toMatch(/^Several harness sessions could own this shell \(Claude Code, Codex\)/)
+    expect(refusal.remedy).toContain('`notifai ask --wait`')
     expect(readSessionState('codex-current-thread', env).pending).toBeUndefined()
     expect(readSessionState('claude-orchestrator', env).pending).toBeUndefined()
   })
 
-  it('does not let newer Claude activity steal a shell with inherited Codex identity', () => {
+  it('does not let newer Claude activity steal a shell with inherited Codex identity', async () => {
     const cwd = mkdtempSync(path.join(os.tmpdir(), 'notifai-claude-under-codex-'))
     const io = new CapturedIo()
     const env = {
@@ -9766,8 +10141,18 @@ describe('asking before the hooks have ever run', () => {
     writeProjectSession(cwd, env, 'claude-current', 42, 'claude-code')
     io.outLines = []
 
-    expect(askCommand(deps, 'Ship it?', { title: 'Decision', json: true })).toBe(EXIT.usage)
+    expect(await askCommand(deps, 'Ship it?', { title: 'Decision', json: true })).toBe(EXIT.usage)
     expect(JSON.parse(io.outLines[0]!).code).toBe('session_identity_ambiguous')
+    expect(readSessionState('claude-current', env).pending).toBeUndefined()
+    expect(readSessionState('codex-orchestrator', env).pending).toBeUndefined()
+    // A wait here holds in the command for the shortest limit, registered to neither session.
+    io.outLines = []
+    const client = { submit: vi.fn(async () => receipt), replies: async () => replyResponse([reply]), closeReplies: async () => claimedReplyResponse([reply]) } as unknown as ApiClient
+    expect(await askCommand({ ...deps, clientFactory: () => withCompatibilityDefaults(client), sleep: async () => {} }, 'Ship it?', { title: 'Decision', wait: true })).toBe(EXIT.ok)
+    expect(client.submit).toHaveBeenCalledTimes(1)
+    const held = (client.submit as ReturnType<typeof vi.fn>).mock.calls[0]![0] as SubmitNotificationRequestT
+    expect(held.draft.reply?.expires_in_seconds).toBe(110)
+    expect(held.draft.source?.session_id).toBeUndefined()
     expect(readSessionState('claude-current', env).pending).toBeUndefined()
     expect(readSessionState('codex-orchestrator', env).pending).toBeUndefined()
   })
@@ -10047,7 +10432,7 @@ describe('asking before the hooks have ever run', () => {
         action: 'approve_or_enable_notifai_hooks',
       },
     })
-    expect(io.outLines.join('\n')).toMatch(/send --reply.*cannot resume this Agent Session after its reply timeout/is)
+    expect(io.outLines.join('\n')).toMatch(/Neither `notifai ask` nor `notifai ask --wait` works until the User approves the hooks/)
     expect(readSessionState('codex-desktop-thread', env).pending).toBeUndefined()
 
     io.outLines = []
@@ -10405,6 +10790,8 @@ describe('asking before the hooks have ever run', () => {
 
     expect(askCommand(deps, 'Ship it?', { title: 'Decision', json: true })).toBe(EXIT.usage)
     const payload = JSON.parse(io.outLines.join('\n')) as { code: string; message: string }
+    // No later answer could find the right session, so plain ask is refused
+    // and the remedy is the held wait.
     expect(payload.code).toBe('session_identity_ambiguous')
     expect(payload.message).toMatch(/Several harness sessions could own this shell/i)
     expect(payload.message).toMatch(/Hermes/)
@@ -10453,7 +10840,7 @@ describe('asking before the hooks have ever run', () => {
     })
   })
 
-  it('refuses Cursor when its active-agent marker has no exact conversation id', () => {
+  it('refuses Cursor when its active-agent marker has no exact conversation id', async () => {
     const cwd = mkdtempSync(path.join(os.tmpdir(), 'notifai-active-cursor-'))
     const io = new CapturedIo()
     const env = {
@@ -10466,8 +10853,9 @@ describe('asking before the hooks have ever run', () => {
     writeProjectSession(cwd, env, 'cursor-live', 42, 'cursor')
     io.outLines = []
 
-    expect(askCommand(deps, 'Ship it?', { title: 'Decision' })).toBe(EXIT.usage)
-    expect(io.errLines.join('\n')).toMatch(/does not expose an exact session id/i)
+    expect(await askCommand(deps, 'Ship it?', { title: 'Decision' })).toBe(EXIT.usage)
+    expect(io.errLines.join('\n')).toMatch(/exposes no exact conversation id/i)
+    expect(io.errLines.join('\n')).toContain('next: run `notifai ask --wait` for this question: the command itself waits for the answer')
     expect(readSessionState('cursor-live', env).pending).toBeUndefined()
   })
 
@@ -10825,7 +11213,7 @@ describe('asking before the hooks have ever run', () => {
     expect(payload).toMatchObject({ ok: false, exit_code: EXIT.failed })
   })
 
-  it('returns a stable exact-session failure when lifecycle context is absent', () => {
+  it('returns a stable no-return-path failure when lifecycle context is absent', async () => {
     const cwd = mkdtempSync(path.join(os.tmpdir(), 'notifai-firstrun-'))
     mkdirSync(path.join(cwd, '.claude'), { recursive: true })
     applyPlan(path.join(cwd, '.claude', 'settings.local.json'), {
@@ -10837,18 +11225,18 @@ describe('asking before the hooks have ever run', () => {
     const io = new CapturedIo()
     const deps = { ...makeDeps(io, {} as ApiClient), cwd, env: { XDG_STATE_HOME: cwd } }
 
-    expect(askCommand(deps, 'Ship it?', { title: 'Decision', json: true })).toBe(EXIT.usage)
+    expect(await askCommand(deps, 'Ship it?', { title: 'Decision', json: true })).toBe(EXIT.usage)
     expect(JSON.parse(io.outLines.at(-1) ?? '{}')).toMatchObject({
       ok: false,
       registered: false,
       code: 'session_identity_missing',
       check_id: 'exact_session',
       exit_code: EXIT.usage,
-      remedy: expect.stringMatching(/exact Agent Session|send --reply/i),
+      remedy: expect.stringMatching(/ask --wait/i),
     })
   })
 
-  it('does not guess a Cursor conversation when lifecycle context is absent', () => {
+  it('does not guess a Cursor conversation when lifecycle context is absent', async () => {
     const cwd = mkdtempSync(path.join(os.tmpdir(), 'notifai-cursor-first-run-'))
     const io = new CapturedIo()
     const deps = {
@@ -10860,14 +11248,14 @@ describe('asking before the hooks have ever run', () => {
     expect(hooksInstallCommand(deps, { harness: 'cursor', execPath, scriptPath })).toBe(EXIT.ok)
     io.outLines = []
 
-    expect(askCommand(deps, 'Ship it?', { title: 'Decision', json: true })).toBe(EXIT.usage)
+    expect(await askCommand(deps, 'Ship it?', { title: 'Decision', json: true })).toBe(EXIT.usage)
     expect(JSON.parse(io.outLines.at(-1) ?? '{}')).toMatchObject({
       code: 'session_identity_missing',
       check_id: 'exact_session',
     })
   })
 
-  it('does not infer OpenCode from an installed adapter alone', () => {
+  it('does not infer OpenCode from an installed adapter alone', async () => {
     const cwd = mkdtempSync(path.join(os.tmpdir(), 'notifai-opencode-first-run-'))
     const io = new CapturedIo()
     const deps = {
@@ -10882,14 +11270,14 @@ describe('asking before the hooks have ever run', () => {
     expect(hooksInstallCommand(deps, { harness: 'opencode', execPath, scriptPath })).toBe(EXIT.ok)
     io.outLines = []
 
-    expect(askCommand(deps, 'Ship it?', { title: 'Decision', json: true })).toBe(EXIT.usage)
+    expect(await askCommand(deps, 'Ship it?', { title: 'Decision', json: true })).toBe(EXIT.usage)
     expect(JSON.parse(io.outLines.at(-1) ?? '{}')).toMatchObject({
       code: 'session_identity_missing',
       check_id: 'exact_session',
     })
   })
 
-  it('does not turn missing harness identity into an installation guess', () => {
+  it('does not turn missing harness identity into an installation guess', async () => {
     const cwd = mkdtempSync(path.join(os.tmpdir(), 'notifai-noinstall-'))
     const io = new CapturedIo()
     const deps = {
@@ -10904,7 +11292,7 @@ describe('asking before the hooks have ever run', () => {
       },
     }
 
-    expect(askCommand(deps, 'Ship it?', { title: 'Decision', json: true })).toBe(EXIT.usage)
+    expect(await askCommand(deps, 'Ship it?', { title: 'Decision', json: true })).toBe(EXIT.usage)
     expect(JSON.parse(io.outLines.at(-1) ?? '{}')).toMatchObject({
       code: 'session_identity_missing',
       check_id: 'exact_session',
@@ -11104,13 +11492,7 @@ describe('command failures carrying server details', () => {
     } as unknown as ApiClient
 
     expect(
-      await sendCommand(makeDeps(io, client), {
-        kind: 'question',
-        title: 'Ship it?',
-        body: 'Should I ship this build?',
-        reply: true,
-        replyTimeout: 30,
-      }),
+      await askCommand(makeDeps(io, client), 'Should I ship this build?', { title: 'Ship decision', wait: true }),
     ).toBe(EXIT.failed)
 
     expect(io.errLines).toEqual([
@@ -11136,13 +11518,8 @@ describe('question sets', () => {
     } as unknown as ApiClient
 
     expect(
-      await sendCommand(makeDeps(io, client), {
-        title: 'Question',
-        body: 'Which fronts?',
-        reply: true,
-        replyTimeout: 30,
-        choice: ['CLI', 'Server', 'Apps'],
-        multi: true,
+      await askCommand({ ...makeDeps(io, client), sleep: async () => {} }, 'Which fronts?', {
+        title: 'Fronts', wait: true, choice: ['CLI', 'Server', 'Apps'], multi: true,
       }),
     ).toBe(EXIT.ok)
     expect(submitted?.draft.reply?.questions?.[0]).toMatchObject({
@@ -11166,15 +11543,12 @@ describe('question sets', () => {
 
     const body = `Which environment?\n\n${'Long Markdown context. '.repeat(30)}`
     expect(
-      await sendCommand(makeDeps(io, client), {
-        title: 'Choose the deployment environment',
-        summary: 'Which environment?',
-        body,
-        reply: true,
-        replyTimeout: 30,
+      await askCommand({ ...makeDeps(io, client), sleep: async () => {} }, 'Which environment?', {
+        title: 'Deployment environment', body, wait: true,
       }),
     ).toBe(EXIT.ok)
     expect(submitted?.draft.presentation.body).toBe(body)
+    expect(submitted?.draft.presentation.summary).toBe('Which environment?')
     expect(submitted?.draft.reply?.questions[0]?.text).toBe('Which environment?')
   })
 

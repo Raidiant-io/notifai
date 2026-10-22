@@ -137,7 +137,7 @@ function run(cwd: string, env: NodeJS.ProcessEnv, args: string[]): Promise<Run> 
 function burst(project: string, env: NodeJS.ProcessEnv, label: string): Promise<Run[]> {
   return Promise.all([
     ...Array.from({ length: SENDS }, (_, i) => run(project, env, [
-      'send', '--kind', 'update', '--title', `${label} ${i}`, '--summary', `Parallel agent ${i} finished.`, '--no-wait',
+      'send', '--kind', 'update', '--title', `${label} ${i}`, '--summary', `Parallel agent ${i} finished.`, '--delivery-timeout', '0',
     ])),
     ...Array.from({ length: ACKNOWLEDGEMENTS }, (_, i) => run(project, env, [
       'acknowledge', `req_${label}_${i}`, '--text', `Using answer ${i}.`,

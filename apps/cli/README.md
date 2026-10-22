@@ -118,11 +118,13 @@ find out your reply landed and what it set in motion — not just that you sent
 it. Answering from your phone and wondering whether anything happened is the
 whole problem this solves.
 
-For a harness that cannot resume an idle agent turn, `notifai send --reply`
-owns the complete answer window in the foreground: keep it alive and set
-`--reply-timeout` equal to `--reply-window`. After a timeout, retain the request
-ID and inspect that original with `notifai replies` and `notifai status`; never
-send a duplicate.
+For a harness that cannot resume an idle agent turn, `notifai ask --wait`
+waits for the answer in the foreground, for the harness's command limit minus
+10 s or the answer window outside any harness, and the service ends the
+question at that deadline. It exits 0 with the answer, 3 when it ended
+unanswered and the question is off the devices, or 5 when the service was
+unreachable at the end; then an answer may still be waiting for
+`notifai replies <request_id>` until the deadline. Never ask a duplicate.
 
 ## Agent harnesses
 

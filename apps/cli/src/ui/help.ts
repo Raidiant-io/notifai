@@ -29,12 +29,11 @@ export const GROUP = {
   advanced: 'Account and wiring:',
 } as const
 
-/** Option groups for `send`, which carries thirty flags. */
+/** Option groups for `send`, which carries two dozen flags. */
 export const SEND_GROUP = {
   content: 'What it says:',
   routing: 'Where it goes:',
   presentation: 'How it arrives:',
-  reply: 'Asking for an answer:',
   advanced: 'Advanced:',
 } as const
 
@@ -116,8 +115,8 @@ export function rootHelpFooter(): string {
     '',
     style.heading('First call, for an agent'),
     `  ${style.code('notifai send --kind done --title "All 42 tests passed" --body "Finished in 3m 10s. Next: review the release candidate."')}`,
-    `  ${style.code('notifai ask "Deploy migration 0007 to production?" --choice Deploy --choice Hold')}`,
-    `  ${style.dim(`${glyph.arrow} ${style.code('ask')} needs question routing installed; ${style.code('notifai doctor --json')} says whether it is.`)}`,
+    `  ${style.code('notifai ask "Deploy migration 0007 to production?" --title "Production deploy" --choice Deploy --choice Hold')}`,
+    `  ${style.dim(`${glyph.arrow} ${style.code('ask')} keeps working while they answer; ${style.code('ask --wait')} waits. ${style.code('notifai doctor --json')} says whether question routing is ready.`)}`,
     '',
     style.dim(
       `Every command takes ${style.code('--help')}. Where a command has machine-readable output it takes ${style.code('--json')}.`,

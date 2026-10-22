@@ -7,11 +7,12 @@ import { buildProgram, type ProgramRunners } from './program.js'
 import type { CommandDeps } from './commands.js'
 import { QUESTION_SETTLEMENT_INPUT_ENV } from './question-settlement-process.js'
 import { GROK_ATTEND_INPUT_ENV } from './grok-attendant.js'
+import { SEND_WAIT_DEPRECATED } from './commands-send.js'
 
 /**
  * The layer these tests own is the argv boundary: what a real command line
  * turns into by the time a command implementation receives it. Collector
- * defaults, `--no-wait` disentangling, `--body-file` reading — none of that is
+ * defaults, `--body-file` reading — none of that is
  * visible to the unit tests on the commands themselves, and it used to be
  * covered by nothing but reading `program.ts` with human eyes.
  */
@@ -88,11 +89,7 @@ describe('program argv parsing', () => {
         '--title', 'Build finished',
         '--summary', 'All green.',
         '--body', 'All green.',
-        '--choice', 'Ship it',
-        '--choice', 'Hold',
-        '--multi',
-        '--reply',
-        '--reply-timeout', '30',
+        '--delivery-timeout', '0',
       ],
       { send: (async (_deps, flags) => ((seen = flags as Record<string, unknown>), 0)) as ProgramRunners['send'] },
     )
@@ -102,12 +99,45 @@ describe('program argv parsing', () => {
       title: 'Build finished',
       summary: 'All green.',
       body: 'All green.',
+      deliveryTimeout: 0,
+    })
+    expect(seen).not.toHaveProperty('wait')
+    expect(seen).not.toHaveProperty('noWait')
+    expect(seen).not.toHaveProperty('reply')
+  })
+
+  it('keeps the deprecated send --reply command line working, hidden from help', async () => {
+    let seen: Record<string, unknown> | undefined
+    const { exitCode, deps } = await parse(
+      [
+        'send',
+        '--title', 'Build finished',
+        '--summary', 'Ship it?',
+        '--choice', 'Ship it',
+        '--choice-description', 'Release now.',
+        '--choice', 'Hold',
+        '--recommended', 'Ship it',
+        '--multi',
+        '--reply',
+        '--reply-timeout', '30',
+        '--reply-window', '600',
+      ],
+      { send: (async (_deps, flags) => ((seen = flags as Record<string, unknown>), 0)) as ProgramRunners['send'] },
+    )
+    expect(exitCode).toBe(0)
+    expect(seen).toMatchObject({
       choice: ['Ship it', 'Hold'],
+      choiceDescription: [{ after: 1, text: 'Release now.' }],
+      recommended: ['Ship it'],
       multi: true,
       reply: true,
       replyTimeout: 30,
-      noWait: false,
+      replyWindow: 600,
     })
+    expect(deps.outLines).toEqual([])
+    const help = buildProgram(makeDeps(), { runners: {}, exit: () => {} }).commands.find((command) => command.name() === 'send')!.helpInformation()
+    expect(help).toContain('--delivery-timeout')
+    for (const hidden of ['--reply', '--choice', '--recommended', '--multi']) expect(help, hidden).not.toContain(hidden)
   })
 
   it('preserves deliberate Projectless send intent at the argv boundary', async () => {
@@ -235,15 +265,35 @@ describe('program argv parsing', () => {
     expect((await parse(['update', '--check', '--channel', 'beta'], { update })).exitCode).toBe(2)
   })
 
-  it('disentangles --no-wait and --wait from their shared commander flag', async () => {
-    const capture = (sink: Record<string, unknown>[]): ProgramRunners['send'] =>
-      (async (_deps, flags) => (sink.push(flags as Record<string, unknown>), 0)) as ProgramRunners['send']
+  it('maps `ask --wait` onto the waiting mode and keeps `send` to its delivery timeout', async () => {
+    const ask = vi.fn(async () => 0) as unknown as ProgramRunners['ask']
+    await parse(['ask', 'Ship it?', '--title', 'Release', '--wait', '--json'], { ask })
+    expect(ask).toHaveBeenCalledWith(expect.anything(), 'Ship it?', { title: 'Release', wait: true, json: true })
+    await parse(['ask', 'Ship it?', '--title', 'Release'], { ask })
+    expect(ask).toHaveBeenLastCalledWith(expect.anything(), 'Ship it?', { title: 'Release' })
+    // `send` waits only for provider outcomes. Its old names stay as hidden
+    // aliases of `--delivery-timeout`, each naming the new flag once.
     const seen: Record<string, unknown>[] = []
-    await parse(['send', '--kind', 'update', '--title', 'T', '--summary', 'B', '--body', 'B', '--no-wait'], { send: capture(seen) })
-    await parse(['send', '--kind', 'update', '--title', 'T', '--summary', 'B', '--body', 'B', '--wait', '5'], { send: capture(seen) })
-    expect(seen[0]).toMatchObject({ noWait: true })
-    expect(seen[0]).not.toHaveProperty('wait')
-    expect(seen[1]).toMatchObject({ noWait: false, wait: 5 })
+    const send = (async (_deps, flags) => (seen.push(flags as Record<string, unknown>), 0)) as ProgramRunners['send']
+    await parse(['send', '--kind', 'update', '--title', 'T', '--summary', 'B', '--body', 'B', '--delivery-timeout', '5'], { send })
+    expect(seen[0]).toMatchObject({ deliveryTimeout: 5 })
+    const noWait = await parse(['send', '--kind', 'update', '--title', 'T', '--summary', 'B', '--no-wait'], { send })
+    expect(noWait.exitCode).toBe(0)
+    expect(seen[1]).toMatchObject({ deliveryTimeout: 0 })
+    expect(seen[1]).not.toHaveProperty('wait')
+    expect(noWait.deps.errLines).toEqual([SEND_WAIT_DEPRECATED])
+    expect((await parse(['send', '--kind', 'update', '--title', 'T', '--summary', 'B', '--wait', '7'], { send })).exitCode).toBe(0)
+    expect(seen[2]).toMatchObject({ deliveryTimeout: 7 })
+    // The new name wins over the old one.
+    await parse(['send', '--kind', 'update', '--title', 'T', '--summary', 'B', '--wait', '7', '--delivery-timeout', '3'], { send })
+    expect(seen[3]).toMatchObject({ deliveryTimeout: 3 })
+    const help = buildProgram(makeDeps(), { runners: {}, exit: () => {} }).commands.find((command) => command.name() === 'send')!.helpInformation()
+    expect(help).toContain('--delivery-timeout')
+    for (const hidden of ['--no-wait', '--wait ']) expect(help, hidden).not.toContain(hidden)
+    // `replies --wait` stays a hidden, deprecated bounded poll.
+    const replies = vi.fn(async () => 0) as unknown as ProgramRunners['replies']
+    expect((await parse(['replies', 'req_x', '--wait', '5'], { replies })).exitCode).toBe(0)
+    expect(replies).toHaveBeenCalledWith(expect.anything(), 'req_x', { wait: 5 })
   })
 
   it('reads --body-file and refuses it alongside --body', async () => {

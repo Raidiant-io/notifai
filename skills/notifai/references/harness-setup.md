@@ -74,8 +74,7 @@ recovery owns the answer, and `null` when nothing assessed it.
 `exit_code` and `remedy` instead of running doctor first. It never guesses an
 Agent Session and has no `--session-id` override. When the failure includes a
 User-owned trust or permission `user_action`, relay the exact `remedy`, say
-the hooks need the User's trust or approval, and wait. Never bypass that gap
-with `notifai send --reply`.
+the hooks need the User's trust or approval, and wait; do not work around it.
 
 Notifai never writes trust approvals. If its diagnosis and Codex disagree,
 `/hooks` is authoritative.
@@ -124,15 +123,12 @@ also clears any Project-scoped hook file an older Notifai left in this
 checkout.
 
 Where no answer can come back to this Agent Session later, `ask` refuses and
-names a blocking `notifai send --reply` question. That command is the
-foreground owner: keep it alive for the complete answer window and set
-`--reply-timeout` equal to `--reply-window`. If it times out, keep its request
-ID, inspect the original with `notifai replies <request_id> --json` and
-`notifai status <request_id> --json`, and never send a duplicate.
+names `notifai ask --wait`: the command itself waits for the answer, so give
+it no command timeout shorter than your harness's default.
 
-When `ask` reports conflicting inherited harness markers, use that foreground
-flow too: nothing can prove which nested Agent Session owns the shell. Do not
-strip markers or borrow another Agent Session's identity to
+When `ask` reports conflicting inherited harness markers, use
+`notifai ask --wait` too: nothing can prove which nested Agent Session owns
+the shell. Do not strip markers or borrow another Agent Session's identity to
 make `ask` pass; basic sending remains available without guessed Source
 Context.
 

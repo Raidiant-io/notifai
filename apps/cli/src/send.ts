@@ -58,13 +58,20 @@ export interface SendFlags {
    * uploads and alt text. Mutually exclusive with the CLI's parallel inputs.
    */
   media?: MediaItemT[]
-  /** Enable the inline reply action for this Notification Request. */
+  /**
+   * This draft is a question. Not a user-facing flag: `ask` and the hooks set
+   * it; `send` cannot ask.
+   */
   reply?: boolean
-  /** How long the server accepts a reply after submission. */
+  /**
+   * How long the server accepts an answer after submission. Not a user-facing
+   * flag: a held `ask --wait` ends its window at the wait's deadline; every
+   * other question keeps `reply_window_seconds`.
+   */
   replyWindow?: number
   /**
-   * Answer labels; turns the reply into a closed question. One flag occurrence
-   * per label, always — a label is a label, whatever characters it contains.
+   * Answer labels; turns the question into a closed one. One occurrence per
+   * label, always — a label is a label, whatever characters it contains.
    */
   choice?: string[]
   /** One-line consequence of each choice, attached to the `--choice` before it. */

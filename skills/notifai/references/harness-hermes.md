@@ -24,9 +24,9 @@ terminal backends and Windows are not.
 
 ## Questions, notes and edits
 
-A classic CLI session receives an `ask` answer back into the same live
-session. On other Hermes surfaces `ask` refuses: use a blocking
-`notifai send --reply` question, as the skill's "Bounded foreground wait" says.
+A classic CLI session receives an `ask` answer back into the same live session,
+and `notifai ask --wait` tells you to end your turn for it. On other Hermes
+surfaces `ask` refuses: use `notifai ask --wait`, which waits in the command.
 Keep Hermes running for the answer window: closing the session ends its
 questions, and an answer that arrives after the process exits is not
 delivered.

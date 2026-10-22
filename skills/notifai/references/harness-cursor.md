@@ -27,9 +27,8 @@ Start one fresh conversation and send one prompt, then run `notifai doctor`.
 Delegated work stays under the parent Agent Session and its Notification
 Request ownership; Cursor starts no separately activated context for it.
 Cursor does not tell Notifai which conversation ran a command, so no answer
-can come back later and `notifai ask` fails closed. Ask with a blocking
-`notifai send --reply` in the foreground, as the skill's "Bounded foreground
-wait" says.
+can come back later: ask with `notifai ask --wait` in the foreground, and let
+it run until it returns with the answer or says the question ended.
 
 ## After a Notifai update
 

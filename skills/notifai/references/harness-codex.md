@@ -37,6 +37,10 @@ Without that tool, use `notifai ask`: it registers an ordinary question.
 accepts it, it waits in the terminal, where an away User never sees it. Use
 `ask` for those questions too.
 
+To wait, run `notifai ask --wait`. It never opens a card, because Codex drops
+open cards when your turn ends: end your turn, and the answer arrives as your
+next message.
+
 A card you open on your own is the Notifai question when its tool context
 says Notifai registered it; then never also `ask` it. With question
 notifications off, or in a project the User disabled, the card is your

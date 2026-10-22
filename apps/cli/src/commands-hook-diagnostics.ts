@@ -102,7 +102,7 @@ export function activeQuestionRouteProblems(
   const problems: string[] = []
   if (active.sessionId === undefined) {
     problems.push(
-      `the active ${active.label} shell does not expose an exact session id; a project-level last-writer pointer can cross-wire two sessions. Use a blocking \`notifai send --reply\` question`,
+      `the active ${active.label} shell does not expose an exact session id; a project-level last-writer pointer can cross-wire two sessions. Use \`notifai ask --wait\``,
     )
   }
   const capability = isHookInstallableHarness(active.harness)

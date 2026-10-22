@@ -71,7 +71,7 @@ kind that is true.**
 | `done` | work finished successfully | completion chime |
 | `failed` | work reached a terminal failure | most insistent tone |
 | `blocked` | waiting, and no User reply would resume the work; otherwise [ask](#ask-a-question) | attention tone |
-| `question` | set for you by `--reply` and by `ask`; never pass it | attention tone |
+| `question` | set by `notifai ask`; never pass it | attention tone |
 
 Each field has a fixed shape; how to write it is the `titles` and `content`
 guidance, with worked examples in [Writing examples](references/writing-examples.md):
@@ -123,8 +123,14 @@ setup or readiness, never for credentials; harness permission prompts stay in
 the harness. In Claude Code the question picker is the Notifai question: never
 also `ask` it ([why](references/harness-claude-code.md#question-picker)).
 
-`ask` keeps the return path for the complete answer window: the answer comes
-back into this Agent Session whenever they reply.
+Ask the way you would without Notifai:
+
+- To keep working while the User decides, run `notifai ask`. The answer comes
+  back into this Agent Session whenever they reply, within the answer window.
+- To stop until they answer, run `notifai ask --wait` and do what it returns:
+  end your turn, and the answer arrives as your next message. Where no later
+  answer can reach you, the command itself waits; if it ends unanswered
+  (exit 3), the question is off the User's devices.
 
 ```bash
 notifai ask "Deploy the schema change to production now?" \
@@ -154,7 +160,8 @@ closure.
 
 **Registering is not the end of the turn.** After `notifai ask`, ask in the
 conversation, say what each answer will make you do, and continue independent
-work; dependent work waits for the answer. **Never say where the answer must
+work; dependent work waits for the answer. When `ask --wait` says to end your
+turn, do the same, then end it. **Never say where the answer must
 arrive** ("tell me here"): it comes back by whatever route the harness has.
 While a question waits, keep this Agent Session open: closing, clearing or
 switching it ends the question.
@@ -175,34 +182,13 @@ with `notifai close <question_id>`; `notifai close --pending` retires all of
 this Agent Session's open questions.
 
 If `ask` reports a User-owned trust or permission gap, relay its exact
-`remedy`, say the hooks need the User's trust or approval, and wait; never
-bypass Question Routing with `send --reply`.
+`remedy`, say the hooks need the User's trust or approval, and wait; do not
+work around it.
 
 If `ask` refuses because “Send questions to my devices” (`ask_notifications`)
 is off, the User keeps questions off their devices: ask in the conversation,
-or in your own question form, which stays in the terminal. `send --reply`
+or in your own question form, which stays in the terminal. `ask --wait`
 refuses there too.
-
-### Bounded foreground wait
-
-`send --reply` is a bounded foreground wait, not a resumable handoff. Use it
-only when this command will consume the answer before exit, or `ask` reports
-Question Routing unavailable and the owner can stay alive:
-
-```bash
-notifai send --reply \
-  --title "Schema change ready" \
-  --summary "Deploy the schema change to production now?" \
-  --choice "Deploy now" --choice "Wait for off-peak" \
-  --reply-window 86400 --reply-timeout 86400
-```
-
-The clocks differ: `--reply-timeout` blocks for 900s by default;
-`--reply-window` accepts answers for a day by default (`reply_window_seconds`).
-For an unsupported-harness fallback, the foreground owner stays alive through
-the complete answer window and `--reply-timeout` equals `--reply-window`.
-Exit 3 means no answer arrived in the bounded wait, not a Delivery failure,
-and it does not resume later. On exit 0, act on the answer.
 
 ## When the answer arrives
 
@@ -300,9 +286,9 @@ the machine and holds the User's answers: treat it as private.
 | 0 | it worked | carry on |
 | 1 | failed; stderr names the code | fix it; a bare retry fails again |
 | 2 | usage *or* setup; stderr names the fix | follow the fix |
-| 3 | a bounded wait timed out | keep its ID; inspect the original with `replies`/`status`, never duplicate it |
+| 3 | `ask --wait` ended unanswered; the question is off the User's devices | carry on without the answer, or ask in the conversation |
 | 4 | this machine is not signed in | see [Set Notifai up](#set-notifai-up) |
-| 5 | network | for `send`, rerun the exact command with `--retry` |
+| 5 | network | for `send`, rerun the exact command with `--retry`; for `ask --wait`, follow its output |
 
 After an interrupted or killed `send`, do not correlate redacted logs by title
 or time and do not retry automatically. Re-run the exact semantic send with

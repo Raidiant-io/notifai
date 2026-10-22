@@ -226,8 +226,10 @@ describe('Notifai agent skill', () => {
     const sends = shellExamples.filter((line) => line.startsWith('notifai send'))
     expect(sends.length).toBeGreaterThan(0)
     for (const example of sends) {
-      // Exactly the boundary rule `sendCommand` enforces.
-      expect(example, example).toMatch(/--kind |--reply\b/)
+      // Exactly the boundary rule `sendCommand` enforces: a notification has a
+      // kind, and a question is `notifai ask`.
+      expect(example, example).toMatch(/--kind /)
+      expect(example, example).not.toMatch(/--reply\b|--kind question/)
       // Attention overrides belong to the user, so no example models one.
       expect(example, example).not.toMatch(/(^|\s)--(sound|level)\b/)
     }
@@ -286,28 +288,26 @@ describe('Notifai agent skill', () => {
     expect(section('## Ask a question').match(/Claude Code/g)?.length).toBe(1)
   })
 
-  it('keeps resumable ask the default and send --reply the bounded foreground wait', () => {
+  it('asks the way the agent would without Notifai: keep working, or wait', () => {
+    // Questions behave as they would without Notifai: one command, two modes.
     const ask = section('## Ask a question')
-    const resumable = ask.search(/work you own or coordinate needs a User response, use `notifai ask`/i)
-    const foreground = ask.indexOf('### Bounded foreground wait')
-    expect(resumable).toBeGreaterThan(0)
-    expect(foreground).toBeGreaterThan(resumable)
-    expect(ask).toMatch(/`ask` keeps the return path for the complete answer window/i)
-    expect(ask).toMatch(/`send --reply` is a bounded foreground wait, not a resumable handoff/i)
-    expect(ask).toContain('--reply-timeout')
-    expect(ask).toContain('--reply-window')
-    expect(ask).toMatch(/foreground owner stays alive through\s+the complete answer window and `--reply-timeout` equals `--reply-window`/i)
-    expect(ask).toMatch(/exit 3 means no answer arrived in the bounded wait[\s\S]{0,80}does not resume later/i)
-    const example = ask.match(/```bash\n(notifai send --reply[\s\S]*?)```/)?.[1] ?? ''
-    expect(Number(example.match(/--reply-timeout\s+(\d+)/)?.[1])).toBe(Number(example.match(/--reply-window\s+(\d+)/)?.[1]))
-    expect(skill).not.toContain('ask --wait')
+    const keepWorking = ask.search(/keep working[^\n]*run `notifai ask`/i)
+    const wait = ask.search(/stop until they answer, run `notifai ask --wait`/i)
+    expect(keepWorking).toBeGreaterThan(0)
+    expect(wait).toBeGreaterThan(keepWorking)
+    // Waiting is the harness's own wait, the end of the turn. Only a wait held
+    // in the command can end unanswered.
+    expect(ask).toMatch(/end your turn, and the answer arrives as your next message/i)
+    expect(ask).toMatch(/command\s+itself waits; if it ends unanswered\s+\(exit 3\), the question is off the\s+User's devices/i)
+    expect(skill).not.toContain('send --reply')
   })
 
-  it('keeps exit 3 attached to the original bounded wait', () => {
+  it('gives exit 3 one next step that never invites asking again', () => {
     const row = skill.match(/^\| 3 \|([^\n]+)$/m)?.[1] ?? ''
-    expect(row).toMatch(/bounded wait timed out/i)
-    expect(row).toMatch(/keep its ID; inspect the original with `replies`\/`status`, never duplicate it/i)
-    expect(skill.match(/^\| 5 \|([^\n]+)$/m)?.[1] ?? '').toMatch(/for `send`, rerun the exact command with `--retry`/i)
+    expect(row).toMatch(/`ask --wait` ended unanswered; the question is off the User's devices/i)
+    expect(row).toMatch(/carry on without the answer, or ask in the conversation/i)
+    expect(row).not.toMatch(/again|never duplicate|inspect/i)
+    expect(skill.match(/^\| 5 \|([^\n]+)$/m)?.[1] ?? '').toMatch(/for `ask --wait`, follow its output/i)
     // The SKILL row and the command's own output are the only homes.
     for (const name of HARNESS_FILES) expect(harnessFile(name), name).not.toMatch(/exit 3/i)
     expect(harnessSetupReference).not.toMatch(/exit 3/i)
@@ -361,32 +361,31 @@ describe('Notifai agent skill', () => {
     expect(approval).toMatch(/exact.*remedy/is)
     expect(approval).toMatch(/hooks.*(?:trust|approval)/is)
     expect(approval).toMatch(/wait/i)
-    expect(approval).toMatch(/never\s+bypass Question Routing with `send --reply`/i)
-    expect(loose(harnessSetupReference)).toMatch(/Never bypass that gap with `notifai send --reply`/)
+    expect(approval).toMatch(/do not\s+work around it/i)
+    expect(loose(harnessSetupReference)).toMatch(/the hooks need the User's trust or approval, and wait; do not work around it/)
     // "Send questions to my devices" off keeps every question off the devices,
     // on every route: the skill names the setting and teaches no workaround.
-    expect(loose(disabled)).toMatch(/“Send questions to my devices” \(`ask_notifications`\) is off, the User keeps questions off their devices: ask in the conversation, or in your own question form, which stays in the terminal\. `send --reply` refuses there too\./)
+    expect(loose(disabled)).toMatch(/“Send questions to my devices” \(`ask_notifications`\) is off, the User keeps questions off their devices: ask in the conversation, or in your own question form, which stays in the terminal\. `ask --wait` refuses there too\./)
     expect(disabled).not.toMatch(/deliberately|does not gate/i)
     expect(skill).not.toContain('/hooks')
     expect(harnessReference).toContain('/hooks')
   })
 
-  it('gives an unsupported-harness fallback one full-window foreground owner, never a duplicate', () => {
+  it('gives a session with no answer route the waiting mode, never a duplicate', () => {
     const ask = section('## Ask a question')
     expect(ask).toContain('notifai status <question_id|request_id> --json')
     expect(ask).toMatch(/notifai replies <request_id> --json/)
     expect(ask).toMatch(/instead of asking again/i)
     expect(ask).toMatch(/never register an open question again/i)
 
-    expect(loose(harnessSetupReference)).toMatch(/no answer can come back[\s\S]{0,120}names a blocking `notifai send --reply` question/i)
-    expect(harnessSetupReference).toMatch(/foreground owner.*alive.*complete answer window/is)
-    expect(harnessSetupReference).toMatch(/`--reply-timeout`.*equal.*`--reply-window`/is)
+    expect(harnessSetupReference).toMatch(/no answer can come back[\s\S]{0,120}names\s+`notifai ask --wait`/i)
     expect(harnessReference).toContain('notifai replies <request_id> --json')
     expect(harnessReference).toContain('notifai status <request_id> --json')
-    expect(harnessReference).not.toContain('ask --wait')
+    expect(harnessReference).not.toContain('send --reply')
+    // The READMEs document the one waiting mode, and no second command.
     for (const [name, docs] of [['root README', rootReadme], ['CLI README', cliReadme]] as const) {
-      expect(docs, name).toMatch(/send --reply[\s\S]*complete answer window/is)
-      expect(docs, name).toMatch(/reply-timeout[\s\S]*equal[\s\S]*reply-window/is)
+      expect(docs, name).not.toMatch(/send --reply|--reply-timeout|--reply-window|blocking reply/)
+      expect(docs, name).toMatch(/notifai ask --wait[\s\S]*exits? 0[\s\S]*3[\s\S]*5/)
     }
   })
 
@@ -494,7 +493,9 @@ describe('Notifai agent skill', () => {
     expect(codex).toMatch(/A terminal answer needs nothing from you; handle the plain-question fallback as \[native questions\]\(native-questions\.md\) says/i)
     expect(codex).not.toMatch(/--native-answers|report a terminal answer/i)
     expect(codex).toMatch(/device answer\*\* arrives in the card with its own `notifai acknowledge req_…` command/i)
-    expect(codex).not.toMatch(/hands back|ask --wait/i)
+    expect(codex).not.toMatch(/hands back/i)
+    // The card cannot outlive the turn, so the waiting mode never opens one.
+    expect(codex).toMatch(/`notifai ask --wait`\. It never opens a card, because Codex drops open cards when your turn ends/i)
     // Cards that stay in the terminal on purpose get their own outcome, never
     // an `ask` that refuses (questions off, a disabled Project) or fails
     // (signed out).
@@ -510,7 +511,8 @@ describe('Notifai agent skill', () => {
     expect(claude).toMatch(/ask a question with two to four closed choices through the `AskUserQuestion` picker, not `notifai ask`/i)
     expect(claude).toMatch(/code `use_question_picker`/)
     expect(claude).toMatch(/option previews stay in the terminal/i)
-    expect(claude).not.toMatch(/ask --wait|heading, or else its headers|continued while the User was away/i)
+    expect(claude).toMatch(/`notifai ask --wait` tells you to end your turn: the answer arrives as your next message/i)
+    expect(claude).not.toMatch(/hands back|heading, or else its headers|continued while the User was away/i)
     // The User at the terminal chose to talk: continue there, never re-ask.
     expect(claude).toMatch(/Esc, "Chat about this", or a picker another hook denies\*\* withdraws the device question: continue in the conversation/i)
     // The agent learns only that a question expired, never that it was dismissed.
@@ -659,7 +661,7 @@ describe('Notifai agent skill', () => {
     expect(setup).toMatch(/“Notifai me” or “use notifai” authorizes durable enablement for this Project; do not ask again\. Run the send\./)
     expect(setup).not.toMatch(/turns it back on: run it/i)
     // Off macOS OpenClaw has no answer continuation, so it waits in the command.
-    expect(loose(harnessFile('openclaw'))).toMatch(/Off macOS, `ask` refuses: use a blocking `notifai send --reply` question/)
+    expect(loose(harnessFile('openclaw'))).toMatch(/Off macOS, `ask` refuses: use `notifai ask --wait`, which waits in the command/)
   })
 
   it('moves per-harness mechanics into progressive disclosure', () => {
@@ -667,7 +669,7 @@ describe('Notifai agent skill', () => {
     expect(loose(skill)).toMatch(/read it when you are\s+installing hooks or diagnosing routing/i)
     expect(harnessReference).toMatch(/exact `HERMES_SESSION_ID`/i)
     expect(harnessReference).toMatch(/`notifai hooks install --harness hermes`\s+installs and enables Notifai's native plugin/i)
-    expect(harnessFile('hermes')).toMatch(/On other Hermes surfaces `ask` refuses: use a blocking\s+`notifai send --reply` question/)
+    expect(loose(harnessFile('hermes'))).toMatch(/On other Hermes surfaces `ask` refuses: use `notifai ask --wait`, which waits in the command/)
     expect(harnessFile('hermes')).toMatch(/bounded system prompt section/)
     expect(harnessFile('hermes')).not.toMatch(/two system prompt sections/i)
     expect(harnessReference).toMatch(/built-in Notifai skill installer/i)
