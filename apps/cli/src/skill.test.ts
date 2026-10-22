@@ -280,12 +280,12 @@ describe('Notifai agent skill', () => {
     // "What if we had 24 different plugins, are we gonna list them all?" —
     // guidance states one rule; the mechanism owns environment detection.
     // Harness names may appear only in setup/routing material, where the
-    // harness IS the subject. Until `ask` hands back the picker, the question
-    // procedure keeps its one Claude Code exception.
+    // harness IS the subject. `ask` carries every Claude Code question, so the
+    // question procedure needs no Claude Code exception.
     for (const heading of ['## Decide whether to notify', '## Send', '## Ask a question', '## When the answer arrives']) {
-      expect(section(heading), heading).not.toMatch(/Codex|Cursor|OpenCode|OpenClaw|Hermes|Grok|Orca/)
+      expect(section(heading), heading).not.toMatch(/Claude Code|Codex|Cursor|OpenCode|OpenClaw|Hermes|Grok|Orca/)
     }
-    expect(section('## Ask a question').match(/Claude Code/g)?.length).toBe(1)
+    expect(skill).not.toMatch(/#question-picker/)
   })
 
   it('asks the way the agent would without Notifai: keep working, or wait', () => {
@@ -332,10 +332,12 @@ describe('Notifai agent skill', () => {
     // skill never restates that, and the CLI never copies the question into it.
     expect(ask).toMatch(/write `--title` as the `titles` guidance says for a question/i)
     expect(ask).not.toMatch(/names the decision/i)
-    // A form carries its own title, and each question of several its own, shown as its tab.
+    // A form carries its own title, and each question of several its own.
+    // `ask` hands back no form yet, so no terminal tab shows it.
     expect(sendDetailsReference).toMatch(/"title": "Release plan"/)
     expect(sendDetailsReference).toMatch(/"title": "Ship day", "text": "Ship on Friday\?"/)
-    expect(sendDetailsReference.replace(/\s+/g, ' ')).toMatch(/with several questions, each takes a `"title"` of a word or two naming its own decision; a terminal form shows it as that question's tab/i)
+    expect(sendDetailsReference.replace(/\s+/g, ' ')).toMatch(/with several questions, each takes a `"title"` of a word or two naming its own decision\./i)
+    expect(sendDetailsReference).not.toMatch(/\btab\b/i)
   })
 
   it('says a self-opened form reaches devices only where linked', () => {
@@ -348,7 +350,8 @@ describe('Notifai agent skill', () => {
     expect(ask).toMatch(/a question form you open yourself carries only its own fields, and reaches the\s+User's devices only where Notifai links it/i)
     expect(ask).toMatch(/when its tool context says Notifai\s+registered it, never also `ask` it/i)
     expect(ask).toMatch(/keep this Agent Session open: closing, clearing or\s+switching it ends the question/i)
-    expect(ask).toMatch(/after `notifai ask`, ask in the\s+conversation, say what each answer will make you do, and continue independent\s+work/i)
+    expect(loose(ask)).toMatch(/In the same turn, ask the question in the conversation and say what each answer will make you do, before you start a wait\. After plain `ask`, continue independent work/)
+    expect(loose(ask)).toMatch(/When `ask --wait` says to end your turn, end it\./)
     expect(ask).toMatch(/never restate the choices in the Body/i)
   })
 
@@ -356,17 +359,17 @@ describe('Notifai agent skill', () => {
     const ask = section('## Ask a question')
     const paragraphs = ask.split(/\n\n+/)
     const approval = paragraphs.find((paragraph) => /trust or permission/i.test(paragraph)) ?? ''
-    const disabled = paragraphs.find((paragraph) => /ask_notifications.*off/i.test(paragraph)) ?? ''
 
     expect(approval).toMatch(/exact.*remedy/is)
     expect(approval).toMatch(/hooks.*(?:trust|approval)/is)
     expect(approval).toMatch(/wait/i)
     expect(approval).toMatch(/do not\s+work around it/i)
-    expect(loose(harnessSetupReference)).toMatch(/the hooks need the User's trust or approval, and wait; do not work around it/)
+    // The skill is the one home of the trust-gap rule.
+    expect(loose(harnessSetupReference)).not.toMatch(/work around it/)
     // "Send questions to my devices" off keeps every question off the devices,
-    // on every route: the skill names the setting and teaches no workaround.
-    expect(loose(disabled)).toMatch(/“Send questions to my devices” \(`ask_notifications`\) is off, the User keeps questions off their devices: ask in the conversation, or in your own question form, which stays in the terminal\. `ask --wait` refuses there too\./)
-    expect(disabled).not.toMatch(/deliberately|does not gate/i)
+    // on every route. The refusal's remedy says what to do at that moment and
+    // harness setup keeps the settings line, so the skill does not repeat it.
+    expect(ask).not.toMatch(/ask_notifications/)
     expect(skill).not.toContain('/hooks')
     expect(harnessReference).toContain('/hooks')
   })
@@ -385,6 +388,8 @@ describe('Notifai agent skill', () => {
     // The READMEs document the one waiting mode, and no second command.
     for (const [name, docs] of [['root README', rootReadme], ['CLI README', cliReadme]] as const) {
       expect(docs, name).not.toMatch(/send --reply|--reply-timeout|--reply-window|blocking reply/)
+      // Notifai records a native-form answer itself; no report command is taught.
+      expect(docs, name).not.toMatch(/acknowledge q_|--native-answers/)
       expect(docs, name).toMatch(/notifai ask --wait[\s\S]*exits? 0[\s\S]*3[\s\S]*5/)
     }
   })
@@ -490,7 +495,11 @@ describe('Notifai agent skill', () => {
     expect(nativeQuestionsReference).not.toMatch(/--native-answers|--operation-id|notifai acknowledge q_|operation ID|app answer watcher/)
     const codex = harnessFile('codex').replace(/\s+/g, ' ')
     expect(codex).toMatch(/terminal answer\*\* needs nothing from you\. Notifai records it, so the devices stop asking/i)
-    expect(codex).toMatch(/A terminal answer needs nothing from you; handle the plain-question fallback as \[native questions\]\(native-questions\.md\) says/i)
+    // The card outcomes below are the one home of the terminal answer and the
+    // plain-question fallback, and the duplicate guard makes a second `ask`
+    // of the card's question register nothing.
+    expect(codex.match(/terminal answer needs nothing from you|terminal answer\*\* needs nothing from you/gi)?.length).toBe(1)
+    expect(codex).not.toMatch(/would duplicate them/i)
     expect(codex).not.toMatch(/--native-answers|report a terminal answer/i)
     expect(codex).toMatch(/device answer\*\* arrives in the card with its own `notifai acknowledge req_…` command/i)
     expect(codex).not.toMatch(/hands back/i)
@@ -507,12 +516,17 @@ describe('Notifai agent skill', () => {
     expect(opencode).not.toMatch(/worker session's form/i)
     const claude = harnessFile('claude-code').replace(/\s+/g, ' ')
     expect(claude).toMatch(/terminal answer\*\* needs nothing from you/i)
-    // On Claude Code the picker is still the route for a closed question.
-    expect(claude).toMatch(/ask a question with two to four closed choices through the `AskUserQuestion` picker, not `notifai ask`/i)
-    expect(claude).toMatch(/code `use_question_picker`/)
+    // `ask` carries every Claude Code question and opens no picker; a picker
+    // the agent opens itself still links, titled by its heading or headers.
+    expect(claude).toMatch(/Ask every question with `notifai ask` or `notifai ask --wait`, closed choices included; neither opens a picker/)
+    expect(claude).not.toMatch(/use_question_picker|through the `AskUserQuestion` picker, not `notifai ask`|#question-picker/)
+    expect(claude).toMatch(/picker you open on your own also reaches the User's devices, after the terminal-first delay/i)
+    expect(claude).toMatch(/never also `ask` it/)
+    expect(claude).toMatch(/Its heading, or else its headers, becomes the title/)
     expect(claude).toMatch(/option previews stay in the terminal/i)
-    expect(claude).toMatch(/`notifai ask --wait` tells you to end your turn: the answer arrives as your next message/i)
-    expect(claude).not.toMatch(/hands back|heading, or else its headers|continued while the User was away/i)
+    expect(claude).toMatch(/A picker Claude Code continued while the User was away\*\* is not an answer: the question stays open on their devices/)
+    // `ask --wait` hands back no picker yet; the skill says it ends the turn.
+    expect(claude).not.toMatch(/hands back/i)
     // The User at the terminal chose to talk: continue there, never re-ask.
     expect(claude).toMatch(/Esc, "Chat about this", or a picker another hook denies\*\* withdraws the device question: continue in the conversation/i)
     // The agent learns only that a question expired, never that it was dismissed.
@@ -643,7 +657,7 @@ describe('Notifai agent skill', () => {
       expect(harnessFile(name).replace(/\s+/g, ' ')).not.toMatch(/Project (is|that is) not enabled|in an enabled Project; never|needs an enabled Project/i)
     }
     // A disabled Project keeps every self-opened form in the terminal.
-    expect(loose(harnessFile('claude-code'))).toMatch(/A picker stays in the terminal when question notifications are off, the machine is not signed in, the User disabled this project, or it runs on Windows/)
+    expect(loose(harnessFile('claude-code'))).toMatch(/A picker stays in the terminal when question notifications are off, the machine is not signed in, the User disabled this project, Notifai cannot carry its shape, or it runs on Windows/)
     expect(loose(harnessFile('opencode'))).toMatch(/reaches the User's devices by itself; never also register it/)
     expect(loose(harnessFile('opencode'))).toMatch(/A form on a signed-out machine, with question notifications off, in a project the User disabled, or in a shape the devices cannot show stays in OpenCode only/)
     expect(loose(harnessFile('openclaw'))).toMatch(/This needs a local Gateway/)

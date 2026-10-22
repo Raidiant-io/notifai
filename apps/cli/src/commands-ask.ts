@@ -168,7 +168,7 @@ const TITLE_GUIDANCE = 'it names the decision in a few words and is never the qu
 export const MISSING_TITLE_NOTE =
   `notifai: pass --title (a form: its "title"); ${TITLE_GUIDANCE}. Until then the question is titled by the Agent Session name.`
 const missingQuestionTitlesNote = (numbers: number[]): string =>
-  `notifai: give each question of a form its own "title", a word or two naming its decision; ${numbers.map(n => `question ${n}`).join(', ')} ${numbers.length === 1 ? 'shows' : 'show'} as "Question N" until then.`
+  `notifai: give each question of a form its own "title", a word or two naming its decision; ${numbers.map(n => `question ${n}`).join(', ')} ${numbers.length === 1 ? 'has' : 'have'} none.`
 
 export interface BuiltQuestions {
   questions: QuestionT[]

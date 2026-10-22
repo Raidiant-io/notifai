@@ -108,12 +108,11 @@ describe('shipped guidance content', () => {
     expect(content).toMatch(/even while other work continues/i)
     expect(content).toMatch(/User was recently active/i)
     expect(content).toMatch(/question itself is the Notification Request/i)
-    // Until `ask` hands back the picker and the card, the questions topic
-    // keeps the one harness exception it had: those forms are the question.
+    // `ask` carries every question on Claude Code, so session start steers no
+    // agent toward the picker; harness forms live in the harness references.
     const questions = shippedGuidanceTopic('questions')!.content.replace(/\s+/g, ' ')
-    expect(questions).toMatch(/In Claude Code the question picker is the Notification Request/)
-    expect(questions).toMatch(/never also `ask`; follow tool context/)
-    expect(questions).not.toMatch(/Cursor|OpenCode|OpenClaw|Hermes|Grok/)
+    expect(questions).not.toMatch(/Claude Code|Codex|Cursor|OpenCode|OpenClaw|Hermes|Grok/)
+    expect(questions).not.toMatch(/picker|request_user_input/)
   })
 
   it('teaches outcome-altitude titles that stand alone, without kind or project', () => {

@@ -32,8 +32,8 @@ reply. The file is JSON:
 ```
 
 With several questions, each takes a `"title"` of a word or two naming its
-own decision; a terminal form shows it as that question's tab. A choice is a
-label or `{"label", "description"?, "recommended"?}`, a description being one
+own decision. A choice is a label or
+`{"label", "description"?, "recommended"?}`, a description being one
 line of at most 160 characters; add `"multi": true` to a
 question whose choices may combine. Mark at most one choice per question as
 recommended.

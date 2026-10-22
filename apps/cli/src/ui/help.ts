@@ -114,8 +114,8 @@ export function rootHelpFooter(): string {
     )}`,
     '',
     style.heading('First call, for an agent'),
-    `  ${style.code('notifai send --kind done --title "All 42 tests passed" --body "Finished in 3m 10s. Next: review the release candidate."')}`,
-    `  ${style.code('notifai ask "Deploy migration 0007 to production?" --title "Production deploy" --choice Deploy --choice Hold')}`,
+    `  ${style.code('notifai send --kind done --title "Users can now create accounts" --summary "Sign-up, verification and login now work on staging."')}`,
+    `  ${style.code('notifai ask "Deploy the schema change to production now?" --title "Production deploy" --choice "Deploy now" --choice "Wait for off-peak"')}`,
     `  ${style.dim(`${glyph.arrow} ${style.code('ask')} keeps working while they answer; ${style.code('ask --wait')} waits. ${style.code('notifai doctor --json')} says whether question routing is ready.`)}`,
     '',
     style.dim(

@@ -50,24 +50,18 @@ User to resume it.
 `notifai config set reopen.terminal off` (or `reopen.automatic off` for every
 place) makes it wait for the User; change these only when the User asks.
 
-## Question picker
+## Questions
 
-In Claude Code, ask a question with two to four closed choices through the
-`AskUserQuestion` picker, not `notifai ask`. The picker is the Notifai
-question: Notifai turns it into a question on the User's devices by itself.
-Do not register it, or a free-text version of it, with `ask` as well; the User
-would be asked twice. `ask` refuses a question the picker can show, with exit 2,
-code `use_question_picker` and the picker input to use. Keep `notifai ask` for
-free-text questions and questions with more than four choices.
-`notifai ask --wait` tells you to end your turn: the answer arrives as your
-next message.
+Ask every question with `notifai ask` or `notifai ask --wait`, closed choices
+included; neither opens a picker.
 
-The picker's wording is yours. Put context in option descriptions or in your
-message, and mark the option you recommend with Claude Code's own
-"(Recommended)" label suffix. Devices show the question, shortened when it is
-over 240 characters, each label with its description under it, and the
-recommended option marked. Wording too long for a device stays whole in the
-notification body. Option previews stay in the terminal.
+An `AskUserQuestion` picker you open on your own also reaches the User's
+devices, after the terminal-first delay, with its questions, option labels and
+descriptions; never also `ask` it. Its heading, or else its headers, becomes
+the title, so make them name the decision as the `titles` guidance says. Mark
+the option you recommend with Claude Code's own "(Recommended)" label suffix;
+devices show it as the recommended choice. Option previews stay in the
+terminal.
 
 The picker takes whichever answer comes first and closes:
 
@@ -82,12 +76,15 @@ The picker takes whichever answer comes first and closes:
   with Notifai context that says so: carry on without it.
 - **A terminal answer** needs nothing from you. Notifai records it, so the
   devices stop asking.
+- **A picker Claude Code continued while the User was away** is not an
+  answer: the question stays open on their devices, and their answer arrives
+  as your next message.
 - **Esc, "Chat about this", or a picker another hook denies** withdraws the
   device question: continue in the conversation.
 
 A picker stays in the terminal when question notifications are off, the
-machine is not signed in, the User disabled this project, or it runs on
-Windows; it still works there. Pickers reach devices on macOS and Linux.
+machine is not signed in, the User disabled this project, Notifai cannot carry
+its shape, or it runs on Windows; it still works there.
 `notifai logs --event hook.gate` shows why a picker stayed in the terminal
 (`picker-terminal-only` and its `reason`) and how it closed.
 

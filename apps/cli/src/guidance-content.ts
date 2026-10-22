@@ -122,10 +122,6 @@ its label alone cannot, and mark the one you recommend when you have a
 recommendation. For a sign-in or a physical action, ask whether it is done;
 the reply is what resumes the work.
 
-In Claude Code the question picker is the Notification Request; in Codex use
-\`request_user_input_async\` if you have it. Their hooks register it: never
-also \`ask\`; follow tool context.
-
 Good:
 
 - \`Is the test device unlocked and ready for the install?\` with
