@@ -14,6 +14,7 @@ import { inspectQuestionState, rememberQuestionState } from './hook-question-sta
 import { currentProcessIdentity } from './process-identity.js'
 import { recordTurnStart } from './session-attendant-state.js'
 import { nativeQuestionTitle } from './codex-question-bindings.js'
+import { readNativeQuestionSnapshot } from './codex-native-turn.js'
 import { CLAUDE_PICKER_TURN } from './claude-question-bindings.js'
 import { questionsAwaitingAnswer, recordConfirmedNativeAnswerTarget } from './native-answer-operation.js'
 import { repliesCommand } from './commands-send.js'
@@ -21,6 +22,20 @@ import * as retirement from './hook-question-retirement.js'
 
 const roots: string[] = []
 afterEach(() => { vi.restoreAllMocks(); for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }) })
+// New registrations use exact cards; an installed older skill may still own
+// this persisted marker shape. Exercise its compatibility path explicitly.
+function rememberLegacyBinding(sessionId: string, env: NodeJS.ProcessEnv, questionId: string, ownerKey: string, file: string) {
+  const snapshot = readNativeQuestionSnapshot(file, sessionId, env)!
+  updateSessionState(sessionId, env, state => {
+    const pending = state.pending!.find(question => question.question_id === questionId)!
+    return { ...state, codex_question_bindings: [...(state.codex_question_bindings ?? []), {
+      question_id: questionId, owner_key: ownerKey, registration_turn_id: snapshot.latest.id,
+      transcript: { file: snapshot.file, identity: snapshot.identity, registered_offset: snapshot.size },
+      service_identity: pending.service_identity!,
+      questions: pending.questions!.map(question => ({ question, marker: '001' })),
+    }] }
+  })
+}
 function fixture(confirmed = true) {
   const root = mkdtempSync(path.join(os.tmpdir(), 'notifai-native-command-')); roots.push(root)
   const sessionId = '019ff69d-a07f-7161-ab6e-bd06b3b93c8e'
@@ -40,6 +55,7 @@ function fixture(confirmed = true) {
   const { question_id: questionId } = registerQuestion(sessionId, env, { question: 'Where?', summary: 'Where?', service_identity: service,
     questions: [{ id: 'q1', text: 'Where?', choices: [{ id: 'staging', label: 'Staging' }, { id: 'production', label: 'Production' }] }],
   }, Date.now(), { owner_key: owner.key, turn_id: 'turn-1', service })
+  rememberLegacyBinding(sessionId, env, questionId, owner.key, file)
   const confirm = () => recordConfirmedNativeAnswerTarget(sessionId, env, { question_id: questionId, request_id: 'req_original', question: 'Where?', summary: 'Where?', service_identity: service })
   if (confirmed) confirm()
   const binding = readSessionState(sessionId, env).codex_question_bindings![0]!
@@ -71,7 +87,7 @@ function fixture(confirmed = true) {
   return { env, owner, sessionId, questionId, file, binding, service, append, emit, confirm, outputs, errors, client, deps, flags, spawn, reply }
 }
 
-it('registers native eligibility atomically and the advertised CLI form records then acknowledges', async () => {
+it('records and acknowledges an accepted answer from an installed legacy marker registration', async () => {
   const h = fixture(); h.emit()
   const before = readSessionState(h.sessionId, h.env)
   expect(before.pending?.[0]?.question_id).toBe(h.binding.question_id)
@@ -176,6 +192,7 @@ it('revokes a native registration added between close-pending discovery and actu
   vi.spyOn(retirement, 'retireQueuedQuestions').mockImplementationOnce((...args) => {
     added = registerQuestion(h.sessionId, h.env, { question: 'Later?', summary: 'Later?', service_identity: h.service,
       questions: [{ id: 'q1', text: 'Later?' }] }, Date.now(), { owner_key: h.owner.key, turn_id: 'turn-1', service: h.service }).question_id
+    rememberLegacyBinding(h.sessionId, h.env, added, h.owner.key, h.file)
     return retire(...args)
   })
   expect(await closeCommand(h.deps, undefined, { pending: true, json: true })).toBe(EXIT.ok)

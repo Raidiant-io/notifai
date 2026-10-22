@@ -1334,17 +1334,6 @@ describe('the OpenCode adapter', () => {
     expect(source).not.toContain('synthetic: true')
   })
 
-  it('injects exact identity and the first-party OpenCode title into agent shells', () => {
-    expect(source).toContain('"shell.env"')
-    expect(source).toContain('NOTIFAI_ACTIVE_HARNESS')
-    expect(source).toContain('NOTIFAI_ACTIVE_SESSION_ID')
-    expect(source).toContain('NOTIFAI_ACTIVE_SESSION_LABEL')
-    expect(source).toContain('NOTIFAI_ACTIVE_SESSION_LABEL_PENDING')
-    expect(source).toContain('input?.sessionID')
-    expect(source).toContain('client.session.get({ path: { id: sessionID } })')
-    expect(source).toContain('response?.data?.title')
-  })
-
   it('executes the generated adapter and publishes the SDK session title', async () => {
     let requested = ''
     const generated = (await import(
@@ -1383,6 +1372,7 @@ describe('the OpenCode adapter', () => {
       NOTIFAI_ACTIVE_HARNESS: 'opencode',
       NOTIFAI_ACTIVE_SESSION_ID: 'opencode-session',
       NOTIFAI_ACTIVE_SESSION_LABEL: 'Semantic session names',
+      NOTIFAI_ACTIVE_SESSION_WORKER: '0',
     })
   })
 
@@ -1417,11 +1407,13 @@ describe('the OpenCode adapter', () => {
     const output = { env: {} as Record<string, string> }
     await plugin['shell.env']?.({ sessionID: 'opencode-session' }, output)
 
-    expect(output.env).toEqual({
+    expect(output.env).toMatchObject({
       NOTIFAI_ACTIVE_HARNESS: 'opencode',
       NOTIFAI_ACTIVE_SESSION_ID: 'opencode-session',
       NOTIFAI_ACTIVE_SESSION_LABEL_PENDING: '1',
+      NOTIFAI_ACTIVE_SESSION_WORKER: '0',
     })
+    expect(output.env).not.toHaveProperty('NOTIFAI_ACTIVE_SESSION_LABEL')
   })
 
   it('carries the ownership marker so a second checkout replaces it', () => {
