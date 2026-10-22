@@ -9,16 +9,15 @@ Run `notifai init --json` yourself. An unapproved Machine starts one approval,
 defaults to QR without asking for email, polls once, and returns. Progress is
 on stderr and final readiness on stdout. The `credential` state's
 `technical.pairing` holds protected local `qr_path` and `qr_text_path` artifacts,
-the `approve_url`, and matching `code`. Present the QR before requesting a scan:
-show the local image where supported, or read `qr_text_path` and reproduce the
-library-generated QR verbatim in a fenced text block in a terminal/text-only harness.
-Display the matching code beside it. Never include the QR
-or proof-bearing link in any Notification Request field or media. Use T2 from
-<https://app.notifai.sh/setup.md>: the User reviews their Account, computer, and
-matching code in their signed-in Companion App before approving. A valid Auth
-Session needs no additional email code merely to approve a Machine. Only the User can approve; opening review never approves automatically.
-If the harness cannot display the local QR, present the browser alternative
-truthfully rather than claiming a QR was shown.
+the `approve_url`, the matching `code` and the prepared `message`. Present the
+QR first: show the local image where supported, or read `qr_text_path` and
+reproduce the library-generated QR verbatim in a fenced text block in a
+terminal/text-only harness. Then send `message` in the conversation as written,
+and end your turn. Never include the QR, the message or the proof-bearing link
+in any Notification Request field or media. Only the User can approve; opening
+review never approves automatically. If the harness cannot display the local
+QR, send the `approve_url` as the way to approve rather than claiming a QR was
+shown.
 
 Only when the User chooses an approval notification, ask for their Account
 email; never infer it from other services or files. Run `notifai init --approval notification --approval-email <email>

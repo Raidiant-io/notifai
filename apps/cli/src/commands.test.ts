@@ -7200,6 +7200,10 @@ describe('init', () => {
       remedy: { by: 'user-here', command: 'notifai init' },
     })
     expect(waiting.remedy.summary).toContain('123456')
+    // The prepared message is the CLI's own: no template is fetched from the website.
+    expect(waiting.technical.pairing.message).toContain('compare code **123456**')
+    expect(waiting.technical.pairing.message).toContain('Scan the QR shown here')
+    expect(waiting.technical.pairing.message).toContain(`Browser alternative: ${waiting.technical.pairing.approve_url}.`)
     expect(io.errLines.join('\n')).toContain('Starting computer approval.')
 
     // The User approved; the next run resumes the same pairing and moves on
