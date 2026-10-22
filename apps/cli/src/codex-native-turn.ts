@@ -18,6 +18,15 @@ export interface NativeTurnSnapshot {
   questions?: NativeQuestionEmission[]
 }
 
+export interface NativeInputSnapshot {
+  file: string
+  identity: string
+  size: number
+  /** First complete record read: confirmation must cover the hook's entire suffix. */
+  tailStart: number
+  userMessages: Array<{ offset: number; turn_id: string | null; hash: string }>
+}
+
 export interface NativeQuestionEmission {
   /** Byte position of the actual tool call, used to reject pre-registration calls. */
   offset: number
@@ -158,6 +167,13 @@ export function readNativeQuestionSnapshot(file: unknown, sessionId: string, env
   return observed !== null && 'latest' in observed ? observed : null
 }
 
+/** Card input confirmation does not need a tool call or turn start still in
+ * the tail. Its hook already owns those identities; it needs committed input. */
+export function readNativeInputSnapshot(file: unknown, sessionId: string, env: NodeJS.ProcessEnv): NativeInputSnapshot | null {
+  const observed = readNativeTranscript(file, sessionId, env, false, false, undefined, true)
+  return observed !== null && 'userMessages' in observed ? observed : null
+}
+
 /** Ownership can be proved even when a long turn exceeds the activity bound. */
 export function nativeTranscriptOwned(file: unknown, sessionId: string, env: NodeJS.ProcessEnv): boolean {
   return readNativeTranscript(file, sessionId, env, true) !== null
@@ -201,8 +217,8 @@ export function readNativeTurnModel(file: unknown, sessionId: string, env: NodeJ
 
 function readNativeTranscript(
   file: unknown, sessionId: string, env: NodeJS.ProcessEnv, identityOnly: boolean, includeQuestions = false,
-  checkpointFile?: string,
-): NativeTurnSnapshot | Pick<NativeTurnSnapshot, 'file' | 'identity'> | null {
+  checkpointFile?: string, inputOnly = false,
+): NativeInputSnapshot | NativeTurnSnapshot | Pick<NativeTurnSnapshot, 'file' | 'identity'> | null {
   if (typeof file !== 'string' || !path.isAbsolute(file)) return null
   let fd: number | undefined
   try {
@@ -314,6 +330,8 @@ function readNativeTranscript(
     let latest: NativeTurnSnapshot['latest'] | undefined
     const positions = new Map<string, number>()
     const questions: NativeQuestionEmission[] = []
+    const userMessages: NativeInputSnapshot['userMessages'] = []
+    const tailStart = at + offset
     const questionCalls = new Set<string>()
     const outputs = new Map<string, boolean>()
     while (offset < limit) {
@@ -322,8 +340,11 @@ function readNativeTranscript(
       const line = bytes.subarray(offset, end).toString('utf8')
       // Conversation records are skipped without parsing or retaining their payload.
       if (line.includes('"event_msg"')) {
-        const record = JSON.parse(line) as { type?: string; payload?: { type?: string; turn_id?: string } }
+        const record = JSON.parse(line) as { type?: string; payload?: { type?: string; turn_id?: string; message?: unknown } }
         const event = record.type === 'event_msg' ? record.payload : undefined
+        if (inputOnly && event?.type === 'user_message' && typeof event.message === 'string') {
+          userMessages.push({ offset: at + offset, turn_id: latest?.id ?? null, hash: digest(Buffer.from(event.message)) })
+        }
         if (event?.type === 'task_started' && typeof event.turn_id === 'string') {
           latest = { id: event.turn_id, offset: at + offset, ended: false }
           positions.set(event.turn_id, at + offset)
@@ -333,10 +354,15 @@ function readNativeTranscript(
           latest.outcome = event.type === 'turn_aborted' ? 'aborted' : 'completed'
         }
       }
-      if (includeQuestions && line.includes('"response_item"')) {
-        const record = JSON.parse(line) as { type?: string; payload?: { type?: string; name?: string; call_id?: string; arguments?: string; output?: string } }
+      if ((includeQuestions || inputOnly) && line.includes('"response_item"')) {
+        const record = JSON.parse(line) as { type?: string; payload?: { type?: string; name?: string; call_id?: string; arguments?: string; output?: string; role?: string; content?: Array<{ type?: string; text?: string }> } }
         const item = record.type === 'response_item' ? record.payload : undefined
-        if (latest !== undefined && item?.type === 'function_call' && item.name === 'request_user_input_async') {
+        if (inputOnly && item?.type === 'message' && item.role === 'user' && Array.isArray(item.content) &&
+            item.content.length > 0 && item.content.every(part => part.type === 'input_text' && typeof part.text === 'string')) {
+          userMessages.push({ offset: at + offset, turn_id: latest?.id ?? null,
+            hash: digest(Buffer.from(item.content.map(part => part.text).join(''))) })
+        }
+        if (includeQuestions && latest !== undefined && item?.type === 'function_call' && item.name === 'request_user_input_async') {
           if (latest.ended || typeof item.call_id !== 'string' || item.call_id.trim() === '' ||
               questionCalls.has(item.call_id) || typeof item.arguments !== 'string') return null
           questionCalls.add(item.call_id)
@@ -348,7 +374,7 @@ function readNativeTranscript(
             questions.push({ offset: at + offset, turn_id: latest.id, call_id: item.call_id, index, title: question.title,
               ...(question.options === undefined ? {} : { options: question.options as string[] }), accepted: false })
           }
-        } else if (item?.type === 'function_call_output' && typeof item.call_id === 'string' &&
+        } else if (includeQuestions && item?.type === 'function_call_output' && typeof item.call_id === 'string' &&
             questions.some(question => question.call_id === item.call_id)) {
           // Missing, conflicting or repeated receipts cannot prove one emission.
           if (outputs.has(item.call_id) || typeof item.output !== 'string') return null
@@ -362,7 +388,9 @@ function readNativeTranscript(
     const current = lstatSync(canonical)
     if (after.size !== stat.size || after.mtimeMs !== stat.mtimeMs || current.isSymbolicLink() ||
         current.dev !== stat.dev || current.ino !== stat.ino) return null
-    if (latest === undefined || at + offset !== stat.size) return null
+    if (at + offset !== stat.size) return null
+    if (inputOnly) return { file: canonical, identity, size: stat.size, tailStart, userMessages }
+    if (latest === undefined) return null
     return { file: canonical, identity: `${stat.dev}:${stat.ino}`, size: stat.size, latest, positions,
       ...(includeQuestions ? { questions: questions.map(question => ({ ...question, accepted: outputs.get(question.call_id) === true })) } : {}) }
   } catch {

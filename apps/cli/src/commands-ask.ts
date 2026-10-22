@@ -527,8 +527,7 @@ function persistRegisteredQuestion(
     : 'Background startup failed. Keep this registration; ordinary lifecycle hooks can recover it. Inspect status before relying on submission.'
   const native = readSessionState(sessionId, deps.env).codex_question_bindings?.find(binding =>
     binding.question_id === questionId && binding.owner_key === readSessionIncarnation(sessionId, deps.env)?.key)
-  const nativeCommand = `notifai acknowledge ${questionId} --operation-id native-1 --native-answers '<actual answers JSON>' --text '<concrete work this answer sets in motion>' --json`
-  const nativeInstruction = `If you use request_user_input_async, copy the native titles and options exactly in this turn. For an answer you actually read from that native form, your first dependent command must be: ${nativeCommand}. Use the registered question/choice IDs. Use a distinct operation ID for each distinct submission; retry the same ID and immutable body after failure, omitting answers/text only after the command confirms the operation was saved. Do not report an app answer again as a native answer. Keep the app watcher; do not close the question after native acknowledgement. If you did not emit the exact marked native form, ordinary conversation answers still retire with notifai close ${questionId}. Native linking is optional and capability-dependent; never promise form closure.`
+  const nativeInstruction = `Only if your tools include request_user_input_async: open it with these titles and options exactly, in this turn. Notifai records a terminal answer itself; an answer from the User's devices arrives in the card with its own acknowledgement command. If they answer in the conversation instead, run notifai close ${questionId}.`
   // The block below is the densest guidance this CLI prints, and until now it
   // was prose only: an agent could not read back the choice ids it must branch
   // on without asking the server for them. The JSON form carries the same

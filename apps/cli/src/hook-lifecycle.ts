@@ -1,3 +1,4 @@
+import { reportCodexTerminalAnswers } from './codex-terminal-answers.js'
 /** Hook-event domain handlers and the question escalation lifecycle. */
 import type {
   CloseDisposition,
@@ -330,6 +331,7 @@ async function waitForAnyReply(
   liveRequests: () => ReadonlySet<string> = () => new Set(requestIds),
   /** When each question's window was due to close (epoch ms), to see one closed early. */
   dueAt: ReadonlyMap<string, number> = new Map(),
+  beforePollWork?: () => Promise<void>,
 ): Promise<{
   byRequest: Map<string, ReplyView[]>
   degraded: boolean
@@ -350,6 +352,7 @@ async function waitForAnyReply(
   }
 
   for (;;) {
+    await beforePollWork?.()
     const beforePoll = interruption?.() ?? null
     if (beforePoll !== null) {
       return { byRequest: new Map(), degraded, permanentFailures, interrupted: beforePoll, closed }
@@ -2439,6 +2442,7 @@ async function escalate(
         return requestId === undefined ? [] : [requestId]
       })),
       dueAt,
+      ctx.harness === 'codex' ? () => reportCodexTerminalAnswers(ctx, sessionId) : undefined,
     )
     if (waited.interrupted === 'new-question') {
       // Native observers can renew their process ceiling for a later question.
@@ -2737,6 +2741,8 @@ const CLOSED_SESSION_DROPS = [
   'message_acknowledgement_due',
   'acknowledgement_blocks',
   'input_wake',
+  'codex_terminal_observations',
+  'codex_terminal_conflicts',
   'pending',
   'retiring',
 ] as const satisfies ReadonlyArray<keyof SessionState>

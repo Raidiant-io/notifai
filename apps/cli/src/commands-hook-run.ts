@@ -1,3 +1,5 @@
+import { stopAnswerOutput } from './hook-acknowledgements.js'
+import { observeCodexTerminalAnswers, reportCodexTerminalAnswers, takeCodexTerminalConflictContext } from './codex-terminal-answers.js'
 import { observeLoadedIntegration } from './integration-revision.js'
 /** Fail-open CLI adapter from harness input to hook lifecycle handlers. */
 import { pendingAgentUpdateNotice } from './agent-update-notice.js'
@@ -609,11 +611,12 @@ export async function hookRunCommand(
     start({ cwd })
     try {
       const cardContext = harness === 'codex' ? await codexCardPostToolUse(deps, envelope, logger) : null
-      // A device answer reaches the session in every Project; the fault notice
-      // is guidance, so only a Project with guidance on carries it.
+      // A device answer and a terminal-answer conflict reach the session in
+      // every Project; the fault notice is guidance, so only a Project with
+      // guidance on carries it.
       if (harness === 'codex') {
         const faultNotice = lifecycleEnabled() ? cachedIntegrationFaultNotice({ ...deps, cwd }, harness) : undefined
-        const notice = [cardContext, faultNotice].filter(Boolean).join('\n\n') || undefined
+        const notice = [cardContext, takeCodexTerminalConflictContext(deps, envelope), faultNotice].filter(Boolean).join('\n\n') || undefined
         let wrote = false
         const io = { ...deps.io, out: (line: string) => {
           wrote = true
@@ -1035,6 +1038,7 @@ export async function hookRunCommand(
       // like Stop, submit it whatever the Project's decision is now.
       if (sessionId === undefined || harness === undefined ||
           readSessionState(sessionId, deps.env).harness !== harness) return EXIT.ok
+      if (harness === 'codex') await reportCodexTerminalAnswers(ctx, sessionId, true)
       await submitSessionQuestions(ctx, envelope, processDeadlineAt, notes)
       // The same owner settles what a closed Claude Code picker left behind:
       // a withdrawn device question to retire, a terminal answer to report.
@@ -1042,6 +1046,7 @@ export async function hookRunCommand(
         await reportClaudeTerminalAnswers(ctx, sessionId)
         await drainRetirements(ctx, sessionId, deps.env)
       }
+      if (harness === 'codex') await reportCodexTerminalAnswers(ctx, sessionId)
       // Native queues can observe answers while the asking turn keeps working.
       // Held Stop and plugin routes retain their own genuine output owner.
       const nativeObserver = harness === 'codex' || harness === 'claude-code'
@@ -1067,12 +1072,17 @@ export async function hookRunCommand(
       // another process hosts is not where the User is: nothing held for it is handed in here.
       const elsewhere = envelope.session_id !== undefined && scriptedRunElsewhere(deps, harness, envelope.session_id)
       runElsewhere = elsewhere
+      if (harness === 'codex' && !elsewhere) observeCodexTerminalAnswers(deps, envelope, logger)
       // Claude wakes carry a token; Codex prompts with one keep their own path.
       outcome = elsewhere ? { notes: [], log: { stage: 'scripted-run-receives-nothing' } }
         : envelope.session_id !== undefined && (envelope.prompt === sessionInputWake() ||
           (harness === 'claude-code' && inputWakeToken(envelope.prompt) !== null))
           ? { notes: [], log: { stage: 'input-wake-observed' } }
           : await handleUserPromptSubmit(ctx, envelope)
+      if (harness === 'codex' && !elsewhere) {
+        const conflict = takeCodexTerminalConflictContext(deps, envelope)
+        if (conflict !== null) outcome.stdout = appendIntegrationContext(outcome.stdout, conflict, harness, 'UserPromptSubmit')
+      }
       handedStdout = outcome.stdout
       if (notice !== undefined) outcome.stdout = appendIntegrationContext(outcome.stdout, notice, harness, 'UserPromptSubmit')
       // A device answer returned through a picker that Claude Code never took
@@ -1090,7 +1100,10 @@ export async function hookRunCommand(
       }
       // A scripted run's turn end collects no answer meant for the place the conversation is in.
       const scriptedElsewhere = event === 'stop' && envelope.session_id !== undefined && scriptedRunElsewhere(deps, harness, envelope.session_id)
-      outcome = scriptedElsewhere ? { notes: [], log: { stage: 'scripted-run-receives-nothing' } } : await handleStop(
+      const terminalConflict = event === 'stop' && harness === 'codex' && !scriptedElsewhere
+        ? takeCodexTerminalConflictContext(deps, envelope) : null
+      outcome = terminalConflict !== null ? { notes: [], stdout: stopAnswerOutput(terminalConflict), decided: true }
+        : scriptedElsewhere ? { notes: [], log: { stage: 'scripted-run-receives-nothing' } } : await handleStop(
         ctx,
         envelope,
         processDeadlineAt,

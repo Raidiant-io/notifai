@@ -17,7 +17,7 @@ import {
 } from './hook-session-state.js'
 import type { PendingQuestion, SessionState } from './hook-types.js'
 
-/** A command obligation, never a second answer-delivery queue. */
+/** A harness recording obligation, never a second answer-delivery queue. */
 export interface NativeAnswerOperation {
   question_id: string
   operation_id: string
@@ -34,7 +34,7 @@ export interface NativeAnswerOperation {
   acknowledgement?: PutAgentAcknowledgementResponse['agent_acknowledgement']
 }
 
-/** The Agent reported and acknowledged a complete native answer. The question
+/** The harness recorded and acknowledged a complete native answer. The question
  * stays registered so a later device answer can still correct it, but nobody
  * is waiting on it any more: it reads as answered and is watched only for that
  * correction, never long-polled.
@@ -43,6 +43,25 @@ export function hasSettledNativeAnswer(state: SessionState, questionId: string |
   return questionId !== undefined && (state.native_answer_operations ?? []).some(op =>
     op.question_id === questionId && op.report !== undefined && op.acknowledgement !== undefined &&
     op.answer_complete !== false)
+}
+
+/** Raised inside the state transaction when another operation already owns an item. */
+export class NativeAnswerAlreadyRecorded extends Error {
+  constructor() { super('Another operation already records this answer.') }
+}
+
+/**
+ * The answer each item of one question already has from another operation:
+ * a terminal answer Notifai recorded itself, or a report written by an agent
+ * still following an older skill. Exactly one operation records an item.
+ */
+export function answersRecordedElsewhere(state: SessionState, questionId: string, operationId: string): Map<string, ReplyAnswerT> {
+  const recorded = new Map<string, ReplyAnswerT>()
+  for (const op of state.native_answer_operations ?? []) {
+    if (op.question_id !== questionId || op.operation_id === operationId) continue
+    for (const answer of op.answers) if (!recorded.has(answer.question_id)) recorded.set(answer.question_id, answer)
+  }
+  return recorded
 }
 
 /** Registered questions still waiting for any answer. */
@@ -107,7 +126,7 @@ export function prepareNativeAnswerOperation(
   admit: AdmitNativeAnswer,
   observe?: (state: SessionState) => SessionState,
 ): NativeAnswerOperation {
-  if (!/^q_[A-Za-z0-9_-]+$/.test(input.questionId) || !/^[A-Za-z0-9_-]{1,64}$/.test(input.operationId)) {
+  if (!/^q_[A-Za-z0-9_-]+$/.test(input.questionId) || !/^(?:[A-Za-z0-9_-]{1,64}|terminal:[0-9]{1,2})$/.test(input.operationId)) {
     throw new Error('Native reporting requires an exact q_ identity and a 1–64 character operation ID.')
   }
   const answers = input.answers === undefined ? undefined : normalizedAnswers(input.answers, owner.sessionId)

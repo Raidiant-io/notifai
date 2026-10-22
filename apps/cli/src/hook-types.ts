@@ -1,3 +1,4 @@
+import type { CodexTerminalObservation, CodexTerminalConflict } from './codex-terminal-answers.js'
 import type { RuntimeBuildReference } from './launch-self.js'
 import type { InputWakeAttempt } from './session-input-wakes.js'
 import type { NativeAnswerOperation } from './native-answer-operation.js'
@@ -102,7 +103,10 @@ export interface SessionState {
   codex_question_bindings?: CodexQuestionRegistration[]
   /** Never reuse a marker while any registration or operation is retained. */
   codex_question_marker_counter?: number
-  /** Frozen native-report commands and their independent report/ack receipts. */
+  /** Uncommitted card input; only rollout confirmation grants reporting authority. */
+  codex_terminal_observations?: CodexTerminalObservation[]
+  codex_terminal_conflicts?: CodexTerminalConflict[]
+  /** Frozen harness reports and their independent report/receipt state. */
   native_answer_operations?: NativeAnswerOperation[]
   /** Content-free native lifecycle proof, scoped to the current owner. */
   codex_native_turn?: { key: string; turn_id: string; transcript_path: string; observed_at?: number }

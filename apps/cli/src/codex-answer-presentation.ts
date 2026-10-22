@@ -78,7 +78,7 @@ export function codexAnswerPresentation(input: {
             question: nativeQuestionTitle(question), answer: [...selected, ...(part.text == null ? [] : [part.text])].join('\n'),
             notifai: { origin: 'companion', request_id: answer.pending.request_id, question_id: part.question_id,
               reply_id: reply.reply_id, reply_seq: reply.seq,
-              instruction: 'This is the existing Notifai app submission, not a new native submission. Do not report it as a native answer.' +
+              instruction: 'This answer came from the User\'s device.' +
                 acknowledgementContext([answer]) + TRANSPORT_LIMIT } }
         })) + '\n</send_user_message_question_reply>'
         const validate = (state: SessionState) => {

@@ -62,6 +62,7 @@ import { shippedSkillBundle } from './skill-integrity.js'
 import { installedChangelog } from './update-handoff.js'
 import { LOCAL_CONTINUITY, LOCAL_CONTINUITY_CAPABILITIES } from './local-continuity.js'
 import { NativeSelectionChanged, retryNativeSelection } from './native-launch-retry.js'
+import { PROJECT_LAYER_REMOVED, takeRepositoryConfigNotice } from './repository-config-retirement.js'
 
 /**
  * One source of truth for the version: the manifest npm actually published.
@@ -83,6 +84,16 @@ function version(): string {
  * The full command path, e.g. `config set`, so a filter on `cmd` distinguishes
  * subcommands that share a leaf name.
  */
+const INTERNAL_COMMANDS = new Set(['hook', 'hub', 'activation-plan', 'attendant-resume'])
+
+/** `--project` is accepted on the layer commands only to refuse it; nothing is written. */
+const removedProjectOption = (): Option => new Option('--project').hideHelp()
+function refusedProjectLayer(deps: CommandDeps, project: boolean | undefined): boolean {
+  if (project !== true) return false
+  deps.io.err(PROJECT_LAYER_REMOVED)
+  return true
+}
+
 function commandPath(command: Command): string {
   const parts: string[] = []
   for (let node: Command | null = command; node?.parent != null; node = node.parent) {
@@ -219,6 +230,10 @@ export function buildProgram(deps: CommandDeps, options: BuildProgramOptions = {
         return
       }
       options.beforeAction?.(admission)
+      // Hooks and internal processes write to a harness, not to a reader.
+      if (!INTERNAL_COMMANDS.has(commandPath(actionCommand).split(' ')[0]!)) {
+        for (const line of takeRepositoryConfigNotice(deps.cwd, deps.env) ?? []) deps.io.err(line)
+      }
       const logger = deps.logger
       logger?.bind({ cmd: commandPath(actionCommand) })
       // SessionEnd uses the hook policy shared with commands.ts: local cleanup
@@ -720,16 +735,17 @@ export function buildProgram(deps: CommandDeps, options: BuildProgramOptions = {
     .action(async () => { exit(await runners.receive(deps)) })
 
   program
-    .command('acknowledge <question_request_or_message_id>')
+    .command('acknowledge <request_or_message_id>')
     .helpGroup(GROUP.agent)
     .summary("Tell the user what you'll do because of their reply or note")
     .description(
-      'Record the required Agent Acknowledgement for a notification reply (req_…), Session Message (sm_…), or explicitly reported answer to an exactly bound native question (q_…); never prompts',
+      'Record the required Agent Acknowledgement for a notification reply (req_…) or Session Message (sm_…); never prompts',
     )
     .option('--text <text>', 'concrete work you will do because of the reply or message')
-    .option('--operation-id <id>', 'native submission identity: reuse on retry, choose a new ID for a distinct answer')
-    .option('--native-answers <json>', 'actual native answers using the registered question/choice IDs; omit only to retry a saved operation')
     .option('--json', 'machine-readable output')
+    // Untaught: an older skill reports a terminal answer Notifai now records itself.
+    .addOption(new Option('--operation-id <id>').hideHelp())
+    .addOption(new Option('--native-answers <json>').hideHelp())
     .action(async (id: string, opts: { text?: string; json?: boolean; operationId?: string; nativeAnswers?: string }) => {
       exit(await runners.acknowledge(deps, id, opts))
     })
@@ -994,12 +1010,14 @@ export function buildProgram(deps: CommandDeps, options: BuildProgramOptions = {
     .option('--local', 'write a personal project preference on this machine (not in the repo)')
     .option('--session <id>', 'apply only to one Agent Session')
     .option('--yes', 'skip the confirmation gate')
+    .addOption(removedProjectOption())
     .action(
       async (
         key: string,
         value: string,
-        opts: { local?: boolean; session?: string; yes?: boolean },
+        { project, ...opts }: { project?: boolean; local?: boolean; session?: string; yes?: boolean },
       ) => {
+        if (refusedProjectLayer(deps, project)) { exit(2); return }
         exit(await runners.configSet(deps, key, value, opts))
       },
     )
@@ -1011,11 +1029,13 @@ export function buildProgram(deps: CommandDeps, options: BuildProgramOptions = {
     .option('--local', 'remove a personal project preference stored on this machine')
     .option('--session <id>', 'remove from one Agent Session')
     .option('--yes', 'skip the confirmation gate')
+    .addOption(removedProjectOption())
     .action(
       async (
         key: string,
-        opts: { local?: boolean; session?: string; yes?: boolean },
+        { project, ...opts }: { project?: boolean; local?: boolean; session?: string; yes?: boolean },
       ) => {
+        if (refusedProjectLayer(deps, project)) { exit(2); return }
         exit(await runners.configUnset(deps, key, opts))
       },
     )
@@ -1041,12 +1061,14 @@ export function buildProgram(deps: CommandDeps, options: BuildProgramOptions = {
     .option('--file <path>', 'read the guidance text from a file (use - for stdin)')
     .option('--local', 'write a personal project preference on this machine (not in the repo)')
     .option('--yes', 'skip the confirmation gate')
+    .addOption(removedProjectOption())
     .action(
       async (
         topic: string,
         text: string | undefined,
-        opts: { file?: string; local?: boolean; yes?: boolean },
+        opts: { file?: string; project?: boolean; local?: boolean; yes?: boolean },
       ) => {
+        if (refusedProjectLayer(deps, opts.project)) { exit(2); return }
         let content = text
         if (typeof opts.file === 'string') {
           if (content !== undefined) {
@@ -1083,8 +1105,10 @@ export function buildProgram(deps: CommandDeps, options: BuildProgramOptions = {
     )
     .option('--local', 'remove a personal project preference stored on this machine')
     .option('--yes', 'skip the confirmation gate')
+    .addOption(removedProjectOption())
     .action(
-      async (topic: string, opts: { local?: boolean; yes?: boolean }) => {
+      async (topic: string, { project, ...opts }: { project?: boolean; local?: boolean; yes?: boolean }) => {
+        if (refusedProjectLayer(deps, project)) { exit(2); return }
         exit(await runners.guidanceUnset(deps, topic, opts))
       },
     )

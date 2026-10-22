@@ -1,3 +1,4 @@
+import { launchCodexTerminalReports } from './codex-terminal-answers.js'
 /** A trusted Codex tool boundary observes the turn and drains shared pending input. */
 import { drainSessionInputs, hasSessionInputs } from './session-inputs.js'
 import { type CommandDeps, makeClient } from './commands-core.js'
@@ -79,6 +80,7 @@ export async function deliverCodexToolMessage(
     const snapshot = readNativeQuestionSnapshot(envelope.transcript_path, sessionId, deps.env)
     updateSessionState(sessionId, deps.env, state => mayObserve() ? observeCodexQuestions(state, incarnation.key, snapshot) : state)
   }
+  launchCodexTerminalReports(deps, envelope, logger)
   const proof = readSessionState(sessionId, deps.env).codex_tool_hook
   if (proof?.incarnation !== incarnation.incarnation || proof.fingerprint !== fingerprint ||
       proof.root_observed?.turn_id !== envelope.turn_id) {

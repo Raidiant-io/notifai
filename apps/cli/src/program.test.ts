@@ -1,4 +1,5 @@
-import { mkdtempSync, writeFileSync } from 'node:fs'
+import { execFileSync } from 'node:child_process'
+import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { describe, expect, it, vi } from 'vitest'
@@ -418,4 +419,63 @@ it('parses native offline installation and explicit setup skips without treating
   expect(result.exitCode).toBe(0)
   expect(flags).toMatchObject({ directory: '/candidate', inventory: '/signed.json', source: 'npm', version: '1.0.0',
     channel: 'stable', init: false, path: false, json: true })
+})
+
+describe('repository config Notifai no longer reads', () => {
+  const removed = 'Repository-committed guidance and config were removed; use `--local` for this project.'
+
+  it.each([
+    [['config', 'set', 'sound', 'ping', '--project', '--yes'], 'configSet'],
+    [['config', 'unset', 'sound', '--project', '--yes'], 'configUnset'],
+    [['guidance', 'set', 'titles', 'Short.', '--project', '--yes'], 'guidanceSet'],
+    [['guidance', 'unset', 'titles', '--project', '--yes'], 'guidanceUnset'],
+  ] as const)('refuses %j with exit 2 and writes nothing', async (argv, runner) => {
+    const spy = vi.fn(async () => 0)
+    const result = await parse([...argv], { [runner]: spy })
+    expect(result.exitCode).toBe(2)
+    expect(result.deps.errLines).toEqual([removed])
+    expect(spy).not.toHaveBeenCalled()
+  })
+
+  it('keeps --project out of help', () => {
+    const program = buildProgram(makeDeps())
+    for (const [group, name] of [['config', 'set'], ['config', 'unset'], ['guidance', 'set'], ['guidance', 'unset']]) {
+      const command = program.commands.find(cmd => cmd.name() === group)!.commands.find(cmd => cmd.name() === name)!
+      expect(command.helpInformation()).not.toContain('--project')
+    }
+  })
+
+  it('names the files once per repository, for every worktree and folder of it, and never from a hook', async () => {
+    const root = mkdtempSync(path.join(os.tmpdir(), 'notifai-repo-config-'))
+    const repo = path.join(root, 'repo')
+    mkdirSync(path.join(repo, 'src'), { recursive: true })
+    execFileSync('git', ['init', '-q', repo])
+    mkdirSync(path.join(repo, '.notifai', 'guidance'), { recursive: true })
+    writeFileSync(path.join(repo, '.notifai', 'guidance', 'titles.md'), 'House rules.')
+    const run = async (argv: string[], cwd: string) => {
+      const deps = makeDeps()
+      deps.env = { HOME: root, XDG_CONFIG_HOME: path.join(root, 'config'), XDG_STATE_HOME: path.join(root, 'state') }
+      deps.cwd = cwd
+      return (await parse(argv, { guidanceShow: async () => 0, configShow: () => 0, hookRun: async () => 0 }, deps)).deps.errLines
+    }
+    expect(await run(['hook', 'session-start'], repo)).toEqual([])
+    const first = await run(['guidance', 'show'], path.join(repo, 'src'))
+    expect(first).toHaveLength(2)
+    expect(first[0]).toContain('no longer reads')
+    expect(first[1]).toContain('notifai config set <key> <value> --local')
+    expect(await run(['guidance', 'show'], repo)).toEqual([])
+    expect(await run(['config', 'show'], path.join(repo, 'src'))).toEqual([])
+    execFileSync('git', ['-C', repo, '-c', 'user.name=t', '-c', 'user.email=t@example.test', 'commit', '-q', '--allow-empty', '-m', 'init'])
+    const linked = path.join(root, 'linked')
+    execFileSync('git', ['-C', repo, 'worktree', 'add', '-q', linked])
+    mkdirSync(path.join(linked, '.notifai'), { recursive: true })
+    writeFileSync(path.join(linked, '.notifai', 'config.toml'), 'sound = "ping"\n')
+    expect(await run(['guidance', 'show'], linked)).toEqual([])
+    const plain = path.join(root, 'plain')
+    mkdirSync(plain)
+    execFileSync('git', ['init', '-q', plain])
+    mkdirSync(path.join(plain, '.notifai'))
+    writeFileSync(path.join(plain, '.notifai', 'config.toml'), '')
+    expect(await run(['guidance', 'show'], plain)).toHaveLength(2)
+  })
 })

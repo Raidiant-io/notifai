@@ -192,6 +192,8 @@ describe('exact native answer presentation', () => {
     expect(payload[0].answer).toBe('Continue')
     expect(payload[0].notifai.origin).toBe('companion')
     expect(payload[0].notifai.instruction).toContain('notifai acknowledge req_bound')
+    expect(payload[0].notifai.instruction).toContain("This answer came from the User's device.")
+    expect(payload[0].notifai.instruction).not.toMatch(/--native-answers|--operation-id/)
     const journal = readDeliveryJournal(SESSION, h.env)[0]!
     expect(journal.presentation).toMatchObject({ kind: 'codex-answer', owner_key: h.incarnation.key,
       incarnation: h.lease.incarnation, generation: 1, expected_turn_id: 'turn-1',
@@ -1381,4 +1383,54 @@ describe('Codex empty wakes', () => {
     await prompt(h, `${sessionInputWake()} And also fix the build.`)
     expect(blocked(h.output)).toBe(false)
   })
+})
+
+
+it('records a card terminal answer through UserPromptSubmit and the detached submission hook, then returns conflict context once', async () => {
+  const h = setup()
+  const binding = reserveBinding(h)
+  binding.emit()
+  await binding.hook()
+  updateSessionState(SESSION, h.env, state => ({ ...state, codex_question_bindings: state.codex_question_bindings!.map(item =>
+    ({ ...item, confirmed_request_id: 'req_bound' })) }))
+  const registered = readSessionState(SESSION, h.env).codex_question_bindings![0]!
+  const prompt = '<send_user_message_question_reply>\n' + JSON.stringify([{
+    questionItemId: '["request_user_input_async","bound_call",0]',
+    question: nativeQuestionTitle(registered.questions[0]!), answer: 'Proceed carefully',
+  }]) + '\n</send_user_message_question_reply>'
+  const spawn = vi.fn()
+  h.deps.spawnQuestionSettlement = spawn
+  const report = vi.fn(async () => ({ status: 'recorded', reply_seq: 1, complete: true,
+    answer_version: { version_id: 'rpl_terminal', origin: 'harness', provenance: 'agent-reported', source: 'reply',
+      status: 'presented', base_version: null, answers: [{ question_id: 'q1', choice_ids: [], text: 'Proceed carefully' }] },
+    other_submissions: [{ version_id: 'rpl_device', origin: 'companion', answers: [{ question_id: 'q1', choice_ids: [], text: 'Wait' }] }],
+  }))
+  const acknowledge = vi.fn(async () => ({ status: 'recorded',
+    agent_acknowledgement: { text: 'Answered in the terminal.', created_at: new Date().toISOString() } }))
+  Object.assign(h.sequencer.client, { recordHarnessAnswer: report, putAgentAcknowledgement: acknowledge })
+  await hookRunCommand(h.deps, 'user-prompt-submit', async () => JSON.stringify({ session_id: SESSION, cwd: h.deps.cwd,
+    hook_event_name: 'UserPromptSubmit', turn_id: 'turn-1', transcript_path: binding.file, prompt }), 'codex')
+  expect(readSessionState(SESSION, h.env).codex_terminal_observations).toHaveLength(1)
+  expect(spawn).toHaveBeenCalledWith(expect.objectContaining({ harness: 'codex', purpose: 'submission' }))
+  expect(report).not.toHaveBeenCalled()
+  appendFileSync(binding.file, JSON.stringify({ type: 'event_msg', payload: { type: 'user_message', message: prompt } }) + '\n')
+  await hookRunCommand(h.deps, 'question-submission', async () => JSON.stringify({ session_id: SESSION, cwd: h.deps.cwd }), 'codex')
+  expect(report).toHaveBeenCalledOnce()
+  expect(acknowledge).toHaveBeenCalledWith('req_bound', { session_id: SESSION, reply_seq: 1, text: 'Answered in the terminal.' })
+  h.output.length = 0
+  await binding.hook()
+  expect(h.output).toHaveLength(1)
+  expect(JSON.parse(h.output[0]!).hookSpecificOutput.additionalContext).toContain('conflicting answers')
+  expect(h.output[0]).toContain('Proceed carefully')
+  expect(h.output[0]).toContain('Wait')
+  h.output.length = 0
+  await binding.hook()
+  expect(h.output).toEqual([])
+  updateSessionState(SESSION, h.env, state => ({ ...state, codex_terminal_conflicts: [
+    ...(state.codex_terminal_conflicts ?? []), { id: 'later-conflict', context: 'Preserve both answers and ask which governs.' },
+  ] }))
+  await hookRunCommand(h.deps, 'stop', async () => JSON.stringify({ session_id: SESSION, cwd: h.deps.cwd,
+    hook_event_name: 'Stop', turn_id: 'turn-1', transcript_path: binding.file }), 'codex')
+  expect(h.output).toHaveLength(1)
+  expect(JSON.parse(h.output[0]!)).toMatchObject({ decision: 'block', reason: 'Preserve both answers and ask which governs.' })
 })
