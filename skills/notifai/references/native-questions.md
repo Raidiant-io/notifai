@@ -22,9 +22,6 @@ returns it.
 
 ## Before emitting the form
 
-Claude Code never returns `native_question`: its picker is the question
-itself. Read [the Claude Code file](harness-claude-code.md#question-picker).
-
 On a Codex host without the card hook, `ask` may return `native_question`.
 Only for that fallback, and only when your tools include the returned tool, use
 it with the returned titles and options exactly, in the registration turn. The short title marker identifies a registered question;

@@ -1847,6 +1847,8 @@ describe('command contracts', () => {
       expect(grammar).toContain(".option('--body-file")
       expect(grammar).toContain("'--session-label <text>'")
       expect(grammar).toContain("'--image <path|url|media_id>'")
+      // A bare `media:N` in the Body is refused, so help names the image syntax.
+      expect(grammar).toContain('show it in Body as ![description](media:N)')
       expect(grammar).toContain("'--image-alt <text>'")
     }
     expect(sendGrammar).toContain(".option('--session-id")
@@ -11567,7 +11569,7 @@ describe('question sets', () => {
     // An untitled question of several is "Question N" until the agent names it.
     const partial = buildQuestions({ form: JSON.stringify({ title: 'Release', summary: 'Three decisions.', questions: [{ title: 'A', text: 'A?' }, { text: 'B?' }, { title: ' ', text: 'C?' }] }) }, undefined)
     expect(partial).toMatchObject({ ok: true, title: 'Release', headers: ['A', 'Question 2', 'Question 3'] })
-    expect(partial).toMatchObject({ notes: [expect.stringMatching(/^notifai: give each question of a form its own "title".*question 2, question 3 show as "Question N"/)] })
+    expect(partial).toMatchObject({ notes: [expect.stringMatching(/^notifai: give each question of a form its own "title".*question 2, question 3 have none\.$/)] })
     expect(buildQuestions({ form: JSON.stringify({ title: 'Release', summary: 'Two decisions.', questions: [{ title: 'A', text: 'A?' }, { title: 7, text: 'B?' }] }) }, undefined))
       .toMatchObject({ ok: false, error: 'Question 2: "title" must be a string.' })
     expect(buildQuestions({ form: JSON.stringify({ title: 3, summary: 'One decision.', questions: [{ text: 'A?' }] }) }, undefined))

@@ -619,7 +619,7 @@ export function buildProgram(deps: CommandDeps, options: BuildProgramOptions = {
     )
     .option(
       '--image <path|url|media_id>',
-      'upload or attach an image; reference it in Body as media:N (repeatable, maximum 8)',
+      'upload or attach an image; show it in Body as ![description](media:N), N in --image order (repeatable, maximum 8)',
       (v: string, all: string[] = []) => [...all, v],
     )
     .option(
@@ -789,7 +789,7 @@ export function buildProgram(deps: CommandDeps, options: BuildProgramOptions = {
     .option('--form <path>', 'ask several questions as one form; JSON file (use - for stdin) with "title", "summary" and "questions", each question carrying its own "title" when there are several')
     .option(
       '--image <path|url|media_id>',
-      'upload or attach an image; reference it in Body as media:N (repeatable, maximum 8)',
+      'upload or attach an image; show it in Body as ![description](media:N), N in --image order (repeatable, maximum 8)',
       (v: string, all: string[] = []) => [...all, v],
     )
     .option(

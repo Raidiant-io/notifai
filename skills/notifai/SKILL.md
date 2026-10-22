@@ -120,8 +120,7 @@ When work you own or coordinate needs a User response, use `notifai ask` in
 the same turn you ask it in the conversation, even during other work or after
 recent User activity: conversation alone misses an away User. Ask for safe
 setup or readiness, never for credentials; harness permission prompts stay in
-the harness. In Claude Code the question picker is the Notifai question: never
-also `ask` it ([why](references/harness-claude-code.md#question-picker)).
+the harness.
 
 Ask the way you would without Notifai:
 
@@ -158,11 +157,12 @@ registered it, never also `ask` it. For a `native_question` from `ask`, read
 [native questions](references/native-questions.md). Never promise form
 closure.
 
-**Registering is not the end of the turn.** After `notifai ask`, ask in the
-conversation, say what each answer will make you do, and continue independent
-work; dependent work waits for the answer. When `ask --wait` says to end your
-turn, do the same, then end it. **Never say where the answer must
-arrive** ("tell me here"): it comes back by whatever route the harness has.
+**Registering is not the end of the turn.** In the same turn, ask the question
+in the conversation and say what each answer will make you do, before you
+start a wait. After plain `ask`, continue independent work; dependent work
+waits for the answer. When `ask --wait` says to end your turn, end it.
+**Never say where the answer must arrive** ("tell me here"): it comes back by
+whatever route the harness has.
 While a question waits, keep this Agent Session open: closing, clearing or
 switching it ends the question.
 
@@ -184,11 +184,6 @@ this Agent Session's open questions.
 If `ask` reports a User-owned trust or permission gap, relay its exact
 `remedy`, say the hooks need the User's trust or approval, and wait; do not
 work around it.
-
-If `ask` refuses because “Send questions to my devices” (`ask_notifications`)
-is off, the User keeps questions off their devices: ask in the conversation,
-or in your own question form, which stays in the terminal. `ask --wait`
-refuses there too.
 
 ## When the answer arrives
 

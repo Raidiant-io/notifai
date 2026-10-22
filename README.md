@@ -134,10 +134,10 @@ printed command carries no `--text`, and `notifai acknowledge <request_id>`
 records the receipt on its own.
 
 When `ask` returns an optional `native_question`, follow its exact titles and
-instructions. An answer read from that bound native form uses the printed
-`acknowledge q_…` command to record its actual answers and authored
-acknowledgement. Keep the original app answer window; distinct native and app
-submissions remain separate in history. Native form closure is capability-dependent.
+instructions. Notifai records an answer given in that bound native form
+itself, so the devices stop asking. Keep the original app answer window;
+distinct native and app submissions remain separate in history. Native form
+closure is capability-dependent.
 
 Anywhere that is not a terminal — a script, a CI job, an agent — `notifai`
 prints help instead of prompting, output stays uncoloured, and `--json` is
