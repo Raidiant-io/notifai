@@ -84,6 +84,9 @@ try {
 // naming what still holds it.
 const cleanup = removeScratchRoot(root)
 if (!cleanup.removed) console.error(describeScratchRoot(root, cleanup))
-else if (cleanup.attempts > 1) console.error(`Removed ${root} on attempt ${cleanup.attempts}`)
+else if (cleanup.attempts > 1) {
+  console.error(`Removed ${root} on attempt ${cleanup.attempts}; the first failed with ${cleanup.first.error?.message ?? cleanup.first.error}` +
+    ` and left ${cleanup.first.remaining.length === 0 ? 'nothing inside it' : cleanup.first.remaining.join(', ')}`)
+}
 if (failure === undefined && cleanup.removed) process.stdout.write(report)
 else process.exitCode = 1

@@ -18,12 +18,17 @@ export function removeScratchRoot(root, {
   remove = directory => rmSync(directory, { recursive: true, force: true }),
   holders = scratchRootHolders,
 } = {}) {
-  let error
+  let error, first
   for (let attempt = 1; attempt <= attempts; attempt++) {
     try {
       remove(root)
-      return { removed: true, attempts: attempt }
-    } catch (caught) { error = caught }
+      return attempt === 1 ? { removed: true, attempts: 1 } : { removed: true, attempts: attempt, first }
+    } catch (caught) {
+      error = caught
+      // A hold that clears on the next attempt is gone before any process
+      // query could name it; what it kept in place is the evidence left.
+      first ??= { error: caught, remaining: remainingEntries(root) }
+    }
     if (attempt < attempts) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, delayMs)
   }
   return { removed: false, attempts, error, remaining: remainingEntries(root), holders: holders(root) }

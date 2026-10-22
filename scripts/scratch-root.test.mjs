@@ -22,7 +22,10 @@ test('retries a briefly held directory until it goes away', () => {
   let calls = 0
   const cleanup = removeScratchRoot('/scratch', { delayMs: 1, holders: () => assert.fail('released in time'),
     remove: () => { if (++calls < 3) throw busy() } })
-  assert.deepEqual(cleanup, { removed: true, attempts: 3 })
+  assert.equal(cleanup.removed, true)
+  assert.equal(cleanup.attempts, 3)
+  assert.equal(cleanup.first.error.code, 'EPERM', 'a passing run still records what the first attempt hit')
+  assert.deepEqual(cleanup.first.remaining, [])
 })
 
 test('stops after its bounded attempts and names what still holds the directory', () => {
