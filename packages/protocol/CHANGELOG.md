@@ -8,6 +8,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 This project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 and [Conventional Commits](https://www.conventionalcommits.org/en/v1.0.0/).
 
+## [9.0.0](https://github.com/Raidiant-io/notifai/compare/protocol-v8.5.0...protocol-v9.0.0) (2026-10-22)
+
+
+### Features
+
+* full content in the push, described choices and dismissed history ([#382](https://github.com/Raidiant-io/notifai/issues/382)) ([515e1d2](https://github.com/Raidiant-io/notifai/commit/515e1d22241cad352bb521ee5d0663254de33e01))
+
+
+### Bug Fixes
+
+* **cli:** reject unresolvable Body image references ([#381](https://github.com/Raidiant-io/notifai/issues/381)) ([7449223](https://github.com/Raidiant-io/notifai/commit/74492231287cbdffb7a572cca854244f4def1f69))
+
+
+### Reverts
+
+* unreleased 14.0.0 release metadata, and release the protocol as 9.0.0 ([#397](https://github.com/Raidiant-io/notifai/issues/397)) ([2e03c9b](https://github.com/Raidiant-io/notifai/commit/2e03c9bd355c6724e5818a6e629a2068645e4657))
+
 ## [9.0.0-beta.1](https://github.com/Raidiant-io/notifai/compare/protocol-v8.5.0...protocol-v9.0.0-beta.1) (2026-10-22)
 
 ### Breaking changes
