@@ -6764,10 +6764,12 @@ describe('init', () => {
     expect(io.errLines.join('\n')).toContain('`--skills-scope` requires `--skills`')
   })
 
-  it('installs every detected project harness when --hooks is set', async () => {
+  it('installs every harness this machine has when --hooks is set, whatever the repository holds', async () => {
     const cwd = mkdtempSync(path.join(os.tmpdir(), 'init-hooks-all-detected-'))
-    mkdirSync(path.join(cwd, '.claude'))
-    mkdirSync(path.join(cwd, '.codex'))
+    mkdirSync(path.join(cwd, 'home', '.claude'), { recursive: true })
+    mkdirSync(path.join(cwd, 'home', '.codex'), { recursive: true })
+    // A repository's own marker for a harness the machine lacks counts for nothing.
+    mkdirSync(path.join(cwd, '.cursor'))
     const io = new CapturedIo()
     const calls = { submit: 0 }
     const nativeSkills = inertSkills
@@ -6859,7 +6861,7 @@ describe('init', () => {
 
   it('grants Claude Code command approval only when asked, and reports it without blocking setup', async () => {
     const cwd = mkdtempSync(path.join(os.tmpdir(), 'init-claude-commands-'))
-    mkdirSync(path.join(cwd, '.claude'))
+    mkdirSync(path.join(cwd, 'home', '.claude'), { recursive: true })
     const io = new CapturedIo()
     const nativeSkills = inertSkills
     const deps = setupReadyDeps(io, cwd, nativeSkills, { submit: 0 })
@@ -6890,7 +6892,7 @@ describe('init', () => {
 
   it('offers and grants Claude Code command approval unless the session is known to run outside default mode', async () => {
     const cwd = mkdtempSync(path.join(os.tmpdir(), 'init-claude-commands-mode-'))
-    mkdirSync(path.join(cwd, '.claude'))
+    mkdirSync(path.join(cwd, 'home', '.claude'), { recursive: true })
     const io = new CapturedIo()
     const base = setupReadyDeps(io, cwd, inertSkills, { submit: 0 })
     const deps = { ...base, env: { ...base.env, CLAUDECODE: '1', CLAUDE_CODE_SESSION_ID: 'claude-mode-session' } }
@@ -6940,7 +6942,7 @@ describe('init', () => {
 
   it('reports Codex without a shared server as ready, and init leaves it alone', async () => {
     const cwd = mkdtempSync(path.join(os.tmpdir(), 'doctor-codex-cards-'))
-    mkdirSync(path.join(cwd, '.codex'))
+    mkdirSync(path.join(cwd, 'home', '.codex'), { recursive: true })
     const io = new CapturedIo()
     const base = setupReadyDeps(io, cwd, inertSkills, { submit: 0 })
     let asked = 0
@@ -6966,7 +6968,7 @@ describe('init', () => {
 
   it('grants Codex command approval only when asked, checks it with Codex, and removes it with the wiring', async () => {
     const cwd = mkdtempSync(path.join(os.tmpdir(), 'init-codex-commands-'))
-    mkdirSync(path.join(cwd, '.codex'))
+    mkdirSync(path.join(cwd, 'home', '.codex'), { recursive: true })
     const io = new CapturedIo()
     const checks: string[][] = []
     const deps: CommandDeps = {
