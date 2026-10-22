@@ -78,6 +78,7 @@ import { QUESTION_WAITER_CEILING_SECONDS } from './question-timing.js'
 import { sessionActivationOutput, userPromptContextOutput } from './session-activation.js'
 import { currentProcessIdentity } from './process-identity.js'
 import { attendantSupport } from './session-attendant-probe.js'
+import { proveWindowsCodexHookSource } from './windows-hook-source.js'
 import { grokAttendHook, startGrokAttendant } from './grok-attendant.js'
 import { readAttendantEndingLease, readAttendantLease } from './session-attendant-state.js'
 import { openclawContinuationRoute } from './openclaw-continuation-bridge.js'
@@ -188,6 +189,11 @@ export async function hookRunCommand(
   ) {
     deps.io.err(`Unknown hook event "${event}". Valid: ${HOOK_EVENTS.join(', ')}`)
     return EXIT.usage
+  }
+  // A Windows Codex hook declares the PowerShell its command starts; every
+  // ownership check below compares the Codex process above it.
+  if (harness === 'codex' && process.platform === 'win32' && (HOOK_EVENTS as readonly string[]).includes(event)) {
+    proveWindowsCodexHookSource(deps.env)
   }
 
   // One clock owns the complete Stop invocation, including stdin, config,

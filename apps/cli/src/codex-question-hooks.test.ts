@@ -25,6 +25,11 @@ const CARD = { questions: [{ title: 'Which environment?', options: ['Staging', '
 const roots: string[] = []
 afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }) })
 
+/** The hooks an install writes here: a source adapter on Windows names its interpreter. */
+function fixtureHooks(home: string) {
+  return buildHookConfig({ adapterPath: hookAdapterPath(home), harness: 'codex', ...(process.platform === 'win32' ? { nodePath: process.execPath } : {}) })
+}
+
 function setup(options: { transport?: boolean; enabled?: boolean; disabled?: boolean; signedIn?: boolean; routing?: boolean } = {}) {
   const root = mkdtempSync(path.join(os.tmpdir(), 'notifai-codex-card-'))
   roots.push(root)
@@ -32,7 +37,7 @@ function setup(options: { transport?: boolean; enabled?: boolean; disabled?: boo
     CODEX_HOME: path.join(root, 'codex'), NOTIFAI_HOOK_SOURCE_PID: String(process.pid) }
   installHookAdapter({ execPath: process.execPath, scriptPath: fileURLToPath(new URL('../dist/main.js', import.meta.url)) }, env.HOME)
   mkdirSync(env.CODEX_HOME, { recursive: true })
-  writeFileSync(path.join(env.CODEX_HOME, 'hooks.json'), JSON.stringify({ hooks: buildHookConfig({ adapterPath: hookAdapterPath(env.HOME), harness: 'codex' }) }))
+  writeFileSync(path.join(env.CODEX_HOME, 'hooks.json'), JSON.stringify({ hooks: fixtureHooks(env.HOME) }))
   const installed = findInstallations(env, env.HOME).find(installation => installation.harness === 'codex')!
   writeFileSync(path.join(env.CODEX_HOME, 'config.toml'), installed.handlers.map(handler =>
     `[hooks.state.${JSON.stringify(codexTrustKey(installed, handler))}]\ntrusted_hash = "${codexHookIdentityHash(handler)}"\n`).join('\n'))
@@ -105,7 +110,7 @@ it.each(['disabled', 'signed-out', 'routing-off', 'subagent', 'wrong-process', '
     if (mode === 'wrong-process') h.env.NOTIFAI_HOOK_SOURCE_PID = '1'
     if (mode === 'untrusted') writeFileSync(path.join(h.env.CODEX_HOME, 'config.toml'), '')
     if (mode === 'narrowed-post-hook') {
-      const hooks = buildHookConfig({ adapterPath: hookAdapterPath(h.env.HOME), harness: 'codex' })
+      const hooks = fixtureHooks(h.env.HOME)
       hooks.PostToolUse![0]!.matcher = 'request_user_input_async'
       writeFileSync(path.join(h.env.CODEX_HOME, 'hooks.json'), JSON.stringify({ hooks }))
       const installed = findInstallations(h.env, h.env.HOME).find(installation => installation.harness === 'codex')!

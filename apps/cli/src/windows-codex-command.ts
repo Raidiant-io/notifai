@@ -6,8 +6,13 @@ const PREAMBLE = "$ErrorActionPreference = 'Stop'; "
 const SUFFIX = '; exit $LASTEXITCODE'
 const SYSTEM_POWERSHELL = /^[a-z]:\\[a-z0-9_.\\-]+\\System32\\WindowsPowerShell\\v1\.0\\powershell\.exe$/i
 
+/** The system Windows PowerShell every Windows Codex hook command starts. */
+export function windowsCodexHookShell(env: NodeJS.ProcessEnv = process.env): string {
+  return path.win32.join(env['SystemRoot'] ?? 'C:\\Windows', 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe')
+}
+
 export function encodeWindowsCodexCommand(command: string): string {
-  const executable = path.win32.join(process.env['SystemRoot'] ?? 'C:\\Windows', 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe')
+  const executable = windowsCodexHookShell()
   // An unquoted absolute system path works in both shells. Never search a
   // project's current directory or PATH for the interpreter. Adapter paths
   // can contain any legal filename characters; they are encoded literals.

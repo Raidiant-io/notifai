@@ -25,12 +25,13 @@ import { captureCandidates, findOpenEqualQuestion } from './question-guard.js'
 import { readSessionIncarnation, readSessionState, sessionHasEnded, updateSessionState } from './hook-session-state.js'
 import type { PendingQuestion } from './hook-types.js'
 import { CLAUDE_QUESTION_TOOL } from './claude-question-bindings.js'
+import { CLAUDE_PICKER_MATCHER } from './hook-events.js'
 import { handBackInput, recordHandBack, type ClaudePickerInput } from './claude-picker-handback.js'
 import { processIdentityLiveness } from './process-identity.js'
 import { connectCodexAnswerControl, type CodexAnswerUnavailable } from './codex-answer-control.js'
 import { currentCodexQuestionContext, type NativeQuestionAdmission } from './codex-question-bindings.js'
 import { hermesQuestionRouteReady } from './session-attendant-state.js'
-import { codexRoutingTrustProblems, findInstallations } from './install-hooks.js'
+import { codexRoutingTrustProblems, findInstallations, handlerEvent } from './install-hooks.js'
 import { cardHandbackInput, cardShown } from './codex-card-handback.js'
 import { CODEX_CARD_VERSION_FLOOR, codexCardHooksReady, codexCardToolOffered } from './codex-card-capability.js'
 import { activeOpenclawGeneration } from './openclaw-session-access.js'
@@ -538,8 +539,9 @@ const OPEN_FORM_UNAVAILABLE = `If ${CLAUDE_QUESTION_TOOL} is unavailable, end yo
 /**
  * The picker `ask --wait` hands back on Claude Code, recorded as this turn's
  * hand-back, or null where the picker cannot carry the question and the agent
- * ends its turn instead. Windows Claude Code runs no picker hooks, so a
- * device answer could never return through it there.
+ * ends its turn instead. Without the picker hooks (an installation from before
+ * they were installed on Windows) a device answer could never return through
+ * the picker.
  */
 function claudeHandBack(
   deps: CommandDeps,
@@ -547,11 +549,19 @@ function claudeHandBack(
   question: Pick<PendingQuestion, 'question_id' | 'title' | 'headers' | 'questions'>,
 ): ClaudePickerInput | null {
   if (readSessionState(sessionId, deps.env).harness !== 'claude-code') return null
-  if ((deps.hookPlatform ?? process.platform) === 'win32') return null
+  if (!claudePickerHooksInstalled(deps)) return null
   const input = handBackInput(question)
   if (input === null) return null
   updateSessionState(sessionId, deps.env, (state) => recordHandBack(state, question.question_id!, (deps.now ?? Date.now)()))
   return input
+}
+
+/** Whether Claude Code runs both picker handlers: the one that holds the picker and the one that settles it. */
+function claudePickerHooksInstalled(deps: CommandDeps): boolean {
+  return findInstallations(deps.env, deps.hookAdapterHome, deps.hookPlatform).some((installation) =>
+    installation.harness === 'claude-code' && (installation.problems ?? []).length === 0 &&
+    (['permission-request', 'post-tool-use'] as const).every((event) => installation.handlers.some((handler) =>
+      handlerEvent(handler.command) === event && handler.matcher === CLAUDE_PICKER_MATCHER)))
 }
 
 /**

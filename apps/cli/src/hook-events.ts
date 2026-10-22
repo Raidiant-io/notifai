@@ -1,6 +1,5 @@
 /** Canonical lifecycle event vocabulary shared by installation and execution. */
 import { type HookInstallableHarness } from './harnesses.js'
-import { hookHostPlatform, type HookHostPlatform } from './hook-adapter.js'
 
 /**
  * One harness-neutral table for the lifecycle events this CLI build serves.
@@ -145,15 +144,14 @@ export function attendDocumentEvents(harness: HookInstallableHarness | undefined
 }
 
 /**
- * Whether this build installs the Session Attendant for a harness: Claude Code
- * everywhere it publishes a session descriptor and inbox, and Codex on POSIX
- * only. Codex on Windows has no proven hook parent process.
+ * Whether this build installs the Session Attendant for a harness, and with
+ * it Codex's card handlers: Claude Code everywhere it publishes a session
+ * descriptor and inbox, and Codex everywhere. On Windows a Codex hook's parent
+ * is the PowerShell its command starts; the Codex process above it is proven
+ * from the process table (`windowsCodexHookSource`).
  */
-export function installsSessionAttendant(
-  harness: HookInstallableHarness | undefined,
-  platform?: NodeJS.Platform | HookHostPlatform,
-): boolean {
-  return harness === 'claude-code' || (harness === 'codex' && hookHostPlatform(platform) === 'posix')
+export function installsSessionAttendant(harness: HookInstallableHarness | undefined): boolean {
+  return harness === 'claude-code' || harness === 'codex'
 }
 
 /** The one tool both Claude Code picker handlers are matched to. */
@@ -163,34 +161,29 @@ export const CLAUDE_PICKER_MATCHER = 'AskUserQuestion'
  * Whether this build installs the two handlers that link a registered
  * question to Claude Code's question picker: `PermissionRequest`, which runs
  * while the picker is on screen, and `PostToolUse`, which runs once it has an
- * answer. Proven on POSIX; Windows keeps the ordinary route.
+ * answer. Every platform: on Windows the picker's process is the one Claude
+ * Code names for itself (`claudeHookSourcePid`), as for the attendant.
  */
-export function installsClaudePickerHooks(
-  harness: HookInstallableHarness | undefined,
-  platform?: NodeJS.Platform | HookHostPlatform,
-): boolean {
-  return harness === 'claude-code' && hookHostPlatform(platform) === 'posix'
+export function installsClaudePickerHooks(harness: HookInstallableHarness | undefined): boolean {
+  return harness === 'claude-code'
 }
 
 /** Lifecycle handlers one installed harness must carry in this CLI build. */
-export function requiredHookEvents(
-  harness: HookInstallableHarness,
-  platform?: NodeJS.Platform | HookHostPlatform,
-): readonly HookEvent[] {
+export function requiredHookEvents(harness: HookInstallableHarness): readonly HookEvent[] {
   if (harness === 'opencode' || harness === 'openclaw' || harness === 'hermes') return []
   return HOOK_EVENT_TABLE.filter((row) =>
     row.notifai === 'pre-tool-use'
-      ? harness === 'codex' && installsSessionAttendant(harness, platform)
+      ? harness === 'codex' && installsSessionAttendant(harness)
       : row.notifai === 'post-compact'
       ? harness === 'grok'
       : row.notifai === 'subagent-start' && harness === 'grok'
       ? false
       : row.notifai === 'post-tool-use'
-      ? harness === 'grok' || (harness === 'codex' && installsSessionAttendant(harness, platform)) || installsClaudePickerHooks(harness, platform)
+      ? harness === 'grok' || (harness === 'codex' && installsSessionAttendant(harness)) || installsClaudePickerHooks(harness)
       : row.notifai === 'permission-request'
-      ? installsClaudePickerHooks(harness, platform)
+      ? installsClaudePickerHooks(harness)
       : row.notifai === 'attend'
-      ? installsSessionAttendant(harness, platform)
+      ? installsSessionAttendant(harness)
       : harness === 'cursor'
         ? row.cursor !== null
         : row.document !== null,

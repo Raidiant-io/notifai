@@ -718,10 +718,10 @@ describe('Codex process probe', () => {
       adapters: { ...base, ...adapters },
     })()
 
-  it('is supported on macOS and Linux, and unknown on Windows', () => {
+  it('is supported on macOS, Linux and Windows', () => {
     expect(attendantSupport('codex', 'darwin')).toEqual({ supported: true })
     expect(attendantSupport('codex', 'linux')).toEqual({ supported: true })
-    expect(attendantSupport('codex', 'win32')).toEqual({ supported: false, reason: 'codex-win32-unproven' })
+    expect(attendantSupport('codex', 'win32')).toEqual({ supported: true })
     expect(attendantSupport('grok', 'darwin')).toEqual({
       supported: true,
     })
@@ -1206,12 +1206,18 @@ describe('notifai hook attend for Codex', () => {
     expect(readSessionIncarnation(THREAD, env)).toBeNull()
   })
 
-  it('does not attend Codex on Windows', async () => {
+  it('attends Codex on Windows under the Codex process the hook proved', async () => {
     const { env, root } = codexEnv()
-    const deps = attendDeps(env, root, { hookPlatform: 'win32' })
+    const deps = attendDeps(env, root, { hookPlatform: 'win32', clientFactory: () => fakeAttendance().client })
     const envelope = { session_id: THREAD, cwd: root, hook_event_name: 'SessionStart', source: 'startup' }
-    expect(await hookRunCommand(deps, 'attend', stdin(envelope), 'codex')).toBe(0)
-    expect(existsSync(attendantClaimPath(THREAD, env))).toBe(false)
+    const running = hookRunCommand(deps, 'attend', stdin(envelope), 'codex')
+    try {
+      await until(() => existsSync(attendantClaimPath(THREAD, env)), 'the Windows attendant claim')
+      expect(readSessionIncarnation(THREAD, env)?.harness_process).toEqual(HARNESS)
+    } finally {
+      markSessionEnded(THREAD, env, Date.now() + 1)
+      expect(await running).toBe(0)
+    }
   })
 
   it('SessionEnd reports the held lease ended, because Codex kills the attendant as soon as SessionEnd returns', async () => {
