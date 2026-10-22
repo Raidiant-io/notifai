@@ -5,7 +5,7 @@ import { copyFileSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'nod
 import os from 'node:os'
 import path from 'node:path'
 import { it } from 'node:test'
-import { inspectWindowsNpmReaders } from '../apps/cli/dist/windows-npm-maintenance.js'
+import { inspectWindowsNpmReaders as inspect, WINDOWS_NPM_READER_CENSUS_TIMEOUT_MS } from '../apps/cli/dist/windows-npm-maintenance.js'
 
 it('scopes npm repair to the package while unrelated applications keep running', { skip: process.platform !== 'win32' }, async () => {
   const root = mkdtempSync(path.join(os.tmpdir(), 'notifai-reader-scope-'))
@@ -13,6 +13,13 @@ it('scopes npm repair to the package while unrelated applications keep running',
   const packageRoot = path.join(prefix, 'node_modules', '@raidiant', 'notifai')
   const entry = path.join(packageRoot, 'dist', 'main.js')
   const children = new Set()
+  // The first census may pay for a cold Windows PowerShell start, which the
+  // runner controls. Every later one must stay well inside the repair bound.
+  const durations = []
+  function inspectWindowsNpmReaders(scope) {
+    const started = performance.now()
+    try { return inspect(scope) } finally { durations.push(Math.round(performance.now() - started)) }
+  }
   const program = `process.send('ready'); process.on('message', () => process.exit(0)); setTimeout(() => process.exit(2), 60000).unref();`
   async function start(file, args = [], runtimeArgs = [], executable = process.execPath) {
     mkdirSync(path.dirname(file), { recursive: true })
@@ -70,6 +77,9 @@ it('scopes npm repair to the package while unrelated applications keep running',
     assert.equal(unrelated.exitCode, null)
     assert.equal(neighbor.exitCode, null)
     assert.equal(sameName.exitCode, null)
+    console.log(`Census durations (ms): ${durations.join(', ')}`)
+    assert.ok(durations.slice(1).every(duration => duration < WINDOWS_NPM_READER_CENSUS_TIMEOUT_MS / 3),
+      `A warm census must finish within a third of its ${WINDOWS_NPM_READER_CENSUS_TIMEOUT_MS} ms bound`)
     console.log('PASS: unrelated live applications ignored; exact package reader blocks; scoped repair clears without stopping unrelated work')
   } finally {
     await Promise.all([...children].map(stop))

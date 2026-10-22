@@ -4,7 +4,7 @@
 import assert from 'node:assert/strict'
 import { generateKeyPairSync, sign } from 'node:crypto'
 import { execFileSync } from 'node:child_process'
-import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, readFileSync, readdirSync, statSync, writeFileSync } from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { Distribution, releaseSigningMessage } from '../apps/cli/dist/release-distribution.js'
@@ -13,6 +13,7 @@ import { Installation } from '../apps/cli/dist/installation.js'
 import { LOCAL_CONTINUITY_CAPABILITIES } from '../apps/cli/dist/local-continuity.js'
 import { installationAccess } from '../apps/cli/dist/installation-access.js'
 import { repositoryRoot } from './cross-platform.mjs'
+import { describeScratchRoot, removeScratchRoot } from './scratch-root.mjs'
 
 assert.ok(process.argv[2], 'Usage: verify-standalone-archive.mjs <archive-directory>')
 const notarized = process.argv[3] === '--notarized'
@@ -32,6 +33,7 @@ assert.equal(statSync(archiveFile).size, metadata.artifact.bytes)
 const root = mkdtempSync(path.join(os.tmpdir(), 'notifai-archive-install-')), home = path.join(root, 'home')
 mkdirSync(home)
 const windows = process.platform === 'win32', extension = windows ? '.exe' : ''
+let report, failure
 try {
   const extracted = await extractReleaseArchive({ distribution, signedInventory, target: nativeTarget,
     bytes: readFileSync(archiveFile), parent: path.join(root, 'extracted') })
@@ -69,8 +71,22 @@ try {
   assert.deepEqual(checked.build, metadata.build, 'Installed executable differs from checked archive identity')
   const size = directory => readdirSync(directory, { withFileTypes: true }).reduce((total, entry) => total +
     (entry.isDirectory() ? size(path.join(directory, entry.name)) : statSync(path.join(directory, entry.name)).size), 0)
-  process.stdout.write(`${JSON.stringify({ ok: true, target: nativeTarget, build: metadata.build, archive_sha256: metadata.artifact.sha256,
+  report = `${JSON.stringify({ ok: true, target: nativeTarget, build: metadata.build, archive_sha256: metadata.artifact.sha256,
     archive_bytes: metadata.artifact.bytes, installed_bytes: size(path.join(home, '.notifai')),
     checks: ['signed-archive-extraction', 'real-candidate-admission', 'fresh-managed-activation', 'mixed-bootstrap-reuse', 'installed-identity-without-runtime-path',
-      ...(notarized ? ['raw-code-notarization'] : [])] })}\n`)
-} finally { rmSync(root, { recursive: true, force: true }) }
+      ...(notarized ? ['raw-code-notarization'] : [])] })}\n`
+} catch (error) {
+  failure = error
+  console.error('Archive verification failed:', error)
+}
+// Cleanup can never replace the check's result: a failed check has already
+// reported its own error, and a directory that will not go away fails the run
+// naming what still holds it.
+const cleanup = removeScratchRoot(root)
+if (!cleanup.removed) console.error(describeScratchRoot(root, cleanup))
+else if (cleanup.attempts > 1) {
+  console.error(`Removed ${root} on attempt ${cleanup.attempts}; the first failed with ${cleanup.first.error?.message ?? cleanup.first.error}` +
+    ` and left ${cleanup.first.remaining.length === 0 ? 'nothing inside it' : cleanup.first.remaining.join(', ')}`)
+}
+if (failure === undefined && cleanup.removed) process.stdout.write(report)
+else process.exitCode = 1
