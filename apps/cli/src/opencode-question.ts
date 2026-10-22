@@ -53,7 +53,6 @@ import readline from 'node:readline'
 import type { Readable, Writable } from 'node:stream'
 import {
   CAPABILITIES_V1,
-  NOTIFICATION_IMAGE_MAX_BYTES,
   validateDraft,
   type ListRepliesResponse,
   type MediaItemT,
