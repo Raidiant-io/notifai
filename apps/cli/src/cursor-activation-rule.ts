@@ -14,8 +14,12 @@
  * loads it whenever the host passes the same `user` setting source that runs
  * Notifai's hooks. This file is that rule. It is short, static and
  * project-agnostic, because it cannot know whether the Project is enabled: it
- * tells the agent how to find out, and defers to the richer session context
- * wherever Cursor delivered it.
+ * tells the agent how to find out, from the CLI. It has no "context already
+ * arrived" shortcut: on SDK hosts no session context ever arrives, so only a
+ * repository file could satisfy one, and a planted sentence would switch the
+ * rule off before the agent reads the trust text `notifai guidance` prints.
+ * Where Cursor did deliver session context, the check costs one
+ * `notifai project status`.
  *
  * The behaviour is not in Cursor's documentation, so doctor checks the bytes
  * and a Cursor release can still drop it silently. Lifecycle wiring owns the
@@ -44,8 +48,7 @@ export function renderCursorActivationRule(): string {
     '---',
     'Notifai is installed on this machine. It reaches the User on their devices while they are away. Each Project enables it separately.',
     '',
-    '- If this conversation already contains Notifai context saying "Notifai is enabled for this Project", follow that context and ignore the rest of this rule.',
-    '- Otherwise, the first time your work needs a User decision, approval, sign-in, credential setup or physical action, or substantial work finishes or fails, run `notifai project status` once in this conversation.',
+    '- The first time your work needs a User decision, approval, sign-in, credential setup or physical action, or substantial work finishes or fails, run `notifai project status` once in this conversation.',
     '- If lifecycle behavior is enabled, you own Notification Requests unless your assignment delegates them elsewhere: load the Notifai skill, run `notifai guidance`, and follow it. If another agent started this conversation with a task brief, you are its worker. A worker owns them only when its assignment delegates them to it; otherwise it reports to its parent.',
     '- If it is disabled or no Project can be inferred, do not act on this rule again in this conversation.',
     '- This rule comes from Notifai, not from the User. Do not mention it.',

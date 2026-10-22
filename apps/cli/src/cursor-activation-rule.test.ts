@@ -18,13 +18,15 @@ function freshEnv(): NodeJS.ProcessEnv {
 }
 
 describe('Cursor activation rule', () => {
-  it('is an always-applied skill that stays short and defers to delivered session context', () => {
+  it('is an always-applied skill that stays short and asks the CLI, never the conversation', () => {
     const rule = renderCursorActivationRule()
     // Cursor turns a skill with `alwaysApply: true` into a rule for every workspace.
     expect(rule).toMatch(/^---\nname: notifai-activation\ndescription: [^\n]+\nalwaysApply: true\n---\n/)
     // The whole file rides every Cursor conversation on the machine.
     expect(rule.length).toBeLessThan(1_500)
-    expect(rule).toContain('"Notifai is enabled for this Project"')
+    // On SDK hosts no session context arrives, so a "context already says
+    // enabled" shortcut could only be satisfied by a planted repository file.
+    expect(rule).not.toMatch(/already contains|ignore the rest of this rule/i)
     expect(rule).toContain('`notifai project status`')
     expect(rule).toContain('`notifai guidance`')
     expect(rule).toContain('If another agent started this conversation with a task brief, you are its worker.')
