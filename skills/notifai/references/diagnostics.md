@@ -33,6 +33,9 @@ OpenCode form that stayed in the terminal logs the stage `picker-terminal-only`
 or `form-terminal-only` with a `reason` of its own, such as `not-signed-in`;
 an OpenCode form refused before it opened logs `form-refused`, or
 `form-refused-unlinkable` for a shape the devices cannot show.
+A routed picker whose shape cannot reach devices logs `form-refused-unlinkable`;
+its tool error names `notifai ask --wait` instead. A waiting hand-back's
+different picker logs `picker-refused` and names the exact input to open.
 `question-notifications-off` is the one the user deliberately never sees, which
 is why it is worth ruling out before concluding anything is broken.
 

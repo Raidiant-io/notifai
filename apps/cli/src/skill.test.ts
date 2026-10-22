@@ -659,7 +659,8 @@ describe('Notifai agent skill', () => {
       expect(harnessFile(name).replace(/\s+/g, ' ')).not.toMatch(/Project (is|that is) not enabled|in an enabled Project; never|needs an enabled Project/i)
     }
     // A disabled Project keeps every self-opened form in the terminal.
-    expect(loose(harnessFile('claude-code'))).toMatch(/A picker stays in the terminal when question notifications are off, the machine is not signed in, the User disabled this project, Notifai cannot carry its shape, or it runs on Windows/)
+    expect(loose(harnessFile('claude-code'))).toMatch(/A picker stays in the terminal when question notifications are off, the machine is not signed in, the User disabled this project, or it runs on Windows/)
+    expect(loose(harnessFile('claude-code'))).toMatch(/a picker Notifai cannot carry is refused before it opens: run `notifai ask --wait`/)
     expect(loose(harnessFile('opencode'))).toMatch(/reaches the User's devices by itself; never also register it/)
     expect(loose(harnessFile('opencode'))).toMatch(/A form on a signed-out machine, with question notifications off, or in a project the User disabled stays in OpenCode only/)
     // A form the devices cannot show is refused before it opens, so none is named as staying local.

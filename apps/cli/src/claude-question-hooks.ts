@@ -605,6 +605,7 @@ export async function claudePermissionRequest(
     const cwd = envelope.cwd ?? deps.cwd
     const config = loadConfig({ cwd, env: deps.env, sessionId })
     if (projectDisabled(projectBinding(cwd, deps.env, config.project.value))) return terminalOnly('project-disabled')
+    if (!config.ask_notifications.value) return terminalOnly('question-notifications-off')
   } catch {
     return terminalOnly('config-invalid')
   }
@@ -616,11 +617,17 @@ export async function claudePermissionRequest(
     return terminalOnly('session-not-live')
   }
   if (readSessionState(sessionId, deps.env).harness !== 'claude-code') return terminalOnly('session-not-admitted')
+  if (deps.store.load() === null) return terminalOnly('not-signed-in')
   const picker = pickerQuestions(envelope.tool_input)
   const digest = pickerDigest(envelope.tool_input)
-  if (picker === null || digest === null) return terminalOnly('not-a-picker')
-  const handedBack = linkHandedBackPicker(deps, envelope, sessionId, incarnation.key, picker, logger)
+  const handedBack = linkHandedBackPicker(deps, envelope, sessionId, incarnation.key, picker ?? [], logger)
   if (handedBack === 'refused') return 'refused'
+  const shape = picker === null ? null : pickerForm(picker)
+  if (picker === null || digest === null || shape === null || 'error' in shape) {
+    deps.io.out(pickerDeniedDecision('Notifai cannot carry this picker to the User\'s devices. Run `notifai ask --wait` for this question instead: it registers the question and tells you how to wait.'))
+    logger.info('hook.gate', { hook: 'permission-request', reason: 'unsupported-picker', stage: 'form-refused-unlinkable' })
+    return 'refused'
+  }
   const registered = handedBack ?? registerPickerQuestion(deps, envelope, sessionId, incarnation.key, picker, logger)
   if ('reason' in registered) return terminalOnly(registered.reason, registered.detail)
   const questionId = registered.questionId

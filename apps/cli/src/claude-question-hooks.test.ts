@@ -1,5 +1,5 @@
 import { execFileSync, spawn } from 'node:child_process'
-import { mkdtempSync, rmSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import type { ClaimDeliveryAttemptRequestT, RecordHarnessAnswerResponse, ReplyAnswerT } from '@raidiant/notifai-protocol'
@@ -32,6 +32,7 @@ import {
 } from './claude-question-hooks.js'
 import { CLAUDE_HANDBACK_HOLD_MS, decideHandBack, handBackInput, recordHandBack, type ClaudePickerInput } from './claude-picker-handback.js'
 import { ApiCallError, type ApiClient } from './client.js'
+import { globalConfigPath } from './config.js'
 import { hookRunCommand } from './commands-hook-run.js'
 import type { CommandDeps } from './commands-core.js'
 import { markNativeQuestionsDismissed, type CodexQuestionRegistration } from './codex-question-bindings.js'
@@ -961,16 +962,37 @@ describe('Claude Code picker hooks', () => {
 
     const h = setup()
     expect(await claudePermissionRequest(h.deps, h.envelope(ENVIRONMENT, { agent_id: 'agent-1' }), h.logger)).toBe('not-bound')
-    expect(await claudePermissionRequest(h.deps, h.envelope(picker([{ question: 'One?', labels: ['Only'] }])), h.logger)).toBe('not-bound')
-    expect(await claudePermissionRequest(h.deps, h.envelope({ command: 'ls' }), h.logger)).toBe('not-bound')
     expect(await claudePermissionRequest(h.deps, h.envelope(ENVIRONMENT, { tool_name: 'Bash' }), h.logger)).toBe('not-bound')
-    expect(h.gates.map(gate => gate['reason'])).toEqual(['subagent', 'unsupported-picker', 'not-a-picker'])
+    expect(h.gates.map(gate => gate['reason'])).toEqual(['subagent'])
     expect(h.output).toEqual([])
     expect(h.state().pending).toBeUndefined()
     expect(h.state().claude_picker).toBeUndefined()
     expect(h.launches).toEqual([])
     const durable = readLogRecords(h.env, { event: ['hook.gate'] })
-    expect(durable.records.map(record => record.data?.['reason'])).toEqual(['subagent', 'unsupported-picker', 'not-a-picker'])
+    expect(durable.records.map(record => record.data?.['reason'])).toEqual(['subagent'])
+  })
+
+  it('refuses unsupported shapes before registration only when the root session can route questions', async () => {
+    const unsupported = picker([{ question: 'One?', labels: ['Only'] }])
+    for (const enabled of [true, false]) {
+      const routed = setup({ enabled })
+      expect(await claudePermissionRequest(routed.deps, routed.envelope(unsupported), routed.logger)).toBe('refused')
+      expect(JSON.parse(routed.output[0]!).hookSpecificOutput.decision).toMatchObject({ behavior: 'deny', message: expect.stringContaining('notifai ask --wait') })
+      expect(routed.gates.at(-1)).toMatchObject({ stage: 'form-refused-unlinkable', reason: 'unsupported-picker' })
+      expect(routed.state().pending).toBeUndefined()
+    }
+    const signedOut = setup({ signedIn: false })
+    const disabled = setup()
+    disableProject(projectBinding(disabled.root, disabled.env)!)
+    const questionsOff = setup()
+    const config = globalConfigPath(questionsOff.env)
+    mkdirSync(path.dirname(config), { recursive: true })
+    writeFileSync(config, 'ask_notifications = false\n')
+    for (const terminal of [signedOut, disabled, questionsOff]) {
+      expect(await claudePermissionRequest(terminal.deps, terminal.envelope(unsupported), terminal.logger)).toBe('not-bound')
+      expect(terminal.output).toEqual([])
+      expect(terminal.state().pending).toBeUndefined()
+    }
   })
 
   it('still delivers a device answer that the terminal overtook or the picker never confirmed', async () => {
