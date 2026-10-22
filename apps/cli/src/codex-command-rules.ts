@@ -21,8 +21,10 @@
  * - A `prefix_rule` matches only a literal `notifai …` argument list. Codex
  *   splits a `bash -lc` script into commands only when it is plain words
  *   joined by `&&`, `||`, `;` or `|`; redirection, heredocs, `$(…)` and
- *   `VAR=…` leave the whole script unmatched. The skill therefore passes a
- *   Markdown body by file path, never by heredoc.
+ *   `VAR=…` leave the whole script unmatched, and so does a quoted value
+ *   that is not one plain string, such as `'It'\''s'` or `"$HOME"`. The skill
+ *   therefore passes every text value, a Markdown body included, inline in
+ *   single quotes, with real line breaks inside them.
  * - The most restrictive decision wins, so a managed `forbidden` rule beats
  *   this file. `doctor` reports that as the organization's choice.
  */
@@ -51,6 +53,9 @@ export const CODEX_ALLOWED_COMMANDS: readonly string[] = [
 
 /** First line of the file; ownership evidence, since Codex rules carry no marker. */
 export const CODEX_COMMAND_RULES_HEADER = '# Notifai command rules. Written by `notifai init --codex-commands`; removed by `notifai hooks uninstall --harness codex`.'
+
+/** Every command the file allows, as the consent and readiness text names them. */
+export const CODEX_COMMANDS_PROSE = `${[...CODEX_ALLOWED_COMMANDS, 'guidance'].join(', ')} and session rename`
 
 const CODEX_COMMAND_RULES_FILE_NAME = 'notifai.rules'
 
@@ -353,7 +358,7 @@ export function codexCommandReadiness(input: CodexCommandReadinessInput): Readin
     return {
       ...base,
       status: 'ready',
-      detail: `Codex may run the Notifai send, ask, receive and acknowledge commands outside its sandbox without asking first (${inspection.file}); no \`codex\` executable here to re-check the rule`,
+      detail: `Codex may run the Notifai ${CODEX_COMMANDS_PROSE} commands outside its sandbox without asking first (${inspection.file}); no \`codex\` executable here to re-check the rule`,
       technical: { ...technical, verified: false },
     }
   }
@@ -402,7 +407,7 @@ export function codexCommandReadiness(input: CodexCommandReadinessInput): Readin
   return {
     ...base,
     status: 'ready',
-    detail: `Codex runs the Notifai send, ask, receive and acknowledge commands outside its sandbox without asking first (${inspection.file}${verified ? ', re-checked with `codex execpolicy check`' : ''})`,
+    detail: `Codex runs the Notifai ${CODEX_COMMANDS_PROSE} commands outside its sandbox without asking first (${inspection.file}${verified ? ', re-checked with `codex execpolicy check`' : ''})`,
     technical: { ...technical, verified },
   }
 }

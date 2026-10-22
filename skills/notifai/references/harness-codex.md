@@ -142,9 +142,10 @@ The rule has three limits, and readiness names each:
   not ask. Never suggest ending that session while one of its questions is
   waiting, because closing the session expires the question.
 - Only a literal `notifai …` argument list matches. Call `notifai` by name,
-  never by absolute path or `node …/main.js`, and never through redirection, a
-  heredoc, `$()` or `VAR=…`: Codex cannot split such a script, so nothing
-  matches and the command stays in the sandbox.
+  never by absolute path or `node …/main.js`, with every value in plain single
+  quotes as the skill's Send section writes it. Never use redirection, a
+  heredoc, a pipe, `$()`, `VAR=…` or an escaped `'\''`: Codex cannot split such
+  a script, so nothing matches and the command stays in the sandbox.
 - Rules are experimental, and the most restrictive rule wins. When readiness
   says the rule check fails, or that your organization forbids it, approve
   Notifai commands when Codex asks; hooks keep working.

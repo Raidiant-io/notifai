@@ -109,7 +109,7 @@ export function hasAccidentalEscapedNewlines(body: string): boolean {
 export function accidentalEscapedNewlineMessage(): string {
   return [
     'This body contains the two-character sequence \\n, which is sent literally and shows as \\n on the device.',
-    'To send a real line break, pass a multiline --body or --body-file -.',
+    "To send a real line break, put the line break itself inside the single-quoted --body '...'.",
     'If you meant the visible characters \\n, pass --literal-backslash-n.',
   ].join('\n')
 }
@@ -531,11 +531,11 @@ function oneLine(text: string): string {
 /** Message shared by every surface that accepts choice labels. */
 export const CHOICE_USAGE =
   'Offer 2-6 answers, one --choice flag per answer, unique once slugified — ' +
-  'e.g. --choice "Yes, ship it" --choice "Not yet".'
+  "e.g. --choice 'Yes, ship it' --choice 'Not yet'."
 
 const CHOICE_DESCRIPTION_USAGE =
   'Put each --choice-description right after the --choice it describes, at most one per choice — ' +
-  'e.g. --choice "Deploy now" --choice-description "Two minutes of downtime." --choice "Wait".'
+  "e.g. --choice 'Deploy now' --choice-description 'Two minutes of downtime.' --choice 'Wait'."
 
 export function slugify(label: string): string {
   return label

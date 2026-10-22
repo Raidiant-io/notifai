@@ -56,15 +56,20 @@ outside the repository), no flag writes this machine, and `--yes` skips the
 CLI's confirmation once the User approved the value and layer:
 
 ```bash
-notifai guidance set when-to-notify "Only when you're blocked or CI-length work finishes" --local --yes
+notifai guidance set when-to-notify 'Only when you’re blocked or CI-length work finishes' --local --yes
 ```
 
 ## Send
 
+Quote every text value in single quotes. The shell expands nothing inside
+them, no `$` and no backtick, and the command stays one plain `notifai …`
+command, which is what harness approval rules match. Inside them, write an
+apostrophe as ’.
+
 ```bash
 notifai send --kind done \
-  --title "Users can now create accounts" \
-  --summary "Sign-up, verification, and login now work on staging."
+  --title 'Users can now create accounts' \
+  --summary 'Sign-up, verification, and login now work on staging.'
 ```
 
 `--kind` is required and decides how insistently it arrives. **Declare the
@@ -89,13 +94,10 @@ guidance, with worked examples in [Writing examples](references/writing-examples
   the Summary says, then the detail; focused views show the Body or the
   Summary, never both. Omit it when the Summary suffices.
 
-Pass a Body that has Markdown, line breaks, backticks, `$` or quotes as a file:
-write it in the system temp directory, never the repository, and pass
-`--body-file <path>`. Command-approval rules match only a plain `notifai …`
-argument list, and inside quotes the shell expands `$` and backticks. Images
-(`--image`, referenced in the Body as `![alt](media:1)`), grouping, replacement and
-the User-owned `--sound`, `--level` and `--device`:
-[Sending details](references/send-details.md).
+Pass the Body inline as `--body '…'`, with real line breaks inside the quotes;
+it needs no file. Images (`--image`, referenced in the Body as
+`![alt](media:1)`), grouping, replacement and the User-owned `--sound`,
+`--level` and `--device`: [Sending details](references/send-details.md).
 
 Project and Agent Session are inferred; never pass `--session-id`. Outside a
 Project, or on a Projectless request, pass `--projectless`; it stops cwd or
@@ -115,7 +117,7 @@ Pass the same `--session-label` on every send and ask; to rename, use
 
 At each change of job, check whether the name still describes the work. If the
 job changed completely enough that the old name would mislead the User, run
-`notifai session rename "New job"` as you start it, without waiting for a
+`notifai session rename 'New job'` as you start it, without waiting for a
 notification or User reminder, and pass the new name as `--session-label` from
 then on. Keep the name for milestones, ordinary progress, and same-job
 refinements. The command takes no Agent Session id: the active harness must
@@ -140,11 +142,11 @@ Ask the way you would without Notifai:
   User's devices.
 
 ```bash
-notifai ask "Deploy the schema change to production now?" \
-  --title "Production deploy" \
-  --choice "Deploy now" --choice-description "About two minutes of downtime." \
-  --choice "Wait for off-peak" --choice-description "Deploys at 02:00 UTC, no downtime." \
-  --recommended "Wait for off-peak"
+notifai ask 'Deploy the schema change to production now?' \
+  --title 'Production deploy' \
+  --choice 'Deploy now' --choice-description 'About two minutes of downtime.' \
+  --choice 'Wait for off-peak' --choice-description 'Deploys at 02:00 UTC, no downtime.' \
+  --recommended 'Wait for off-peak'
 ```
 
 The positional question is the Summary: the exact question, at most 240
@@ -153,9 +155,10 @@ Offer 2-6 closed choices, one `--choice` each (commas are literal), each
 followed by its `--choice-description` when the label alone does not say what
 it does. Companion Apps show a description on its choice, so
 never restate the choices in the Body. The User can always type an answer
-instead. Add `--body-file` for standalone Markdown reasoning, `--image` for
-evidence, `--multi` when several choices may combine, or `--form <path>` for up
-to 10 questions decided together ([format](references/send-details.md)).
+instead. Add `--body '…'` for standalone Markdown reasoning, `--image` for
+evidence, `--multi` when several choices may combine, or `--form '{…}'` with
+the form's JSON for up to 10 questions decided together
+([format](references/send-details.md)).
 Register independent questions separately, and never register an open
 question again.
 
@@ -216,7 +219,7 @@ arrives through Notifai owes one acknowledgement before the work it unblocks.
 The context it arrives with gives the exact command:
 
 ```bash
-notifai acknowledge <request_id> --text "<the concrete work this reply sets in motion>"
+notifai acknowledge <request_id> --text '<the concrete work this reply sets in motion>'
 ```
 
 Keep the text under 200 characters. When acknowledgement text is off,

@@ -98,19 +98,19 @@ it opens: run `notifai ask --wait` for that question instead.
 
 ## Command approval
 
-In its default permission mode Claude Code asks before each Bash command it has
-no permission rule for. A question, its wake-up and its acknowledgement are all
-commands, so an away User's first question can wait at a terminal approval
-nobody sees. Readiness reports this as `claude-commands` once Claude Code is
-wired; it never blocks setup.
+Claude Code checks each Bash command against its permission rules. With no
+rule for a Notifai command, `default` and `acceptEdits` ask at the terminal,
+`dontAsk` refuses the command, and `auto` (and `plan`, where auto mode is
+available) leaves it to a classifier that can block it. A question, its
+wake-up and its acknowledgement are all commands, so an away User's first
+question can wait at an approval nobody sees, or never leave. Readiness
+reports this as `claude-commands` once Claude Code is wired; it never blocks
+setup.
 
-The offer depends on the session's permission mode. In `default` mode, outside
-Claude Code, or before any hook has reported a mode (as in first-time setup),
-`claude-commands` carries a remedy. In `auto`, `acceptEdits`, `plan`,
-`bypassPermissions` or any other known mode it reads `not applicable` with no
-remedy: do not offer the rules, do not ask the User about them, and do not run
-the command. With the remedy present, or during first-time setup before Claude
-Code is wired, on the User's yes:
+Only in `bypassPermissions`, which runs every command unasked, are the rules
+not needed: there `claude-commands` reads `not needed` with no remedy. In every
+other mode, outside Claude Code, and during first-time setup, it carries a
+remedy. On the User's yes:
 
 ```bash
 notifai init --claude-commands --json
@@ -122,7 +122,12 @@ That adds allow rules to the User's Claude Code settings for `send`, `ask`,
 keep their prompt. `notifai hooks uninstall` removes the rules with the wiring.
 Never add them unasked, and never edit Claude Code's permission settings by hand.
 If setup reports that the rules were not added, it says why in one line: relay
-that to the User and do not retry.
+that to the User and do not retry. `dontAsk` refuses the setup command itself:
+give it to the User to run in a terminal.
+
+The rules match one plain `notifai …` command written as the skill's Send
+section writes it. A leading `VAR=value`, or a file written for the command,
+gets its own approval.
 
 ## After a Notifai update
 

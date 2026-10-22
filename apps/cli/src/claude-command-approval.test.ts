@@ -4,6 +4,7 @@ import path from 'node:path'
 import { describe, expect, it } from 'vitest'
 import {
   CLAUDE_COMMAND_RULES,
+  CLAUDE_COMMANDS_PROSE,
   addClaudeCommandRules,
   claudeCommandReadiness,
   claudeCommandsNotWritten,
@@ -62,20 +63,28 @@ describe('Claude Code command rules', () => {
 describe('Claude Code command approval readiness', () => {
   const offer = { by: 'cli', command: 'notifai init --claude-commands' }
 
-  it('offers the rules at a terminal outside Claude Code and in a default-mode session', () => {
-    for (const context of [null, { permissionMode: 'default' }]) {
+  // Every mode but bypassPermissions asks, refuses (dontAsk) or leaves the
+  // command to a reviewer (auto, plan) when no rule matches; a matching rule
+  // runs it at once in each of them.
+  it.each([null, 'default', 'acceptEdits', 'plan', 'dontAsk', 'auto', 'someFutureMode'])('offers the rules in %s mode', (mode) => {
+    for (const context of mode === null ? [null, { permissionMode: null }] : [{ permissionMode: mode }]) {
       const state = claudeCommandReadiness(false, context)
       expect(state).toMatchObject({ id: 'claude-commands', status: 'optional-gap', remedy: offer, harnesses: ['claude-code'] })
-      expect(state.detail).toContain('default mode')
+      expect(state.detail).toMatch(/^not granted/)
     }
   })
 
-  it.each(['auto', 'acceptEdits', 'plan', 'bypassPermissions', 'dontAsk'])('reports the rules as not applicable in %s mode, with no offer', (mode) => {
-    const state = claudeCommandReadiness(false, { permissionMode: mode })
-    expect(state).toMatchObject({ status: 'ready', technical: { permission_mode: mode, applicable: false } })
+  it('reports the rules as not needed only in bypassPermissions mode, with no offer', () => {
+    const state = claudeCommandReadiness(false, { permissionMode: 'bypassPermissions' })
+    expect(state).toMatchObject({ status: 'ready', technical: { permission_mode: 'bypassPermissions', applicable: false } })
     expect(state.remedy).toBeUndefined()
-    expect(state.detail).toContain(`\`${mode}\``)
-    expect(state.detail).toMatch(/^not applicable/)
+    expect(state.detail).toMatch(/^not needed in this session's `bypassPermissions` permission mode/)
+  })
+
+  it('names every command the rules allow wherever it asks for or reports them', () => {
+    const commands = [...new Set(CLAUDE_COMMAND_RULES.map((rule) => /^Bash\(notifai ([a-z ]+?)( \*)?\)$/.exec(rule)![1]!))]
+    expect(CLAUDE_COMMANDS_PROSE).toBe(`${commands.slice(0, -1).join(', ')} and ${commands.at(-1)}`)
+    expect(claudeCommandReadiness(true, null).detail).toContain(CLAUDE_COMMANDS_PROSE)
   })
 
   it('offers the rules inside a session nothing names a mode for, as in first-time setup', () => {
@@ -115,9 +124,9 @@ describe('Claude Code command approval readiness', () => {
   })
 
   it('says plainly why an explicit yes added nothing', () => {
-    const notApplicable = claudeCommandReadiness(false, { permissionMode: 'auto', source: 'launch' })
+    const notApplicable = claudeCommandReadiness(false, { permissionMode: 'bypassPermissions', source: 'launch' })
     expect(claudeCommandsNotWritten(notApplicable, false, false)).toBe(
-      "Claude Code command approval was not added: this session runs in Claude Code's `auto` permission mode, and the approval is only for its default mode. To add it, run `notifai init --claude-commands` from a terminal or from a Claude Code session in its default mode.",
+      "Claude Code command approval was not added: this session runs in Claude Code's `bypassPermissions` permission mode, which runs every command without asking. To add it for the other modes, run `notifai init --claude-commands` from a terminal or from a Claude Code session in another mode.",
     )
     expect(claudeCommandsNotWritten(undefined, false, false)).toMatch(/^Claude Code command approval was not added: Notifai is not set up for Claude Code/)
     expect(claudeCommandsNotWritten(claudeCommandReadiness(false, null), false, false)).toMatch(/setup stopped before it got there/)

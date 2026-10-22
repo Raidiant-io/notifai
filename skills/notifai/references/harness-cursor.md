@@ -32,6 +32,15 @@ can come back later: ask with `notifai ask --wait` in the foreground, and let
 it run until it returns with the answer or says the question ended.
 `notifai doctor` reports that as a Cursor limit, not a fault to repair.
 
+## Command approval
+
+Cursor can hold a Notifai command for approval: Notifai needs the network,
+which Cursor's sandbox blocks, so the command runs outside it, where Cursor's
+run mode decides whether to ask; `cursor-agent` asks for each command not on
+its allowlist. An away User never sees that approval. Notifai writes no
+Cursor rules: the User can allow the Notifai commands in Cursor's approval
+settings. Never change those yourself.
+
 ## After a Notifai update
 
 The hooks call the updated CLI, and refreshing the hooks also rewrites the
