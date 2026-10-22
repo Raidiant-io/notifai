@@ -105,7 +105,7 @@ export function assertNpmMaintenanceQuiet(input: {
 export const WINDOWS_NPM_READER_CENSUS = String.raw`
 $ErrorActionPreference = 'Stop'
 $PSModuleAutoLoadingPreference = 'None'
-foreach ($module in @('Microsoft.PowerShell.Management', 'Microsoft.PowerShell.Utility', 'CimCmdlets')) {
+foreach ($module in @('Microsoft.PowerShell.Utility', 'CimCmdlets')) {
   Import-Module ([IO.Path]::Combine($PSHOME, 'Modules', $module, ($module + '.psd1'))) -ErrorAction Stop
 }
 $inputScope = [Environment]::GetEnvironmentVariable('NOTIFAI_NPM_CENSUS') | ConvertFrom-Json
@@ -114,45 +114,53 @@ foreach ($directory in @($inputScope.prefix) + @($inputScope.state_roots)) {
     throw 'Repair supports fixed local storage; shared or unestablished storage remains pending'
   }
 }
-Add-Type -TypeDefinition @'
-using System;
-using System.Runtime.InteropServices;
-using System.Text;
-public static class NotifaiReaderArguments {
-  [DllImport("shell32.dll", CharSet=CharSet.Unicode, SetLastError=true)]
-  static extern IntPtr CommandLineToArgvW(string line, out int count);
-  [DllImport("kernel32.dll")] static extern IntPtr LocalFree(IntPtr memory);
-  [DllImport("kernel32.dll", CharSet=CharSet.Unicode)]
-  static extern uint GetLongPathName(string input, StringBuilder output, uint size);
-  public static string[] Parse(string line) {
-    int count; IntPtr memory = CommandLineToArgvW(line, out count);
-    if (memory == IntPtr.Zero) throw new InvalidOperationException("Cannot inspect scoped process arguments");
-    try {
-      var result = new string[count];
-      for (int i=0; i<count; i++) result[i] = Marshal.PtrToStringUni(Marshal.ReadIntPtr(memory, i * IntPtr.Size));
-      return result;
-    } finally { LocalFree(memory); }
-  }
-  public static string LongPath(string value) {
-    var buffer = new StringBuilder(32768);
-    uint count = GetLongPathName(value, buffer, (uint)buffer.Capacity);
-    return count > 0 && count < buffer.Capacity ? buffer.ToString() : value;
-  }
+# Bind the two Win32 calls directly. Add-Type would start the C# compiler and
+# load a new assembly on every census, a cost that grows on a cold machine.
+$nativeType = [AppDomain]::CurrentDomain.DefineDynamicAssembly([Reflection.AssemblyName]::new('NotifaiReaderNative'),
+  [Reflection.Emit.AssemblyBuilderAccess]::Run).DefineDynamicModule('NotifaiReaderNative').DefineType('NotifaiReaderNative', 'Public, Abstract, Sealed')
+foreach ($signature in @(
+    @('shell32.dll', 'CommandLineToArgvW', [IntPtr], @([string], [int].MakeByRefType())),
+    @('kernel32.dll', 'LocalFree', [IntPtr], @([IntPtr])),
+    @('kernel32.dll', 'GetLongPathNameW', [uint32], @([string], [Text.StringBuilder], [uint32])))) {
+  $nativeType.DefinePInvokeMethod($signature[1], $signature[0], 'Public, Static, PinvokeImpl', 'Standard', $signature[2], [Type[]]($signature[3]),
+    'Winapi', 'Unicode').SetImplementationFlags('PreserveSig')
 }
-'@
-function Normalize-LocalPath([string]$value) {
+$native = $nativeType.CreateType()
+function Split-CommandLine([string]$line) {
+  $count = 0; $memory = $native::CommandLineToArgvW($line, [ref]$count)
+  if ($memory -eq [IntPtr]::Zero) { throw 'Cannot inspect scoped process arguments' }
+  try {
+    $result = [string[]]::new($count)
+    for ($i = 0; $i -lt $count; $i++) { $result[$i] = [Runtime.InteropServices.Marshal]::PtrToStringUni([Runtime.InteropServices.Marshal]::ReadIntPtr($memory, $i * [IntPtr]::Size)) }
+    return $result
+  } finally { [void]$native::LocalFree($memory) }
+}
+function Get-LongPath([string]$value) {
+  $buffer = [Text.StringBuilder]::new(32768)
+  $count = $native::GetLongPathNameW($value, $buffer, [uint32]$buffer.Capacity)
+  if ($count -gt 0 -and $count -lt $buffer.Capacity) { return $buffer.ToString() }
+  return $value
+}
+function Resolve-LocalPath([string]$value) {
   if ($value.StartsWith('file:', [StringComparison]::OrdinalIgnoreCase)) {
     try { $value = ([Uri]$value).LocalPath } catch { return '' }
   }
   if ($value.StartsWith('\\?\')) { $value = $value.Substring(4) }
   if ($value -notmatch '^[a-zA-Z]:[\\/]') { return '' }
-  try { return [NotifaiReaderArguments]::LongPath([IO.Path]::GetFullPath($value)).TrimEnd('\').ToLowerInvariant() } catch { return '' }
+  try { return (Get-LongPath ([IO.Path]::GetFullPath($value))).TrimEnd('\').ToLowerInvariant() } catch { return '' }
+}
+# Many processes share an executable path. Resolve each distinct text once.
+$resolvedPaths = [Collections.Generic.Dictionary[string, string]]::new([StringComparer]::Ordinal)
+function Normalize-LocalPath([string]$value) {
+  $resolved = $null
+  if (-not $resolvedPaths.TryGetValue($value, [ref]$resolved)) { $resolved = Resolve-LocalPath $value; $resolvedPaths[$value] = $resolved }
+  return $resolved
 }
 $prefixes = @($inputScope.prefix, [IO.Path]::GetDirectoryName($inputScope.command)) | ForEach-Object { Normalize-LocalPath $_ } | Select-Object -Unique
 $packages = @($prefixes | ForEach-Object { $_ + '\node_modules\@raidiant\notifai' })
 $commands = @($prefixes | ForEach-Object { $_ + '\notifai'; $_ + '\notifai.cmd'; $_ + '\notifai.ps1' })
-function Test-PackagePath([string]$value) {
-  $candidate = Normalize-LocalPath $value
+function Test-PackagePath([string]$value) { return Test-ResolvedPackagePath (Normalize-LocalPath $value) }
+function Test-ResolvedPackagePath([string]$candidate) {
   if (-not $candidate) { return $false }
   if ($commands -contains $candidate) { return $true }
   foreach ($package in $packages) {
@@ -160,11 +168,9 @@ function Test-PackagePath([string]$value) {
   }
   return $false
 }
-function Test-DirectReader($row) {
-  if (Test-PackagePath $row.ExecutablePath) { return $true }
-  if ($row.Name -notin @('node.exe', 'bun.exe', 'deno.exe')) { return $false }
+function Test-ArgumentReader($row) {
   if (-not $row.CommandLine) { return $false }
-  $arguments = @([NotifaiReaderArguments]::Parse($row.CommandLine))
+  $arguments = @(Split-CommandLine $row.CommandLine)
   # The supported npm shims launch an absolute script. Inspect that entry and
   # preloads, not application data after it. Opaque embedded imports are outside
   # this direct-CLI assessment; scanning every interpreter cannot prove them safe.
@@ -194,16 +200,35 @@ function Test-DirectReader($row) {
 }
 $rows = @(Get-CimInstance -ClassName Win32_Process)
 if ($rows.Count -gt 4096) { throw 'Process census exceeds its bound' }
+# A producer is named by its PID and creation time, or by a recorded executable
+# that is not a shared shell or runtime. Index both once instead of per process.
+$producerStarts = @{}
+$producerExecutables = [Collections.Generic.HashSet[string]]::new([StringComparer]::InvariantCultureIgnoreCase)
+foreach ($producer in @($inputScope.producers)) {
+  $producerPid = [long]$producer.pid
+  if (-not $producerStarts.ContainsKey($producerPid)) { $producerStarts[$producerPid] = [Collections.Generic.List[object]]::new() }
+  $producerStarts[$producerPid].Add($producer.start)
+  if ([IO.Path]::GetFileName($producer.executable) -notin @('node.exe', 'bun.exe', 'deno.exe', 'powershell.exe', 'pwsh.exe', 'cmd.exe')) {
+    [void]$producerExecutables.Add((Normalize-LocalPath $producer.executable))
+  }
+}
+$hasManager = [bool]$inputScope.manager; $managerPid = $inputScope.manager.pid
+$runtimes = @('node.exe', 'bun.exe', 'deno.exe')
 $readers = [Collections.Generic.List[object]]::new(); $uncertain = $false
 foreach ($row in $rows) {
-  $named = @($inputScope.producers | Where-Object {
-    ($_.pid -eq $row.ProcessId -and $row.CreationDate -and
-     [Math]::Abs($row.CreationDate.ToUniversalTime().ToFileTimeUtc() - [long]$_.start.Substring(17)) -le 10) -or
-    ([IO.Path]::GetFileName($_.executable) -notin @('node.exe', 'bun.exe', 'deno.exe', 'powershell.exe', 'pwsh.exe', 'cmd.exe') -and
-     (Normalize-LocalPath $_.executable) -eq (Normalize-LocalPath $row.ExecutablePath))
-  }).Count -gt 0
-  $manager = $inputScope.manager -and $row.ProcessId -eq $inputScope.manager.pid
-  if (-not $manager -and -not $named -and -not (Test-DirectReader $row)) { continue }
+  # A function call costs more than every other check on an unrelated process,
+  # so the common path makes at most one.
+  $executable = $null
+  if (-not $resolvedPaths.TryGetValue([string]$row.ExecutablePath, [ref]$executable)) { $executable = Normalize-LocalPath $row.ExecutablePath }
+  $named = $producerExecutables.Contains($executable)
+  $starts = $producerStarts[[long]$row.ProcessId]
+  if ($null -ne $starts -and $row.CreationDate) {
+    $created = $row.CreationDate.ToUniversalTime().ToFileTimeUtc()
+    foreach ($start in $starts) { if ([Math]::Abs($created - [long]$start.Substring(17)) -le 10) { $named = $true } }
+  }
+  $manager = $hasManager -and $row.ProcessId -eq $managerPid
+  if (-not $manager -and -not $named -and -not ($executable -and (Test-ResolvedPackagePath $executable)) -and
+      -not ($row.Name -in $runtimes -and (Test-ArgumentReader $row))) { continue }
   try {
     # Inspect only processes tied to the assessed package/application. Inability
     # to read an unrelated program is not a reason to stop it or its workload.
@@ -222,11 +247,14 @@ foreach ($row in $rows) {
   } catch {
     # A departed process is harmless; a still-present inaccessible process is
     # uncertainty, never an empty list that can authorize replacement.
-    if (Get-Process -Id $row.ProcessId -ErrorAction SilentlyContinue) { $uncertain = $true }
+    try { [void][Diagnostics.Process]::GetProcessById($row.ProcessId); $uncertain = $true } catch [ArgumentException] {}
   }
 }
 @{readers=@($readers.ToArray()); uncertain=$uncertain} | ConvertTo-Json -Depth 4 -Compress
 `
+
+/** One census must finish inside this bound or npm repair refuses. */
+export const WINDOWS_NPM_READER_CENSUS_TIMEOUT_MS = 15_000
 
 export function inspectWindowsNpmReaders(scope: NpmMaintenanceScope, manager?: ProcessIdentity): WindowsReaderCensus {
   if (process.platform !== 'win32') throw new Error('Windows process observation is unavailable')
@@ -234,7 +262,7 @@ export function inspectWindowsNpmReaders(scope: NpmMaintenanceScope, manager?: P
   const powershell = path.join(process.env['SystemRoot'] ?? 'C:\\Windows', 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe')
   const output = execFileSync(powershell, ['-NoProfile', '-NonInteractive', '-EncodedCommand', Buffer.from(WINDOWS_NPM_READER_CENSUS, 'utf16le').toString('base64')], {
     env: { ...process.env, NOTIFAI_NPM_CENSUS: JSON.stringify({ ...scope.observation, manager }) },
-    encoding: 'utf8', windowsHide: true, timeout: 15_000, maxBuffer: 1024 * 1024, stdio: ['ignore', 'pipe', 'pipe'],
+    encoding: 'utf8', windowsHide: true, timeout: WINDOWS_NPM_READER_CENSUS_TIMEOUT_MS, maxBuffer: 1024 * 1024, stdio: ['ignore', 'pipe', 'pipe'],
   })
   const result = JSON.parse(output) as WindowsReaderCensus
   if (!result || typeof result.uncertain !== 'boolean' || !Array.isArray(result.readers) || result.readers.length > 4096 ||
