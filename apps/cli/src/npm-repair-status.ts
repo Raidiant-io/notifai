@@ -25,8 +25,8 @@ export function pendingNpmRepairs(env: NodeJS.ProcessEnv): Array<Record<string, 
         if (receipt.phase === 'complete') return null
         return { operation, status: receipt.phase, version: receipt.target.version,
           confirmation: npmReplacementConfirmation(receipt),
-          next_step: 'The responsible agent must re-establish the displayed scoped pause and resume this exact operation with install --migrate-npm --resume. Diagnosis does not authorize execution.' }
-      } catch { return { operation, status: 'uncertain', next_step: 'Inspect this incomplete repair before modifying its package or preparation; do not discard its backup.' } }
+          next_step: 'The responsible agent must re-establish the displayed scoped pause and resume this exact operation with install --migrate-npm --resume. Diagnosis does not authorize execution. Follow references/npm-migration.md in this package\'s Notifai skill.' }
+      } catch { return { operation, status: 'uncertain', next_step: 'Inspect this incomplete repair before modifying its package or preparation; do not discard its backup. Follow references/npm-migration.md in this package\'s Notifai skill.' } }
     }).filter((value): value is NonNullable<typeof value> => value !== null)
   } catch (error) {
     return (error as NodeJS.ErrnoException).code === 'ENOENT' ? [] : [{ status: 'uncertain', next_step: 'Inspect the npm repair directory before changing a legacy installation.' }]

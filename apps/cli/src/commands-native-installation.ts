@@ -205,7 +205,7 @@ export async function nativeInstallCommand(deps: CommandDeps, flags: NativeInsta
     if (legacy.collisions.length && (!flags.migrateNpm || legacy.migration === null)) {
       emit({ ok: false, code: 'installation_collision', ...installed, collisions: legacy.collisions,
         ...(legacy.migration ? { migration: legacy.migration,
-          message: 'A legacy npm installation is on PATH. Rerun with --migrate-npm to stage the native runtime while preserving that package. Its replacement needs a separate assessed maintenance operation.' }
+          message: 'A legacy npm installation is on PATH. Rerun with --migrate-npm to stage the native runtime while preserving that package. Its replacement needs a separate assessed maintenance operation. Follow references/npm-migration.md in this package\'s Notifai skill.' }
           : { message: 'Another Notifai installation is on PATH. Resolve this collision before installing; no package or shim was changed.' }) },
       legacy.migration ? 'A legacy npm installation is on PATH. Rerun with --migrate-npm to stage the native runtime while preserving the old package.'
         : 'Resolve the existing Notifai installation before installing.')

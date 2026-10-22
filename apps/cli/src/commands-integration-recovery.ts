@@ -49,7 +49,7 @@ export function integrationRecoveryCommand(deps: CommandDeps, flags: NativeInsta
     const confirmation = installation.integrationRecoveryConfirmation(operation.token)
     if (flags.quiescence === undefined) {
       emit({ ok: true, read_only: true, code: 'integration_recovery_assessed', operation, confirmation,
-        next_step: 'The responsible agent must establish a local Hermes publication pause, observe the original coordinator and all installer/wrapper/Python/git writers stopped, and preserve that pause through release. Unknown routing or unidentified descendants stays pending. Approval binds this exact reservation; matching files or a dead caller alone is insufficient.' },
+        next_step: 'The responsible agent must establish a local Hermes publication pause, observe the original coordinator and all installer/wrapper/Python/git writers stopped, and preserve that pause through release. Unknown routing or unidentified descendants stays pending. Approval binds this exact reservation; matching files or a dead caller alone is insufficient. Follow references/hermes-publication-recovery.md in this package\'s Notifai skill.' },
       'Inspect the exact host publication route and arrange its scoped pause before releasing this reservation.')
       return EXIT.ok
     }

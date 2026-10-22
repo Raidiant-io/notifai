@@ -54,7 +54,7 @@ export async function updateResumeCommand(deps: CommandDeps, flags: { json?: boo
       try { if (claimOlderHubHandover(deps.env)) deps.spawnHubHandover({ cwd: deps.cwd }) } catch { /* The next hook checks again. */ }
     }
     const npmRepairs = pendingNpmRepairs(deps.env)
-    if (npmRepairs.length) pending.push('A scoped npm repair remains pending; the responsible agent must resume its exact prepared operation after observing the approved pause.')
+    if (npmRepairs.length) pending.push('A scoped npm repair remains pending; the responsible agent must resume its exact prepared operation after observing the approved pause. Follow references/npm-migration.md in this package\'s Notifai skill.')
     const complete = filesComplete && pending.length === 0
     const result = { ok: filesComplete, read_only: false, running_version: packageVersion(),
       files_complete: filesComplete, migration_complete: complete, pending_actions: [...new Set(pending)],
@@ -174,7 +174,7 @@ export async function updateResumeCommand(deps: CommandDeps, flags: { json?: boo
       // First-time host setup is not a failed runtime update. Keep its scope
       // visible without making unrelated owned repairs depend on its outcome.
       diagnostics.push(...(publish.pending?.() ?? []).map(item =>
-        `Plugin setup remains pending at ${item.scope}; preserve its prepared source. Inspect reservation recovery with notifai install --recover-integration ${item.token} --json; the responsible agent must establish host publication quiescence before releasing it.`))
+        `Plugin setup remains pending at ${item.scope}; preserve its prepared source. Inspect reservation recovery with notifai install --recover-integration ${item.token} --json; the responsible agent must establish host publication quiescence before releasing it. Follow references/hermes-publication-recovery.md in this package\'s Notifai skill.`))
       return report(!skillGap && repairFaults.length === 0)
     })
   } catch {
