@@ -30,7 +30,9 @@ finds them days later.
 `delivery-limit`, `proceeding` —
 so filter on that, never on the wording of a message. A Claude Code picker or
 OpenCode form that stayed in the terminal logs the stage `picker-terminal-only`
-or `form-terminal-only` with a `reason` of its own, such as `not-signed-in`.
+or `form-terminal-only` with a `reason` of its own, such as `not-signed-in`;
+an OpenCode form refused before it opened logs `form-refused`, or
+`form-refused-unlinkable` for a shape the devices cannot show.
 `question-notifications-off` is the one the user deliberately never sees, which
 is why it is worth ruling out before concluding anything is broken.
 

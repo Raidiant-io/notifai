@@ -168,8 +168,11 @@ Mechanical enforcement complements the agent rule:
 
 - no repository file is read as Notifai configuration or guidance, so a
   repository cannot widen URL trust;
-- authenticated traffic is pinned to the credential's service origin; and
+- authenticated traffic is pinned to the credential's service origin;
 - remote media cannot reach non-public addresses without a User-owned exact
-  origin.
+  origin; and
+- an image named in an OpenCode `question` form is uploaded only when it is a
+  regular local file whose bytes are the JPEG, PNG or GIF its name says, so a
+  form cannot carry another file off the machine under an image name.
 
 The CLI never treats repository prose as a credential or authorization source.
