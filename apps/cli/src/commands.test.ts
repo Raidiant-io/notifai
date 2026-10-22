@@ -9792,6 +9792,82 @@ describe('asking before the hooks have ever run', () => {
     expect(io.outLines.join('\n')).not.toContain('Continue independent work')
   })
 
+  it('hands back the picker for a closed `ask --wait` in Claude Code, and the same one for a repeat', async () => {
+    const cwd = scratchDir('notifai-claude-ask-wait-picker-')
+    const io = new CapturedIo()
+    const env = { ...isolatedEnv(cwd), CLAUDECODE: '1', CLAUDE_CODE_SESSION_ID: 'claude-picker' }
+    const client = { submit: vi.fn(), replies: vi.fn() } as unknown as ApiClient
+    const deps = { ...makeDeps(io, client), cwd, env, now: () => 42, hookPlatform: 'darwin' as const, spawnQuestionSettlement: vi.fn() }
+    expect(hooksInstallCommand(deps, { harness: 'claude-code', execPath, scriptPath })).toBe(EXIT.ok)
+    beginSessionIncarnation('claude-picker', env, { stamp: lifecycleStamp(), harnessProcess: currentProcessIdentity()! })
+    writeSessionState('claude-picker', env, { harness: 'claude-code', last_prompt_at: 42, last_stop_at: 41 })
+    writeProjectSession(cwd, env, 'claude-picker', 42, 'claude-code')
+    io.outLines = []
+    const flags = { title: 'Deploy target', choice: ['Staging', 'Production'], choiceDescription: [{ after: 1, text: 'A safe rehearsal.' }],
+      recommended: ['Production'], body: 'The release window closes today.', wait: true, json: true }
+    expect(await askCommand(deps, 'Where should this deploy go?', flags)).toBe(EXIT.ok)
+    const first = JSON.parse(io.outLines.join('\n'))
+    const input = {
+      questions: [{ question: 'Where should this deploy go?', header: 'Deploy target',
+        options: [{ label: 'Production (Recommended)', description: '' }, { label: 'Staging', description: 'A safe rehearsal.' }], multiSelect: false }],
+      metadata: { source: `notifai:${first.question_id}` },
+    }
+    expect(first).toMatchObject({
+      registered: true,
+      open_form: { tool: 'AskUserQuestion', input },
+      next: {
+        end_turn: false,
+        in_this_turn: expect.stringMatching(/^Say what each answer will make you do, then open AskUserQuestion with open_form\.input unchanged, in this turn\. It is your question in the conversation: never also ask it in prose\. If AskUserQuestion is unavailable, end your turn instead/),
+      },
+    })
+    expect(first.next).not.toHaveProperty('answered_outside_notifai')
+    // The registration keeps the agent's order; only the picker puts the recommended choice first.
+    expect(readSessionState('claude-picker', env).pending?.[0]?.questions?.[0]?.choices?.map(choice => choice.label)).toEqual(['Staging', 'Production'])
+    expect(readSessionState('claude-picker', env).claude_handbacks).toEqual([{ question_id: first.question_id, at: 42 }])
+    expect(deps.spawnQuestionSettlement).toHaveBeenCalledTimes(1)
+    expect(client.submit).not.toHaveBeenCalled()
+
+    io.outLines = []
+    expect(await askCommand(deps, 'Where should this deploy go?', flags)).toBe(EXIT.ok)
+    expect(JSON.parse(io.outLines.join('\n'))).toMatchObject({
+      registered: false, already_open: { question_id: first.question_id }, open_form: { tool: 'AskUserQuestion', input }, next: { end_turn: false },
+    })
+
+    // The human output ends with the input to open, as one line.
+    io.outLines = []
+    expect(await askCommand(deps, 'Where should this deploy go?', { ...flags, json: false })).toBe(EXIT.ok)
+    expect(io.outLines.slice(-3)).toEqual([
+      'Say what each answer will make you do. Then open AskUserQuestion with this input unchanged, in this turn. It is your question in the conversation: never also ask it in prose.',
+      JSON.stringify(input),
+      'If AskUserQuestion is unavailable, end your turn instead: the answer arrives as your next message.',
+    ])
+    io.outLines = []
+    expect(await askCommand(deps, 'Which colour?', { title: 'Release colour', choice: ['Red', 'Blue'], wait: true })).toBe(EXIT.ok)
+    expect(io.outLines.slice(-3, -1)).toEqual([
+      'Then open AskUserQuestion with this input unchanged, in this turn. It is your question in the conversation: never also ask it in prose.',
+      expect.stringContaining('"header":"Release colour"'),
+    ])
+    expect(io.outLines.join('\n')).not.toContain('Ask it in the conversation')
+    expect(io.outLines.join('\n')).not.toContain('notifai close')
+
+    // What the picker cannot ask exactly, and Windows, where no picker hook runs, end the turn instead.
+    io.outLines = []
+    expect(await askCommand(deps, 'Which tier?', { title: 'Tier', choice: ['A', 'B', 'C', 'D', 'E'], wait: true, json: true })).toBe(EXIT.ok)
+    expect(JSON.parse(io.outLines.join('\n'))).toMatchObject({ next: { end_turn: true } })
+    expect(JSON.parse(io.outLines.join('\n'))).not.toHaveProperty('open_form')
+    io.outLines = []
+    const windows = { ...deps, cwd: scratchDir('notifai-claude-ask-wait-windows-'), hookPlatform: 'win32' as const }
+    windows.env = { ...isolatedEnv(windows.cwd), CLAUDECODE: '1', CLAUDE_CODE_SESSION_ID: 'claude-windows' }
+    expect(hooksInstallCommand(windows, { harness: 'claude-code', execPath, scriptPath })).toBe(EXIT.ok)
+    beginSessionIncarnation('claude-windows', windows.env, { stamp: lifecycleStamp(), harnessProcess: currentProcessIdentity()! })
+    writeSessionState('claude-windows', windows.env, { harness: 'claude-code', last_prompt_at: 42, last_stop_at: 41 })
+    writeProjectSession(windows.cwd, windows.env, 'claude-windows', 42, 'claude-code')
+    io.outLines = []
+    expect(await askCommand(windows, 'Which colour?', { title: 'Release colour', choice: ['Red', 'Blue'], wait: true, json: true })).toBe(EXIT.ok)
+    expect(JSON.parse(io.outLines.join('\n'))).toMatchObject({ registered: true, next: { end_turn: true } })
+    expect(JSON.parse(io.outLines.join('\n'))).not.toHaveProperty('open_form')
+  })
+
   it('refuses `ask --wait` in a hooked session that is not ready, and never holds it', async () => {
     // Admission comes first: a harness with a return path whose routing is not
     // ready is refused, so the wait cannot become a bypass of the hooks.

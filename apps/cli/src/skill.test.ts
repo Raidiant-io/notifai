@@ -295,9 +295,9 @@ describe('Notifai agent skill', () => {
     const wait = ask.search(/stop until they answer, run `notifai ask --wait`/i)
     expect(keepWorking).toBeGreaterThan(0)
     expect(wait).toBeGreaterThan(keepWorking)
-    // Waiting is the harness's own wait, the end of the turn. Only a wait held
-    // in the command can end unanswered.
-    expect(ask).toMatch(/end your turn, and the answer arrives as your next message/i)
+    // Waiting is the harness's own wait: a handed-back form, or the end of the
+    // turn. Only a wait held in the command can end unanswered.
+    expect(ask).toMatch(/open the question form it hands back, or end your turn; the answer arrives\s+as your next message/i)
     expect(ask).toMatch(/command\s+itself waits; if it ends unanswered\s+\(exit 3\), the question is off the\s+User's devices/i)
     expect(skill).not.toContain('send --reply')
   })
@@ -519,15 +519,16 @@ describe('Notifai agent skill', () => {
     expect(claude).toMatch(/terminal answer\*\* needs nothing from you/i)
     // `ask` carries every Claude Code question and opens no picker; a picker
     // the agent opens itself still links, titled by its heading or headers.
-    expect(claude).toMatch(/Ask every question with `notifai ask` or `notifai ask --wait`, closed choices included; neither opens a picker/)
+    expect(claude).toMatch(/Ask every question with `notifai ask` or `notifai ask --wait`, closed choices included/)
     expect(claude).not.toMatch(/use_question_picker|through the `AskUserQuestion` picker, not `notifai ask`|#question-picker/)
     expect(claude).toMatch(/picker you open on your own also reaches the User's devices, after the terminal-first delay/i)
     expect(claude).toMatch(/never also `ask` it/)
     expect(claude).toMatch(/Its heading, or else its headers, becomes the title/)
     expect(claude).toMatch(/option previews stay in the terminal/i)
     expect(claude).toMatch(/A picker Claude Code continued while the User was away\*\* is not an answer: the question stays open on their devices/)
-    // `ask --wait` hands back no picker yet; the skill says it ends the turn.
-    expect(claude).not.toMatch(/hands back/i)
+    expect(claude).toMatch(/to wait, run `notifai ask --wait`\. For a closed question of one to four questions with two to four choices each, it hands back `AskUserQuestion` picker input: open it unchanged/i)
+    expect(claude).toMatch(/until it opens, any other picker is refused before it shows, with an error that says what to do/i)
+    expect(claude).toMatch(/for free text, more choices or more questions it tells you to end your turn instead, and the answer arrives as your next message/i)
     // The User at the terminal chose to talk: continue there, never re-ask.
     expect(claude).toMatch(/Esc, "Chat about this", or a picker another hook denies\*\* withdraws the device question: continue in the conversation/i)
     // The agent learns only that a question expired, never that it was dismissed.
@@ -658,7 +659,8 @@ describe('Notifai agent skill', () => {
       expect(harnessFile(name).replace(/\s+/g, ' ')).not.toMatch(/Project (is|that is) not enabled|in an enabled Project; never|needs an enabled Project/i)
     }
     // A disabled Project keeps every self-opened form in the terminal.
-    expect(loose(harnessFile('claude-code'))).toMatch(/A picker stays in the terminal when question notifications are off, the machine is not signed in, the User disabled this project, Notifai cannot carry its shape, or it runs on Windows/)
+    expect(loose(harnessFile('claude-code'))).toMatch(/A picker stays in the terminal when question notifications are off, the machine is not signed in, the User disabled this project, or it runs on Windows/)
+    expect(loose(harnessFile('claude-code'))).toMatch(/a picker Notifai cannot carry is refused before it opens: run `notifai ask --wait`/)
     expect(loose(harnessFile('opencode'))).toMatch(/reaches the User's devices by itself; never also register it/)
     expect(loose(harnessFile('opencode'))).toMatch(/A form on a signed-out machine, with question notifications off, or in a project the User disabled stays in OpenCode only/)
     // A form the devices cannot show is refused before it opens, so none is named as staying local.

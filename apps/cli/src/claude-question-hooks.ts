@@ -1,11 +1,13 @@
 /**
  * The Claude Code hooks that make a question picker a device question.
  *
- * `PermissionRequest` runs while the picker is on screen. The handler
- * registers the picker's own questions for the User's devices, or links the
+ * `PermissionRequest` runs while the picker is on screen. The handler links a
+ * picker `notifai ask --wait` handed back to the question `ask` registered, or
+ * refuses one that is not exactly it (`claude-picker-handback.ts`). Otherwise
+ * it registers the picker's own questions for the User's devices, or links the
  * picker to the equal question this session already has open (the duplicate
- * guard in `question-guard.ts`), waits for the device answer and returns it as
- * the picker's own result; Claude Code then
+ * guard in `question-guard.ts`). It then waits for the device answer and
+ * returns it as the picker's own result; Claude Code then
  * closes the picker and the agent reads the answer as the tool's output. If
  * the terminal answers first Claude Code takes that answer and discards
  * anything this handler returns later. When the picker cannot reach devices
@@ -43,8 +45,17 @@ import {
   pickerForm,
   pickerHeading,
   pickerQuestions,
+  reserveClaudeQuestion,
   type PickerQuestion,
 } from './claude-question-bindings.js'
+import {
+  decideHandBack,
+  handBackHolds,
+  handBackShown,
+  pickerSource,
+  withoutHandBack,
+  withoutHandBacks,
+} from './claude-picker-handback.js'
 import { ApiCallError } from './client.js'
 import { CodexControlNotSent } from './codex-native-control.js'
 import { admitBoundNativeAnswer, terminateCodexQuestions, type CodexQuestionRegistration } from './codex-question-bindings.js'
@@ -147,12 +158,17 @@ function withoutCancelledPicker(state: SessionState): SessionState {
   return next
 }
 
-/** Whether a live handler is waiting to return this session's app answer through a picker. */
-export function claudePickerHolds(state: SessionState): boolean {
-  const picker = state.claude_picker
-  if (picker === undefined || processIdentityLiveness(picker.waiter) === 'gone') return false
+/**
+ * Whether this session's app answers are a picker's to return: a live handler
+ * waits on their picker, or `ask` just handed back the picker that will.
+ */
+export function claudePickerHolds(state: SessionState, now: number = Date.now()): boolean {
   const waiting = state.waiting_answers ?? []
-  return waiting.length > 0 && waiting.every((answer) => answer.pending.question_id === picker.question_id)
+  if (waiting.length === 0) return false
+  const picker = state.claude_picker
+  const live = picker !== undefined && processIdentityLiveness(picker.waiter) !== 'gone'
+  return waiting.every((answer) => (live && answer.pending.question_id === picker.question_id) ||
+    handBackHolds(state, answer.pending.question_id, now))
 }
 
 /**
@@ -212,6 +228,8 @@ export function closeClaudePicker(
   cwd?: string,
 ): void {
   const state = readSessionState(sessionId, deps.env)
+  // A hand-back waits only for the turn it was handed back in.
+  if (state.claude_handbacks !== undefined) updateSessionState(sessionId, deps.env, withoutHandBacks)
   const picker = state.claude_picker
   if (picker !== undefined) {
     updateSessionState(sessionId, deps.env, (current) =>
@@ -319,6 +337,17 @@ function pickerClosedDecision(toolInput: unknown): string {
   return pickerDecision(toolInput, {})
 }
 
+/**
+ * Refuse the picker before it shows. Claude Code closes it and gives the agent
+ * the message as the tool's error; no `PostToolUse` runs, so nothing is left
+ * to settle, and the registered question stays as it was.
+ */
+function pickerDeniedDecision(message: string): string {
+  return JSON.stringify({
+    hookSpecificOutput: { hookEventName: 'PermissionRequest', decision: { behavior: 'deny', message } },
+  })
+}
+
 type Registered = { questionId: string } | { reason: string; detail?: Record<string, unknown> }
 
 /**
@@ -397,6 +426,46 @@ function registerPickerQuestion(
     has_body: form.body !== undefined, ...(registered.registered ? {} : { linked: true }),
   })
   return { questionId }
+}
+
+/**
+ * The picker against this session's hand-backs (`claude-picker-handback.ts`):
+ * bind it to the registration `ask` made, refuse it, or, with no hand-back
+ * concerned, null for the ordinary registration. Signed out, nothing can reach
+ * the devices, so the picker is never refused there.
+ */
+function linkHandedBackPicker(
+  deps: CommandDeps,
+  envelope: HookEnvelope,
+  sessionId: string,
+  ownerKey: string,
+  picker: readonly PickerQuestion[],
+  logger: Logger,
+): Registered | 'refused' | null {
+  const credential = deps.store.load()
+  if (credential === null) return null
+  const decision = decideHandBack(readSessionState(sessionId, deps.env), envelope.tool_input, picker)
+  if (decision.kind === 'none') return null
+  if (decision.kind === 'refuse') {
+    deps.io.out(pickerDeniedDecision(decision.message))
+    logger.info('hook.gate', { hook: 'permission-request', reason: decision.reason, question_ids: [decision.questionId], stage: 'picker-refused' })
+    return 'refused'
+  }
+  const service = { base_url: credential.baseUrl, machine_id: credential.machineId }
+  let linked: string | undefined
+  updateSessionState(sessionId, deps.env, (state) => {
+    const current = decideHandBack(state, envelope.tool_input, picker)
+    if (current.kind !== 'link' || current.questionId !== decision.questionId) return state
+    linked = current.questionId
+    const bound = reserveClaudeQuestion(state, current.pending, {
+      owner_key: ownerKey, turn_id: CLAUDE_PICKER_TURN, service, picker: handBackShown(picker, current.pending.questions!),
+    })
+    return withoutHandBack(bound, current.questionId)
+  })
+  if (linked === undefined || registrationOf(readSessionState(sessionId, deps.env), linked) === undefined) return { reason: 'binding-missing' }
+  logger.info('hook.gate', { hook: 'permission-request', reason: 'linked', question_ids: [linked],
+    stage: pickerSource(envelope.tool_input) === linked ? 'picker-handback-linked' : 'picker-handback-matched' })
+  return { questionId: linked }
 }
 
 function pickerPresentation(input: {
@@ -523,7 +592,7 @@ export async function claudePermissionRequest(
   envelope: HookEnvelope,
   logger: Logger,
   seams: ClaudePickerSeams = {},
-): Promise<'answered' | 'closed' | 'left-to-terminal' | 'not-bound'> {
+): Promise<'answered' | 'closed' | 'refused' | 'left-to-terminal' | 'not-bound'> {
   const sessionId = envelope.session_id
   if (envelope.tool_name !== CLAUDE_QUESTION_TOOL || sessionId === undefined) return 'not-bound'
   const terminalOnly = (reason: string, detail: Record<string, unknown> = {}): 'not-bound' => {
@@ -536,6 +605,7 @@ export async function claudePermissionRequest(
     const cwd = envelope.cwd ?? deps.cwd
     const config = loadConfig({ cwd, env: deps.env, sessionId })
     if (projectDisabled(projectBinding(cwd, deps.env, config.project.value))) return terminalOnly('project-disabled')
+    if (!config.ask_notifications.value) return terminalOnly('question-notifications-off')
   } catch {
     return terminalOnly('config-invalid')
   }
@@ -547,10 +617,18 @@ export async function claudePermissionRequest(
     return terminalOnly('session-not-live')
   }
   if (readSessionState(sessionId, deps.env).harness !== 'claude-code') return terminalOnly('session-not-admitted')
+  if (deps.store.load() === null) return terminalOnly('not-signed-in')
   const picker = pickerQuestions(envelope.tool_input)
   const digest = pickerDigest(envelope.tool_input)
-  if (picker === null || digest === null) return terminalOnly('not-a-picker')
-  const registered = registerPickerQuestion(deps, envelope, sessionId, incarnation.key, picker, logger)
+  const handedBack = linkHandedBackPicker(deps, envelope, sessionId, incarnation.key, picker ?? [], logger)
+  if (handedBack === 'refused') return 'refused'
+  const shape = picker === null ? null : pickerForm(picker)
+  if (picker === null || digest === null || shape === null || 'error' in shape) {
+    deps.io.out(pickerDeniedDecision('Notifai cannot carry this picker to the User\'s devices. Run `notifai ask --wait` for this question instead: it registers the question and tells you how to wait.'))
+    logger.info('hook.gate', { hook: 'permission-request', reason: 'unsupported-picker', stage: 'form-refused-unlinkable' })
+    return 'refused'
+  }
+  const registered = handedBack ?? registerPickerQuestion(deps, envelope, sessionId, incarnation.key, picker, logger)
   if ('reason' in registered) return terminalOnly(registered.reason, registered.detail)
   const questionId = registered.questionId
   const now = deps.now ?? Date.now

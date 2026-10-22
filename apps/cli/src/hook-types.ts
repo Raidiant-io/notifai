@@ -213,6 +213,12 @@ export interface SessionState {
    * within the bound, the session owner withdraws the device question.
    */
   claude_picker_cancelled?: { question_id: string; digest: string; at: number }
+  /**
+   * Pickers `notifai ask --wait` handed back in this turn and not yet opened,
+   * with when each was handed back. While one waits, a picker that is not
+   * exactly it is refused (`claude-picker-handback.ts`).
+   */
+  claude_handbacks?: Array<{ question_id: string; at: number }>
   /** A content-free native wake is outstanding for this incarnation. */
   input_wake?: {
     incarnation: string; token: string; queued: boolean; writer: ProcessIdentity
@@ -376,6 +382,8 @@ export interface PendingQuestion {
    * heading, its headers or the Agent Session name. Never the question.
    */
   title?: string
+  /** With several questions, each question's own short title from `ask --form`: its header in a terminal form. */
+  headers?: string[]
   /** Purpose-written plain text for native banners and notification lists. */
   summary: string
   /**

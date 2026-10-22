@@ -1,5 +1,5 @@
 import { execFileSync, spawn } from 'node:child_process'
-import { mkdtempSync, rmSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import type { ClaimDeliveryAttemptRequestT, RecordHarnessAnswerResponse, ReplyAnswerT } from '@raidiant/notifai-protocol'
@@ -30,7 +30,9 @@ import {
   settleCancelledClaudePicker,
   takeOwedClaudePickerAnswer,
 } from './claude-question-hooks.js'
+import { CLAUDE_HANDBACK_HOLD_MS, decideHandBack, handBackInput, recordHandBack, type ClaudePickerInput } from './claude-picker-handback.js'
 import { ApiCallError, type ApiClient } from './client.js'
+import { globalConfigPath } from './config.js'
 import { hookRunCommand } from './commands-hook-run.js'
 import type { CommandDeps } from './commands-core.js'
 import { markNativeQuestionsDismissed, type CodexQuestionRegistration } from './codex-question-bindings.js'
@@ -960,16 +962,37 @@ describe('Claude Code picker hooks', () => {
 
     const h = setup()
     expect(await claudePermissionRequest(h.deps, h.envelope(ENVIRONMENT, { agent_id: 'agent-1' }), h.logger)).toBe('not-bound')
-    expect(await claudePermissionRequest(h.deps, h.envelope(picker([{ question: 'One?', labels: ['Only'] }])), h.logger)).toBe('not-bound')
-    expect(await claudePermissionRequest(h.deps, h.envelope({ command: 'ls' }), h.logger)).toBe('not-bound')
     expect(await claudePermissionRequest(h.deps, h.envelope(ENVIRONMENT, { tool_name: 'Bash' }), h.logger)).toBe('not-bound')
-    expect(h.gates.map(gate => gate['reason'])).toEqual(['subagent', 'unsupported-picker', 'not-a-picker'])
+    expect(h.gates.map(gate => gate['reason'])).toEqual(['subagent'])
     expect(h.output).toEqual([])
     expect(h.state().pending).toBeUndefined()
     expect(h.state().claude_picker).toBeUndefined()
     expect(h.launches).toEqual([])
     const durable = readLogRecords(h.env, { event: ['hook.gate'] })
-    expect(durable.records.map(record => record.data?.['reason'])).toEqual(['subagent', 'unsupported-picker', 'not-a-picker'])
+    expect(durable.records.map(record => record.data?.['reason'])).toEqual(['subagent'])
+  })
+
+  it('refuses unsupported shapes before registration only when the root session can route questions', async () => {
+    const unsupported = picker([{ question: 'One?', labels: ['Only'] }])
+    for (const enabled of [true, false]) {
+      const routed = setup({ enabled })
+      expect(await claudePermissionRequest(routed.deps, routed.envelope(unsupported), routed.logger)).toBe('refused')
+      expect(JSON.parse(routed.output[0]!).hookSpecificOutput.decision).toMatchObject({ behavior: 'deny', message: expect.stringContaining('notifai ask --wait') })
+      expect(routed.gates.at(-1)).toMatchObject({ stage: 'form-refused-unlinkable', reason: 'unsupported-picker' })
+      expect(routed.state().pending).toBeUndefined()
+    }
+    const signedOut = setup({ signedIn: false })
+    const disabled = setup()
+    disableProject(projectBinding(disabled.root, disabled.env)!)
+    const questionsOff = setup()
+    const config = globalConfigPath(questionsOff.env)
+    mkdirSync(path.dirname(config), { recursive: true })
+    writeFileSync(config, 'ask_notifications = false\n')
+    for (const terminal of [signedOut, disabled, questionsOff]) {
+      expect(await claudePermissionRequest(terminal.deps, terminal.envelope(unsupported), terminal.logger)).toBe('not-bound')
+      expect(terminal.output).toEqual([])
+      expect(terminal.state().pending).toBeUndefined()
+    }
   })
 
   it('still delivers a device answer that the terminal overtook or the picker never confirmed', async () => {
@@ -1072,6 +1095,136 @@ describe('Claude Code picker hooks', () => {
     expect(claudePickerAnswers(registration, answer, SERVICE)).toEqual({ [REWORDED]: 'Staging' })
     expect(claudePickerAnswers({ ...registration, question_id: 'q_two' }, answer, SERVICE)).toBeNull()
     expect(claudePickerAnswers(registration, answer, { ...SERVICE, machine_id: 'other' })).toBeNull()
+  })
+})
+
+describe('the picker `ask --wait` hands back', () => {
+  const QUESTION = {
+    id: 'which-environment', text: REWORDED,
+    choices: [{ id: 'staging', label: 'Staging', description: 'A safe rehearsal.' }, { id: 'production', label: 'Production', recommended: true }],
+  }
+  /** What `ask --wait` does on Claude Code: register at once, then hand back the picker that asks it. */
+  function handBack(h: ReturnType<typeof setup>): { questionId: string; input: ClaudePickerInput } {
+    const asked = registerQuestion(SESSION, h.env, { question: REWORDED, title: 'Deploy target', summary: REWORDED, body: 'Why it matters.',
+      service_identity: SERVICE, questions: [QUESTION] })
+    h.confirm(asked.question_id)
+    updateSessionState(SESSION, h.env, state => recordHandBack(state, asked.question_id, Date.now()))
+    return { questionId: asked.question_id, input: handBackInput(h.pendingOf(asked.question_id)!)! }
+  }
+  const unsourced = (input: ClaudePickerInput) => ({ questions: input.questions })
+  const denial = (h: ReturnType<typeof setup>) => h.decision().hookSpecificOutput.decision
+
+  it('asks in Claude Code\'s classic picker shape, recommended choice first and marked, named by the registration', () => {
+    const h = setup()
+    const { questionId, input } = handBack(h)
+    expect(input).toEqual({
+      questions: [{ question: REWORDED, header: 'Deploy target', multiSelect: false, options: [
+        { label: 'Production (Recommended)', description: '' }, { label: 'Staging', description: 'A safe rehearsal.' }] }],
+      metadata: { source: `notifai:${questionId}` },
+    })
+  })
+
+  it('binds the picker to the registration `ask` made and returns the device answer as the picker result', async () => {
+    const h = setup()
+    const { questionId, input } = handBack(h)
+    const outcome = await claudePermissionRequest(h.deps, h.envelope(input), h.logger, {
+      sleep: async () => {
+        if (h.state().waiting_answers?.length) return
+        expect(h.held()).toBe(questionId)
+        h.stage([{ question_id: QUESTION.id, choice_ids: ['production'] }], questionId)
+      },
+    })
+    expect(outcome).toBe('answered')
+    expect(denial(h)).toMatchObject({ behavior: 'allow', updatedInput: { answers: { [REWORDED]: 'Production (Recommended)' } } })
+    expect(h.gates.map(gate => gate['stage'])).toEqual(['picker-handback-linked', 'picker-waiting', 'picker-answered'])
+    // Nothing new was registered: the picker carries the question `ask` made, Body and title included.
+    expect(h.state().codex_question_bindings!.map(item => item.question_id)).toEqual([questionId])
+    expect(h.state().claude_handbacks).toBeUndefined()
+    // The marked label the User may pick in the terminal is the recommended choice.
+    expect(claudeTerminalAnswers(h.registration(questionId), { answers: { [REWORDED]: 'Production (Recommended)' } }))
+      .toEqual([{ question_id: QUESTION.id, choice_ids: ['production'] }])
+  })
+
+  it('links the exact picker when it names nothing, as an older skill opens it', async () => {
+    const h = setup()
+    const { questionId, input } = handBack(h)
+    expect(await claudePermissionRequest(h.deps, h.envelope(unsourced(input)), h.logger, {
+      sleep: async () => {
+        if (h.state().waiting_answers?.length) return
+        h.stage([{ question_id: QUESTION.id, choice_ids: ['staging'] }], questionId)
+      },
+    })).toBe('answered')
+    expect(h.gates[0]).toMatchObject({ stage: 'picker-handback-matched', question_ids: [questionId] })
+  })
+
+  it('refuses a reworded picker that names the hand-back, and leaves the registration as it was', async () => {
+    const h = setup()
+    const { questionId, input } = handBack(h)
+    const reworded = { ...input, questions: [{ ...input.questions[0]!, question: 'Where should this deploy go?' }] }
+    expect(await claudePermissionRequest(h.deps, h.envelope(reworded), h.logger)).toBe('refused')
+    expect(h.output).toHaveLength(1)
+    expect(denial(h)).toEqual({ behavior: 'deny', message: `This is not the question \`notifai ask\` handed back (\`${questionId}\`). ` +
+      `To ask that one, open exactly this input: ${JSON.stringify(input)}. For a different question, run \`notifai ask\` for it. ` +
+      `If you no longer need \`${questionId}\`, run \`notifai close ${questionId}\`.` })
+    expect(h.gates).toEqual([expect.objectContaining({ stage: 'picker-refused', reason: 'handback-mismatch', question_ids: [questionId] })])
+    expect(h.pendingOf(questionId)).toBeDefined()
+    expect(h.state().codex_question_bindings).toBeUndefined()
+    expect(h.state().claude_picker).toBeUndefined()
+    expect(h.state().claude_handbacks?.map(entry => entry.question_id)).toEqual([questionId])
+  })
+
+  it('refuses any other picker while a hand-back waits, and none once the turn moves on', async () => {
+    const h = setup()
+    const { questionId } = handBack(h)
+    expect(await claudePermissionRequest(h.deps, h.envelope(FORM), h.logger)).toBe('refused')
+    expect(h.gates.at(-1)).toMatchObject({ stage: 'picker-refused', reason: 'handback-waiting', question_ids: [questionId] })
+    expect(h.state().pending?.map(entry => entry.question_id)).toEqual([questionId])
+    for (const event of ['stop', 'user-prompt-submit'] as const) {
+      updateSessionState(SESSION, h.env, state => recordHandBack(state, questionId, Date.now()))
+      await hookRunCommand(h.deps, event, async () => JSON.stringify({ session_id: SESSION, cwd: h.root, prompt: 'next' }), 'claude-code')
+      expect(h.state().claude_handbacks).toBeUndefined()
+      expect(decideHandBack(h.state(), FORM, pickerQuestions(FORM)!)).toEqual({ kind: 'none' })
+    }
+  })
+
+  it('returns an answer that came before the picker opened through the picker, keeping it from the wake meanwhile', async () => {
+    const h = setup()
+    const { questionId, input } = handBack(h)
+    h.stage([{ question_id: QUESTION.id, choice_ids: ['staging'] }], questionId)
+    expect(claudePickerHolds(h.state())).toBe(true)
+    expect(claudePickerHolds(h.state(), Date.now() + CLAUDE_HANDBACK_HOLD_MS)).toBe(false)
+    expect(await claudePermissionRequest(h.deps, h.envelope(input), h.logger, {
+      sleep: async () => { throw new Error('the answer is already here') },
+    })).toBe('answered')
+    expect(denial(h).updatedInput.answers).toEqual({ [REWORDED]: 'Staging' })
+    expect(h.claims).toEqual([`req_${questionId}`])
+  })
+
+  it('refuses a handed-back picker whose question was answered and delivered, or ended unanswered', async () => {
+    const answered = setup()
+    const first = handBack(answered)
+    const answer = answered.stage([{ question_id: QUESTION.id, choice_ids: ['staging'] }], first.questionId)
+    updateSessionState(SESSION, answered.env, state => ({ ...state, waiting_answers: [], delivered_answers: [answer] }))
+    expect(await claudePermissionRequest(answered.deps, answered.envelope(first.input), answered.logger)).toBe('refused')
+    expect(denial(answered).message).toBe(`\`${first.questionId}\` was already answered, and that answer was delivered to you. Do not ask it again.`)
+
+    const ended = setup()
+    const second = handBack(ended)
+    updateSessionState(SESSION, ended.env, state => ({ ...state, pending: [],
+      question_history: [{ question_id: second.questionId, state: 'withdrawn' }] }))
+    expect(await claudePermissionRequest(ended.deps, ended.envelope(second.input), ended.logger)).toBe('refused')
+    expect(denial(ended).message).toBe(`\`${second.questionId}\` has expired without an answer: carry on without it, or ask in the conversation.`)
+    expect(ended.gates.at(-1)).toMatchObject({ reason: 'expired' })
+  })
+
+  it('never refuses a picker on a signed-out machine', async () => {
+    const h = setup()
+    const { input } = handBack(h)
+    const signedOut = { ...h.deps, store: { ...h.deps.store, load: () => null } } as CommandDeps
+    const reworded = { ...input, questions: [{ ...input.questions[0]!, question: 'Where should this deploy go?' }] }
+    expect(await claudePermissionRequest(signedOut, h.envelope(reworded), h.logger)).toBe('not-bound')
+    expect(h.output).toEqual([])
+    expect(h.gates.at(-1)).toMatchObject({ reason: 'not-signed-in' })
   })
 })
 

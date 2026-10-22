@@ -127,9 +127,10 @@ Ask the way you would without Notifai:
 - To keep working while the User decides, run `notifai ask`. The answer comes
   back into this Agent Session whenever they reply, within the answer window.
 - To stop until they answer, run `notifai ask --wait` and do what it returns:
-  end your turn, and the answer arrives as your next message. Where no later
-  answer can reach you, the command itself waits; if it ends unanswered
-  (exit 3), the question is off the User's devices.
+  open the question form it hands back, or end your turn; the answer arrives
+  as your next message. Where no later answer can reach you, the command
+  itself waits; if it ends unanswered (exit 3), the question is off the
+  User's devices.
 
 ```bash
 notifai ask "Deploy the schema change to production now?" \

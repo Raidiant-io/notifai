@@ -22,7 +22,10 @@ import { resolveDraftInvocation, uploadImage } from './commands-send-support.js'
 import { loadConfig, type CliConfig } from './config.js'
 import { QuestionRegistrationChanged, registerQuestion, type RegisteredQuestion } from './hook-lifecycle.js'
 import { captureCandidates, findOpenEqualQuestion } from './question-guard.js'
-import { readSessionIncarnation, readSessionState, sessionHasEnded } from './hook-session-state.js'
+import { readSessionIncarnation, readSessionState, sessionHasEnded, updateSessionState } from './hook-session-state.js'
+import type { PendingQuestion } from './hook-types.js'
+import { CLAUDE_QUESTION_TOOL } from './claude-question-bindings.js'
+import { handBackInput, recordHandBack, type ClaudePickerInput } from './claude-picker-handback.js'
 import { processIdentityLiveness } from './process-identity.js'
 import { connectCodexAnswerControl, type CodexAnswerUnavailable } from './codex-answer-control.js'
 import { currentCodexQuestionContext, type NativeQuestionAdmission } from './codex-question-bindings.js'
@@ -525,6 +528,32 @@ const END_TURN = 'Ask it in the conversation, say what each answer will make you
 /** The human output's last line, after the commitments it asks for. */
 const END_TURN_HUMAN = 'Then end your turn: the answer arrives as your next message.'
 
+/** The picker wait: Claude Code's own form asks the registered question and returns its answer. */
+const OPEN_FORM = `Say what each answer will make you do, then open ${CLAUDE_QUESTION_TOOL} with open_form.input unchanged, in this turn. It is your question in the conversation: never also ask it in prose.`
+
+const OPEN_FORM_HUMAN = `Then open ${CLAUDE_QUESTION_TOOL} with this input unchanged, in this turn. It is your question in the conversation: never also ask it in prose.`
+
+const OPEN_FORM_UNAVAILABLE = `If ${CLAUDE_QUESTION_TOOL} is unavailable, end your turn instead: the answer arrives as your next message.`
+
+/**
+ * The picker `ask --wait` hands back on Claude Code, recorded as this turn's
+ * hand-back, or null where the picker cannot carry the question and the agent
+ * ends its turn instead. Windows Claude Code runs no picker hooks, so a
+ * device answer could never return through it there.
+ */
+function claudeHandBack(
+  deps: CommandDeps,
+  sessionId: string,
+  question: Pick<PendingQuestion, 'question_id' | 'title' | 'headers' | 'questions'>,
+): ClaudePickerInput | null {
+  if (readSessionState(sessionId, deps.env).harness !== 'claude-code') return null
+  if ((deps.hookPlatform ?? process.platform) === 'win32') return null
+  const input = handBackInput(question)
+  if (input === null) return null
+  updateSessionState(sessionId, deps.env, (state) => recordHandBack(state, question.question_id!, (deps.now ?? Date.now)()))
+  return input
+}
+
 /**
  * The duplicate guard found this question already open in this Agent Session,
  * or answered with the answer not yet handed to the agent: nothing new was
@@ -544,9 +573,12 @@ function reportAlreadyOpen(
   const open = captureCandidates(readSessionState(sessionId, deps.env)).find((pending) => pending.question_id === questionId)
   const questions = open?.questions ?? built.questions
   const message = `This question is already open in this Agent Session as ${questionId}: nothing new was registered, and a new Body or images were not applied. Its answer comes back into this Agent Session.`
-  const inThisTurn = wait
-    ? END_TURN
-    : 'Ask the question in the conversation and explain what each answer will change, then continue independent work; dependent work waits for the answer.'
+  const handBack = wait && open !== undefined ? claudeHandBack(deps, sessionId, open) : null
+  const inThisTurn = handBack !== null
+    ? `${OPEN_FORM} ${OPEN_FORM_UNAVAILABLE}`
+    : wait
+      ? END_TURN
+      : 'Ask the question in the conversation and explain what each answer will change, then continue independent work; dependent work waits for the answer.'
   const answeredOutside = `If they answer in the conversation instead, run \`notifai close ${questionId}\` to retire this question.`
   if (json) {
     deps.io.out(JSON.stringify({
@@ -560,20 +592,29 @@ function reportAlreadyOpen(
         ...(entry.choices === undefined ? {} : { choices: entry.choices }),
         ...(entry.multi === true ? { multi: true } : {}),
       })),
+      ...(handBack === null ? {} : { open_form: { tool: CLAUDE_QUESTION_TOOL, input: handBack } }),
       status: `notifai status ${questionId}`,
       close: `notifai close ${questionId}`,
       next: {
-        end_turn: wait,
+        end_turn: wait && handBack === null,
         in_this_turn: inThisTurn,
         route_neutral: ROUTE_NEUTRAL,
         keep_session_open: KEEP_SESSION_OPEN,
         on_answer: ON_ANSWER,
-        answered_outside_notifai: answeredOutside,
+        ...(handBack === null ? { answered_outside_notifai: answeredOutside } : {}),
       },
     }, null, 2))
     return EXIT.ok
   }
   deps.io.out(message)
+  if (handBack !== null) {
+    deps.io.out(`Inspect \`notifai status ${questionId}\` for submission evidence; never register a replacement to check this question.`)
+    deps.io.out(KEEP_SESSION_OPEN)
+    deps.io.out(`Say what each answer will make you do. ${OPEN_FORM_HUMAN}`)
+    deps.io.out(JSON.stringify(handBack))
+    deps.io.out(OPEN_FORM_UNAVAILABLE)
+    return EXIT.ok
+  }
   deps.io.out(`${inThisTurn} Inspect \`notifai status ${questionId}\` for submission evidence; never register a replacement to check this question.`)
   deps.io.out(KEEP_SESSION_OPEN)
   deps.io.out(answeredOutside)
@@ -606,6 +647,7 @@ function persistRegisteredQuestion(
       {
         question: built.questions[0]!.text,
         title: draft.presentation.title,
+        ...(built.headers !== undefined ? { headers: built.headers } : {}),
         summary: draft.presentation.summary,
         service_identity: service,
         questions: built.questions,
@@ -673,6 +715,12 @@ function persistRegisteredQuestion(
     binding.owner_key === readSessionIncarnation(sessionId, deps.env)?.key)
   const nativeInstruction = 'Open the handed-back card unchanged after saying what each answer will make you do. It is your question in the conversation; never also ask it in prose. Notifai records a terminal answer itself; acknowledge a device answer with the command it carries.'
   const openForm = native === undefined ? undefined : { tool: 'request_user_input_async', input: cardHandbackInput(native) }
+  const handBack = wait
+    ? claudeHandBack(deps, sessionId, {
+      question_id: questionId, title: draft.presentation.title, questions: built.questions,
+      ...(built.headers !== undefined ? { headers: built.headers } : {}),
+    })
+    : null
   // The block below is the densest guidance this CLI prints, and until now it
   // was prose only: an agent could not read back the choice ids it must branch
   // on without asking the server for them. The JSON form carries the same
@@ -700,19 +748,22 @@ function persistRegisteredQuestion(
             ...('version' in nativeUnavailable && nativeUnavailable.version !== undefined ? { codex_version: nativeUnavailable.version } : {}),
             ...(nativeUnavailable.reason === 'codex_version_unsupported' ? { codex_version_floor: CODEX_CARD_VERSION_FLOOR } : {}),
           } } : {}),
+          ...(handBack === null ? {} : { open_form: { tool: CLAUDE_QUESTION_TOOL, input: handBack } }),
           status: `notifai status ${questionId}`,
           close: `notifai close ${questionId}`,
           next: {
-            end_turn: wait,
-            in_this_turn: wait
-              ? `${END_TURN} ${nextStep}`
-              : `${native === undefined ? 'Ask the question in the conversation and explain what each answer will change.' : nativeInstruction} ${nextStep}`,
+            end_turn: wait && handBack === null,
+            in_this_turn: handBack !== null
+              ? `${OPEN_FORM} ${OPEN_FORM_UNAVAILABLE} ${nextStep}`
+              : wait
+                ? `${END_TURN} ${nextStep}`
+                : `${native === undefined ? 'Ask the question in the conversation and explain what each answer will change.' : nativeInstruction} ${nextStep}`,
             route_neutral: ROUTE_NEUTRAL,
             keep_session_open: KEEP_SESSION_OPEN,
             on_answer: ON_ANSWER,
-            answered_outside_notifai: native === undefined
+            ...(handBack !== null ? {} : { answered_outside_notifai: native === undefined
               ? `If they answer in the conversation instead, run \`notifai close ${questionId}\` to retire this question.`
-              : nativeInstruction,
+              : nativeInstruction }),
           },
         },
         null,
@@ -740,9 +791,11 @@ function persistRegisteredQuestion(
     `${nextStep} Inspect \`notifai status ${questionId}\` for submission evidence; never register a replacement to check this question.`,
   )
   deps.io.out(KEEP_SESSION_OPEN)
-  deps.io.out(wait
-    ? 'Ask it in the conversation and say what each answer will make you do:'
-    : native === undefined ? 'Ask in the conversation and explain what each answer will change:' : 'Before opening the card, explain what each answer will change:')
+  deps.io.out(handBack !== null
+    ? 'Say what each answer will make you do:'
+    : wait
+      ? 'Ask it in the conversation and say what each answer will make you do:'
+      : native === undefined ? 'Ask in the conversation and explain what each answer will change:' : 'Before opening the card, explain what each answer will change:')
   for (const [index, entry] of built.questions.entries()) {
     const questionPrefix = built.questions.length > 1 ? `Question ${index + 1}, ` : ''
     if (entry.choices !== undefined) {
@@ -766,6 +819,12 @@ function persistRegisteredQuestion(
   deps.io.out(
     'A Notifai answer cannot answer a harness permission prompt; leave those to the harness and user.',
   )
+  if (handBack !== null) {
+    deps.io.out(OPEN_FORM_HUMAN)
+    deps.io.out(JSON.stringify(handBack))
+    deps.io.out(OPEN_FORM_UNAVAILABLE)
+    return EXIT.ok
+  }
   if (wait) {
     deps.io.out(`If they answer in this conversation instead, retire it with \`notifai close ${questionId}\`.`)
     deps.io.out(END_TURN_HUMAN)

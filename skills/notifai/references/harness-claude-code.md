@@ -53,7 +53,14 @@ place) makes it wait for the User; change these only when the User asks.
 ## Questions
 
 Ask every question with `notifai ask` or `notifai ask --wait`, closed choices
-included; neither opens a picker.
+included.
+To wait, run `notifai ask --wait`. For a closed question of one to four
+questions with two to four choices each, it hands back `AskUserQuestion`
+picker input: open it unchanged, and the picker carries your title, Body and
+images to the devices. Until it opens, any other picker is refused before it
+shows, with an error that says what to do. For free text, more choices or more
+questions it tells you to end your turn instead, and the answer arrives as
+your next message.
 
 An `AskUserQuestion` picker you open on your own also reaches the User's
 devices, after the terminal-first delay, with its questions, option labels and
@@ -83,8 +90,9 @@ The picker takes whichever answer comes first and closes:
   device question: continue in the conversation.
 
 A picker stays in the terminal when question notifications are off, the
-machine is not signed in, the User disabled this project, Notifai cannot carry
-its shape, or it runs on Windows; it still works there.
+machine is not signed in, the User disabled this project, or it runs on Windows;
+it still works there. Otherwise a picker Notifai cannot carry is refused before
+it opens: run `notifai ask --wait` for that question instead.
 `notifai logs --event hook.gate` shows why a picker stayed in the terminal
 (`picker-terminal-only` and its `reason`) and how it closed.
 
