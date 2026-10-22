@@ -78,6 +78,7 @@ describe('Notifai agent skill', () => {
     expect(description).toMatch(/for Notification Request owners/i)
     expect(description).toMatch(/parent owns by default/i)
     expect(description).toMatch(/workers only by explicit delegation/i)
+    expect(description).toMatch(/an agent that briefs a session is its parent/i)
     expect(description).toMatch(/does not mention Notifai/i)
     expect(description).toMatch(/guidance/i)
     for (const trigger of ['decision', 'approval', 'sign-in', 'credential setup', 'physical action', 'substantial work']) {
@@ -90,6 +91,8 @@ describe('Notifai agent skill', () => {
     expect(decide).toMatch(/context is absent[\s\S]*run this once/i)
     expect(decide).toMatch(/parent owns by default/i)
     expect(decide).toMatch(/explicit delegation makes a worker the owner/i)
+    // An orchestrator's worker may be a top-level session the harness gives no parent.
+    expect(decide).toMatch(/agent that started your Agent Session with a task brief is your parent, even when the harness shows no parent/i)
     expect(decide).toMatch(/ordinary workers[\s\S]{0,100}do not load or send/i)
   })
 

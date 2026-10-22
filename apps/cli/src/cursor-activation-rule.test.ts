@@ -27,6 +27,7 @@ describe('Cursor activation rule', () => {
     expect(rule).toContain('"Notifai is enabled for this Project"')
     expect(rule).toContain('`notifai project status`')
     expect(rule).toContain('`notifai guidance`')
+    expect(rule).toContain('If another agent started this conversation with a task brief, you are its worker.')
     expect(rule).toMatch(/does not act|do not act on this rule again/i)
   })
 

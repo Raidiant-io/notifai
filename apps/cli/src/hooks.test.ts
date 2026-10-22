@@ -4093,6 +4093,7 @@ describe('session-start hook', () => {
       const context = first.hookSpecificOutput?.additionalContext ?? ''
       // Root activation must reach owners before they discover or load the skill.
       expect(context).toMatch(/you own Notification Requests unless your assignment delegates them elsewhere/i)
+      expect(context).toMatch(/another agent started this Agent Session with a task brief, that agent owns them unless the brief delegates them to you/i)
       expect(context).toMatch(/load the Notifai skill before your first Notification Request/i)
       expect(context).toMatch(/`notifai ask`.*same turn/i)
       expect(context).toMatch(/ask for readiness, never for a credential/i)

@@ -1,6 +1,6 @@
 ---
 name: notifai
-description: Use when work needs a User decision, approval, sign-in, credential setup or physical action, substantial work finishes or fails, or the Agent Session changes jobs and needs renaming, even if the User was recently active or does not mention Notifai. For Notification Request owners; parent owns by default, workers only by explicit delegation. Run `notifai guidance` before the first Notification Request.
+description: Use when work needs a User decision, approval, sign-in, credential setup or physical action, substantial work finishes or fails, or the Agent Session changes jobs and needs renaming, even if the User was recently active or does not mention Notifai. For Notification Request owners; parent owns by default, workers only by explicit delegation, and an agent that briefs a session is its parent. Run `notifai guidance` before the first Notification Request.
 ---
 
 # Notifai
@@ -15,8 +15,10 @@ For an update notice, a local integration notice or a channel change, read
 
 ## Decide whether to notify
 
-Parent owns by default. Ordinary workers report Agent Events to their parent
-and do not load or send. Explicit delegation makes a worker the owner.
+Parent owns by default. An agent that started your Agent Session with a task
+brief is your parent, even when the harness shows no parent. Ordinary workers
+report Agent Events to their parent and do not load or send. Explicit
+delegation makes a worker the owner.
 
 Owner session context carries the `when-to-notify` and `questions` guidance.
 Before your first Notification Request or acknowledgement, or when that
