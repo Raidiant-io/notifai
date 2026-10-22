@@ -141,6 +141,8 @@ export interface CommandDeps {
   spawnHookMaintenance?: (launch: HookMaintenanceLaunch) => void
   /** Test seam: the installed Claude Code's version; production runs `claude --version`. */
   claudeCodeVersion?: () => string | null
+  /** Test seam: the installed OpenCode's version; production runs `opencode --version`. */
+  opencodeVersion?: () => string | null
   /** Starts a detached retirement of closed sessions' queued questions. Absent, none starts. */
   spawnRetirement?: (launch: HookMaintenanceLaunch) => void
   /**

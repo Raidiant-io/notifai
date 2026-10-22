@@ -74,6 +74,7 @@ import {
 } from './openclaw-plugin.js'
 import { applyOpenclawPluginLive, openclawLiveApplyText } from './openclaw-live-apply.js'
 import { isOurOpencodePlugin, opencodePluginSource } from './opencode-plugin.js'
+import { opencodePluginLoadWarning, opencodeVersionFor } from './opencode-version.js'
 import { hermesPluginDir, installHermesPlugin, preflightHermesPlugin, refreshHermesPlugin, uninstallHermesPlugin } from './hermes-plugin.js'
 import { integrationPublication, type IntegrationPublication } from './native-installation.js'
 import { packageVersion } from './release.js'
@@ -555,6 +556,8 @@ function installOpencodePlugin(
     deps.io.err(String(err))
     return EXIT.failed
   }
+  const warning = opencodePluginLoadWarning(opencodeVersionFor(deps))
+  if (warning !== null) deps.io.err(warning)
   if (options.narrate !== false) printHooksInstallClose(deps, 'opencode', file, beforeInstall !== installationBytes([file]))
   return EXIT.ok
 }

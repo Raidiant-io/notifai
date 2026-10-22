@@ -3,6 +3,10 @@
 Read with [Harness setup and recovery](harness-setup.md), which holds what every
 harness shares.
 
+This covers OpenCode 1. OpenCode 2 does not load Notifai's plugin yet, so its
+sessions get no Notifai guidance and its question forms stay in OpenCode;
+`notifai doctor` reports it.
+
 ## Activation
 
 Restart OpenCode after installation, because plugins load at startup. Then
