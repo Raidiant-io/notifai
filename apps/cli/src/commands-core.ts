@@ -102,6 +102,8 @@ export interface CommandDeps {
   clientFactory?: (baseUrl: string, bearer: string | null, options?: ClientOptions) => ApiClient
   /** Test seam for bounded polling without wall-clock sleeps. */
   now?: () => number
+  /** Test seam for the signals a held `ask --wait` withdraws on. */
+  heldWaitSignals?: (handler: (signal: 'SIGINT' | 'SIGTERM' | 'SIGHUP') => void) => () => void
   /** Test seam for retry/backoff timing. */
   sleep?: (milliseconds: number) => Promise<void>
   /** Test seams for Claude liveness and socket delivery. */

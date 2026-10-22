@@ -20,15 +20,14 @@ context; enabling one takes effect from the next User prompt in the same Agent
 Session.
 
 Nothing can yet bring an answer back once an OpenCode session goes idle, so
-`notifai ask` fails closed. Ask in a way that waits: OpenCode's own `question`
-tool, or a blocking `notifai send --reply` question when it needs a Body or
-images.
+ask in a way that waits: OpenCode's own `question` tool, or
+`notifai ask --wait` when the question needs a Body or images.
 
 ## Question form
 
 OpenCode's own `question` tool reaches the User's devices by itself; never
-also register it with `notifai ask` or `send --reply`, or the User is asked
-twice. The form keeps
+also register it with `notifai ask`, or the User is asked twice. The form
+keeps
 your turn open and takes whichever answer comes first:
 
 - **A device answer** is the form's own result. The next system context names

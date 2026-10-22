@@ -26,9 +26,9 @@ Keep unrelated hooks and trust decisions with their owner.
 
 ## Questions and replies
 
-`notifai ask` schedules submission while independent work continues. At turn
-end, Grok's Stop hook waits for the answer and continues the session with it.
-Start
+`notifai ask` schedules submission while independent work continues. After
+`notifai ask --wait`, end your turn; Grok's Stop hook keeps the session
+waiting and continues it with the answer. Start
 Grok with `--leader` for ongoing device conversations: on Grok's shared leader
 the answer arrives in the exact running session, however many questions
 follow.

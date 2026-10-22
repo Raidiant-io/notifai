@@ -5,6 +5,7 @@ import {
   REPLY_MAX_QUESTIONS,
   validateDraft,
   type NotificationDraftT,
+  type Platform,
   type QuestionT,
 } from '@raidiant/notifai-protocol'
 import { EXIT, authedClient, log, makeClient, type CommandDeps } from './commands-core.js'
@@ -19,7 +20,6 @@ import {
 } from './commands-hook-diagnostics.js'
 import { resolveDraftInvocation, uploadImage } from './commands-send-support.js'
 import { loadConfig, type CliConfig } from './config.js'
-import { HERMES_QUESTION_ROUTING_UNAVAILABLE, isHookInstallableHarness } from './harnesses.js'
 import { QuestionRegistrationChanged, registerQuestion, type RegisteredQuestion } from './hook-lifecycle.js'
 import { captureCandidates, findOpenEqualQuestion } from './question-guard.js'
 import { readSessionIncarnation, readSessionState, sessionHasEnded } from './hook-session-state.js'
@@ -33,6 +33,7 @@ import { activeOpenclawGeneration } from './openclaw-session-access.js'
 import { openclawGatewayReady } from './openclaw-gateway-readiness.js'
 import { enableProjectUnlessDisabled, inferredProjectName, projectBinding } from './project-enablement.js'
 import { spawnQuestionSettlement } from './question-settlement-process.js'
+import { answerCannotReturnRemedy, heldAskWait, heldWaitRoute } from './commands-ask-wait.js'
 import {
   buildDraft,
   parseChoices,
@@ -130,6 +131,19 @@ function askFailure(
     message,
     ...details,
   })
+}
+
+/** Questions off keeps every route off the devices: nothing registers, nothing is held. */
+function questionsOff(deps: CommandDeps, flags: Pick<AskFlags, 'json'>): number {
+  // The code is the shipped one; scripts match it.
+  return askFailure(
+    deps,
+    flags,
+    'question_routing_disabled',
+    'ask_notifications',
+    'The User keeps questions off their devices: "Send questions to my devices" is off (ask_notifications=false). Nothing was registered.',
+    'ask the way you would without Notifai: in the conversation, or in your own question form, which stays in the terminal; change the setting only if the User asks',
+  )
 }
 
 /** One `--form` choice: a bare label, or a label with its consequence and recommendation. */
@@ -374,7 +388,9 @@ export function buildAskDraft(
   flags: AskFlags,
   invocation: DraftInvocation,
   mediaIds: string[],
-): { ok: true; draft: NotificationDraftT } | { ok: false; error: string } {
+  /** A held wait's window ends at its deadline; every other route keeps `reply_window_seconds`. */
+  replyWindowSeconds?: number,
+): { ok: true; draft: NotificationDraftT; platform: Platform } | { ok: false; error: string } {
   const result = buildDraft(
     config,
     {
@@ -385,6 +401,7 @@ export function buildAskDraft(
       ...(mediaIds.length > 0 ? { image: mediaIds } : {}),
       ...(flags.imageAlt !== undefined ? { imageAlt: flags.imageAlt } : {}),
       reply: true,
+      ...(replyWindowSeconds !== undefined ? { replyWindow: replyWindowSeconds } : {}),
       questions: built.questions,
     },
     invocation,
@@ -399,7 +416,7 @@ export function buildAskDraft(
       error: validation.errors.map((issue) => `${issue.path}: ${issue.message}`).join('\n'),
     }
   }
-  return { ok: true, draft: result.draft }
+  return { ok: true, draft: result.draft, platform: result.platform }
 }
 
 function recordRegisteredQuestion(
@@ -503,6 +520,9 @@ const ON_ANSWER = 'Acknowledge it, then resume the committed work without asking
  * wakes it.
  */
 const END_TURN = 'Ask it in the conversation, say what each answer will make you do, then end your turn. The answer arrives as your next message.'
+
+/** The human output's last line, after the commitments it asks for. */
+const END_TURN_HUMAN = 'Then end your turn: the answer arrives as your next message.'
 
 /**
  * The duplicate guard found this question already open in this Agent Session,
@@ -722,7 +742,9 @@ function persistRegisteredQuestion(
     `${nextStep} Inspect \`notifai status ${questionId}\` for submission evidence; never register a replacement to check this question.`,
   )
   deps.io.out(KEEP_SESSION_OPEN)
-  deps.io.out(wait ? END_TURN : 'Ask in the conversation and explain what each answer will change:')
+  deps.io.out(wait
+    ? 'Ask it in the conversation and say what each answer will make you do:'
+    : 'Ask in the conversation and explain what each answer will change:')
   for (const [index, entry] of built.questions.entries()) {
     const questionPrefix = built.questions.length > 1 ? `Question ${index + 1}, ` : ''
     if (entry.choices !== undefined) {
@@ -746,6 +768,11 @@ function persistRegisteredQuestion(
   deps.io.out(
     'A Notifai answer cannot answer a harness permission prompt; leave those to the harness and user.',
   )
+  if (wait) {
+    deps.io.out(`If they answer in this conversation instead, retire it with \`notifai close ${questionId}\`.`)
+    deps.io.out(END_TURN_HUMAN)
+    return EXIT.ok
+  }
   if (native !== undefined) {
     deps.io.out(nativeInstruction)
     deps.io.out(JSON.stringify({ native_questions: native.questions.map(binding => ({ title: nativeQuestionTitle(binding),
@@ -889,33 +916,29 @@ export function askCommand(
   // canonical id to the directory's concurrent-session index.
   const now = (deps.now ?? Date.now)()
   const { active, contested } = resolveActiveHarness(deps.env, deps.cwd, now)
-  let sessionId: string | undefined
-  if (active !== null) {
-    if (contested.length > 1) {
+  // Where no later answer can come back (no harness, conflicting markers,
+  // Cursor, OpenCode, OpenClaw off macOS, Hermes off its classic CLI), plain
+  // `ask` is refused and `ask --wait` holds in this command.
+  // Questions off keeps every route off the devices first (D11).
+  const held = heldWaitRoute(active, contested, deps.hookPlatform ?? process.platform)
+  if (held !== null) {
+    if (!explicitUseConfig.ask_notifications.value) return questionsOff(deps, flags)
+    if (flags.wait !== true) {
       return askFailure(
-        deps,
-        flags,
-        'session_identity_ambiguous',
-        'exact_session',
-        `Several harness sessions could own this shell (${contested.map((candidate) => candidate.label).join(', ')}).`,
-        'use the documented foreground `notifai send --reply` flow with --reply-timeout equal to --reply-window, or run ask from an unambiguous harness session',
+        deps, flags, held.code, held.checkId,
+        `${held.reason} Nothing was registered.`,
+        answerCannotReturnRemedy(held),
       )
     }
-    if ((active.harness === 'hermes' && active.integrationInstance === undefined) ||
-        !isHookInstallableHarness(active.harness)) {
-      const capability = HERMES_QUESTION_ROUTING_UNAVAILABLE
-      return askFailure(
-        deps,
-        flags,
-        'question_routing_unavailable',
-        'hook_contract',
-        `${active.label}: ${capability.deliveryContract}`,
-        'use a blocking `notifai send --reply` question',
-      )
-    }
+    return heldAskWait(deps, { question, built, flags, config: explicitUseConfig, route: held })
+  }
+  // From here the harness has a return path. Its routing must be ready, for
+  // `ask` and `ask --wait` alike: a wait is never a way round admission.
+  const sessionId = active!.sessionId!
+  {
     const installations = findInstallations(deps.env, deps.hookAdapterHome, deps.hookPlatform)
     const activeInstalled = installations.some(
-      (installation) => installation.harness === active.harness,
+      (installation) => installation.harness === active!.harness,
     )
     if (!activeInstalled) {
       return askFailure(
@@ -923,24 +946,14 @@ export function askCommand(
         flags,
         'hooks_not_installed',
         'hook_installation',
-        `Notifai ${active.label} hooks are not installed in this active harness home.`,
-        `run \`notifai init --json\` from this ${active.label} session`,
-      )
-    }
-    if (active.sessionId === undefined) {
-      return askFailure(
-        deps,
-        flags,
-        'session_identity_missing',
-        'exact_session',
-        `The active ${active.label} shell does not expose an exact session id.`,
-        'use a blocking `notifai send --reply` question',
+        `Notifai ${active!.label} hooks are not installed in this active harness home.`,
+        `run \`notifai init --json\` from this ${active!.label} session`,
       )
     }
     const matchingInstallations = installations.filter(
-      (installation) => installation.harness === active.harness,
+      (installation) => installation.harness === active!.harness,
     )
-    const trustProblems = active.harness === 'codex'
+    const trustProblems = active!.harness === 'codex'
       ? codexRoutingTrustProblems(matchingInstallations, deps.env)
       : []
     if (trustProblems.length > 0) {
@@ -949,13 +962,13 @@ export function askCommand(
         flags,
         'codex_hook_approval_required',
         'hook_trust',
-        `Question routing is not ready: ${trustProblems.join('; ')}. This question was not registered. Do not replace it with a short \`notifai send --reply\` wait: that command cannot resume this Agent Session after its reply timeout.`,
+        `Question routing is not ready: ${trustProblems.join('; ')}. This question was not registered. Neither \`notifai ask\` nor \`notifai ask --wait\` works until the User approves the hooks.`,
         'open `/hooks` in Codex and approve or enable the Notifai handlers',
         EXIT.usage,
         { user_action: CODEX_HOOK_APPROVAL_USER_ACTION },
       )
     }
-    const routeProblems = activeQuestionRouteProblems(deps, active, installations)
+    const routeProblems = activeQuestionRouteProblems(deps, active!, installations)
     if (routeProblems.includes(CODEX_STOP_DEFINITION_NOT_SINGULAR_PROBLEM)) {
       return askFailure(
         deps,
@@ -988,54 +1001,41 @@ export function askCommand(
         'run `notifai init --json` and follow its question-routing remedy',
       )
     }
-    const state = readSessionState(active.sessionId, deps.env)
-    if (active.harness === 'openclaw' &&
-        activeOpenclawGeneration(active.sessionId, deps.env) === null) {
+    const state = readSessionState(sessionId, deps.env)
+    if (active!.harness === 'openclaw' &&
+        activeOpenclawGeneration(sessionId, deps.env) === null) {
       return askFailure(
         deps, flags, 'openclaw_generation_stale', 'exact_session',
         'This OpenClaw tool subprocess cannot prove the current Gateway session generation.',
         'run the question from a current OpenClaw turn after the Notifai plugin has recorded it',
       )
     }
-    if (active.harness === 'openclaw' && !openclawGatewayReady(deps.env)) {
+    if (active!.harness === 'openclaw' && !openclawGatewayReady(deps.env)) {
       return askFailure(
         deps, flags, 'openclaw_gateway_unready', 'hook_contract',
         'The local OpenClaw Gateway service has not proved a matching CLI, a live process and the installed Notifai plugin generation.',
         'apply the installed plugin with `openclaw plugins reload notifai` (or start the Gateway), then run `notifai doctor`',
       )
     }
-    if (state.harness !== active.harness ||
-        (active.harness !== 'hermes' && state.last_prompt_at === undefined)) {
+    if (state.harness !== active!.harness ||
+        (active!.harness !== 'hermes' && state.last_prompt_at === undefined)) {
       return askFailure(
         deps,
         flags,
         'session_not_activated',
         'user_prompt_submit',
-        `This exact ${active.label} session has not fired UserPromptSubmit.`,
-        `send one prompt in this ${active.label} session, then retry \`notifai ask --json\``,
+        `This exact ${active!.label} session has not fired UserPromptSubmit.`,
+        `send one prompt in this ${active!.label} session, then retry \`notifai ask --json\``,
       )
     }
-    if (active.harness === 'hermes' &&
-        !hermesQuestionRouteReady(active.sessionId, deps.env, now)) {
+    if (active!.harness === 'hermes' &&
+        !hermesQuestionRouteReady(sessionId, deps.env, now)) {
       return askFailure(
         deps, flags, 'question_routing_unavailable', 'plugin_writer',
         'This exact Hermes classic CLI session has no current attending plugin writer.',
         'start a fresh local classic CLI session with the Notifai plugin enabled, then retry',
       )
     }
-    sessionId = active.sessionId
-  } else {
-    return askFailure(
-      deps,
-      flags,
-      'session_identity_missing',
-      'exact_session',
-      'Could not prove which live Agent Session owns this command.',
-      'run it from a supported harness with exact Agent Session identity, or use a blocking `notifai send --reply` question',
-    )
-  }
-  if (!sessionId) {
-    return askFailure(deps, flags, 'session_identity_missing', 'exact_session', 'No exact active Agent Session is available.', 'use a blocking `notifai send --reply` question')
   }
   let routingConfig: CliConfig
   try {
@@ -1050,17 +1050,7 @@ export function askCommand(
       'fix the reported Notifai configuration and retry',
     )
   }
-  if (!routingConfig.ask_notifications.value) {
-    // The code is the shipped one; scripts match it.
-    return askFailure(
-      deps,
-      flags,
-      'question_routing_disabled',
-      'ask_notifications',
-      'The User keeps questions off their devices: "Send questions to my devices" is off (ask_notifications=false). Nothing was registered.',
-      'ask the way you would without Notifai: in the conversation, or in your own question form, which stays in the terminal; change the setting only if the User asks',
-    )
-  }
+  if (!routingConfig.ask_notifications.value) return questionsOff(deps, flags)
   // The card shows titles and option labels only; a question that carries
   // more keeps ordinary ask so nothing the agent wrote is lost.
   if (flags.wait !== true && flags.body === undefined && flags.image === undefined && built.body === undefined &&
@@ -1075,7 +1065,7 @@ export function askCommand(
       request_user_input_async: card,
     })
   }
-  const source = resolveDraftInvocation(deps, flags, active)
+  const source = resolveDraftInvocation(deps, flags, active!)
   if (!source.ok) {
     return askFailure(
       deps,
@@ -1094,7 +1084,7 @@ export function askCommand(
       flags,
       'session_identity_mismatch',
       'exact_session',
-      `The inferred session does not match the exact active ${active.label} session.`,
+      `The inferred session does not match the exact active ${active!.label} session.`,
       'remove NOTIFAI_SESSION_ID and retry from the exact active session',
     )
   }

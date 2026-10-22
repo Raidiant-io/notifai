@@ -92,14 +92,14 @@ const CURSOR_CAPABILITY: HarnessCapability = {
   stopContinuation: 'unsupported',
   deliveryRoutes: ['unsupported'],
   deliveryContract:
-    'the hook can return a live follow-up, but the invoking shell exposes no exact conversation id; asynchronous ask is unsupported',
+    'the hook can return a live follow-up, but the invoking shell exposes no exact conversation id, so an answer cannot come back later; `notifai ask --wait` waits for it instead',
 }
 
 const OPENCODE_CAPABILITY: HarnessCapability = {
   stopContinuation: 'unsupported',
   deliveryRoutes: ['unsupported'],
   deliveryContract:
-    "OpenCode's own question form reaches the User's devices while its turn waits and settles from either side; there is no proven answer continuation after session.idle, so use the question form or a blocking reply command; closing the session ends its questions",
+    "OpenCode's own question form reaches the User's devices while its turn waits and settles from either side; there is no proven answer continuation after session.idle, so use the question form or `notifai ask --wait`; closing the session ends its questions",
 }
 
 const OPENCLAW_CAPABILITY: HarnessCapability = {
@@ -114,7 +114,7 @@ const OPENCLAW_UNPROVEN_PLATFORM_CAPABILITY: HarnessCapability = {
   stopContinuation: 'unsupported',
   deliveryRoutes: ['unsupported'],
   deliveryContract:
-    'OpenClaw asynchronous answer continuation is verified on macOS only; use a blocking reply command on this host',
+    'OpenClaw asynchronous answer continuation is verified on macOS only; use `notifai ask --wait` on this host',
   sessionMessages: 'unsupported',
 }
 
@@ -135,7 +135,7 @@ export const HERMES_CLASSIC_CLI_QUESTION_CAPABILITY: HarnessCapability = {
 export const HERMES_QUESTION_ROUTING_UNAVAILABLE: HarnessCapability = {
   stopContinuation: 'unsupported',
   deliveryRoutes: ['unsupported'],
-  deliveryContract: 'Hermes Question Routing is available only in an attended local classic CLI session; use a blocking `notifai send --reply` question on other Hermes surfaces',
+  deliveryContract: 'Hermes Question Routing is available only in an attended local classic CLI session; use `notifai ask --wait` on other Hermes surfaces',
 }
 
 /**

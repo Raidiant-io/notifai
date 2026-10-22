@@ -776,7 +776,7 @@ describe('OpenClaw generation fencing at the CLI boundary', () => {
     expect(h.io.outLines).toHaveLength(2)
   })
 
-  it('lets a foreground OpenClaw question acknowledge and inspect its answer only in its creating generation', async () => {
+  it.each(['ask --wait', 'deprecated send --reply'] as const)('lets a foreground OpenClaw question from %s acknowledge and inspect its answer only in its creating generation', async (route) => {
     const h = harness([reply()])
     const sessionId = 'agent:main:foreground'
     const envelope = { session_id: sessionId, cwd: h.deps.cwd, openclaw_session_id: 'transcript-a' }
@@ -799,11 +799,18 @@ describe('OpenClaw generation fencing at the CLI boundary', () => {
       claimDeliveryAttempt: async () => ({ attempt_id: 'att_foreground', claim_remaining_ms: 0,
         outcome: 'handed_off' as const }),
     } as ApiClient
-    const deps = { ...h.deps, env, clientFactory: () => client }
-    expect(await sendCommand(deps, {
-      title: 'Proceed?', summary: 'Proceed with this task?', reply: true,
-      replyTimeout: 60, replyWindow: 60, json: true,
-    })).toBe(EXIT.ok)
+    // Off macOS OpenClaw has no proven answer continuation, so `ask --wait`
+    // holds in the command and the generation keeps owning the question.
+    const deps = { ...h.deps, env, clientFactory: () => client, hookPlatform: 'linux' as const }
+    if (route === 'ask --wait') {
+      expect(await askCommand(deps, 'Proceed with this task?', { title: 'Proceed?', wait: true, json: true })).toBe(EXIT.ok)
+      expect(h.recorder.submitted[0]?.draft.reply?.expires_in_seconds).toBe(110)
+    } else {
+      expect(await sendCommand(deps, {
+        title: 'Proceed?', summary: 'Proceed with this task?', reply: true,
+        replyTimeout: 60, replyWindow: 60, json: true,
+      })).toBe(EXIT.ok)
+    }
     const requestId = h.recorder.receipts[0]!
     expect(await acknowledgeCommand(deps, requestId, { text: 'Proceeding.', json: true })).toBe(EXIT.ok)
     expect(await repliesCommand(deps, requestId, { json: true })).toBe(EXIT.ok)
@@ -832,7 +839,7 @@ describe('OpenClaw generation fencing at the CLI boundary', () => {
     expect(h.recorder.acknowledged).toEqual(new Set([requestId]))
   })
 
-  it('retains foreground question ownership when its blocking wait times out', async () => {
+  it('retains foreground question ownership when its held wait times out', async () => {
     const h = harness()
     const envelope = {
       session_id: 'agent:main:foreground-timeout', cwd: h.deps.cwd,
@@ -849,18 +856,17 @@ describe('OpenClaw generation fencing at the CLI boundary', () => {
       ...fakeClient(h.recorder, []),
       capabilities: async (platform: 'ios' | 'android' | 'macos') => CAPABILITIES_V1.describe(platform),
     } as ApiClient
-    const deps = { ...h.deps, env, clientFactory: () => client }
-    expect(await sendCommand(deps, {
-      title: 'Proceed?', summary: 'Proceed with this task?', reply: true,
-      replyTimeout: 1, replyWindow: 60, json: true,
-    })).toBe(EXIT.noReply)
+    const deps = { ...h.deps, env, clientFactory: () => client, hookPlatform: 'linux' as const }
+    expect(await askCommand(deps, 'Proceed with this task?', { title: 'Proceed?', wait: true, json: true })).toBe(EXIT.noReply)
     const requestId = h.recorder.receipts[0]!
+    // The unanswered end withdrew it; a late answer is still readable by its owner.
+    expect(h.recorder.closed).toEqual([requestId])
     h.recorder.repliesFor = () => [reply()]
     expect(await repliesCommand(deps, requestId, { json: true })).toBe(EXIT.ok)
     expect(await acknowledgeCommand(deps, requestId, { text: 'Proceeding.' })).toBe(EXIT.ok)
   })
 
-  it('retains foreground question ownership when its blocking wait loses the connection', async () => {
+  it('retains foreground question ownership when its held wait loses the connection', async () => {
     const h = harness()
     const envelope = {
       session_id: 'agent:main:foreground-interrupted', cwd: h.deps.cwd,
@@ -877,12 +883,9 @@ describe('OpenClaw generation fencing at the CLI boundary', () => {
       ...fakeClient(h.recorder, []),
       capabilities: async (platform: 'ios' | 'android' | 'macos') => CAPABILITIES_V1.describe(platform),
     } as ApiClient
-    const deps = { ...h.deps, env, clientFactory: () => client }
+    const deps = { ...h.deps, env, clientFactory: () => client, hookPlatform: 'linux' as const }
     h.recorder.beforeReplies = async () => { throw new NetworkError('interrupted wait') }
-    expect(await sendCommand(deps, {
-      title: 'Proceed?', summary: 'Proceed with this task?', reply: true,
-      replyTimeout: 60, replyWindow: 60, json: true,
-    })).toBe(EXIT.network)
+    expect(await askCommand(deps, 'Proceed with this task?', { title: 'Proceed?', wait: true, json: true })).toBe(EXIT.network)
     const requestId = h.recorder.receipts[0]!
     h.recorder.beforeReplies = undefined
     h.recorder.repliesFor = () => [reply()]
@@ -917,11 +920,8 @@ describe('OpenClaw generation fencing at the CLI boundary', () => {
         return receipt
       },
     } as ApiClient
-    const deps = { ...h.deps, env, clientFactory: () => client }
-    expect(await sendCommand(deps, {
-      title: 'Proceed?', summary: 'Proceed with this task?', reply: true,
-      replyTimeout: 60, replyWindow: 60, json: true,
-    })).toBe(EXIT.failed)
+    const deps = { ...h.deps, env, clientFactory: () => client, hookPlatform: 'linux' as const }
+    expect(await askCommand(deps, 'Proceed with this task?', { title: 'Proceed?', wait: true, json: true })).toBe(EXIT.failed)
     const requestId = h.recorder.receipts[0]!
     const nextEnv = { ...env,
       NOTIFAI_ACTIVE_OPENCLAW_GENERATION: readOpenclawGeneration(envelope.session_id, h.env)?.id }
@@ -2616,7 +2616,7 @@ describe('Cursor stop output', () => {
 
     expect(h.recorder.submitted).toHaveLength(0)
     expect(h.io.outLines).toHaveLength(0)
-    expect(h.io.errLines.join('\n')).toContain('asynchronous ask is unsupported')
+    expect(h.io.errLines.join('\n')).toMatch(/answer cannot come back later; `notifai ask --wait`/)
   })
 })
 

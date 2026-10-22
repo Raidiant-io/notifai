@@ -98,6 +98,8 @@ export const LOG_EVENTS = [
   'send.outcome',
   /** `notifai ask` registered a question for Question Routing. */
   'ask.registered',
+  /** How a held `ask --wait` ended: answered, timed out, expired or withdrawn. */
+  'ask.held_wait',
   /** An answer came back from a device. */
   'reply.received',
   /** An agent attempted to acknowledge the user's reply. */
@@ -228,7 +230,7 @@ export const DURABLE_EVENTS_MAX_BYTES = 2_000_000
 
 /** Question and hook outcomes, with their reasons. */
 const DURABLE_EVENTS: ReadonlySet<LogEvent> = new Set<LogEvent>([
-  'ask.registered', 'hook.gate', 'hook.pushed', 'hook.answer', 'hook.retirement',
+  'ask.registered', 'ask.held_wait', 'hook.gate', 'hook.pushed', 'hook.answer', 'hook.retirement',
 ])
 
 export function isDurableEvent(event: LogEvent, data?: Record<string, unknown>): boolean {

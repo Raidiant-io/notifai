@@ -628,7 +628,7 @@ export function buildProgram(deps: CommandDeps, options: BuildProgramOptions = {
       (v: string, all: string[] = []) => [...all, v],
     )
     .optionsGroup(SEND_GROUP.routing)
-    .option('--kind <kind>', 'what this is (required): update | done | failed | blocked (no User reply would resume it) — question is set by --reply')
+    .option('--kind <kind>', 'what this is (required): update | done | failed | blocked (no User reply would resume it); a question is `notifai ask`')
     .option('--project <id>', 'Project identifier override (otherwise configured or inferred)')
     .option('--projectless', 'deliberately omit Project identity for this notification')
     .option('--device <id>', 'target a device id (repeatable)', (v: string, all: string[] = []) => [...all, v])
@@ -643,26 +643,6 @@ export function buildProgram(deps: CommandDeps, options: BuildProgramOptions = {
     .option('--thread-id <id>', 'group related notifications')
     .option('--ttl <seconds>', 'delivery window in seconds', (v: string) => Number(v))
     .option('--platform <platform>', 'limit optional fields to one supported platform')
-    .optionsGroup(SEND_GROUP.reply)
-    .option('--reply', 'enable the inline reply action and block for the answer')
-    .option('--reply-timeout <seconds>', 'how long to wait for a reply (default: 900)', (v: string) => Number(v))
-    .option(
-      '--reply-window <seconds>',
-      'how long an answer is still accepted, 60-259200 (default: reply_window_seconds, a day)',
-      (v: string) => Number(v),
-    )
-    .option(
-      '--choice <label>',
-      'with --reply, ask a closed question; repeat the flag once per answer (2-6)',
-      (v: string, all: string[] = []) => [...all, v],
-    )
-    .option(
-      '--choice-description <text>',
-      `what choosing the --choice just before it does: one line, at most ${CHOICE_DESCRIPTION_MAX_LENGTH} characters`,
-      (v: string, all: ChoiceDescriptionInput[] = []): ChoiceDescriptionInput[] => [...all, { after: choiceCount(send), text: v }],
-    )
-    .option('--recommended <label>', 'mark the --choice with this exact label as the answer you recommend', (v: string, all: string[] = []) => [...all, v])
-    .option('--multi', 'with --choice, several answers may be selected')
     .optionsGroup(SEND_GROUP.advanced)
     .option(
       '--sound <sound>',
@@ -682,7 +662,19 @@ export function buildProgram(deps: CommandDeps, options: BuildProgramOptions = {
     )
     .option('--json', 'print the full submission receipt as JSON')
     // Deprecated names kept working for shipped sessions and scripts, hidden
-    // from help: `--delivery-timeout` replaced `--wait` and `--no-wait`.
+    // from help: `ask --wait` replaced `--reply`, and `--delivery-timeout`
+    // replaced `--wait` and `--no-wait`.
+    .addOption(new Option('--reply', 'deprecated: use `notifai ask --wait`').hideHelp())
+    .addOption(new Option('--reply-timeout <seconds>').argParser((v: string) => Number(v)).hideHelp())
+    .addOption(new Option('--reply-window <seconds>').argParser((v: string) => Number(v)).hideHelp())
+    .addOption(new Option('--choice <label>').argParser((v: string, all: string[] = []) => [...all, v]).hideHelp())
+    .addOption(
+      new Option('--choice-description <text>')
+        .argParser((v: string, all: ChoiceDescriptionInput[] = []): ChoiceDescriptionInput[] => [...all, { after: choiceCount(send), text: v }])
+        .hideHelp(),
+    )
+    .addOption(new Option('--recommended <label>').argParser((v: string, all: string[] = []) => [...all, v]).hideHelp())
+    .addOption(new Option('--multi').hideHelp())
     .addOption(new Option('--wait <seconds>').argParser((v: string) => Number(v)).hideHelp())
     .addOption(new Option('--no-wait').hideHelp())
     .action(async (opts: Record<string, unknown>) => {

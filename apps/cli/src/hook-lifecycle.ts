@@ -1831,7 +1831,7 @@ async function handleClaimedStop(
     // reasons exist, and the wrong one sent that reader looking for a question
     // that was right there.
     gate(ctx, 'held', 'harness-cannot-continue', { harness: ctx.harness })
-    notes.push(`${HARNESS_CAPABILITIES[ctx.harness].deliveryContract}; use a blocking \`notifai send --reply\` question`)
+    notes.push(HARNESS_CAPABILITIES[ctx.harness].deliveryContract)
     return { notes }
   }
 

@@ -59,6 +59,8 @@ Do not register it, or a free-text version of it, with `ask` as well; the User
 would be asked twice. `ask` refuses a question the picker can show, with exit 2,
 code `use_question_picker` and the picker input to use. Keep `notifai ask` for
 free-text questions and questions with more than four choices.
+`notifai ask --wait` tells you to end your turn: the answer arrives as your
+next message.
 
 The picker's wording is yours. Put context in option descriptions or in your
 message, and mark the option you recommend with Claude Code's own

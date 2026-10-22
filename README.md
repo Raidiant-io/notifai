@@ -108,12 +108,14 @@ hook installation. `devices` accepts
 `--platform <ios|android|macos|windows|linux>` and `--json`; send routing still uses
 the per-request device flags documented by `notifai send --help`.
 
-Agents can ask for a reply, collect it directly, and send the required Agent
+Agents ask through `notifai ask`, read the answer, and send the required Agent
 Acknowledgement without any interactive prompt:
 
 ```sh
-# the Summary is the exact answerable question; Body is optional Markdown detail
-notifai send --title "Migration 0007 is ready" --summary "Deploy migration 0007 to production now?" --reply
+# the positional question is the exact answerable question; --title names the decision
+notifai ask "Deploy migration 0007 to production now?" --title "Production deploy" --choice Deploy --choice Hold
+# add --wait to wait for the answer the way the agent would without Notifai
+notifai ask "Deploy migration 0007 to production now?" --title "Production deploy" --choice Deploy --choice Hold --wait
 # after the user's reply, the CLI prints the exact follow-up command
 notifai acknowledge req_example --text "I will deploy the approved build to staging now."
 
@@ -122,7 +124,7 @@ notifai close req_example --json
 ```
 
 Every presented answer submission is acknowledged, so the user learns that an agent
-read their answer. `send --reply`, `replies`, and `close` expose
+read their answer. A held `ask --wait`, `replies`, and `close` expose
 `agent_acknowledgement_required`, the current `agent_acknowledgement`, and
 `acknowledgement_command` while it is still absent.
 
@@ -167,9 +169,9 @@ not part of the current public support claim.
 | Approved Machine CLI: login, configuration, send, ask, doctor | Supported | Supported | Supported |
 | Claude Code hooks | Supported; live inbox wake | Supported; live inbox wake | Supported; live inbox wake through the session's named pipe; question pickers stay in the terminal |
 | Codex hooks | Asynchronous Stop and durable session queue; CLI/app-server verified | Same queue implementation; live Codex verification pending | Same queue implementation; live Codex verification pending |
-| Cursor hooks | Supported; use full-window blocking `notifai send --reply` where a proven return is required | Supported; same limitation | Supported; same limitation |
-| OpenCode hooks | Supported; OpenCode 1.19.3's own question form reaches devices and settles from either side; otherwise use full-window blocking `notifai send --reply` where a proven return is required | Same implementation; live OpenCode verification pending | Same implementation; live OpenCode verification pending |
-| OpenClaw hooks | Asynchronous Question Routing, Session Presence, Session Notes, and post-consumption Answer Edits through the local Gateway service and exact-session followup queue | Lifecycle hooks; asynchronous Question Routing and Session Messages unproven, use blocking reply | WSL2 lifecycle hooks only; native Windows Gateway unproven |
+| Cursor hooks | Supported; `notifai ask --wait` waits for the answer inside the asking command, since no later answer can return | Supported; same limitation | Supported; same limitation |
+| OpenCode hooks | Supported; OpenCode 1.19.3's own question form reaches devices and settles from either side; otherwise `notifai ask --wait` waits for the answer inside the asking command | Same implementation; live OpenCode verification pending | Same implementation; live OpenCode verification pending |
+| OpenClaw hooks | Asynchronous Question Routing, Session Presence, Session Notes, and post-consumption Answer Edits through the local Gateway service and exact-session followup queue | Lifecycle hooks; asynchronous Question Routing and Session Messages unproven, so `notifai ask --wait` waits inside the asking command | WSL2 lifecycle hooks only; native Windows Gateway unproven |
 | Hermes plugin | v0.21.5 local classic CLI: managed Project activation, Source Context, Question Routing, Session Presence, Session Notes, and Answer Edits through its live plugin writer | Same implementation; live Hermes verification pending | Unverified |
 | Grok hooks | Automatic guidance and Question Routing for main and delegated child sessions; live shared-leader sessions also receive Notes and Answer Edits | Same adapter; live Grok verification pending | Same adapter; live Grok verification pending |
 
@@ -190,13 +192,16 @@ later, is blocked by the prompt hook: no turn runs and no model request is
 made, and Codex shows one "Blocked by hook" line. Unsupported question shapes
 retain ordinary delivery and do not suppress the native form.
 
-Each `send --reply` fallback owns the complete answer window in its foreground
-process: keep it alive and set `--reply-timeout` equal to `--reply-window`.
-After a timeout, retain the request ID, inspect that original with `notifai
-replies` and `notifai status`, and never send a duplicate. A question you
-dismiss on a device ends like one whose window ran out: a waiting `send
---reply` stops waiting (exit 3), and an `ask` question is retired, with no
-answer delivered.
+Where no later answer can reach the asking Agent Session, `notifai ask --wait`
+holds the question in its foreground process and the service ends the
+question's answer window at the wait's deadline, so a killed command leaves
+nothing open on the devices. The wait is the harness's command limit minus
+10 s, or the answer window outside any harness; no flag sets it. It exits 0
+with the answer, 3 when it ended unanswered (the question is withdrawn), or
+5 when the service was unreachable at the end, naming `notifai replies` for an
+answer that may still be waiting. A question you dismiss on a device ends like
+one whose window ran out: a held `ask --wait` stops waiting (exit 3), and a
+registered question is retired, with no answer delivered.
 
 “Fails closed” means Notifai keeps the accepted answer in the Agent Session
 journal until an exact continuation path can prove ownership, rather than
@@ -205,8 +210,8 @@ Claude Code live inbox wake requires Claude Code 2.1.224 or newer on macOS and
 Linux and 2.1.234 or newer on Windows; an older Claude Code receives the
 accepted answer at the Agent Session's next turn. Cursor does not expose the conversation
 identity needed to prove asynchronous return, and OpenCode has no proven
-exactly-once continuation after `session.idle`; blocking reply mode provides
-their reliable question path. OpenCode's own question form is the exception:
+exactly-once continuation after `session.idle`; `notifai ask --wait` waits
+inside the asking command there. OpenCode's own question form is the exception:
 it holds its turn, so its device answer returns through the form itself. OpenClaw's advertised Windows cell is WSL2 only;
 a native Windows Gateway plus native Notifai CLI in one process is unproven.
 
@@ -334,9 +339,9 @@ there), Cursor uses its own hook shapes, OpenCode and OpenClaw get generated
 plugins, and Hermes gets a native Python plugin through Hermes's own CLI.
 Hermes's plugin supplies a bounded system-prompt section for an enabled
 Project. In an attended local classic CLI session, its live writer also routes
-question answers to that exact session. Other Hermes surfaces require a
-blocking `send --reply` question. Other harnesses have their own documented
-answer path, or require a blocking `send --reply` question.
+question answers to that exact session. On other Hermes surfaces
+`notifai ask --wait` waits for the answer inside the asking command. Other
+harnesses have their own documented answer path, or wait the same way.
 
 In its default permission mode Claude Code asks before each Bash command it has
 no permission rule for. `notifai init --claude-commands` adds allow rules to

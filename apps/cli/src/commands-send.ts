@@ -91,8 +91,12 @@ export function draftForServerCapabilities(
   return { ...draft, source: legacySource }
 }
 
+export const SEND_REPLY_DEPRECATED =
+  'notifai: `send --reply` is deprecated and will be removed; ask with `notifai ask --wait`, which waits for the answer the way you would without Notifai.'
+
 export const SEND_WAIT_DEPRECATED =
   'notifai: `send --wait` and `--no-wait` are deprecated and will be removed; use `--delivery-timeout <seconds>`, where 0 returns at acceptance.'
+
 export const REPLIES_WAIT_DEPRECATED =
   'notifai: `replies --wait` is deprecated and will be removed; `notifai replies` reads once, and `notifai ask --wait` waits for an answer.'
 
@@ -112,6 +116,9 @@ export async function sendCommand(
     deps.io.err('Pass --retry or --idempotency-key, not both.')
     return EXIT.usage
   }
+  // `send --reply` stays for shipped sessions and scripts that still call it,
+  // hidden from help and from every guidance text.
+  if (flags.reply) deps.io.err(SEND_REPLY_DEPRECATED)
   const hasChoice = Array.isArray(flags.choice)
     ? flags.choice.length > 0
     : flags.choice !== undefined
@@ -119,19 +126,19 @@ export async function sendCommand(
     deps.io.err(`--kind ${flags.kind} cannot be combined with --reply; a reply request is a question.`)
     return EXIT.usage
   }
-  // Kind now decides the sound a notification arrives with, so it is asked for
-  // at the boundary rather than defaulted silently: an unlabelled send would
+  // Kind decides the sound a notification arrives with, so it is asked for at
+  // the boundary rather than defaulted silently: an unlabelled send would
   // reach the user as ordinary news whatever actually happened.
   if (!flags.reply && flags.kind === undefined) {
     deps.io.err(
       '--kind is required: say what this notification is. ' +
         'update (news) · done (finished) · failed (terminal failure) · blocked (cannot proceed; no User reply would resume it). ' +
-        '--reply makes it a question without --kind.',
+        'A question is `notifai ask`.',
     )
     return EXIT.usage
   }
   if (!flags.reply && flags.kind === 'question') {
-    deps.io.err('--kind question requires --reply so the question can be answered.')
+    deps.io.err('A notification cannot be answered, so send takes no `--kind question`. Use `notifai ask` for a question the User should answer.')
     return EXIT.usage
   }
   if (
@@ -540,7 +547,7 @@ export async function sendCommand(
  * Companion Receipts (the User dismissed it at once): then the window asked
  * for is the reference, measured from when the send started.
  */
-function replyWindowDue(receipt: SubmissionReceipt, submittedAt: number, windowSeconds: number | undefined): number {
+export function replyWindowDue(receipt: SubmissionReceipt, submittedAt: number, windowSeconds: number | undefined): number {
   const due = receipt.reply_expires_at === null ? NaN : Date.parse(receipt.reply_expires_at)
   if (!Number.isFinite(due) || receipt.replayed || windowSeconds === undefined) return due
   const asked = submittedAt + windowSeconds * 1000
@@ -779,7 +786,7 @@ export async function repliesCommand(
 }
 
 /** The stdout write is the foreground harness hand-off; report only afterwards. */
-async function reportForegroundAnswer(
+export async function reportForegroundAnswer(
   deps: CommandDeps,
   client: ApiClient,
   sessionId: string,
@@ -837,7 +844,7 @@ function recordDegradedReplyWaits(deps: CommandDeps, requestIds: readonly string
  * Delivery / Companion Receipt / OS presentation are separate facts — a wait
  * fault is not evidence that the push failed.
  */
-function degradedWaitWarning(requestId: string): string {
+export function degradedWaitWarning(requestId: string): string {
   return (
     `notifai: the wait for ${requestId} ended while the server was unreachable or faulting, ` +
     `so this is "could not find out", not "no answer" — the request is still durable and the ` +
@@ -850,17 +857,24 @@ function isNonNegativeInteger(value: number): boolean {
 }
 
 /**
- * The one JSON object `send --reply --json` prints, whatever happens after the
- * durable submit. Embedding the receipt keeps stdout a single parseable line;
- * `replies` (from a wait) omits it because there is no submission to report.
+ * `replies --json` and `send --reply --json` print `reply_result`, which
+ * shipped callers parse; a held `ask --wait --json` prints `answer_result`.
  */
-function replyResultJson(
+export type AnswerResultType = 'reply_result' | 'answer_result'
+
+/**
+ * The one JSON object a foreground wait prints, whatever happens after the
+ * durable submit. Embedding the receipt keeps stdout a single parseable line;
+ * `replies` omits it because there is no submission to report.
+ */
+export function replyResultJson(
   response: ListRepliesResponse,
   degraded: boolean,
   receipt?: SubmissionReceipt,
+  type: AnswerResultType = 'reply_result',
 ): object {
   return {
-    type: 'reply_result',
+    type,
     ...(receipt !== undefined ? { receipt } : {}),
     request_id: response.request_id,
     reply_expires_at: response.reply_expires_at,
@@ -879,13 +893,17 @@ function replyResultJson(
 }
 
 /**
- * The reply_result for a reply send that has no answer to report — a receipt
- * failure, or a wait that faulted. Same shape, same single line; `degraded`
- * distinguishes "the wait could not find out" from "delivery already failed".
+ * The result for a foreground wait that has no answer to report — a receipt
+ * failure, an unanswered end, or a wait that faulted. Same shape, same single
+ * line; `degraded` distinguishes "the wait could not find out" from the rest.
  */
-function unansweredReplyResultJson(receipt: SubmissionReceipt, degraded: boolean): object {
+export function unansweredReplyResultJson(
+  receipt: SubmissionReceipt,
+  degraded: boolean,
+  type: AnswerResultType = 'reply_result',
+): object {
   return {
-    type: 'reply_result',
+    type,
     receipt,
     request_id: receipt.request_id,
     replies: [],
@@ -912,7 +930,7 @@ function unansweredReadJson(requestId: string): object {
   }
 }
 
-function recordReplies(deps: CommandDeps, requestId: string, replies: readonly ReplyView[]): void {
+export function recordReplies(deps: CommandDeps, requestId: string, replies: readonly ReplyView[]): void {
   const logger = log(deps)
   for (const reply of replies) {
     logger.info('reply.received', {
@@ -926,7 +944,7 @@ function recordReplies(deps: CommandDeps, requestId: string, replies: readonly R
   }
 }
 
-function printReplies(deps: CommandDeps, replies: ReplyView[]): void {
+export function printReplies(deps: CommandDeps, replies: ReplyView[]): void {
   for (const reply of replies) deps.io.out(`reply from ${reply.device_name}: ${reply.text}`)
   const contradiction = contradictingAnswer(replies)
   if (contradiction !== null) deps.io.err(contradiction)
@@ -1126,7 +1144,7 @@ function printEvidenceSnapshot(deps: CommandDeps, snapshot: EvidenceSnapshot): v
   deps.io.out(
     anyReplyReceived
       ? `  Reply wait: answers are on the server — collect with \`notifai replies ${snapshot.request_id}\` (a local wait fault does not erase them)`
-      : `  Reply wait: no answer stored yet — a blocking wait failure is independent of Delivery above; retry with \`notifai replies ${snapshot.request_id}\``,
+      : `  Reply wait: no answer stored yet — a wait that lost the network is independent of Delivery above; read again with \`notifai replies ${snapshot.request_id}\``,
   )
 }
 

@@ -89,11 +89,6 @@ describe('program argv parsing', () => {
         '--title', 'Build finished',
         '--summary', 'All green.',
         '--body', 'All green.',
-        '--choice', 'Ship it',
-        '--choice', 'Hold',
-        '--multi',
-        '--reply',
-        '--reply-timeout', '30',
         '--delivery-timeout', '0',
       ],
       { send: (async (_deps, flags) => ((seen = flags as Record<string, unknown>), 0)) as ProgramRunners['send'] },
@@ -104,14 +99,45 @@ describe('program argv parsing', () => {
       title: 'Build finished',
       summary: 'All green.',
       body: 'All green.',
-      choice: ['Ship it', 'Hold'],
-      multi: true,
-      reply: true,
-      replyTimeout: 30,
       deliveryTimeout: 0,
     })
     expect(seen).not.toHaveProperty('wait')
     expect(seen).not.toHaveProperty('noWait')
+    expect(seen).not.toHaveProperty('reply')
+  })
+
+  it('keeps the deprecated send --reply command line working, hidden from help', async () => {
+    let seen: Record<string, unknown> | undefined
+    const { exitCode, deps } = await parse(
+      [
+        'send',
+        '--title', 'Build finished',
+        '--summary', 'Ship it?',
+        '--choice', 'Ship it',
+        '--choice-description', 'Release now.',
+        '--choice', 'Hold',
+        '--recommended', 'Ship it',
+        '--multi',
+        '--reply',
+        '--reply-timeout', '30',
+        '--reply-window', '600',
+      ],
+      { send: (async (_deps, flags) => ((seen = flags as Record<string, unknown>), 0)) as ProgramRunners['send'] },
+    )
+    expect(exitCode).toBe(0)
+    expect(seen).toMatchObject({
+      choice: ['Ship it', 'Hold'],
+      choiceDescription: [{ after: 1, text: 'Release now.' }],
+      recommended: ['Ship it'],
+      multi: true,
+      reply: true,
+      replyTimeout: 30,
+      replyWindow: 600,
+    })
+    expect(deps.outLines).toEqual([])
+    const help = buildProgram(makeDeps(), { runners: {}, exit: () => {} }).commands.find((command) => command.name() === 'send')!.helpInformation()
+    expect(help).toContain('--delivery-timeout')
+    for (const hidden of ['--reply', '--choice', '--recommended', '--multi']) expect(help, hidden).not.toContain(hidden)
   })
 
   it('preserves deliberate Projectless send intent at the argv boundary', async () => {
