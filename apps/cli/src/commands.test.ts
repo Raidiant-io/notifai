@@ -9850,7 +9850,7 @@ describe('asking before the hooks have ever run', () => {
     expect(io.outLines.join('\n')).not.toContain('Ask it in the conversation')
     expect(io.outLines.join('\n')).not.toContain('notifai close')
 
-    // What the picker cannot ask exactly, and Windows, where no picker hook runs, end the turn instead.
+    // What the picker cannot ask exactly ends the turn instead.
     io.outLines = []
     expect(await askCommand(deps, 'Which tier?', { title: 'Tier', choice: ['A', 'B', 'C', 'D', 'E'], wait: true, json: true })).toBe(EXIT.ok)
     expect(JSON.parse(io.outLines.join('\n'))).toMatchObject({ next: { end_turn: true } })
@@ -9862,8 +9862,19 @@ describe('asking before the hooks have ever run', () => {
     beginSessionIncarnation('claude-windows', windows.env, { stamp: lifecycleStamp(), harnessProcess: currentProcessIdentity()! })
     writeSessionState('claude-windows', windows.env, { harness: 'claude-code', last_prompt_at: 42, last_stop_at: 41 })
     writeProjectSession(windows.cwd, windows.env, 'claude-windows', 42, 'claude-code')
+    // Windows runs the picker hooks too, so the picker is handed back there.
     io.outLines = []
     expect(await askCommand(windows, 'Which colour?', { title: 'Release colour', choice: ['Red', 'Blue'], wait: true, json: true })).toBe(EXIT.ok)
+    expect(JSON.parse(io.outLines.join('\n'))).toMatchObject({ registered: true, open_form: { tool: 'AskUserQuestion' } })
+    // An installation from before the picker hooks has no hook to return a
+    // device answer through the picker: its session ends the turn instead.
+    const [installed] = findInstallations(windows.env, undefined, 'win32').filter((installation) => installation.harness === 'claude-code')
+    const document = JSON.parse(readFileSync(installed!.file, 'utf8')) as { hooks: Record<string, unknown> }
+    delete document.hooks['PermissionRequest']
+    delete document.hooks['PostToolUse']
+    writeFileSync(installed!.file, JSON.stringify(document, null, 2))
+    io.outLines = []
+    expect(await askCommand(windows, 'Which size?', { title: 'Release size', choice: ['Small', 'Large'], wait: true, json: true })).toBe(EXIT.ok)
     expect(JSON.parse(io.outLines.join('\n'))).toMatchObject({ registered: true, next: { end_turn: true } })
     expect(JSON.parse(io.outLines.join('\n'))).not.toHaveProperty('open_form')
   })

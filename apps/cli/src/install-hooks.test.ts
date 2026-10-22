@@ -18,6 +18,8 @@ import { parse as parseToml, stringify as stringifyToml } from 'smol-toml'
 import { afterEach, describe, expect, it } from 'vitest'
 import { REPLY_MAX_WINDOW_SECONDS } from '@raidiant/notifai-protocol'
 import { parseChoices } from './send.js'
+import { decodeWindowsCodexCommand } from './windows-codex-command.js'
+import { sourceIntegrationRevision } from './integration-revision.js'
 import {
   OPENCODE_PLUGIN_MARKER,
   isOurOpencodePlugin,
@@ -162,15 +164,23 @@ describe('choice labels', () => {
 })
 
 describe('hook config', () => {
-  it('installs synchronous tool-boundary delivery only for Codex on POSIX', () => {
+  it('installs synchronous tool-boundary delivery for Codex on every platform', () => {
     const config = buildHookConfig({ adapterPath: ADAPTER, harness: 'codex', platform: 'darwin' })
     expect(config['PostToolUse']?.[0]?.hooks).toEqual([
       { type: 'command', command: expect.stringContaining('hook post-tool-use'), timeout: 10 },
     ])
-    expect(buildHookConfig({ adapterPath: ADAPTER, harness: 'codex', platform: 'win32' })['PostToolUse']).toBeUndefined()
+    // Windows: the same handlers, each in the encoded PowerShell form Codex runs there.
+    const windows = buildHookConfig({ adapterPath: 'C:\\Notifai\\notifai.exe', harness: 'codex', platform: 'win32' })
+    for (const event of ['PreToolUse', 'PostToolUse'] as const) {
+      const handler = windows[event]?.[0]?.hooks[0]
+      expect(handler, event).toMatchObject({ type: 'command', timeout: 10 })
+      expect(decodeWindowsCodexCommand(handler!.command), event).toContain(`hook ${event === 'PreToolUse' ? 'pre-tool-use' : 'post-tool-use'} --owner notifai --harness codex`)
+    }
+    expect(windows['PreToolUse']?.[0]?.matcher).toBe('request_user_input_async')
+    expect(windows['SessionStart']?.[0]?.hooks.some(handler => decodeWindowsCodexCommand(handler.command)?.includes('hook attend ') === true)).toBe(true)
   })
 
-  it('matches both Claude Code picker handlers to the question tool, on POSIX only', () => {
+  it('matches both Claude Code picker handlers to the question tool, on every platform', () => {
     const config = buildHookConfig({ adapterPath: ADAPTER, harness: 'claude-code', platform: 'darwin', claudeForm: 'exec' })
     expect(config['PermissionRequest']).toEqual([{
       matcher: 'AskUserQuestion',
@@ -180,9 +190,16 @@ describe('hook config', () => {
       matcher: 'AskUserQuestion',
       hooks: [{ type: 'command', command: ADAPTER, args: expect.arrayContaining(['hook', 'post-tool-use']), timeout: 10 }],
     }])
-    const windows = buildHookConfig({ adapterPath: ADAPTER, harness: 'claude-code', platform: 'win32' })
-    expect(windows['PermissionRequest']).toBeUndefined()
-    expect(windows['PostToolUse']).toBeUndefined()
+    // Windows keeps the shell form, with the same matcher and lifetimes.
+    const windows = buildHookConfig({ adapterPath: 'C:\\Notifai\\notifai.exe', harness: 'claude-code', platform: 'win32' })
+    expect(windows['PermissionRequest']).toEqual([{
+      matcher: 'AskUserQuestion',
+      hooks: [{ type: 'command', command: expect.stringContaining('hook permission-request --owner notifai --harness claude-code'), timeout: QUESTION_STOP_TIMEOUT_SECONDS }],
+    }])
+    expect(windows['PostToolUse']).toEqual([{
+      matcher: 'AskUserQuestion',
+      hooks: [{ type: 'command', command: expect.stringContaining('hook post-tool-use --owner notifai --harness claude-code'), timeout: 10 }],
+    }])
     expect(buildHookConfig({ adapterPath: ADAPTER, harness: 'codex', platform: 'darwin' })['PermissionRequest']).toBeUndefined()
     expect(buildHookConfig({ adapterPath: ADAPTER, harness: 'grok', platform: 'darwin' })['PermissionRequest']).toBeUndefined()
   })
@@ -365,27 +382,20 @@ describe('hook config', () => {
       'stop',
       'session-end',
     ])
-    expect(requiredHookEvents('claude-code', 'darwin')).toEqual([
-      'post-tool-use',
-      'permission-request',
-      'session-start',
-      'subagent-start',
-      'user-prompt-submit',
-      'stop',
-      'session-end',
-      'attend',
-    ])
-    // The picker hooks stay POSIX only; the attendant runs everywhere.
-    expect(requiredHookEvents('claude-code', 'win32')).toEqual([
-      'session-start',
-      'subagent-start',
-      'user-prompt-submit',
-      'stop',
-      'session-end',
-      'attend',
-    ])
-    expect(requiredHookEvents('codex', 'darwin')).toContain('attend')
-    expect(requiredHookEvents('codex', 'win32')).not.toContain('attend')
+    // Every platform, Windows included: the picker hooks and the attendant.
+    for (const platform of ['darwin', 'win32'] as const) {
+      expect(requiredHookEvents('claude-code'), platform).toEqual([
+        'post-tool-use',
+        'permission-request',
+        'session-start',
+        'subagent-start',
+        'user-prompt-submit',
+        'stop',
+        'session-end',
+        'attend',
+      ])
+    }
+    expect(requiredHookEvents('codex')).toEqual(expect.arrayContaining(['pre-tool-use', 'post-tool-use', 'attend']))
     expect(requiredHookEvents('opencode')).toEqual([])
     expect(Object.keys(buildHookConfig({ adapterPath: ADAPTER }))).toEqual([
       'SessionStart',
@@ -404,7 +414,7 @@ describe('hook config', () => {
     expect(cursorStop.map((handler) => handlerEvent(handler.command))).toEqual(['stop'])
   })
 
-  it('installs the session child handler as a second async handler for Claude Code everywhere and Codex on POSIX only', () => {
+  it('installs the session child handler as a second async handler for Claude Code and Codex everywhere', () => {
     const hooks = buildHookConfig({ adapterPath: ADAPTER, harness: 'claude-code', platform: 'darwin', claudeForm: 'exec' })
     for (const event of ['SessionStart', 'UserPromptSubmit', 'Stop']) {
       const handlers = hooks[event]?.flatMap((group) => group.hooks) ?? []
@@ -435,19 +445,36 @@ describe('hook config', () => {
     const windowsOptions = { adapterPath: ADAPTER, platform: 'win32' as const, nodePath: EXEC }
     expect(attends(buildHookConfig({ ...windowsOptions, harness: 'claude-code' })))
       .toEqual(['SessionStart', 'UserPromptSubmit', 'Stop'])
-    expect(attends(buildHookConfig({ ...windowsOptions, harness: 'codex' }))).toEqual([])
+    expect(attends(buildHookConfig({ ...windowsOptions, harness: 'codex' })))
+      .toEqual(['SessionStart', 'UserPromptSubmit', 'Stop', 'Interrupt'])
   })
 
   it('keeps every Codex hook definition byte-identical to the shipped build, so Codex asks for no new review', () => {
     // Captured from the build before the hub; Codex trusts hooks by hash and
     // skips changed ones until the User reviews them again.
     const golden = JSON.parse(readFileSync(new URL('./fixtures/codex-hooks-golden-b3.json', import.meta.url), 'utf8')) as Record<string, string>
-    for (const platform of ['darwin', 'linux', 'win32'] as const) {
-      const adapterPath = platform === 'win32' ? 'C:\\Users\\Example User\\.notifai\\bin\\notifai.exe' : '/home/example user/.notifai/bin/notifai'
+    for (const platform of ['darwin', 'linux'] as const) {
+      const adapterPath = '/home/example user/.notifai/bin/notifai'
       for (const scope of ['', 'codex:/home/example user/.codex']) {
         expect(JSON.stringify(buildHookConfig({ adapterPath, harness: 'codex', platform, integrationScope: scope }), null, 2), `${platform} ${scope}`)
           .toBe(golden[`${platform}|${scope}`])
       }
+    }
+    // Windows gained the attendant and card handlers. A reinstall keeps the
+    // revision the shipped handlers carry, so each of them stays byte-identical
+    // at its own position, and only the added handlers wait for the User's review.
+    const handlersOf = (document: Record<string, Array<{ hooks: unknown[] }>>) => Object.entries(document)
+      .flatMap(([event, groups]) => groups.flatMap((group, groupIndex) => group.hooks.map((handler, handlerIndex) =>
+        `${event}:${groupIndex}:${handlerIndex}:${JSON.stringify(handler)}`)))
+    for (const scope of ['', 'codex:/home/example user/.codex']) {
+      const shipped = golden[`win32|${scope}`]!
+      const reinstalled = handlersOf(buildHookConfig({ adapterPath: 'C:\\Users\\Example User\\.notifai\\bin\\notifai.exe', harness: 'codex',
+        platform: 'win32', integrationScope: scope, integrationRevision: sourceIntegrationRevision(shipped)! }) as never)
+      const kept = handlersOf(JSON.parse(shipped) as never)
+      expect(reinstalled, scope).toEqual(expect.arrayContaining(kept))
+      expect(reinstalled.filter((handler) => !kept.includes(handler)).map((handler) => handler.split(':').slice(0, 3).join(':')), scope).toEqual([
+        'PreToolUse:0:0', 'PostToolUse:0:0', 'SessionStart:0:1', 'UserPromptSubmit:0:1', 'Stop:0:1', 'Interrupt:0:0',
+      ])
     }
   })
 

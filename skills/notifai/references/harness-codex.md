@@ -144,9 +144,9 @@ The rule has three limits, and readiness names each:
 ## Windows hooks
 
 On Windows, Codex runs hooks through the session's own shell; Notifai's hook
-command works under PowerShell and cmd.exe. A reinstall that changes the hook
-definition needs the User's approval in `/hooks`; Notifai never grants hook
-trust. Running sessions may keep the hooks they loaded: leave their work
+command works under PowerShell and cmd.exe, and cards link there as they do on
+macOS and Linux. A reinstall that adds or changes a handler needs the User's
+approval of that handler in `/hooks`; Notifai never grants hook trust. Running sessions may keep the hooks they loaded: leave their work
 running and check the new definition in a fresh session.
 
 ## After a Notifai update

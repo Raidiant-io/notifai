@@ -1530,7 +1530,7 @@ function hookChecks(deps: CommandDeps): HookCheck[] {
       }),
   )
   const missing = installations.flatMap((installation) => {
-    const required = requiredHookEvents(installation.harness, deps.hookPlatform)
+    const required = requiredHookEvents(installation.harness)
     const installed = new Set(
       installation.handlers
         .map((handler) => handlerEvent(handler.command))

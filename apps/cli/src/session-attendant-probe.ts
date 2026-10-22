@@ -44,10 +44,11 @@ export function attendantSupport(
       : { supported: false, reason: `claude-code-${platform}-unproven` }
   }
   if (harness === 'codex') {
-    // Proven on macOS: the hook's parent is the Codex process, and Codex keeps
-    // an async hook for its declared timeout while the thread stays loaded.
-    // Windows reports no parent the same way.
-    return platform === 'darwin' || platform === 'linux'
+    // Codex keeps an async hook for its declared timeout while the thread
+    // stays loaded. The hook's parent is the Codex process on macOS and Linux;
+    // on Windows it is the PowerShell the hook command starts, and the hook
+    // entry replaces it with the Codex process proven above it.
+    return platform === 'darwin' || platform === 'linux' || platform === 'win32'
       ? { supported: true }
       : { supported: false, reason: `codex-${platform}-unproven` }
   }

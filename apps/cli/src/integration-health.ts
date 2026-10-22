@@ -29,7 +29,7 @@ export function installationFaults(installation: Installation, platform?: NodeJS
   return [
     ...(claude === undefined ? [] : claudeFormFaults(installation, platform, claude)),
     ...(installation.problems ?? []),
-    ...requiredHookEvents(installation.harness, platform).filter(event => !events.includes(event))
+    ...requiredHookEvents(installation.harness).filter(event => !events.includes(event))
       .map(event => `missing ${event}`),
     ...events.filter(event => event !== null && !(HOOK_EVENTS as readonly string[]).includes(event))
       .map(event => `unsupported ${event}`),

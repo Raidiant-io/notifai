@@ -352,7 +352,7 @@ export function buildHookConfig(options: BuildOptions): HookConfig {
   for (const row of HOOK_EVENT_TABLE) {
     if (row.document === null) continue
     if (row.notifai === 'pre-tool-use') {
-      if (options.harness !== 'codex' || !installsSessionAttendant(options.harness, options.platform)) continue
+      if (options.harness !== 'codex' || !installsSessionAttendant(options.harness)) continue
       hooks[row.document] = [{ matcher: 'request_user_input_async', hooks: [{
         type: 'command', ...hookCommandFields(adapterPath, row.notifai, options.harness, commandOptions), timeout: row.timeoutSeconds,
       }] }]
@@ -363,7 +363,7 @@ export function buildHookConfig(options: BuildOptions): HookConfig {
     // own tool hook is the place that can teach its Notification Request role.
     if (row.notifai === 'subagent-start' && options.harness === 'grok') continue
     if (row.notifai === 'permission-request' || (row.notifai === 'post-tool-use' && options.harness === 'claude-code')) {
-      if (!installsClaudePickerHooks(options.harness, options.platform)) continue
+      if (!installsClaudePickerHooks(options.harness)) continue
       // The waiting handler owns the picker for the complete answer window,
       // exactly as a held Stop does; the settling handler only records.
       hooks[row.document] = [{
@@ -377,7 +377,7 @@ export function buildHookConfig(options: BuildOptions): HookConfig {
       continue
     }
     if (row.notifai === 'post-tool-use' && options.harness !== 'grok' &&
-        (options.harness !== 'codex' || !installsSessionAttendant(options.harness, options.platform))) continue
+        (options.harness !== 'codex' || !installsSessionAttendant(options.harness))) continue
     if (row.notifai === 'stop') {
       hooks[row.document] = [{ hooks: [stopHandler(adapterPath, options.harness, commandOptions)] }]
       continue
@@ -399,7 +399,7 @@ export function buildHookConfig(options: BuildOptions): HookConfig {
       hooks[alias] = structuredClone(hooks[event]!)
     }
   }
-  if (installsSessionAttendant(options.harness, options.platform)) {
+  if (installsSessionAttendant(options.harness)) {
     // A second handler in the same group, never folded into the first. The
     // harness waits for the synchronous handler, so the resident must be an
     // async handler of its own. A process that a synchronous handler leaves
@@ -1581,7 +1581,10 @@ export function codexTrustKey(
 ): string {
   let source = installation.file
   try {
-    source = path.join(realpathSync(path.dirname(source)), path.basename(source))
+    // Codex canonicalizes with the OS. On Windows only the native call expands
+    // 8.3 short names (`RUNNER~1`) the way Codex's key spells them.
+    const canonical = process.platform === 'win32' ? realpathSync.native : realpathSync
+    source = path.join(canonical(path.dirname(source)), path.basename(source))
   } catch {
     // Codex falls back to the logical source path when canonicalization fails,
     // so the diagnostic must do the same.
