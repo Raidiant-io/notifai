@@ -21,7 +21,10 @@ nothing to repeat in a new checkout.
 
 An ordinary subagent receives worker context: it reports to its parent and does
 not notify. A worker explicitly delegated Notification Requests in its prompt
-loads the skill and guidance as their owner.
+loads the skill and guidance as their owner. Its `notifai ask` registers the
+question to the root Agent Session that started it, so the answer arrives
+there, not to the worker. `ask` never hands a worker the card; follow its
+output and tell your parent the question id and what each answer will change.
 
 ## Questions
 

@@ -3,6 +3,7 @@ import {
   type HermesClassicCliLocalInstance,
   type SourceContextHarness,
 } from './harnesses.js'
+import { delegatedCodexRoot } from './codex-subagent.js'
 import { readSessionIncarnation } from './hook-session-state.js'
 import { processAncestry, type AncestorProcess } from './process-ancestry.js'
 
@@ -28,8 +29,10 @@ export interface ActiveHarnessSession {
   /** The harness has only a temporary placeholder title so far. */
   sessionLabelPending?: boolean
   /**
-   * OpenCode only: whether its plugin reported this session as a delegated
-   * worker. Absent from a plugin too old to say, which hands back no form.
+   * Whether a delegated worker is asking. OpenCode: its plugin reported the
+   * session as one; absent from a plugin too old to say, which hands back no
+   * form. Codex: set only by `resolveAskingHarness`, for a subagent asking on
+   * its root's behalf.
    */
   worker?: boolean
 }
@@ -176,6 +179,23 @@ export function resolveActiveHarness(
   _now: number,
 ): ActiveHarnessResolution {
   return resolution(verifiedCandidates(env))
+}
+
+/**
+ * The Agent Session a question from this shell belongs to. As
+ * `resolveActiveHarness`, except that a Codex subagent proven to run inside
+ * its root (see `codex-subagent.ts`) asks on the root's behalf: its question
+ * registers there and its answer wakes the root, as a Claude Code subagent's
+ * does. Only questions take the root's identity; everything else a subagent
+ * runs keeps its own thread.
+ */
+export function resolveAskingHarness(env: NodeJS.ProcessEnv, cwd: string, now: number): ActiveHarnessResolution {
+  const resolved = resolveActiveHarness(env, cwd, now)
+  if (resolved.active?.harness !== 'codex' || resolved.contested.length > 0) return resolved
+  const delegated = delegatedCodexRoot(env, callerChain ?? null)
+  return delegated === null
+    ? resolved
+    : { active: { ...resolved.active, sessionId: delegated.rootSessionId, worker: true }, contested: [] }
 }
 
 /**

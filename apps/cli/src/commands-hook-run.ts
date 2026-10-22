@@ -62,6 +62,7 @@ import {
   type HookHarness,
   type HookOutcome,
 } from './hook-types.js'
+import { recordCodexSubagent } from './codex-subagent.js'
 import { codexStopDefinitionFingerprint, findInstallations } from './install-hooks.js'
 import { logConfigResolved, logSettingsFrom } from './logging.js'
 import {
@@ -714,6 +715,21 @@ export async function hookRunCommand(
   // checked anew on every run so disabling takes effect without reinstalling.
   if (event === 'session-start' || event === 'subagent-start') {
     start({ cwd, source: envelope.source ?? null })
+    // Codex runs a spawned child's SubagentStart in the root's own process and
+    // names both threads. Recording that lets a delegated child's `ask` reach
+    // the root (`codex-subagent.ts`); it neither activates the child nor
+    // touches the root's state.
+    if (event === 'subagent-start' && harness === 'codex' && envelope.session_id !== undefined &&
+        envelope.agent_id !== undefined) {
+      try {
+        recordCodexSubagent({
+          rootSessionId: envelope.session_id, childThreadId: envelope.agent_id,
+          hookSourcePid: declaredHookSourcePid(deps), env: deps.env, now: now(),
+        })
+      } catch {
+        // Without the record the child's `ask` is refused, as before.
+      }
+    }
     if (event === 'session-start') startDueMaintenance()
     const guidanceOn = lifecycleEnabled()
     // Both notices are read from records written off the prompt path: the

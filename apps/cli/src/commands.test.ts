@@ -112,6 +112,7 @@ import type { AnsweredPending } from './hook-types.js'
 import { currentProcessIdentity } from './process-identity.js'
 import { hostBinaryIdentity, recordCodexAttachResult } from './codex-attach-signal.js'
 import { recordTurnStart } from './session-attendant-state.js'
+import { recordCodexSubagent } from './codex-subagent.js'
 import { readDeliveryJournal } from './session-delivery.js'
 import {
   nativeSkills as realNativeSkills,
@@ -9272,6 +9273,69 @@ describe('asking before the hooks have ever run', () => {
     expect(askCommand(deps, 'Ordinary?', { title: 'Decision', json: true })).toBe(EXIT.ok)
     expect(JSON.parse(io.outLines.join('\n')).native_question).toBeUndefined()
     expect(compatibility).toHaveBeenCalledTimes(2)
+  })
+
+  it('registers a delegated Codex subagent\'s question to its root and never hands the subagent the card', async () => {
+    const cwd = scratchDir('notifai-codex-subagent-ask-')
+    const root = '019ff69d-a07f-7161-ab6e-bd06b3b93c8e'
+    const child = '019ff69d-b1c2-7d3e-8f40-516273849abc'
+    // Codex gives a spawned child's shell its own thread and the root's session.
+    const env = { HOME: cwd, XDG_CONFIG_HOME: cwd, XDG_STATE_HOME: cwd, CODEX_HOME: path.join(cwd, 'codex'),
+      CODEX_THREAD_ID: child, CODEX_SESSION_ID: root }
+    const io = new CapturedIo()
+    const compatibility = vi.fn(async () => ({ server_capabilities: ['harness_answers'] }))
+    const codexAnswerControl = vi.fn(async () => ({ namespace: 'codex', threadId: root, currentTurn: async () => true, steer: async () => {}, close: vi.fn() }))
+    const spawn = vi.fn()
+    const deps = { ...makeDeps(io, { compatibility } as unknown as ApiClient), cwd, env, now: () => 42, spawnQuestionSettlement: spawn, codexAnswerControl }
+    writeProjectSettings(cwd, env, 'project = "subagent-ask"\n')
+    expect(hooksInstallCommand(deps, { harness: 'codex', execPath, scriptPath })).toBe(EXIT.ok)
+    trustInstalledCodexHooks(cwd, env)
+    // The root is activated, hosted by this process, and its Codex offers the card.
+    const owner = beginSessionIncarnation(root, env, { stamp: lifecycleStamp(), harnessProcess: currentProcessIdentity()! })
+    const file = path.join(env.CODEX_HOME, 'sessions', 'owned.jsonl')
+    mkdirSync(path.dirname(file), { recursive: true })
+    writeFileSync(file, [
+      { type: 'session_meta', payload: { id: root, source: 'cli' } },
+      { type: 'turn_context', payload: { turn_id: 'turn-1', model: 'gpt-6-sol' } },
+      { type: 'event_msg', payload: { type: 'task_started', turn_id: 'turn-1' } },
+    ].map(item => JSON.stringify(item) + '\n').join(''))
+    recordTurnStart(root, env, owner.key, 'turn-1')
+    writeCurrentCodexSessionState(cwd, env, root, {
+      last_prompt_at: 42,
+      codex_native_turn: { key: owner.key, turn_id: 'turn-1', transcript_path: file },
+      codex_tool_hook: { incarnation: owner.incarnation, fingerprint: 'controlled', root_observed: { turn_id: 'turn-1', at: 42 } },
+      codex_card_tool: { key: owner.key, model: 'gpt-6-sol', transcript_path: file },
+    })
+    io.outLines = []
+
+    // The variables alone prove nothing: without Codex's record of the spawn
+    // the child is an unactivated session, as before.
+    expect(await askCommand(deps, 'Where?', { title: 'Decision', choice: ['Staging', 'Production'], json: true })).toBe(EXIT.usage)
+    // A subagent cannot send a prompt of its own, so the remedy sends it to its parent.
+    expect(JSON.parse(io.outLines.at(-1)!)).toMatchObject({ code: 'session_not_activated', registered: false,
+      remedy: expect.stringContaining('your parent') })
+
+    expect(recordCodexSubagent({ rootSessionId: root, childThreadId: child, hookSourcePid: process.pid, env, now: 42 })).toBe(true)
+    io.outLines = []
+    expect(await askCommand(deps, 'Where?', { title: 'Decision', choice: ['Staging', 'Production'], json: true })).toBe(EXIT.ok)
+    const output = JSON.parse(io.outLines.join('\n'))
+    expect(output).toMatchObject({ registered: true, next: { in_this_turn: expect.stringContaining('the root Agent Session') } })
+    expect(output.next.in_this_turn).not.toContain('comes back into this Agent Session')
+    // No subagent can open the card, so none is offered or even checked for.
+    expect(output.open_form).toBeUndefined()
+    expect(compatibility).not.toHaveBeenCalled()
+    expect(codexAnswerControl).not.toHaveBeenCalled()
+    expect(readSessionState(root, env).pending?.[0]).toMatchObject({ question_id: output.question_id, source: { session_id: root, harness: 'codex' } })
+    expect(readSessionState(child, env).pending).toBeUndefined()
+    expect(spawn).toHaveBeenCalledWith(expect.objectContaining({ envelope: expect.objectContaining({ session_id: root }) }))
+
+    // A wait never hands back a form either, and still names the root.
+    io.outLines = []
+    expect(await askCommand(deps, 'Which size?', { title: 'Size', choice: ['Small', 'Large'], wait: true, json: true })).toBe(EXIT.ok)
+    const waited = JSON.parse(io.outLines.join('\n'))
+    expect(waited).toMatchObject({ registered: true, next: { end_turn: true, in_this_turn: expect.stringContaining('the root Agent Session') } })
+    expect(waited.open_form).toBeUndefined()
+    expect(waited.next.in_this_turn).not.toContain('arrives as your next message')
   })
 
   it('registers a first-turn question from a linked worktree with account-specific Codex state', async () => {
