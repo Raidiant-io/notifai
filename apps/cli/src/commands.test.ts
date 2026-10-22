@@ -5294,7 +5294,9 @@ describe('logs', () => {
     writeProjectSettings(deps.cwd, deps.env, 'log_level = "off"\n')
     expect(logsCommand(deps, {})).toBe(EXIT.ok)
     expect(io.errLines.join('\n')).toContain('log_level is off')
-    expect(io.errLines.join('\n')).toContain('config set log_level info')
+    // The off switch sits in this project's override, so removing it there is
+    // what turns recording back on; setting the shipped default is refused.
+    expect(io.errLines.join('\n')).toContain('When the User asks to record again, run `notifai config unset log_level --local --yes`.')
   })
 
   it('points at the files, and says they stay here', () => {

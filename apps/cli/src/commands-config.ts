@@ -220,7 +220,7 @@ export async function configSetCommand(
   if (target.layer === 'global' && Object.is(value, configDefaultValue(configKey))) {
     deps.io.err(`${key} is already the shipped default (${JSON.stringify(value)}).`)
     deps.io.err(
-      `Run \`notifai config unset ${key} --yes\` to remove a redundant override instead of creating one.`,
+      `When the User asked for this change directly, run \`notifai config unset ${key} --yes\` to remove the redundant override instead.`,
     )
     return EXIT.usage
   }
@@ -228,7 +228,7 @@ export async function configSetCommand(
   if (!flags.yes) {
     const confirmed = await deps.io.confirm(`Set ${key} = ${JSON.stringify(value)} in ${target.path}?`)
     if (!confirmed) {
-      deps.io.err('Not confirmed. Pass --yes to skip the confirmation gate.')
+      deps.io.err('Not confirmed. When the User asked for this change directly, rerun with --yes.')
       return EXIT.usage
     }
   }
@@ -282,7 +282,7 @@ function forgetNestedSpelling(document: Record<string, unknown>, key: ConfigKey)
 function machineOnlyRefused(deps: CommandDeps, key: ConfigKey, flags: ConfigMutationFlags): boolean {
   if (!MACHINE_ONLY_CONFIG_KEYS.includes(key) || (flags.local !== true && flags.session === undefined)) return false
   deps.io.err(`${key} applies to this whole machine, so it is never read from a project or a session — every project here runs the same Notifai.`)
-  deps.io.err(`Set it for this machine instead: notifai config set ${key} <value> --yes`)
+  deps.io.err(`When the User asked for this change directly, set it for this machine instead: notifai config set ${key} <value> --yes`)
   return true
 }
 type ConfigMutationLayer = 'global' | 'local' | 'session'
@@ -340,7 +340,7 @@ export async function configUnsetCommand(
   if (!flags.yes) {
     const confirmed = await deps.io.confirm(`Remove ${configKey} from ${target.path}?`)
     if (!confirmed) {
-      deps.io.err('Not confirmed. Pass --yes to skip the confirmation gate.')
+      deps.io.err('Not confirmed. When the User asked for this change directly, rerun with --yes.')
       return EXIT.usage
     }
   }

@@ -15,7 +15,7 @@ import type { ApiClient } from './client.js'
 import type { CommandDeps, CommandIo } from './commands-core.js'
 import { EXIT } from './commands-core.js'
 import { configSetCommand } from './commands-config.js'
-import { guidanceShowCommand } from './commands-guidance.js'
+import { guidanceSetCommand, guidanceShowCommand } from './commands-guidance.js'
 import { loginCommand } from './commands-auth.js'
 import { uploadImage } from './commands-send-support.js'
 import { loadConfig } from './config.js'
@@ -507,6 +507,7 @@ describe('pairing approval URLs', () => {
     expect(captured.out.join('\n')).not.toContain('phish.example/pair/ABCD-EFGH')
     expect(captured.err.join('\n')).toContain('Pairing stopped')
     expect(captured.err.join('\n')).toContain('approve_origins')
+    expect(captured.err.join('\n')).toContain('When the User self-hosts the dashboard on its own origin and asks you to allow it')
   })
 })
 
@@ -667,5 +668,33 @@ describe('a hostile clone cannot supply guidance', () => {
     expect(added).toMatchObject({ authority: 'user', summary: 'User-added guidance' })
     expect(parsed.topics.map((topic) => topic.name)).not.toContain('house-style')
     expect(new Set(parsed.topics.map((topic) => topic.authority))).toEqual(new Set(['user', 'shipped']))
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Remedies that would widen trust or skip a confirmation
+// ---------------------------------------------------------------------------
+
+describe('remedies that change Notifai name the User as the one who asks', () => {
+  // A repository's instructions often run these commands and read their
+  // output. A remedy that says "pass --yes" or "allow this origin" without a
+  // condition would hand the change to whoever is reading.
+  const DIRECT = 'When the User asked for this change directly'
+
+  it('conditions --yes on the User asking, for settings and guidance alike', async () => {
+    const { deps, captured } = hostileClone()
+    const declining = { ...deps, io: { ...deps.io, confirm: async () => false } }
+    expect(await configSetCommand(declining, 'sound', 'done', { local: true })).toBe(EXIT.usage)
+    expect(await guidanceSetCommand(declining, 'titles', 'Name the repository.', { local: true })).toBe(EXIT.usage)
+    expect(await configSetCommand(declining, 'updates.automatic', 'off', { local: true })).toBe(EXIT.usage)
+    const remedies = captured.err.filter((line) => line.includes('--yes'))
+    expect(remedies.length).toBeGreaterThanOrEqual(3)
+    for (const remedy of remedies) expect(remedy).toContain(DIRECT)
+  })
+
+  it('conditions widening the media origins on the User asking', async () => {
+    const media = await checkMediaUrl(new URL('http://imgs.example/x.png'), { allowOrigins: [] })
+    if (media.ok) throw new Error('expected refusal')
+    expect(media.reason).toContain('when the User asks to allow a self-hosted or intranet image server')
   })
 })

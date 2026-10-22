@@ -121,7 +121,7 @@ export async function guidanceSetCommand(
         : `Replace the shipped "${topic}" guidance for this scope`
     const confirmed = await deps.io.confirm(`${replaces} at ${target.path}?`)
     if (!confirmed) {
-      deps.io.err('Not confirmed. Pass --yes to skip the confirmation gate.')
+      deps.io.err('Not confirmed. When the User asked for this change directly, rerun with --yes.')
       return EXIT.usage
     }
   }
@@ -149,7 +149,7 @@ export async function guidanceUnsetCommand(
   if (!flags.yes) {
     const confirmed = await deps.io.confirm(`Remove ${target.path}?`)
     if (!confirmed) {
-      deps.io.err('Not confirmed. Pass --yes to skip the confirmation gate.')
+      deps.io.err('Not confirmed. When the User asked for this change directly, rerun with --yes.')
       return EXIT.usage
     }
   }

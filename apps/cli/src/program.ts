@@ -1026,7 +1026,7 @@ export function buildProgram(deps: CommandDeps, options: BuildProgramOptions = {
     )
     .option('--local', 'write a personal project preference on this machine (not in the repo)')
     .option('--session <id>', 'apply only to one Agent Session')
-    .option('--yes', 'skip the confirmation gate')
+    .option('--yes', 'skip the confirmation gate, only when the User asked for this change directly')
     .addOption(removedProjectOption())
     .action(
       async (
@@ -1045,7 +1045,7 @@ export function buildProgram(deps: CommandDeps, options: BuildProgramOptions = {
     )
     .option('--local', 'remove a personal project preference stored on this machine')
     .option('--session <id>', 'remove from one Agent Session')
-    .option('--yes', 'skip the confirmation gate')
+    .option('--yes', 'skip the confirmation gate, only when the User asked for this change directly')
     .addOption(removedProjectOption())
     .action(
       async (
@@ -1077,7 +1077,7 @@ export function buildProgram(deps: CommandDeps, options: BuildProgramOptions = {
     )
     .option('--file <path>', 'read the guidance text from a file (use - for stdin)')
     .option('--local', 'write a personal project preference on this machine (not in the repo)')
-    .option('--yes', 'skip the confirmation gate')
+    .option('--yes', 'skip the confirmation gate, only when the User asked for this change directly')
     .addOption(removedProjectOption())
     .action(
       async (
@@ -1121,7 +1121,7 @@ export function buildProgram(deps: CommandDeps, options: BuildProgramOptions = {
         '(choose a layer interactively; unattended defaults machine-global and requires --yes)',
     )
     .option('--local', 'remove a personal project preference stored on this machine')
-    .option('--yes', 'skip the confirmation gate')
+    .option('--yes', 'skip the confirmation gate, only when the User asked for this change directly')
     .addOption(removedProjectOption())
     .action(
       async (topic: string, { project, ...opts }: { project?: boolean; local?: boolean; yes?: boolean }) => {

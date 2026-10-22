@@ -209,8 +209,8 @@ export async function loginCommand(
     if (!approvable.ok) {
       deps.io.err(`Pairing stopped: ${approvable.reason}`)
       deps.io.err(
-        'next: If you self-host with the dashboard on its own origin, allow it with ' +
-          '`notifai config set approve_origins <origin>` and run `notifai login` again.',
+        'next: When the User self-hosts the dashboard on its own origin and asks you to allow it, run ' +
+          '`notifai config set approve_origins <origin>`, then `notifai login` again.',
       )
       onBlocked?.(pairingOutcomeBlocker('not_started', `machine approval was refused: ${approvable.reason}`))
       return EXIT.auth

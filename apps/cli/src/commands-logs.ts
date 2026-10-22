@@ -1,5 +1,5 @@
 import { unlinkSync } from 'node:fs'
-import { type LogLevel } from './config.js'
+import { type ConfigSource, type LogLevel } from './config.js'
 import {
   LOG_EVENTS,
   RECORD_LEVELS,
@@ -217,7 +217,7 @@ export function logsCommand(deps: CommandDeps, flags: LogsFlags): number {
   if (result.records.length === 0) {
     if (config.log_level.value === 'off') {
       deps.io.err('Nothing is being recorded: log_level is off.')
-      deps.io.err('Turn it on with `notifai config set log_level info --yes`.')
+      deps.io.err(`When the User asks to record again, run \`${logLevelReset(config.log_level.source)}\`.`)
     } else if (logsDiskUsage(deps.env).files === 0) {
       deps.io.err('No log yet. It is written the next time a notifai command or harness hook runs.')
     } else {
@@ -240,4 +240,15 @@ export function logsCommand(deps: CommandDeps, flags: LogsFlags): number {
   if (config.log_level.value !== 'debug') notes.push('`log_level = debug` records request detail')
   if (notes.length > 0) deps.io.err(`— ${result.records.length} records; ${notes.join('; ')}`)
   return EXIT.ok
+}
+
+/**
+ * Removing the override that turned recording off, at the layer that holds
+ * it. `config set log_level info` would be refused as a redundant copy of the
+ * shipped default.
+ */
+function logLevelReset(source: ConfigSource): string {
+  if (source.startsWith('project-local:')) return 'notifai config unset log_level --local --yes'
+  if (source.startsWith('session:')) return 'notifai config unset log_level --session <id> --yes'
+  return 'notifai config unset log_level --yes'
 }
