@@ -17,6 +17,11 @@ on:
         required: false
         type: boolean
         default: false
+      windows_forms_only:
+        description: Focused Windows question-form checks only; never release evidence
+        required: false
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -31,8 +36,13 @@ jobs:
     uses: ./.github/workflows/windows-access.yml
     with:
       expected_sha: ${{ inputs.expected_sha }}
+  windows-forms:
+    if: ${{ inputs.windows_forms_only }}
+    uses: ./.github/workflows/windows-question-forms.yml
+    with:
+      expected_sha: ${{ inputs.expected_sha }}
   scope:
-    if: ${{ !inputs.windows_access_only }}
+    if: ${{ !inputs.windows_access_only && !inputs.windows_forms_only }}
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 10
     steps:
@@ -85,7 +95,7 @@ jobs:
 
   gates:
     needs: scope
-    if: ${{ always() && !inputs.standalone_only && !inputs.windows_access_only }}
+    if: ${{ always() && !inputs.standalone_only && !inputs.windows_access_only && !inputs.windows_forms_only }}
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
@@ -227,7 +237,7 @@ jobs:
             src/hooks.test.ts src/commands.test.ts \
             --testNamePattern "Windows Claude"
           pnpm --filter @raidiant/notifai test -- \
-            src/process-identity.test.ts src/claude-wake.test.ts
+            src/process-identity.test.ts src/claude-wake.test.ts src/windows-hook-source.test.ts
       - name: Configure the native Windows access-check compiler
         uses: ilammy/msvc-dev-cmd@0b201ec74fa43914dc39ae48a89fd1d8cb592756 # v1
         with:

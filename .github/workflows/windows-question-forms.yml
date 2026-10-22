@@ -1,0 +1,81 @@
+name: Windows question forms
+
+# Focused evidence that Claude Code pickers and Codex cards link on Windows:
+# the Windows hook, identity and install tests on a Windows runner, then the
+# real Claude Code and Codex CLIs against a local mock model, each running
+# Notifai's own Windows hook commands. No account, no model and no secret.
+on:
+  workflow_call:
+    inputs:
+      expected_sha:
+        required: true
+        type: string
+  workflow_dispatch:
+    inputs:
+      expected_sha:
+        description: Exact source commit to verify
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  forms:
+    runs-on: windows-2025
+    timeout-minutes: 40
+    steps:
+      - name: Admit the exact source commit
+        shell: bash
+        env:
+          EXPECTED_SHA: ${{ inputs.expected_sha }}
+        run: |
+          set -euo pipefail
+          [[ "$EXPECTED_SHA" =~ ^[0-9a-f]{40}$ ]]
+          test "$GITHUB_SHA" = "$EXPECTED_SHA"
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320 # v4.4.0
+        with:
+          version: 10.34.5
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '24'
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm build
+      # A source build reads process starts through Windows PowerShell with a
+      # five-second bound; its first start on a fresh runner can take longer.
+      - name: Warm Windows PowerShell
+        shell: pwsh
+        run: powershell.exe -NoProfile -NonInteractive -Command '(Get-Process -Id $PID).StartTime.ToFileTimeUtc(); Get-CimInstance Win32_Process -Filter "ProcessId = $PID" | Out-Null'
+      - name: Run the Windows identity, install and linking tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          pnpm --filter @raidiant/notifai test -- \
+            src/windows-hook-source.test.ts src/process-identity.test.ts \
+            src/claude-question-hooks.test.ts src/codex-question-hooks.test.ts \
+            src/claude-picker-handback.test.ts src/codex-card-capability.test.ts
+          pnpm --filter @raidiant/notifai test -- src/install-hooks.test.ts \
+            --testNamePattern "Windows|every platform|everywhere|byte-identical|picker"
+      - name: Install the newest Claude Code and Codex CLIs
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm install -g @anthropic-ai/claude-code@latest @openai/codex@latest
+          python -m pip install --disable-pip-version-check pywinpty
+          claude --version
+          codex --version
+      - name: Run the real harnesses against a local mock model
+        shell: bash
+        run: node scripts/windows-question-forms.mjs "$RUNNER_TEMP/windows-question-forms.json"
+      - name: Retain the harness record
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: windows-question-forms-${{ inputs.expected_sha }}
+          path: ${{ runner.temp }}/windows-question-forms.json
+          if-no-files-found: ignore
+          retention-days: 30
