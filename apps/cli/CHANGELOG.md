@@ -8,45 +8,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 This project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 and [Conventional Commits](https://www.conventionalcommits.org/en/v1.0.0/).
 
-## [14.0.0](https://github.com/Raidiant-io/notifai/compare/v13.1.0...v14.0.0) (2026-10-22)
-
-
-### ⚠ BREAKING CHANGES
-
-* **cli:** Notifai no longer reads `.notifai/config.toml` or `.notifai/guidance/` from a repository, and `config set`, `config unset`, `guidance set` and `guidance unset` no longer accept `--project`. Use `--local` for a per-project setting, stored outside the repository.
-
-### Features
-
-* **cli:** ask every Claude Code question once, with an agent-written title ([#388](https://github.com/Raidiant-io/notifai/issues/388)) ([1b5347e](https://github.com/Raidiant-io/notifai/commit/1b5347e977d38bb6dd777721bd0ee47f24e3d4cb))
-* **cli:** carry OpenCode question forms through registration ([#393](https://github.com/Raidiant-io/notifai/issues/393)) ([cb32083](https://github.com/Raidiant-io/notifai/commit/cb320836a1fdbb25296a6bc0f298e98be9a3e43f))
-* **cli:** carry text and number pickers to devices ([#389](https://github.com/Raidiant-io/notifai/issues/389)) ([614f03f](https://github.com/Raidiant-io/notifai/commit/614f03f9743b1f8f8700153bbd794816002ee123))
-* **cli:** hand back exact Codex question cards ([#392](https://github.com/Raidiant-io/notifai/issues/392)) ([54fc39f](https://github.com/Raidiant-io/notifai/commit/54fc39f1dce63c2f1f145a803b7fdc75593fa1d6))
-* **cli:** preserve context through waiting question pickers ([#394](https://github.com/Raidiant-io/notifai/issues/394)) ([e77c910](https://github.com/Raidiant-io/notifai/commit/e77c910b23b53229a1a31af88237dd8e39c3bcc8))
-* **cli:** record Codex terminal answers mechanically ([#387](https://github.com/Raidiant-io/notifai/issues/387)) ([7411aa0](https://github.com/Raidiant-io/notifai/commit/7411aa0429f35a90ee26e8cc43b9207648617546))
-* **cli:** stop reading repository config and load writing guidance at first use ([#384](https://github.com/Raidiant-io/notifai/issues/384)) ([73197cb](https://github.com/Raidiant-io/notifai/commit/73197cbe7ab51449a5885feb2468806f5e9d9146))
-* **cli:** wait for an answer with ask --wait, and deprecate send --reply ([#390](https://github.com/Raidiant-io/notifai/issues/390)) ([371959a](https://github.com/Raidiant-io/notifai/commit/371959af67de4bba84fb2cd9daf8412421204ab2))
-* full content in the push, described choices and dismissed history ([#382](https://github.com/Raidiant-io/notifai/issues/382)) ([515e1d2](https://github.com/Raidiant-io/notifai/commit/515e1d22241cad352bb521ee5d0663254de33e01))
-
-
-### Bug Fixes
-
-* **cli:** activate Cursor without an extra turn ([#378](https://github.com/Raidiant-io/notifai/issues/378)) ([806b441](https://github.com/Raidiant-io/notifai/commit/806b44176c09a1cb46c56b04c455ebae9e9eb5c5))
-* **cli:** end Cursor's copies of Claude Code hooks before anything runs ([#377](https://github.com/Raidiant-io/notifai/issues/377)) ([e37d101](https://github.com/Raidiant-io/notifai/commit/e37d10115d9c69c2dd72660579ba3176c9e28ac6))
-* **cli:** finish approval while terminal prompts are open ([#379](https://github.com/Raidiant-io/notifai/issues/379)) ([1a6b27b](https://github.com/Raidiant-io/notifai/commit/1a6b27ba415d0c6255faf1374b52bbd621a7ba89))
-* **cli:** keep a disabled project silent and give every question its own delay ([#385](https://github.com/Raidiant-io/notifai/issues/385)) ([69dde4b](https://github.com/Raidiant-io/notifai/commit/69dde4b5982178c6907896d0df3882d5b009873c))
-* **cli:** keep a disabled project silent and give every question its own delay ([#386](https://github.com/Raidiant-io/notifai/issues/386)) ([f901da0](https://github.com/Raidiant-io/notifai/commit/f901da047e5fa0563f6d64c3cdb9703fb410076f))
-* **cli:** reject unresolvable Body image references ([#381](https://github.com/Raidiant-io/notifai/issues/381)) ([7449223](https://github.com/Raidiant-io/notifai/commit/74492231287cbdffb7a572cca854244f4def1f69))
-* **cli:** send the Cursor activation follow-up once per conversation ([#375](https://github.com/Raidiant-io/notifai/issues/375)) ([b1e4272](https://github.com/Raidiant-io/notifai/commit/b1e42728b1e122e7d69aaeca735dcae99051fa0a))
-* **cli:** settle in-flight questions before confirming close ([#383](https://github.com/Raidiant-io/notifai/issues/383)) ([bf196ca](https://github.com/Raidiant-io/notifai/commit/bf196caf247e1fd310475044c6908b59c68f94fe))
-* **skill:** make agent guidance match questions on main ([#391](https://github.com/Raidiant-io/notifai/issues/391)) ([7d8e9c8](https://github.com/Raidiant-io/notifai/commit/7d8e9c8f1b8539d26bf6bc049e5f87d0e86e236f))
-
-
-### Dependencies
-
-* The following workspace dependencies were updated
-  * dependencies
-    * @raidiant/notifai-protocol bumped from 9.0.0-beta.1 to 8.6.0
-
 ## [14.0.0-beta.1](https://github.com/Raidiant-io/notifai/compare/v13.1.0...v14.0.0-beta.1) (2026-10-22)
 
 ### Breaking changes
