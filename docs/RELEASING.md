@@ -306,6 +306,18 @@ CLI-only form during ordinary generation; this verifier remains the fail-closed
 backstop if configuration or upstream behavior drifts. Keep the generated Release PR metadata
 unchanged; if this check rejects a candidate, do not merge it.
 
+The same verifier refuses a stable version lower than a prerelease already
+published for that package. For each package the manifest advances, it reads the
+package's tags from the checkout (`v*` for the CLI, `protocol-v*` for the
+protocol), finds the newest stable tag, and compares the proposal with the
+highest `X.Y.Z` of any `X.Y.Z-beta.N` tagged after it. Equal or higher passes.
+Lower means a breaking change went unmarked, so release-please computed too
+small a bump: mark it with `!` or a `BREAKING CHANGE:` footer on a commit
+touching that package, or set `release-as` for that package, then regenerate
+the Release PR. The release job's checkout uses `fetch-depth: 0`, which brings
+every tag; if the tag list is empty or lacks the tag of the manifest's previous
+version, the verifier fails closed.
+
 GitHub documents one narrower exception to the recursion rule: when
 `GITHUB_TOKEN` creates or updates a pull request, its `pull_request` event can
 create runs in an approval-required state. This repository has no pull-request
