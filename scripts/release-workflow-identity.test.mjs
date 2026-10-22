@@ -181,6 +181,11 @@ test('release-please is explicit, exact-main guarded, and uses a verified predec
   assert.match(release, /verify-release-please-output\.mjs "\$\{\{ steps\.predecessor\.outputs\.sha \}\}"/u)
   assert.match(release, /Verify generated release pull request metadata/u)
   assert.match(release, /node scripts\/verify-release-pr-metadata\.mjs "\$event_path"/u)
+  // The metadata verifier compares proposals with published prerelease tags,
+  // so the release job's checkout must carry the full tag history.
+  const releaseCheckout = releaseWorkflow.jobs['release-please'].steps
+    .find(step => step.uses?.startsWith('actions/checkout@'))
+  assert.equal(releaseCheckout.with['fetch-depth'], 0)
   assert.doesNotMatch(release, /github\.event\.before/u)
   assert.match(release, /release-please:\n(?:.*\n)*?    permissions:\n      contents: write\n      pull-requests: write/u)
   assert.match(release, /  dispatch:\n(?:.*\n)*?    permissions:\n      actions: write/u)
