@@ -442,44 +442,84 @@ export function claudePickerUnanswered(registration: CodexQuestionRegistration, 
 }
 
 /**
+ * The answer Claude Code gives a picker question the User only wrote notes on,
+ * without choosing an option (seen on 2.1.308, in pickers with option
+ * previews). The notes ride in the result's `annotations`; the placeholder
+ * itself answers nothing.
+ */
+export const CLAUDE_NOTES_ONLY = '(notes only)'
+
+/** One question's own answer in a picker result: a label, typed text, or labels as a list (extended schema). */
+function givenValue(answers: unknown, title: string): string | string[] | undefined {
+  if (typeof answers !== 'object' || answers === null) return undefined
+  const value = (answers as Record<string, unknown>)[title]
+  if (Array.isArray(value)) {
+    const labels = value.filter((label): label is string => typeof label === 'string' && label.trim() !== '')
+    return labels.length > 0 ? labels : undefined
+  }
+  return typeof value === 'string' && value.trim() !== '' && value !== CLAUDE_NOTES_ONLY ? value : undefined
+}
+
+/** The notes the User wrote on one picker question, from the result's `annotations`. */
+function givenNotes(annotations: unknown, title: string): string | undefined {
+  if (typeof annotations !== 'object' || annotations === null) return undefined
+  const entry = (annotations as Record<string, unknown>)[title]
+  const notes = typeof entry === 'object' && entry !== null ? (entry as { notes?: unknown }).notes : undefined
+  return typeof notes === 'string' && notes.trim() !== '' ? notes.trim() : undefined
+}
+
+/** Whether a picker result answers the question with this picker text: a choice, typed text, or notes. */
+export function claudeQuestionAnswered(toolResponse: unknown, title: string): boolean {
+  if (typeof toolResponse !== 'object' || toolResponse === null) return false
+  const { answers, annotations } = toolResponse as { answers?: unknown; annotations?: unknown }
+  return givenValue(answers, title) !== undefined || givenNotes(annotations, title) !== undefined
+}
+
+/** The picker's labels as registered choice ids, or null when any of them is not one of its options. */
+function choiceIdsOf(binding: CodexQuestionBinding, value: string | string[]): string[] | null {
+  const choices = (binding.question.choices ?? []).map((choice) => ({ id: choice.id, label: pickerLabel(binding, choice.id)! }))
+  const exact = typeof value === 'string' ? choices.find((choice) => choice.label === value) : undefined
+  if (exact !== undefined) return [exact.id]
+  if (binding.question.multi !== true) return null
+  const parts = (typeof value === 'string' ? value.split(', ') : value).map((part) => part.trim()).filter((part) => part !== '')
+  const picked = parts.map((part) => choices.find((choice) => choice.label === part))
+  if (parts.length === 0 || picked.some((choice) => choice === undefined)) return null
+  return [...new Set(picked.map((choice) => choice!.id))]
+}
+
+/**
  * The terminal's own picker answers as registered question and choice ids, for
  * the native answer report. A value that is not one of the picker's labels is
- * typed text. Freeform text the User typed instead of selecting an option
- * (`response`) answers the questions that `answers` leaves out. Null when the
- * response still leaves a question of the picker unanswered.
+ * typed text. Notes the User wrote on a question ride beside its choice, or
+ * stand alone when they chose nothing; Claude Code's notes-only placeholder is
+ * never recorded. Freeform text the User typed instead of selecting an option
+ * (`response`) answers the questions that are otherwise left out. Null when a
+ * question of the picker is still unanswered.
  */
 export function claudeTerminalAnswers(
   registration: CodexQuestionRegistration,
   toolResponse: unknown,
 ): ReplyAnswerT[] | null {
   if (typeof toolResponse !== 'object' || toolResponse === null) return null
-  const { answers: raw, response } = toolResponse as { answers?: unknown; response?: unknown }
+  const { answers: given, annotations, response } = toolResponse as { answers?: unknown; annotations?: unknown; response?: unknown }
   const typedResponse = typeof response === 'string' && response.trim() !== '' ? response.trim() : undefined
-  if ((typeof raw !== 'object' || raw === null) && typedResponse === undefined) return null
-  const given = (typeof raw === 'object' && raw !== null ? raw : {}) as Record<string, unknown>
   const answers: ReplyAnswerT[] = []
   for (const binding of registration.questions) {
-    const value = given[pickerTitle(binding)]
-    if (typeof value !== 'string' || value.trim() === '') {
-      if (typedResponse === undefined) return null
-      answers.push({ question_id: binding.question.id, text: typedResponse })
+    const value = givenValue(given, pickerTitle(binding))
+    const notes = givenNotes(annotations, pickerTitle(binding))
+    if (value === undefined) {
+      const text = notes ?? typedResponse
+      if (text === undefined) return null
+      answers.push({ question_id: binding.question.id, text })
       continue
     }
-    const choices = (binding.question.choices ?? []).map((choice) => ({ id: choice.id, label: pickerLabel(binding, choice.id)! }))
-    const exact = choices.find((choice) => choice.label === value)
-    if (exact !== undefined) {
-      answers.push({ question_id: binding.question.id, choice_ids: [exact.id] })
+    const choiceIds = choiceIdsOf(binding, value)
+    if (choiceIds !== null) {
+      answers.push({ question_id: binding.question.id, choice_ids: choiceIds, ...(notes === undefined ? {} : { text: notes }) })
       continue
     }
-    if (binding.question.multi === true) {
-      const parts = value.split(', ').map((part) => part.trim()).filter((part) => part !== '')
-      const picked = parts.map((part) => choices.find((choice) => choice.label === part))
-      if (parts.length > 0 && picked.every((choice) => choice !== undefined)) {
-        answers.push({ question_id: binding.question.id, choice_ids: [...new Set(picked.map((choice) => choice!.id))] })
-        continue
-      }
-    }
-    answers.push({ question_id: binding.question.id, text: value.trim() })
+    const typed = typeof value === 'string' ? value.trim() : value.join(', ')
+    answers.push({ question_id: binding.question.id, text: notes === undefined ? typed : `${typed}\n${notes}` })
   }
   return answers
 }

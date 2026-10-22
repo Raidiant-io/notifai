@@ -1,6 +1,7 @@
 import { automaticUpdateReport, automaticUpdatesRunHere } from './automatic-update.js'
 import { processArguments, reopenLine, reopenReport, reopenStalledLine } from './session-reopen.js'
 import { CLAUDE_EXEC_FORM_MIN_VERSION, claudeHookFormFor, describeClaudeHookForm } from './claude-hook-form.js'
+import { claudeDialogExpiry, claudeRemoteControlAtStartup, claudeRemotePickerCheck } from './claude-remote-pickers.js'
 import { claudeFormFaults } from './integration-health.js'
 import { buildIdentity } from './distribution.js'
 import {
@@ -1267,6 +1268,7 @@ const CHECK_TITLES: Readonly<Record<string, string>> = {
   'hooks (wake route)': 'Direct wake route',
   'hooks (openclaw plugin)': 'OpenClaw plugin loadability',
   'hooks (hermes plugin)': 'Hermes plugin activation',
+  'hooks (claude remote pickers)': 'Pickers sent to Remote Control',
 }
 
 function checkTitle(name: string): string {
@@ -1569,6 +1571,16 @@ function hookChecks(deps: CommandDeps): HookCheck[] {
       technical: { file: installation.file, installed_form: exec ? 'exec' : 'shell', claude_code_version: decision.version,
         exec_form_min_version: CLAUDE_EXEC_FORM_MIN_VERSION, decision: decision.form, reason: decision.reason },
     })
+  }
+
+  // A picker Remote Control lets expire closes like Esc; say so where it can happen.
+  if (installations.some((installation) => installation.harness === 'claude-code')) {
+    const root = projectLocation(deps.cwd, deps.env)?.root
+    const remote = claudeRemotePickerCheck({
+      expiry: claudeDialogExpiry(deps.env, root === undefined ? [deps.cwd] : [deps.cwd, root]),
+      remoteControlAtStartup: claudeRemoteControlAtStartup(deps.env),
+    })
+    checks.push({ name: 'hooks (claude remote pickers)', harnesses: ['claude-code'], reportOnly: true, ...remote })
   }
 
   const adapterProblems = installations.flatMap((installation) =>
