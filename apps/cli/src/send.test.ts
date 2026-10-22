@@ -1,6 +1,9 @@
 import { describe, expect, it } from 'vitest'
 import {
+  BODY_NOTE_LENGTH,
+  SUMMARY_NOTE_LENGTH,
   accidentalEscapedNewlineMessage,
+  contentLengthNotes,
   hasAccidentalEscapedNewlines,
   rejectAccidentalEscapedNewlines,
   rewriteMediaReferences,
@@ -56,5 +59,16 @@ describe('accidental escaped newlines', () => {
 
   it('does not treat an escaped backslash plus n as accidental', () => {
     expect(hasAccidentalEscapedNewlines('escape as \\\\n')).toBe(false)
+  })
+})
+
+describe('content length notes', () => {
+  it('notes only a long Summary or Body, counting Unicode characters', () => {
+    expect(contentLengthNotes('Login works again.', 'Short.')).toEqual([])
+    expect(contentLengthNotes('é'.repeat(SUMMARY_NOTE_LENGTH - 1), 'x'.repeat(BODY_NOTE_LENGTH))).toEqual([])
+    const notes = contentLengthNotes('é'.repeat(SUMMARY_NOTE_LENGTH), 'x'.repeat(BODY_NOTE_LENGTH + 1))
+    expect(notes).toHaveLength(2)
+    expect(notes[0]).toContain(`Summary is ${SUMMARY_NOTE_LENGTH} characters`)
+    expect(notes[1]).toContain(`Body is ${BODY_NOTE_LENGTH + 1} characters`)
   })
 })
