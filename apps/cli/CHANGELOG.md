@@ -8,6 +8,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 This project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 and [Conventional Commits](https://www.conventionalcommits.org/en/v1.0.0/).
 
+## [14.1.0-beta.1](https://github.com/Raidiant-io/notifai/compare/v14.0.0...v14.1.0-beta.1) (2026-10-22)
+
+### Features
+
+* Hermes agents receive the whole session guidance in two prompt sections on Hermes 0.21.5 and later; older Hermes keeps the single-section fallback.
+* Claude Code pickers and Codex cards link to the User's devices on Windows, under the same rules as macOS and Linux.
+
+### Bug Fixes
+
+* An Agent Session another agent started with a task brief reports to that agent and sends no Notification Requests unless the brief delegates them.
+* A claim release is no longer dropped while another process briefly holds its guard, so a close or hand-off never waits on a claim that was meant to be released.
+
 ## [14.0.0](https://github.com/Raidiant-io/notifai/compare/v13.1.0...v14.0.0) (2026-10-22)
 
 
