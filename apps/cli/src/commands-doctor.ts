@@ -40,6 +40,7 @@ import { CODEX_ATTACH_CHECKS } from './codex-attach-canary.js'
 import { codexHostKind } from './codex-session-end.js'
 import { assessCodexCommandRules } from './codex-command-rules.js'
 import { openclawGatewayReady } from './openclaw-gateway-readiness.js'
+import { OPENCODE_PLUGIN_LOAD_REMEDY, opencodeLoadsPlugin, opencodePluginLoadWarning, opencodeVersionFor } from './opencode-version.js'
 import {
   NON_ROUTING_BLOCKING_STOP_TIMEOUT_SECONDS,
   QUESTION_STOP_TIMEOUT_SECONDS,
@@ -1267,6 +1268,7 @@ const CHECK_TITLES: Readonly<Record<string, string>> = {
   'hooks (answer continuation)': 'How an answer returns',
   'hooks (wake route)': 'Direct wake route',
   'hooks (openclaw plugin)': 'OpenClaw plugin loadability',
+  'hooks (opencode plugin)': 'OpenCode plugin loadability',
   'hooks (hermes plugin)': 'Hermes plugin activation',
   'hooks (claude remote pickers)': 'Pickers sent to Remote Control',
 }
@@ -1393,6 +1395,23 @@ function hookChecks(deps: CommandDeps): HookCheck[] {
       ...(loadability.loadable || loadability.remedy === null
         ? {}
         : { remedy: { by: 'user-elsewhere' as const, summary: loadability.remedy } }),
+    })
+  }
+
+  // OpenCode 2 does not run OpenCode 1 plugins, so its sessions get none of
+  // Notifai's OpenCode wiring; see opencode-version.ts.
+  if (installations.some((installation) => installation.harness === 'opencode')) {
+    const version = opencodeVersionFor(deps)
+    const loads = opencodeLoadsPlugin(version)
+    checks.push({
+      name: 'hooks (opencode plugin)',
+      harnesses: ['opencode'],
+      ok: loads,
+      detail: opencodePluginLoadWarning(version) ?? (version === null
+        ? 'the OpenCode version could not be read (`opencode --version` did not answer); OpenCode 1 loads the Notifai plugin'
+        : `OpenCode ${version} loads the Notifai plugin`),
+      technical: { opencode_version: version, opencode_loads_plugin: loads },
+      ...(loads ? {} : { remedy: { by: 'user-elsewhere' as const, summary: OPENCODE_PLUGIN_LOAD_REMEDY } }),
     })
   }
 
