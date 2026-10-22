@@ -3,7 +3,7 @@ import {
   disableProject,
   enableProject,
   projectBinding,
-  projectEnabled,
+  projectEnablementState,
 } from './project-enablement.js'
 
 function bindingFor(deps: CommandDeps) {
@@ -18,7 +18,10 @@ export function projectEnableCommand(deps: CommandDeps): number {
     return EXIT.usage
   }
   enableProject(binding)
-  deps.io.out(`Notifai lifecycle behavior is enabled for Project "${binding.project}".`)
+  deps.io.out(
+    `Notifai is enabled for Project "${binding.project}": its notifications and questions reach the User's devices, ` +
+      'and agents here get Notifai\'s guidance.',
+  )
   return EXIT.ok
 }
 
@@ -29,19 +32,26 @@ export function projectDisableCommand(deps: CommandDeps): number {
     return EXIT.usage
   }
   disableProject(binding)
-  deps.io.out(`Notifai lifecycle behavior is disabled for Project "${binding.project}".`)
+  deps.io.out(
+    `Notifai is disabled for Project "${binding.project}": nothing from it reaches the User's devices until ` +
+      '`notifai project enable`.',
+  )
   return EXIT.ok
 }
 
 export function projectStatusCommand(deps: CommandDeps, json = false): number {
   const binding = bindingFor(deps)
-  const enabled = projectEnabled(binding)
+  const decision = projectEnablementState(binding)
   if (json) {
-    deps.io.out(JSON.stringify({ project: binding?.project ?? null, enabled }))
+    deps.io.out(JSON.stringify({ project: binding?.project ?? null, enabled: decision === 'enabled', disabled: decision === 'disabled' }))
   } else if (binding === null) {
     deps.io.out('No Project can be inferred here; lifecycle behavior is disabled.')
+  } else if (decision === 'disabled') {
+    deps.io.out(
+      `Project "${binding.project}": lifecycle behavior disabled. The User disabled Notifai here: nothing from it reaches the User's devices.`,
+    )
   } else {
-    deps.io.out(`Project "${binding.project}": lifecycle behavior ${enabled ? 'enabled' : 'disabled'}.`)
+    deps.io.out(`Project "${binding.project}": lifecycle behavior ${decision === 'enabled' ? 'enabled' : 'disabled'}.`)
   }
   return EXIT.ok
 }

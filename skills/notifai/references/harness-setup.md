@@ -115,8 +115,9 @@ If a companion device is missing, ask the user to open a supported companion
 build, sign in, and grant notification permission. Do not emulate that, and do
 not treat Provider Acceptance as Companion Receipt proof.
 
-To turn Notifai's guidance off in one project while leaving other projects
-wired, run `notifai project disable`.
+To turn Notifai off in one project while leaving other projects wired, run
+`notifai project disable`: nothing from that project reaches the User's
+devices until `notifai project enable`.
 `notifai hooks uninstall` removes the machine's lifecycle wiring for every
 project; pass `--harness <name>` to name one when several are wired. Uninstall
 also clears any Project-scoped hook file an older Notifai left in this
@@ -150,6 +151,9 @@ With no scope flag, `notifai config set` writes Machine-Global Configuration.
 `--local` writes a Project Override under the user's configuration directory;
 one local Git checkout and all its linked worktrees resolve to the same file.
 Nothing in the repository configures Notifai.
+
+With “Send questions to my devices” (`ask_notifications`) off, ask in the
+conversation, or in your own question form, which stays in the terminal.
 
 `NOTIFAI_NO_INPUT=1` guarantees no command will ever prompt, which is what you
 want in CI or any shell with nobody at it. `NOTIFAI_CREDENTIALS=file` stores the

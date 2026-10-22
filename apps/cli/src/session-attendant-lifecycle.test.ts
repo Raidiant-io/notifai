@@ -1435,16 +1435,15 @@ describe('attendant gates', () => {
     )
   }
 
-  it('require Project Enablement and an installed attend handler', () => {
+  it('require an installed attend handler, in every Project', () => {
     const { env, root } = isolatedEnv()
     const deps = gateDeps(root, env, installedCli(root, env, '11.4.0'))
-    const binding = projectBinding(root, env)!
-    enableProject(binding, new Date())
-    expect(attendantGates(deps, root, 's', 'claude-code', '11.4.0')).toEqual({ ok: false, reason: 'attend-handler-removed' })
+    expect(attendantGates(deps, root, 'claude-code', '11.4.0')).toEqual({ ok: false, reason: 'attend-handler-removed' })
     installAttend(env)
-    expect(attendantGates(deps, root, 's', 'claude-code', '11.4.0')).toEqual({ ok: true })
-    disableProject(binding)
-    expect(attendantGates(deps, root, 's', 'claude-code', '11.4.0')).toEqual({ ok: false, reason: 'project-disabled' })
+    // An answer returns to the session whatever the User decided for the Project.
+    expect(attendantGates(deps, root, 'claude-code', '11.4.0')).toEqual({ ok: true })
+    disableProject(projectBinding(root, env)!)
+    expect(attendantGates(deps, root, 'claude-code', '11.4.0')).toEqual({ ok: true })
   })
 
   it('withdraws after an in-place downgrade, judged by the version this attendant started with', () => {
@@ -1454,8 +1453,8 @@ describe('attendant gates', () => {
     // The attendant started as 11.4.0; the same install path now holds 11.3.0.
     // Rereading the manifest would have compared 11.3.0 with itself.
     const deps = gateDeps(root, env, installedCli(root, env, '11.3.0'))
-    expect(attendantGates(deps, root, 's', 'claude-code', '11.4.0')).toEqual({ ok: false, reason: 'cli-downgraded' })
-    expect(attendantGates(deps, root, 's', 'claude-code', '11.3.0')).toEqual({ ok: true })
+    expect(attendantGates(deps, root, 'claude-code', '11.4.0')).toEqual({ ok: false, reason: 'cli-downgraded' })
+    expect(attendantGates(deps, root, 'claude-code', '11.3.0')).toEqual({ ok: true })
   })
 
   it('reads a symlinked installed CLI contract and fails closed when its real manifest is unavailable', () => {
@@ -1464,7 +1463,7 @@ describe('attendant gates', () => {
     installAttend(env)
     const home = installedCli(root, env, '11.4.0')
     const deps = gateDeps(root, env, home)
-    expect(attendantGates(deps, root, 's', 'claude-code', '11.4.0')).toEqual({ ok: true })
+    expect(attendantGates(deps, root, 'claude-code', '11.4.0')).toEqual({ ok: true })
     const link = path.join(root, 'bin', 'notifai')
     mkdirSync(path.dirname(link), { recursive: true })
     symlinkSync(path.join(root, 'pkg', 'dist', 'main.js'), link)
@@ -1472,13 +1471,13 @@ describe('attendant gates', () => {
     expect(inspectHookAdapter(home, 'darwin').target).toMatchObject({ scriptPath: link })
     const manifest = path.join(root, 'pkg', 'package.json')
 
-    expect(attendantGates(deps, root, 's', 'claude-code', '11.4.0')).toEqual({ ok: true })
+    expect(attendantGates(deps, root, 'claude-code', '11.4.0')).toEqual({ ok: true })
     writeFileSync(manifest, JSON.stringify({ name: '@raidiant/notifai', version: '11.3.0' }))
-    expect(attendantGates(deps, root, 's', 'claude-code', '11.4.0')).toEqual({ ok: false, reason: 'cli-downgraded' })
+    expect(attendantGates(deps, root, 'claude-code', '11.4.0')).toEqual({ ok: false, reason: 'cli-downgraded' })
     writeFileSync(manifest, '{invalid json')
-    expect(attendantGates(deps, root, 's', 'claude-code', '11.4.0')).toEqual({ ok: false, reason: 'cli-contract-unknown' })
+    expect(attendantGates(deps, root, 'claude-code', '11.4.0')).toEqual({ ok: false, reason: 'cli-contract-unknown' })
     rmSync(manifest)
-    expect(attendantGates(deps, root, 's', 'claude-code', '11.4.0')).toEqual({ ok: false, reason: 'cli-contract-unknown' })
+    expect(attendantGates(deps, root, 'claude-code', '11.4.0')).toEqual({ ok: false, reason: 'cli-contract-unknown' })
   })
 
   it('fails closed when the installed contract cannot be established', () => {
@@ -1486,9 +1485,9 @@ describe('attendant gates', () => {
     enableProject(projectBinding(root, env)!, new Date())
     installAttend(env)
     const missing = gateDeps(root, env, path.join(root, 'no-adapter-here'))
-    expect(attendantGates(missing, root, 's', 'claude-code', '11.4.0')).toEqual({ ok: false, reason: 'cli-contract-unknown' })
+    expect(attendantGates(missing, root, 'claude-code', '11.4.0')).toEqual({ ok: false, reason: 'cli-contract-unknown' })
     const home = installedCli(root, env, '11.4.0')
-    expect(attendantGates(gateDeps(root, env, home), root, 's', 'claude-code', null)).toEqual({
+    expect(attendantGates(gateDeps(root, env, home), root, 'claude-code', null)).toEqual({
       ok: false,
       reason: 'cli-contract-unknown',
     })
@@ -1502,7 +1501,7 @@ describe('attendant gates', () => {
       'darwin',
       env,
     )
-    expect(attendantGates(gateDeps(root, env, npxHome), root, 's', 'claude-code', '11.4.0')).toEqual({
+    expect(attendantGates(gateDeps(root, env, npxHome), root, 'claude-code', '11.4.0')).toEqual({
       ok: false,
       reason: 'cli-downgraded',
     })

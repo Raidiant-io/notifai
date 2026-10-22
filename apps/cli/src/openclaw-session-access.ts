@@ -2,18 +2,16 @@
 import { readSessionIncarnation, readSessionState, sessionHasEnded, updateSessionState } from './hook-session-state.js'
 import { openclawGenerationLockPath, readOpenclawGeneration } from './openclaw-generation.js'
 import { withFileLock } from './file-lock.js'
-import { loadConfig } from './config.js'
-import { projectBinding, projectEnabled } from './project-enablement.js'
 
 /**
  * A stable sessionKey alone is insufficient: /new and /reset can reuse it.
  * The generated plugin places the generation observed by resolve_exec_env in
  * the tool's environment, and this check compares it with fresh CLI-owned state.
+ * It reads no Project Enablement: the conversation is recorded in every Project.
  */
 export function activeOpenclawGeneration(
   sessionKey: string,
   env: NodeJS.ProcessEnv,
-  cwd?: string,
 ): string | null {
   if (env['NOTIFAI_ACTIVE_HARNESS'] !== 'openclaw' ||
       env['NOTIFAI_ACTIVE_SESSION_ID'] !== sessionKey) return null
@@ -22,16 +20,8 @@ export function activeOpenclawGeneration(
   const generation = readOpenclawGeneration(sessionKey, env)
   const incarnation = readSessionIncarnation(sessionKey, env)
   if (generation === null || incarnation === null || generation.ended ||
-      !generation.activated || sessionHasEnded(sessionKey, env) ||
+      !generation.recorded || sessionHasEnded(sessionKey, env) ||
       generation.id !== marker || incarnation.openclaw_generation !== marker) return null
-  if (cwd !== undefined) {
-    try {
-      const config = loadConfig({ cwd, env, sessionId: sessionKey })
-      if (!projectEnabled(projectBinding(cwd, env, config.project.value))) return null
-    } catch {
-      return null
-    }
-  }
   return marker
 }
 
@@ -77,10 +67,9 @@ export function recordOpenclawForegroundReply(
   requestId: string,
   generation: string,
   env: NodeJS.ProcessEnv,
-  cwd: string,
 ): boolean {
   return withFileLock(openclawGenerationLockPath(sessionKey, env), () => {
-    if (activeOpenclawGeneration(sessionKey, env, cwd) !== generation) return false
+    if (activeOpenclawGeneration(sessionKey, env) !== generation) return false
     let recorded = false
     updateSessionState(sessionKey, env, (state) => {
       recorded = true

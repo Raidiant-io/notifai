@@ -10,7 +10,7 @@ import { readSessionIncarnation, readSessionState, sessionHasEnded, updateSessio
 import type { HookEnvelope } from './hook-types.js'
 import type { Logger } from './logging.js'
 import { processIdentityLiveness } from './process-identity.js'
-import { projectBinding, projectEnabled } from './project-enablement.js'
+import { projectBinding, projectDisabled } from './project-enablement.js'
 import { spawnQuestionSettlement } from './question-settlement-process.js'
 import { currentCodexTurn, recordTurnStart } from './session-attendant-state.js'
 
@@ -33,7 +33,7 @@ async function routeCard(deps: CommandDeps, envelope: HookEnvelope, logger: Logg
   if (owner === null || !codexCardHooksReady(deps)) return null
   const cwd = envelope.cwd ?? deps.cwd
   const config = loadConfig({ cwd, env: deps.env, sessionId })
-  if (!projectEnabled(projectBinding(cwd, deps.env, config.project.value)) || !config.ask_notifications.value) return null
+  if (projectDisabled(projectBinding(cwd, deps.env, config.project.value)) || !config.ask_notifications.value) return null
   const credential = deps.store.load()
   if (credential === null) return null
   const raw = (envelope.tool_input as { questions?: unknown } | null)?.questions

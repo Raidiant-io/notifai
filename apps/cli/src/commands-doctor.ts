@@ -113,7 +113,7 @@ import {
   writeSetupProof,
 } from './commands-setup-proof.js'
 import { skillReadiness } from './commands-skill.js'
-import { inferredProjectName, projectBinding, projectEnabled } from './project-enablement.js'
+import { inferredProjectName, projectBinding, projectEnablementState } from './project-enablement.js'
 import { attendantSupport } from './session-attendant-probe.js'
 import { readHubReport } from './hub-client.js'
 import { describeHubHandover, hubHandoverReport } from './hub-handover.js'
@@ -329,7 +329,8 @@ function projectEnablementReadiness(deps: CommandDeps, config: CliConfig): Readi
       detail: 'no Project is available here; lifecycle hooks stay silent',
     }
   }
-  if (projectEnabled(binding)) {
+  const decision = projectEnablementState(binding)
+  if (decision === 'enabled') {
     return {
       id: 'project-enablement',
       title: 'Project enablement',
@@ -337,14 +338,29 @@ function projectEnablementReadiness(deps: CommandDeps, config: CliConfig): Readi
       detail: `enabled by the User for Project "${binding.project}"`,
     }
   }
+  if (decision === 'disabled') {
+    // The User's choice, so not a gap init closes; only they lift it.
+    return {
+      id: 'project-enablement',
+      title: 'Project enablement',
+      status: 'optional-gap',
+      detail: `Notifai is disabled for Project "${binding.project}": nothing from it reaches the User's devices`,
+      technical: { project_disabled: true },
+      remedy: {
+        by: 'user-here',
+        summary: 'if the User asked for Notifai here, enable it',
+        command: 'notifai project enable',
+      },
+    }
+  }
   return {
     id: 'project-enablement',
     title: 'Project enablement',
     status: 'optional-gap',
-    detail: `disabled for Project "${binding.project}"; installed lifecycle hooks will emit no model guidance`,
+    detail: `not enabled for Project "${binding.project}"; installed lifecycle hooks emit no model guidance until a send, ask or setup here enables it`,
     remedy: {
       by: 'cli',
-      summary: 'enable Notifai lifecycle behavior for this Project',
+      summary: 'enable Notifai for this Project',
       command: 'notifai project enable',
     },
   }
@@ -775,6 +791,28 @@ async function applyRegistryRecommendation(
   }
 }
 
+/**
+ * In a Project the User disabled, the proof that setup would send is skipped:
+ * an optional gap that names the User's choice, never a gap `init` closes by
+ * sending. Null elsewhere.
+ */
+function projectDisabledProofState(deps: CommandDeps, config: CliConfig): ReadinessState | null {
+  const binding = projectBinding(deps.cwd, deps.env, config.project.value)
+  if (binding === null || projectEnablementState(binding) !== 'disabled') return null
+  return {
+    id: 'proof',
+    title: 'Delivery proof',
+    status: 'optional-gap',
+    detail: `not sent: Notifai is disabled for Project "${binding.project}", so setup sends nothing from here`,
+    technical: { project_disabled: true },
+    remedy: {
+      by: 'user-here',
+      summary: 'if the User asked for Notifai here, enable it, then run setup again to prove delivery',
+      command: 'notifai project enable',
+    },
+  }
+}
+
 async function setupProofState(
   deps: CommandDeps,
   config: CliConfig,
@@ -803,7 +841,11 @@ async function setupProofState(
 
   const proof = readSetupProof(deps)
   const applies = setupProofApplies(proof, companions.map((device) => device.device_id))
+  // The User disabled Notifai here, so setup sends nothing from this Project,
+  // its one-time delivery proof included: the proof is a notification too.
+  const disabledProject = projectDisabledProofState(deps, config)
   if (!applies) {
+    if (disabledProject !== null) return disabledProject
     return {
       id: 'proof',
       title: 'Delivery proof',
@@ -871,6 +913,7 @@ async function setupProofState(
     }
     const now = (deps.now ?? Date.now)()
     if (setupProofIsStale(proof, now)) {
+      if (disabledProject !== null) return disabledProject
       return {
         id: 'proof',
         title: 'Delivery proof',

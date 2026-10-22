@@ -73,7 +73,7 @@ export async function activateInstalledAttendants(deps: CommandDeps, artifact: s
     const current = readSessionIncarnation(sessionId, deps.env)
     if (current === null || index >= 16) return result('pending')
     const owned = recoveryOwner(deps, sessionId, current.key)
-    if (owned === null || !attendantGates(deps, owned.cwd, sessionId, 'codex', packageVersion()).ok) return result('pending')
+    if (owned === null || !attendantGates(deps, owned.cwd, 'codex', packageVersion()).ok) return result('pending')
     const claimFile = attendantClaimPath(sessionId, deps.env)
     const holder = readClaimFile(claimFile)
     if (attendantClaimMatches(holder, packageVersion(), reference)) {

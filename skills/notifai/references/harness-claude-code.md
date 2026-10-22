@@ -83,9 +83,9 @@ The picker takes whichever answer comes first and closes:
 - **Esc, "Chat about this", or a picker another hook denies** withdraws the
   device question: continue in the conversation.
 
-A picker stays in the terminal when the Project is not enabled, the machine is
-not signed in, question routing is off, or it runs on Windows; it still works
-there. Pickers reach devices on macOS and Linux.
+A picker stays in the terminal when question notifications are off, the
+machine is not signed in, the User disabled this project, or it runs on
+Windows; it still works there. Pickers reach devices on macOS and Linux.
 `notifai logs --event hook.gate` shows why a picker stayed in the terminal
 (`picker-terminal-only` and its `reason`) and how it closed.
 

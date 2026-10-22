@@ -376,7 +376,7 @@ export const NotifAIPlugin = async ({ directory, client }) => {
         owedAcknowledgements.delete(sessionID)
         output.system.push(owed)
       }
-      // Successful empty output is the runtime's deliberate disabled-Project no-op.
+      // Successful empty output is the runtime's deliberate guidance-off no-op.
       if (resolved !== null && resolved.trim().length === 0) return
       const context = typeof resolved === "string" && resolved.trim().length > 0
         ? resolved.trim()

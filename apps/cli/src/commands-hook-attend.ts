@@ -41,7 +41,6 @@ import type { HookEnvelope, HookHarness } from './hook-types.js'
 import { findInstallations, findLegacyProjectInstallations, handlerEvent } from './install-hooks.js'
 import { logSettingsFrom, type Logger } from './logging.js'
 import { processExecutableName, processStartTime, type ProcessIdentity } from './process-identity.js'
-import { projectBinding, projectEnabled } from './project-enablement.js'
 import { packageVersion } from './release.js'
 import type { AttendanceMessage } from '@raidiant/notifai-protocol'
 import {
@@ -120,7 +119,7 @@ export interface AttendantSeams {
   supersededOwnerWaitMs?: number
   /** How long a starting Claude Code attendant waits for its inbox to be published. */
   inboxSettleMs?: number
-  /** Replace the Project Enablement and installed-contract gates. */
+  /** Replace the installed-contract gates. */
   gates?: () => GateResult
   /** Observe the finished attendant. */
   onExit?: (result: AttendantResult) => void
@@ -252,7 +251,7 @@ export async function attendHook(
       const upgrade = (harness === 'codex' ? ownsNative(current.key) : ownsClaudeSession(current.key)) &&
         runningVersion !== null && (holder['handoff'] === true || !compatibleNative &&
           (holder['runtime_version'] !== runningVersion || holder['runtime_revision'] !== attendantRuntimeRevision)) && holder['pid'] !== process.pid &&
-        (seams.gates ?? (() => attendantGates(deps, cwd, sessionId, harness, runningVersion)))().ok &&
+        (seams.gates ?? (() => attendantGates(deps, cwd, harness, runningVersion)))().ok &&
         (holder['handoff'] === true || (typeof holder['token'] === 'string' &&
           requestClaimHandoff(claimFile, holder['token'], current.incarnation)))
       if (!upgrade) return end('owner-present', { same_incarnation: true, holder_alive: true })
@@ -260,10 +259,10 @@ export async function attendHook(
     }
   }
 
-  const assessGates = seams.gates ?? (() => attendantGates(deps, cwd, sessionId, harness!, runningVersion))
+  const assessGates = seams.gates ?? (() => attendantGates(deps, cwd, harness!, runningVersion))
   const gates = () => {
     const result = assessGates()
-    if (!result.ok && !['project-disabled', 'enablement-unavailable'].includes(result.reason)) {
+    if (!result.ok) {
       // Preserve evidence before the missing contract withdraws this observer.
       // An explicit loss invalidates a recent healthy cache immediately.
       integrationFaultNotice({ ...deps, cwd }, harness, false, true)
@@ -275,7 +274,7 @@ export async function attendHook(
     logger.adopt(logSettingsFrom(config))
     logger.bind({ project: config.project.value })
   } catch {
-    // The gate below reports enablement it cannot read.
+    // Unreadable settings leave the bootstrap log settings in place.
   }
   const gate = gates()
   if (!gate.ok) return end('ignored', { reason: gate.reason })
@@ -298,7 +297,7 @@ export async function attendHook(
     ? readOpenclawGeneration(sessionId, deps.env)
     : null
   if (harness === 'openclaw' && (openclawGeneration === null ||
-      openclawGeneration.ended || !openclawGeneration.activated ||
+      openclawGeneration.ended || !openclawGeneration.recorded ||
       readSessionIncarnation(sessionId, deps.env)?.openclaw_generation !== openclawGeneration.id)) {
     return end('ignored', { reason: 'stale-openclaw-generation' })
   }
@@ -695,26 +694,18 @@ export function recordCodexTurnStart(envelope: HookEnvelope, env: NodeJS.Process
 }
 
 /**
- * Re-checked before every exchange: the User-owned Project Enablement, and
- * the installed CLI/hook contract. Hooks removed or replaced by a build that
- * does not attend, or an installed CLI older than this attendant, withdraw it.
+ * Re-checked before every exchange: the installed CLI/hook contract. Hooks
+ * removed or replaced by a build that does not attend, or an installed CLI
+ * older than this attendant, withdraw it. Project Enablement is not read:
+ * answers return to the session in every Project.
  */
 export function attendantGates(
   deps: CommandDeps,
   cwd: string,
-  sessionId: string,
   harness: HookHarness,
   runningVersion: string | null,
 ): GateResult {
   if (nativeUninstallPending(deps.env)) return { ok: false, reason: 'uninstall-in-progress' }
-  try {
-    const config = loadConfig({ cwd, env: deps.env, sessionId })
-    if (!projectEnabled(projectBinding(cwd, deps.env, config.project.value))) {
-      return { ok: false, reason: 'project-disabled' }
-    }
-  } catch {
-    return { ok: false, reason: 'enablement-unavailable' }
-  }
   // The handler that started this attendant lives in the Machine layer, or in
   // a Project layer an older build wrote; either keeps the contract in place.
   const attendInstalled = [

@@ -13,7 +13,10 @@ export interface OpenclawGeneration {
   resumedFrom?: string
   startSeen: boolean
   resetPending: boolean
-  activated: boolean
+  /** The session and its incarnation are recorded, so its questions and answers route. */
+  recorded: boolean
+  /** The activation text reached the model; only a Project with guidance on prints it. */
+  activationPrinted: boolean
   ended: boolean
   /** Transcript IDs replaced under this stable sessionKey; late hooks cannot restore them. */
   supersededSessionIds?: string[]
@@ -42,7 +45,8 @@ export function readOpenclawGeneration(
       typeof state['id'] !== 'string' ||
       typeof state['startSeen'] !== 'boolean' ||
       typeof state['resetPending'] !== 'boolean' ||
-      typeof state['activated'] !== 'boolean' ||
+      typeof state['recorded'] !== 'boolean' ||
+      typeof state['activationPrinted'] !== 'boolean' ||
       typeof state['ended'] !== 'boolean'
     ) return null
     return {
@@ -52,7 +56,8 @@ export function readOpenclawGeneration(
       ...(typeof state['resumedFrom'] === 'string' ? { resumedFrom: state['resumedFrom'] } : {}),
       startSeen: state['startSeen'],
       resetPending: state['resetPending'],
-      activated: state['activated'],
+      recorded: state['recorded'],
+      activationPrinted: state['activationPrinted'],
       ended: state['ended'],
       ...(Array.isArray(state['supersededSessionIds']) &&
         state['supersededSessionIds'].every((id) => typeof id === 'string')
@@ -96,7 +101,8 @@ function fresh(
     ...(resumedFrom === undefined ? {} : { resumedFrom }),
     startSeen: false,
     resetPending: false,
-    activated: false,
+    recorded: false,
+    activationPrinted: false,
     ended: false,
     ...(supersededSessionIds.length === 0 ? {} : { supersededSessionIds }),
     ...(supersededLifecycleRevisions.length === 0 ? {} : { supersededLifecycleRevisions }),

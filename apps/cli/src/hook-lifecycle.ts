@@ -136,33 +136,31 @@ import { buildDraft } from './send.js'
 export const MIN_REPLY_WINDOW_SECONDS = 60
 
 /**
- * The terminal-first wait: the question sits in the terminal for
- * `ask_grace_seconds` from when it was sent, and only then reaches companion
- * devices.
+ * The terminal-first delay: each question sits in the terminal for
+ * `ask_grace_seconds` from its own registration, and only then reaches
+ * companion devices. A question already on the devices never shortens the
+ * delay of one registered after it.
  *
- * A plain timer, and nothing else. It once polled an idle signal so it could
- * abandon the wait the moment the user touched the keyboard — necessary while
- * the wait blocked the terminal, because a user wanting to answer locally was
- * otherwise locked out of their own prompt. Presence no longer changes this
- * deterministic timer; whether the harness holds or wakes is a separate route
- * decision.
+ * A plain timer, and nothing else. Presence does not change it; whether the
+ * harness holds or wakes is a separate route decision.
  *
- * The window is measured from registration, not from the turn's end: a
- * question the agent asked five minutes ago while it kept working has already
- * served its wait. A stamp from the future would otherwise consume the whole
- * ceiling and leave no room to answer, so it starts no later than now.
+ * A question the agent asked five minutes ago while it kept working has
+ * already served its delay. A stamp from the future would otherwise consume
+ * the whole ceiling and leave no room to answer, so it starts no later than now.
  */
-async function awaitTerminalFirstWindow(
-  ctx: HookContext,
-  askedAt: number,
-  ceilingAt: number,
-): Promise<void> {
+function terminalFirstDueAt(ctx: HookContext, delayStartedAt: number, ceilingAt: number): number {
   const graceSeconds = ctx.config.ask_grace_seconds.value
-  if (graceSeconds <= 0) return
-  const until = Math.min(Math.min(askedAt, ctx.now()) + graceSeconds * 1000, ceilingAt)
-  const remaining = until - ctx.now()
-  if (remaining > 0) await ctx.sleep(remaining)
+  if (graceSeconds <= 0) return ctx.now()
+  return Math.min(delayStartedAt + graceSeconds * 1000, ceilingAt)
 }
+
+/**
+ * How long a submitter waits for questions still in their terminal-first
+ * delay: `all` until every question it saw has been submitted, `first` until
+ * one has (an answer owner then polls it while later questions arrive through
+ * their own submitter), `none` submits only what is already due.
+ */
+export type SubmissionDelayWait = 'all' | 'first' | 'none'
 
 /**
  * A question is stored so a later hook can push it, and it reaches us from a
@@ -1950,13 +1948,39 @@ export async function submitSessionQuestions(
   envelope: HookEnvelope,
   hardDeadlineAt = ctx.now() + QUESTION_WAITER_CEILING_SECONDS * 1000,
   notes: string[] = [],
+  wait: SubmissionDelayWait = 'all',
 ): Promise<PendingQuestion[]> {
   const sessionId = envelope.session_id
-  if (sessionId === undefined || sessionHasEnded(sessionId, ctx.env)) return []
-  if (!ctx.config.ask_notifications.value) {
-    gate(ctx, 'held', 'question-notifications-off', { source: ctx.config.ask_notifications.source })
-    return []
+  if (sessionId === undefined) return []
+  const attempted = new Set<string>()
+  const delayStartedAt = new Map<string, number>()
+  const submitted: PendingQuestion[] = []
+  for (;;) {
+    if (sessionHasEnded(sessionId, ctx.env)) return submitted
+    if (!ctx.config.ask_notifications.value) {
+      gate(ctx, 'held', 'question-notifications-off', { source: ctx.config.ask_notifications.source })
+      return submitted
+    }
+    // The delay is slept without the admission lock, so another submitter or
+    // an answer owner is never held behind a question that is not yet due.
+    const round = await admitDueQuestions(ctx, envelope, sessionId, hardDeadlineAt, notes, attempted, delayStartedAt)
+    if (round === null) return submitted
+    submitted.push(...round.submitted)
+    if (round.nextDueAt === null || wait === 'none' || (wait === 'first' && submitted.length > 0)) return submitted
+    await ctx.sleep(Math.max(0, round.nextDueAt - ctx.now()))
   }
+}
+
+/** One admission pass: submit every question whose terminal-first delay has passed. */
+async function admitDueQuestions(
+  ctx: HookContext,
+  envelope: HookEnvelope,
+  sessionId: string,
+  hardDeadlineAt: number,
+  notes: string[],
+  attempted: Set<string>,
+  delayStartedAt: Map<string, number>,
+): Promise<{ submitted: PendingQuestion[]; nextDueAt: number | null } | null> {
   const lock = `${sessionStatePath(sessionId, ctx.env)}.submission`
   // This lock spans admission only, never reply polling or harness delivery.
   const lockDeadline = Math.min(hardDeadlineAt, ctx.now() + 60_000)
@@ -1967,19 +1991,24 @@ export async function submitSessionQuestions(
   }
   if (token === null) {
     notes.push('question submission is already owned; the durable registration remains available for recovery')
-    return []
+    return null
   }
   try {
     const ceilingAt = hardDeadlineAt
-    const state = readSessionState(sessionId, ctx.env)
-    const pending = pendingList(state)
-    if (pending.length > 0 && pending.every((entry) => entry.request_id === undefined)) {
-      await awaitTerminalFirstWindow(ctx, Math.min(...pending.map((entry) => entry.asked_at ?? ctx.now())), ceilingAt)
-    }
     // Phase one: every registered question reaches the user's devices, each as
     // its own notification — one ask never stands in for another.
     const submitted: PendingQuestion[] = []
+    let nextDueAt: number | null = null
     for (const entry of pendingList(readSessionState(sessionId, ctx.env)).filter((entry) => entry.request_id === undefined)) {
+      const key = entry.question_id ?? entry.question
+      if (attempted.has(key)) continue
+      if (!delayStartedAt.has(key)) delayStartedAt.set(key, Math.min(entry.asked_at ?? ctx.now(), ctx.now()))
+      const dueAt = terminalFirstDueAt(ctx, delayStartedAt.get(key)!, ceilingAt)
+      if (dueAt > ctx.now()) {
+        nextDueAt = Math.min(nextDueAt ?? dueAt, dueAt)
+        continue
+      }
+      attempted.add(key)
       if (entry.service_identity !== undefined && (
         entry.service_identity.machine_id !== ctx.service_identity?.machine_id ||
         entry.service_identity.base_url !== ctx.service_identity?.base_url
@@ -2253,7 +2282,7 @@ export async function submitSessionQuestions(
       submitted.push(live)
     }
 
-    return submitted
+    return { submitted, nextDueAt }
   } finally {
     releaseClaimFile(lock, token)
   }
@@ -2309,9 +2338,14 @@ async function escalate(
   owner: QuestionOwnerRole,
 ): Promise<HookOutcome> {
   const ceilingAt = hardDeadlineAt
-  const attemptedLocal = new Set(pendingList(readSessionState(sessionId, ctx.env))
+  const queued = pendingList(readSessionState(sessionId, ctx.env))
+  const attemptedLocal = new Set(queued
     .filter((entry) => entry.request_id === undefined).map((entry) => entry.question_id ?? entry.question))
-  const submitted = await submitSessionQuestions(ctx, envelope, hardDeadlineAt, notes)
+  // A question still in its delay reaches the devices through its own
+  // submitter; this owner then picks it up as a new question. It waits here
+  // only when it has nothing live to watch meanwhile.
+  const submitted = await submitSessionQuestions(ctx, envelope, hardDeadlineAt, notes,
+    queued.some((entry) => entry.request_id !== undefined) ? 'none' : 'first')
   // Another submitter may have promoted a question while this owner waited.
   // The durable queue, not either caller's earlier snapshot, is authoritative.
   const live = observableQuestions(readSessionState(sessionId, ctx.env), submitted, ctx.now())
@@ -2416,7 +2450,7 @@ async function escalate(
       for (const entry of pendingList(readSessionState(sessionId, ctx.env))) {
         if (entry.request_id === undefined) attemptedLocal.add(entry.question_id ?? entry.question)
       }
-      submitted.push(...await submitSessionQuestions(ctx, envelope, hardDeadlineAt, notes))
+      submitted.push(...await submitSessionQuestions(ctx, envelope, hardDeadlineAt, notes, 'none'))
       activeWaiting = observableQuestions(readSessionState(sessionId, ctx.env), submitted, ctx.now())
       for (const entry of activeWaiting) knownRequestIds.add(entry.request_id!)
       if (activeWaiting.length === 0) return { notes }

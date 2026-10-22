@@ -10,9 +10,9 @@ When the card cannot receive a device answer, its pre-tool hook registers an
 ordinary question and prevents the card from appearing. Restate the printed
 question and choices in plain conversation text and continue independent work.
 An answer in the conversation uses the printed `notifai close` command: it
-retires the device question without recording a native answer. A Project that
-is not enabled, a signed-out Machine, disabled routing, unsupported shapes,
-and subagent cards stay terminal-only and are left untouched.
+retires the device question without recording a native answer. A Project the
+User disabled, a signed-out Machine, question notifications off, unsupported
+shapes, and subagent cards stay terminal-only and are left untouched.
 
 Native forms are optional; Question Routing still works without them. New linking requires
 local eligibility, confirmed service support and, for Codex, a connection to

@@ -475,14 +475,14 @@ export function buildProgram(deps: CommandDeps, options: BuildProgramOptions = {
     .command('project')
     .helpGroup(GROUP.daily)
     .summary('Control Notifai for this Project')
-    .description('Inspect or change this Project\'s User-owned lifecycle enablement')
-  project.command('enable').description('Enable lifecycle guidance for this Project').action(() => {
+    .description('Inspect or change whether Notifai is on for this Project, a decision only the User makes')
+  project.command('enable').description('Turn Notifai on for this Project: its guidance, notifications and questions').action(() => {
     exit(runners.projectEnable(deps))
   })
-  project.command('disable').description('Disable lifecycle guidance for this Project').action(() => {
+  project.command('disable').description('Turn Notifai off for this Project: nothing from it reaches your devices').action(() => {
     exit(runners.projectDisable(deps))
   })
-  project.command('status').description('Show lifecycle enablement for this Project').option('--json').action((opts: { json?: boolean }) => {
+  project.command('status').description('Show whether Notifai is on for this Project').option('--json').action((opts: { json?: boolean }) => {
     exit(runners.projectStatus(deps, opts.json === true))
   })
 

@@ -8,6 +8,8 @@ import { installHookAdapter } from './hook-adapter.js'
 import { opencodePluginSource } from './opencode-plugin.js'
 import { openclawPluginSource } from './openclaw-plugin.js'
 import { enableProject, projectBinding } from './project-enablement.js'
+import { readOpenclawGeneration } from './openclaw-generation.js'
+import { readSessionIncarnation } from './hook-session-state.js'
 
 describe('generated activation through the real isolated CLI', () => {
   it('keeps disabled OpenCode Projects silent and activates from the next User prompt in the same Agent Session', async () => {
@@ -57,7 +59,7 @@ describe('generated activation through the real isolated CLI', () => {
     expect(nextRequest.system.join('\n').match(/Notifai is enabled for this Project/g)).toHaveLength(1)
   })
 
-  it('keeps disabled OpenClaw Projects silent and observes later enablement', async () => {
+  it('records an OpenClaw conversation with guidance off, and activates it at the first prompt after enablement', async () => {
     const root = mkdtempSync(path.join(os.tmpdir(), 'notifai-openclaw-activation-'))
     const cwd = path.join(root, 'project')
     mkdirSync(cwd)
@@ -77,10 +79,18 @@ describe('generated activation through the real isolated CLI', () => {
     const activate = handlers.get('before_prompt_build')!
     const ctx = { sessionKey: 'agent:main:activation-owner', workspaceDir: cwd }
     expect(await activate({}, ctx)).toBeUndefined()
+    // Recorded, so its questions and answers route; nothing printed.
+    const recorded = readOpenclawGeneration(ctx.sessionKey, process.env)
+    expect(recorded).toMatchObject({ recorded: true, activationPrinted: false })
+    expect(readSessionIncarnation(ctx.sessionKey, process.env)?.openclaw_generation).toBe(recorded!.id)
 
     const binding = projectBinding(cwd, process.env)
     if (binding === null) throw new Error('test Project binding unavailable')
     enableProject(binding)
     expect((await activate({}, ctx))?.prependContext).toMatch(/Notifai.*enabled.*Project/i)
+    expect(readOpenclawGeneration(ctx.sessionKey, process.env)).toMatchObject({
+      id: recorded!.id, recorded: true, activationPrinted: true,
+    })
+    expect(await activate({}, ctx)).toBeUndefined()
   })
 })

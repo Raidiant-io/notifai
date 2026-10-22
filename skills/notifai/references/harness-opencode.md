@@ -26,9 +26,9 @@ images.
 
 ## Question form
 
-OpenCode's own `question` tool reaches the User's devices by itself in an
-enabled Project; never also register it with `notifai ask` or `send --reply`,
-or the User is asked twice. The form keeps
+OpenCode's own `question` tool reaches the User's devices by itself; never
+also register it with `notifai ask` or `send --reply`, or the User is asked
+twice. The form keeps
 your turn open and takes whichever answer comes first:
 
 - **A device answer** is the form's own result. The next system context names
@@ -39,9 +39,9 @@ your turn open and takes whichever answer comes first:
   the conversation.
 
 Closing OpenCode or deleting the session withdraws the device question; a
-later device answer reaches nobody. A form in a Project that is not enabled,
-on a signed-out machine, with question routing off, or in a shape the devices
-cannot show stays in OpenCode only and still works there.
+later device answer reaches nobody. A form on a signed-out machine, with
+question notifications off, in a project the User disabled, or in a shape the
+devices cannot show stays in OpenCode only and still works there.
 
 ## After a Notifai update
 

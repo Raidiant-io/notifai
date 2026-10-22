@@ -38,11 +38,10 @@ accepts it, it waits in the terminal, where an away User never sees it. Use
 `ask` for those questions too.
 
 A card you open on your own is the Notifai question when its tool context
-says Notifai registered it; then never also `ask` it. With question routing
-off, or on a signed-out machine, the card stays in the terminal and still
-works there. In a Project that is not enabled the card also stays on this
-machine; enable the Project with `notifai project enable` only when the User
-asked for Notifai here. Any other card without that context, such as one in a
+says Notifai registered it; then never also `ask` it. With question
+notifications off, or in a project the User disabled, the card is your
+question and stays in the terminal, as a card on a signed-out machine does; it
+still works there. Any other card without that context, such as one in a
 shape the devices cannot show, stays on this machine: if it is still
 unanswered, `ask` the question too.
 

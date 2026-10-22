@@ -115,7 +115,7 @@ export interface SessionAttendantOptions {
   claimHeld(): boolean
   /** Whether this session had a Notification Request accepted on this machine. */
   notified(): boolean
-  /** Project Enablement and the installed CLI/hook contract. */
+  /** The installed CLI/hook contract. */
   gates(): GateResult
   /** Authenticated client, stable until its credential changes; null when unpaired. */
   client(): ApiClient | null

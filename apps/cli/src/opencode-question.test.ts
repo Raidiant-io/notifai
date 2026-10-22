@@ -1,5 +1,5 @@
 import { execFileSync } from 'node:child_process'
-import { mkdtempSync, readdirSync, readFileSync, rmSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { PassThrough } from 'node:stream'
@@ -8,6 +8,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { pickerForm } from './claude-question-bindings.js'
 import type { ApiClient } from './client.js'
 import type { CommandDeps } from './commands-core.js'
+import { globalConfigPath } from './config.js'
 import {
   OPENCODE_NATIVE_ACKNOWLEDGEMENT,
   opencodeDeviceAnswers,
@@ -19,7 +20,7 @@ import {
   type OpencodeQuestionOutbound,
   type OpencodeQuestionRequest,
 } from './opencode-question.js'
-import { enableProject, projectBinding } from './project-enablement.js'
+import { disableProject, enableProject, projectBinding, projectEnablementState } from './project-enablement.js'
 
 const SESSION = 'ses_opencode_parent'
 const REQUEST: OpencodeQuestionRequest = {
@@ -91,12 +92,20 @@ describe('OpenCode question forms as device questions', () => {
 const roots: string[] = []
 afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }) })
 
-function setup(options: { enabled?: boolean; signedIn?: boolean; signals?: NodeJS.Signals[] } = {}) {
+function setup(options: {
+  enabled?: boolean; disabled?: boolean; signedIn?: boolean; signals?: NodeJS.Signals[]; settings?: string
+  sleep?: (ms: number) => Promise<void>
+} = {}) {
   const root = mkdtempSync(path.join(os.tmpdir(), 'notifai-opencode-question-'))
   roots.push(root)
   const env = { HOME: path.join(root, 'home'), XDG_CONFIG_HOME: path.join(root, 'config'), XDG_STATE_HOME: path.join(root, 'state') }
   execFileSync('git', ['init', '-q'], { cwd: root })
   if (options.enabled !== false) enableProject(projectBinding(root, env)!)
+  if (options.disabled === true) disableProject(projectBinding(root, env)!)
+  if (options.settings !== undefined) {
+    mkdirSync(path.dirname(globalConfigPath(env)), { recursive: true })
+    writeFileSync(globalConfigPath(env), options.settings)
+  }
   let answer: ReplyView | null = null
   let releasePoll: (() => void) | null = null
   const submitted: SubmitNotificationRequestT[] = []
@@ -137,6 +146,7 @@ function setup(options: { enabled?: boolean; signedIn?: boolean; signals?: NodeJ
       : ({ machineId: 'mch_test', secret: 'test-secret', baseUrl: 'https://notifai.test', machineName: 'test' }),
     save: () => {}, clear: () => {} } as unknown as CommandDeps['store'],
     clientFactory: () => client as unknown as ApiClient,
+    ...(options.sleep === undefined ? {} : { sleep: options.sleep }),
   }
   const input = new PassThrough()
   const output = new PassThrough()
@@ -244,8 +254,42 @@ describe('opencode-question command', () => {
     await t.run
   })
 
+  it('registers a form in a Project with no record, and leaves the Project as it was', async () => {
+    const t = setup({ enabled: false })
+    expect(await t.frame('registered')).toEqual({ type: 'registered', request_id: 'req_opencode' })
+    expect(t.submitted).toHaveLength(1)
+    expect(projectEnablementState(projectBinding(t.root, t.env))).toBe('unset')
+    t.input.end()
+    await t.run
+  })
+
+  it('holds the form in OpenCode for the terminal-first delay before it reaches the devices', async () => {
+    const slept: Array<{ ms: number; submitted: number }> = []
+    const t = setup({ settings: 'ask_grace_seconds = 30\n', sleep: async (ms) => {
+      slept.push({ ms, submitted: t.submitted.length })
+    } })
+    expect(await t.frame('registered')).toEqual({ type: 'registered', request_id: 'req_opencode' })
+    expect(slept).toEqual([{ ms: 30_000, submitted: 0 }])
+    expect(t.submitted).toHaveLength(1)
+    t.input.end()
+    await t.run
+  })
+
   it.each([
-    [{ enabled: false }, 'project-not-enabled'],
+    [{ type: 'native', answers: [['Staging'], ['Lint']] }],
+    [{ type: 'dismissed' }],
+  ])('keeps a form settled in OpenCode during its delay off the devices: %o', async (settledWith) => {
+    const t = setup({ settings: 'ask_grace_seconds = 30\n', sleep: () => new Promise<void>(() => {}) })
+    t.send(settledWith)
+    expect(await t.frame('terminal')).toEqual({ type: 'terminal', reason: 'settled-in-opencode' })
+    await t.run
+    expect(t.submitted).toEqual([])
+    expect(t.client.recordHarnessAnswer).not.toHaveBeenCalled()
+  })
+
+  it.each([
+    [{ disabled: true }, 'project-disabled'],
+    [{ settings: 'ask_notifications = false\n' }, 'question-notifications-off'],
     [{ signedIn: false }, 'not-signed-in'],
   ])('leaves the form to OpenCode alone when %o', async (options, reason) => {
     const t = setup(options)

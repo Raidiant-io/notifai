@@ -40,7 +40,7 @@ export async function grokAttendHook(deps: CommandDeps, envelope: HookEnvelope, 
   const record = readSessionIncarnation(sessionId, deps.env)
   if (record === null || record.key !== envelope.grok_incarnation_key || sessionHasEnded(sessionId, deps.env)) return 0
   const runningVersion = deps.runningVersion === undefined ? packageVersion() : deps.runningVersion
-  const gate = () => attendantGates(deps, cwd, sessionId, 'grok', runningVersion)
+  const gate = () => attendantGates(deps, cwd, 'grok', runningVersion)
   if (!gate().ok) return 0
   const writer = currentProcessIdentity()
   if (writer === null) return 0

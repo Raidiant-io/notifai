@@ -92,17 +92,20 @@ notifai                      # the interactive app
 notifai config show          # every setting, explained
 notifai config explain <key> # one setting, in full
 notifai config unset <key>   # return a setting to its inherited/default value
-notifai project status       # show lifecycle enablement for this Project
-notifai project enable       # activate lifecycle guidance for this Project
-notifai project disable      # stop future lifecycle guidance for this Project
+notifai project status       # show whether Notifai is on for this Project
+notifai project enable       # turn Notifai on for this Project
+notifai project disable      # turn it off: nothing from this Project reaches your devices
 notifai devices              # list Device Installations and delivery readiness
 notifai doctor               # check every part of the setup
 notifai update               # update the CLI this shell and the hooks use
 ```
 
-The `project` group controls User-owned Project Enablement for lifecycle hooks;
-it is separate from hook installation and is not permission to send. `devices`
-accepts `--platform <ios|android|macos|windows|linux>` and `--json`; send routing still uses
+The `project` group controls User-owned Project Enablement: an enabled Project
+gets Notifai's guidance, and nothing from a disabled one reaches your devices.
+The first send, ask or setup in a Project with no decision enables it; only
+`notifai project enable` turns a disabled one back on. It is separate from
+hook installation. `devices` accepts
+`--platform <ios|android|macos|windows|linux>` and `--json`; send routing still uses
 the per-request device flags documented by `notifai send --help`.
 
 Agents can ask for a reply, collect it directly, and send the required Agent

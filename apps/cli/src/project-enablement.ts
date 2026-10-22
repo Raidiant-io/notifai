@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto'
-import { existsSync, readFileSync, unlinkSync } from 'node:fs'
+import { existsSync, readFileSync } from 'node:fs'
 import path from 'node:path'
 import { atomicWriteFileSync, ensurePrivateDirectory } from './atomic-file.js'
 import { withTargetFileLock } from './file-lock.js'
@@ -9,7 +9,7 @@ import { inferInvocationContext } from './invocation-context.js'
 interface ProjectEnablementMarker {
   version: 1
   project: string
-  enabled: true
+  enabled: boolean
   updated_at: string
 }
 
@@ -17,6 +17,12 @@ export interface ProjectBinding {
   project: string
   markerPath: string
 }
+
+/**
+ * The User's decision for one Project: `enabled` and `disabled` are recorded
+ * decisions; `unset` is a Project the User never switched either way.
+ */
+export type ProjectEnablementState = 'enabled' | 'disabled' | 'unset'
 
 /**
  * The Project name inferred for a folder: from its Project root (see
@@ -59,23 +65,33 @@ export function projectBinding(
   }
 }
 
-export function projectEnabled(binding: ProjectBinding | null): boolean {
-  if (binding === null || !existsSync(binding.markerPath)) return false
+/** An unreadable record is no decision: `unset`. */
+export function projectEnablementState(binding: ProjectBinding | null): ProjectEnablementState {
+  if (binding === null || !existsSync(binding.markerPath)) return 'unset'
   try {
     const marker = JSON.parse(readFileSync(binding.markerPath, 'utf8')) as Partial<ProjectEnablementMarker>
-    return marker.version === 1 && marker.enabled === true && marker.project === binding.project
+    if (marker.version !== 1 || marker.project !== binding.project || typeof marker.enabled !== 'boolean') return 'unset'
+    return marker.enabled ? 'enabled' : 'disabled'
   } catch {
-    return false
+    return 'unset'
   }
 }
 
+export function projectEnabled(binding: ProjectBinding | null): boolean {
+  return projectEnablementState(binding) === 'enabled'
+}
+
+/** The User switched Notifai off here: nothing from this Project reaches their devices. */
+export function projectDisabled(binding: ProjectBinding | null): boolean {
+  return projectEnablementState(binding) === 'disabled'
+}
+
 /**
- * Record that the User enabled this Project.
+ * Record that the User enabled this Project: `notifai project enable`, the
+ * only way back from disabled.
  *
- * Every send and ask in an enabled Project reaches here, often from several
- * Agent Sessions at the same instant. The record carries a decision, not a
- * heartbeat, so a Project that is already enabled is left untouched: concurrent
- * senders then only read it. The first enablement, and any racing disable, is
+ * The record carries a decision, not a heartbeat, so a Project that is
+ * already enabled is left untouched. A write, and any racing disable, is
  * serialized under the record's lock, so a sibling's write is never mistaken
  * for a foreign replacement by the atomic write's guard.
  */
@@ -83,29 +99,53 @@ export function enableProject(binding: ProjectBinding, now: Date = new Date()): 
   if (projectEnabled(binding)) return
   withEnablementLock(binding, () => {
     if (projectEnabled(binding)) return
-    const marker: ProjectEnablementMarker = {
-      version: 1,
-      project: binding.project,
-      enabled: true,
-      updated_at: now.toISOString(),
-    }
-    atomicWriteFileSync(binding.markerPath, `${JSON.stringify(marker, null, 2)}\n`, {
-      mode: 0o600,
-      preserveMode: false,
-      requireCurrentUserOwner: true,
-      directoryMode: 0o700,
-    })
+    writeMarker(binding, true, now)
   })
 }
 
-export function disableProject(binding: ProjectBinding): void {
-  if (!existsSync(binding.markerPath)) return
+/**
+ * An explicit request for Notifai in this Project (`send`, `ask`, `init`):
+ * enable a Project with no record; never change the User's disable.
+ *
+ * Every send and ask reaches here, often from several Agent Sessions at the
+ * same instant; once a decision is recorded they only read it.
+ */
+export function enableProjectUnlessDisabled(binding: ProjectBinding, now: Date = new Date()): 'enabled' | 'disabled' {
+  const state = projectEnablementState(binding)
+  if (state !== 'unset') return state
+  let decided: 'enabled' | 'disabled' = 'enabled'
   withEnablementLock(binding, () => {
-    try {
-      unlinkSync(binding.markerPath)
-    } catch (err) {
-      if ((err as NodeJS.ErrnoException).code !== 'ENOENT') throw err
+    const current = projectEnablementState(binding)
+    if (current !== 'unset') {
+      decided = current
+      return
     }
+    writeMarker(binding, true, now)
+  })
+  return decided
+}
+
+/** Record that the User disabled this Project; only `enableProject` lifts it. */
+export function disableProject(binding: ProjectBinding, now: Date = new Date()): void {
+  if (projectDisabled(binding)) return
+  withEnablementLock(binding, () => {
+    if (projectDisabled(binding)) return
+    writeMarker(binding, false, now)
+  })
+}
+
+function writeMarker(binding: ProjectBinding, enabled: boolean, now: Date): void {
+  const marker: ProjectEnablementMarker = {
+    version: 1,
+    project: binding.project,
+    enabled,
+    updated_at: now.toISOString(),
+  }
+  atomicWriteFileSync(binding.markerPath, `${JSON.stringify(marker, null, 2)}\n`, {
+    mode: 0o600,
+    preserveMode: false,
+    requireCurrentUserOwner: true,
+    directoryMode: 0o700,
   })
 }
 

@@ -16,7 +16,7 @@ import { inspectQuestionState, type QuestionStateView } from './hook-question-st
 import { selectedForClaimedDelivery } from './hook-question-retirement.js'
 import { readSessionState, recordSessionNotified } from './hook-session-state.js'
 import { questionsAwaitingAnswer } from './native-answer-operation.js'
-import { enableProject, projectBinding } from './project-enablement.js'
+import { enableProjectUnlessDisabled, projectBinding } from './project-enablement.js'
 import {
   buildDraft,
   formatReceipt,
@@ -183,6 +183,15 @@ export async function sendCommand(
     env: deps.env,
     flags: { base_url: flags.baseUrl, wait_seconds: flags.wait } as FlagOverrides,
   })
+  if (flags.reply && !config.ask_notifications.value) {
+    deps.io.err(
+      'question_routing_disabled: The User keeps questions off their devices: "Send questions to my devices" is off ' +
+        '(ask_notifications=false). Nothing was sent.\n' +
+        'Ask the way you would without Notifai: in the conversation, or in your own question form, which stays in the terminal; ' +
+        'change the setting only if the User asks.',
+    )
+    return EXIT.usage
+  }
   const activeSession = sourceContextHarnessSession(deps.env, deps.cwd, (deps.now ?? Date.now)())
   const source = resolveDraftInvocation(
     deps,
@@ -211,7 +220,14 @@ export async function sendCommand(
   }
   if (semanticBuild.draft.project !== undefined) {
     const binding = projectBinding(deps.cwd, deps.env, semanticBuild.draft.project)
-    if (binding !== null) enableProject(binding)
+    if (binding !== null && enableProjectUnlessDisabled(binding) === 'disabled') {
+      deps.io.err(
+        `project_disabled: Notifai is disabled for Project "${binding.project}": nothing from it reaches the User's devices. ` +
+          'Nothing was sent.\n' +
+          'If the User asked for Notifai here, run `notifai project enable`, then run this send again; otherwise do not notify them.',
+      )
+      return EXIT.usage
+    }
   }
   const authed = authedClient(deps, config)
   if (!authed) return EXIT.auth
@@ -276,7 +292,7 @@ export async function sendCommand(
     submissionDraft.source?.session_id === activeSession.sessionId
     ? activeSession.sessionId : null
   const foregroundGeneration = foregroundSession === null ? null
-    : activeOpenclawGeneration(foregroundSession, deps.env, deps.cwd)
+    : activeOpenclawGeneration(foregroundSession, deps.env)
   emitSendWarnings(deps, flags, config)
   if (
     !flags.reply &&
@@ -329,7 +345,7 @@ export async function sendCommand(
     let recorded = false
     try {
       recorded = recordOpenclawForegroundReply(
-        foregroundSession, receipt.request_id, foregroundGeneration, deps.env, deps.cwd,
+        foregroundSession, receipt.request_id, foregroundGeneration, deps.env,
       )
     } catch (err) {
       deps.io.err(`Could not retain ownership of ${receipt.request_id}: ${String(err)}`)

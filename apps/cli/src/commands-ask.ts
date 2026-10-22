@@ -32,7 +32,7 @@ import { codexRoutingTrustProblems, findInstallations, handlerEvent } from './in
 import { CODEX_CARD_VERSION_FLOOR, codexCardHooksReady, codexCardToolOffered } from './codex-card-capability.js'
 import { activeOpenclawGeneration } from './openclaw-session-access.js'
 import { openclawGatewayReady } from './openclaw-gateway-readiness.js'
-import { enableProject, inferredProjectName, projectBinding, projectEnabled } from './project-enablement.js'
+import { enableProjectUnlessDisabled, inferredProjectName, projectBinding } from './project-enablement.js'
 import { spawnQuestionSettlement } from './question-settlement-process.js'
 import {
   buildDraft,
@@ -725,11 +725,10 @@ export function askCommand(
   }
   const explicitProject = flags.project ?? explicitUseConfig.project.value ?? inferredProjectName(deps.cwd, deps.env)
   const explicitBinding = explicitProject === null ? null : projectBinding(deps.cwd, deps.env, explicitProject)
-  // A disabled OpenClaw Project stays disabled until the User enables it; the
-  // exact-generation route cannot infer consent.
-  if (explicitBinding !== null && deps.env['NOTIFAI_ACTIVE_HARNESS'] !== 'openclaw') {
+  if (explicitBinding !== null) {
+    let decision: 'enabled' | 'disabled'
     try {
-      enableProject(explicitBinding)
+      decision = enableProjectUnlessDisabled(explicitBinding)
     } catch (err) {
       return askFailure(
         deps,
@@ -739,6 +738,16 @@ export function askCommand(
         `Project Enablement could not be saved: ${String(err)}`,
         'check filesystem permissions or sandbox access for the Notifai state directory, then retry the same ask',
         EXIT.failed,
+      )
+    }
+    if (decision === 'disabled') {
+      return askFailure(
+        deps,
+        flags,
+        'project_disabled',
+        'project_enablement',
+        `Notifai is disabled for Project "${explicitBinding.project}": nothing from it reaches the User's devices. Nothing was registered.`,
+        'if the User asked for Notifai here, run `notifai project enable`, then ask again; otherwise ask in the conversation, as you would without Notifai',
       )
     }
   }
@@ -860,16 +869,11 @@ export function askCommand(
     }
     const state = readSessionState(active.sessionId, deps.env)
     if (active.harness === 'openclaw' &&
-        activeOpenclawGeneration(active.sessionId, deps.env, deps.cwd) === null) {
-      // Only an enabled Project activates a generation. Whether to enable it is
-      // the User's word, which only the agent can tell from the conversation.
-      const projectOff = explicitBinding !== null && !projectEnabled(explicitBinding)
+        activeOpenclawGeneration(active.sessionId, deps.env) === null) {
       return askFailure(
         deps, flags, 'openclaw_generation_stale', 'exact_session',
-        'This OpenClaw tool subprocess cannot prove the current enabled Gateway session generation.',
-        projectOff
-          ? 'enable the Project with `notifai project enable` only when the User asked for Notifai here, then run the question from a current OpenClaw turn after the Notifai plugin has activated; otherwise ask in the conversation'
-          : 'run the question from a current OpenClaw turn after the Notifai plugin has activated',
+        'This OpenClaw tool subprocess cannot prove the current Gateway session generation.',
+        'run the question from a current OpenClaw turn after the Notifai plugin has recorded it',
       )
     }
     if (active.harness === 'openclaw' && !openclawGatewayReady(deps.env)) {
@@ -926,13 +930,14 @@ export function askCommand(
     )
   }
   if (!routingConfig.ask_notifications.value) {
+    // The code is the shipped one; scripts match it.
     return askFailure(
       deps,
       flags,
       'question_routing_disabled',
       'ask_notifications',
-      'Question routing is disabled by ask_notifications=false.',
-      'enable question routing or use a blocking `notifai send --reply` question',
+      'The User keeps questions off their devices: "Send questions to my devices" is off (ask_notifications=false). Nothing was registered.',
+      'ask the way you would without Notifai: in the conversation, or in your own question form, which stays in the terminal; change the setting only if the User asks',
     )
   }
   // In Claude Code the picker is the question: it reaches the User's devices

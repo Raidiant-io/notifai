@@ -46,7 +46,7 @@ import { loadConfig, stateDir } from './config.js'
 import { recordSessionNotified } from './hook-session-state.js'
 import type { Logger } from './logging.js'
 import { currentProcessIdentity, processIdentityLiveness, type ProcessIdentity } from './process-identity.js'
-import { projectBinding, projectEnabled } from './project-enablement.js'
+import { projectBinding, projectDisabled } from './project-enablement.js'
 
 /** What OpenCode's devices-facing acknowledgement says for an answer given in OpenCode. */
 export const OPENCODE_NATIVE_ACKNOWLEDGEMENT = 'Answered in OpenCode.'
@@ -348,7 +348,12 @@ type Prepared = Registration | { reason: string; detail?: Record<string, unknown
  * Register the form's questions for the User's devices. Every refusal leaves
  * the form to OpenCode alone, which always works.
  */
-async function registerForm(deps: CommandDeps, ask: AskFrame, logger: Logger): Promise<Prepared> {
+async function registerForm(
+  deps: CommandDeps,
+  ask: AskFrame,
+  logger: Logger,
+  settledInOpencode: Promise<Inbound | null>,
+): Promise<Prepared> {
   const { session_id: sessionId, cwd, request } = ask
   let config
   try {
@@ -356,8 +361,8 @@ async function registerForm(deps: CommandDeps, ask: AskFrame, logger: Logger): P
   } catch {
     return { reason: 'config-invalid' }
   }
-  // Project Enablement is the User's opt-in: forms elsewhere stay in OpenCode.
-  if (!projectEnabled(projectBinding(cwd, deps.env, config.project.value))) return { reason: 'project-not-enabled' }
+  // Nothing reaches the devices from a Project the User disabled.
+  if (projectDisabled(projectBinding(cwd, deps.env, config.project.value))) return { reason: 'project-disabled' }
   if (!config.ask_notifications.value) return { reason: 'question-notifications-off' }
   const form = pickerForm(opencodePickerQuestions(request))
   if ('error' in form) return { reason: 'unsupported-form', detail: { shape: form.error } }
@@ -374,6 +379,11 @@ async function registerForm(deps: CommandDeps, ask: AskFrame, logger: Logger): P
   if (!source.ok) return { reason: 'source-invalid' }
   const draft = buildAskDraft(config, form, {}, source.invocation, [])
   if (!draft.ok) return { reason: 'invalid-draft', detail: { error: draft.error } }
+  // The terminal-first delay: answered or dismissed in OpenCode first, the
+  // form never reaches the devices.
+  if (await settlesWithin(settledInOpencode, config.ask_grace_seconds.value * 1000, deps)) {
+    return { reason: 'settled-in-opencode' }
+  }
   try {
     const capabilities = await client.capabilities()
     const receipt = await client.submit({
@@ -392,6 +402,17 @@ async function registerForm(deps: CommandDeps, ask: AskFrame, logger: Logger): P
       error: err instanceof Error ? err.message : String(err),
       ...(err instanceof ApiCallError ? { status: err.status, code: err.code } : {}),
     } }
+  }
+}
+
+async function settlesWithin(frame: Promise<unknown>, ms: number, deps: Pick<CommandDeps, 'sleep'>): Promise<boolean> {
+  if (ms <= 0) return false
+  let timer: ReturnType<typeof setTimeout> | undefined
+  const elapsed = deps.sleep?.(ms) ?? new Promise<void>((resolve) => { timer = setTimeout(resolve, ms) })
+  try {
+    return await Promise.race([frame.then(() => true), elapsed.then(() => false)])
+  } finally {
+    if (timer !== undefined) clearTimeout(timer)
   }
 }
 
@@ -499,7 +520,9 @@ async function runForm(deps: CommandDeps, pipe: PluginPipe): Promise<number> {
   }
   logger.bind({ cmd: 'hook opencode-question', session: ask.session_id })
   await sweepAbandonedOpencodeForms(deps)
-  const prepared = await registerForm(deps, ask, logger)
+  let settled: Inbound | null | undefined
+  const frame = pipe.next().then((value) => { settled = value; return value })
+  const prepared = await registerForm(deps, ask, logger, frame)
   if ('reason' in prepared) {
     logger.info('hook.gate', { hook: 'opencode-question', reason: prepared.reason, ...prepared.detail, stage: 'form-terminal-only' })
     pipe.send({ type: 'terminal', reason: prepared.reason })
@@ -514,8 +537,6 @@ async function runForm(deps: CommandDeps, pipe: PluginPipe): Promise<number> {
   pipe.send({ type: 'registered', request_id: registration.requestId })
 
   let outcome = 'withdrawn'
-  let settled: Inbound | null | undefined
-  const frame = pipe.next().then((value) => { settled = value; return value })
   try {
     for (;;) {
       const raced = await Promise.race([
