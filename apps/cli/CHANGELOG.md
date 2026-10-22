@@ -8,6 +8,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 This project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 and [Conventional Commits](https://www.conventionalcommits.org/en/v1.0.0/).
 
+## [14.0.0-beta.1](https://github.com/Raidiant-io/notifai/compare/v13.1.0...v14.0.0-beta.1) (2026-10-22)
+
+### Breaking changes
+
+* Repository-supplied configuration and guidance are no longer read. Keep personal preferences in the User-owned machine or local Project settings.
+
+### Features
+
+* Ask and wait with `notifai ask --wait`; waiting Claude Code and Codex questions retain their native form and full device context.
+* Carry authored titles, standalone detail, images and choice descriptions through linked questions, including OpenCode forms and supported text and number pickers.
+* Record Codex terminal answers mechanically and keep disabled Projects silent across question routes.
+
+### Fixes
+
+* Load writing guidance at first use, simplify harness guidance, and prevent duplicate question registration.
+* Keep full notification content available when it does not fit in a push, and preserve close and approval behavior while terminal prompts are open.
+
 ## [13.1.0](https://github.com/Raidiant-io/notifai/compare/v13.0.0...v13.1.0) (2026-10-21)
 
 
