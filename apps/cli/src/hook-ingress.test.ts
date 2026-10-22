@@ -336,6 +336,8 @@ describe.skipIf(!supported)('hook ingress through the launcher', () => {
     expect(ingressRefusal(request('stop', 'not json'), identity)).toBe('input')
     expect(ingressRefusal(request('stop', '{}'), identity)).toBe('no-session')
     expect(ingressRefusal(request('user-prompt-submit', envelope('UserPromptSubmit', { prompt: `Notifai wake ${SESSION}. Use any` })), identity)).toBe('input-wake')
+    expect(ingressRefusal(request('post-tool-use', envelope('PostToolUse', { tool_name: 'request_user_input' })), identity)).toBe('question-form')
+    expect(ingressRefusal(request('post-tool-use', envelope('PostToolUse', { tool_name: 'shell' })), identity)).toBeNull()
     expect(ingressRefusal(request('stop', envelope('Stop')), identity)).toBeNull()
   })
 })

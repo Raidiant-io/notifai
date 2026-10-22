@@ -151,6 +151,8 @@ export function ingressRefusal(request: IngressRequest, identity: IngressIdentit
   if (typeof sessionId !== 'string' || sessionId === '') return 'no-session'
   // A Codex card is registered (and its answer delivered) by the runtime.
   if (request.event === 'post-tool-use' && envelope.tool_name === 'request_user_input_async') return 'question-card'
+  // The runtime tells the agent that Codex's synchronous form stayed in the terminal.
+  if (request.event === 'post-tool-use' && envelope.tool_name === 'request_user_input') return 'question-form'
   // A Notifai wake is the delivery of something staged; the runtime hands it in or blocks it.
   if (request.event === 'user-prompt-submit' && typeof envelope.prompt === 'string' &&
       (isSessionInputWake(envelope.prompt) || /^Notifai wake [0-9a-f-]{36}\. /.test(envelope.prompt))) return 'input-wake'

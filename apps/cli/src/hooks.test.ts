@@ -4265,6 +4265,39 @@ describe('Grok native lifecycle', () => {
     expect(h.io.outLines).toHaveLength(1)
   })
 
+  it('tells the root agent when Grok\'s own question card never reached the devices', async () => {
+    const h = harness()
+    const input = { sessionId: 'grok-card', cwd: h.deps.cwd, promptId: 'card-turn', tool_name: 'ask_user_question' }
+    await hookRunCommand(h.deps, 'post-tool-use', stdin(input), 'grok')
+    const first = JSON.parse(h.io.outLines[0] ?? '{}').hookSpecificOutput.additionalContext
+    expect(first).toContain('You own Notification Requests')
+    expect(first).toContain('register that question with notifai ask')
+    // The warning repeats at each use; activation guidance does not.
+    await hookRunCommand(h.deps, 'post-tool-use', stdin({ ...input, tool_name: 'AskQuestion', promptId: 'second' }), 'grok')
+    const second = JSON.parse(h.io.outLines[1] ?? '{}').hookSpecificOutput.additionalContext
+    expect(second).not.toContain('You own Notification Requests')
+    expect(second).toContain('Grok\'s question card')
+    await hookRunCommand(h.deps, 'post-tool-use', stdin({ ...input, tool_name: 'read_file', promptId: 'third' }), 'grok')
+    await hookRunCommand(h.deps, 'post-tool-use', stdin({ ...input, subagentType: 'explore', promptId: 'child' }), 'grok')
+    writeGlobalConfig(h, 'ask_notifications = false\n')
+    await hookRunCommand(h.deps, 'post-tool-use', stdin({ ...input, promptId: 'questions-off' }), 'grok')
+    expect(h.io.outLines.slice(2).join('\n')).not.toContain('question card')
+  })
+
+  it('tells a Codex root agent that request_user_input stayed in the terminal', async () => {
+    const h = harness()
+    const input = { session_id: 'codex-sync-form', cwd: h.deps.cwd, hook_event_name: 'PostToolUse', turn_id: 'turn-1' }
+    await hookRunCommand(h.deps, 'post-tool-use', stdin({ ...input, tool_name: 'request_user_input' }), 'codex')
+    expect(JSON.parse(h.io.outLines[0] ?? '{}').hookSpecificOutput).toMatchObject({
+      hookEventName: 'PostToolUse', additionalContext: expect.stringContaining('Ask your next question with notifai ask'),
+    })
+    await hookRunCommand(h.deps, 'post-tool-use', stdin({ ...input, tool_name: 'request_user_input', agent_id: 'child' }), 'codex')
+    await hookRunCommand(h.deps, 'post-tool-use', stdin({ ...input, tool_name: 'shell' }), 'codex')
+    disableProject(projectBinding(h.deps.cwd, h.env)!)
+    await hookRunCommand(h.deps, 'post-tool-use', stdin({ ...input, tool_name: 'request_user_input' }), 'codex')
+    expect(h.io.outLines.slice(1).join('\n')).not.toContain('request_user_input')
+  })
+
   it('refuses conflicting native session identities without changing either session', async () => {
     const h = harness()
     await hookRunCommand(h.deps, 'session-start', stdin({ sessionId: 'native', session_id: 'other', cwd: h.deps.cwd }), 'grok')
