@@ -19,13 +19,15 @@
  * acknowledgement instruction, or it records a terminal answer as the native
  * answer so the devices stop asking.
  *
- * Claude Code signals the waiting handler when the picker resolves without its
- * decision: Esc, the session ending, an auto-continue while the User was away,
- * or a request for another round; but not when the terminal answers or the
- * User chooses to chat instead. A cancellation says nothing about which, so
- * the handler only marks the picker cancelled and `PostToolUse` settles it
- * from the picker's result: an auto-continue is not an answer and the device
- * question stays open; typed text is a terminal answer; anything else closes
+ * Claude Code signals the waiting handler when the picker is cancelled: Esc,
+ * the session ending, or (by its source) a Remote Control dialog expiry; on
+ * 2.1.308 no `PostToolUse` follows. It sends no signal when the terminal
+ * answers, when the picker auto-continues while the User is away, or when the
+ * User chooses to chat instead; the first two run `PostToolUse` at once. A
+ * cancellation says nothing about which, so the handler only marks the picker
+ * cancelled and `PostToolUse` settles it from the picker's result: an
+ * auto-continue is not an answer and the device question stays open; a
+ * choice, typed text or notes are a terminal answer; anything else closes
  * without an answer and withdraws the device question. With no `PostToolUse`
  * within `CLAUDE_PICKER_CANCEL_SETTLE_MS`, the session owner withdraws it.
  * Otherwise the wait watches local state, which `PostToolUse`, `Stop` and the
@@ -39,6 +41,7 @@ import {
   CLAUDE_QUESTION_TOOL,
   claudePickerAnswers,
   claudePickerUnanswered,
+  claudeQuestionAnswered,
   claudeTerminalAnswers,
   isClaudeRegistration,
   pickerDigest,
@@ -128,11 +131,12 @@ export type ClaudePickerResult = 'auto-continued' | 'follow-up' | 'answered' | '
 
 export function classifyClaudePickerResult(toolResponse: unknown): ClaudePickerResult {
   if (typeof toolResponse !== 'object' || toolResponse === null) return 'unanswered'
-  const { afkTimeoutMs, followUp, answers, response } = toolResponse as Record<string, unknown>
+  const { afkTimeoutMs, followUp, answers, annotations, response } = toolResponse as Record<string, unknown>
   if (typeof afkTimeoutMs === 'number') return 'auto-continued'
   if (followUp === true || (typeof followUp === 'object' && followUp !== null)) return 'follow-up'
   if (typeof response === 'string' && response.trim() !== '') return 'answered'
-  if (typeof answers === 'object' && answers !== null && Object.values(answers).some((value) => typeof value === 'string' && value.trim() !== '')) return 'answered'
+  const titles = [answers, annotations].flatMap((part) => typeof part === 'object' && part !== null ? Object.keys(part) : [])
+  if (titles.some((title) => claudeQuestionAnswered(toolResponse, title))) return 'answered'
   return 'unanswered'
 }
 
@@ -682,10 +686,10 @@ export async function claudePermissionRequest(
 
   /**
    * Claude Code cancelled this handler: the picker resolved without its
-   * decision. Whether that was Esc, an auto-continue while the User was away,
-   * a request for another round or something else is in the picker's result,
-   * which only `PostToolUse` sees, so mark the picker cancelled and let that
-   * hook settle it; the owner withdraws it if nothing does within the bound.
+   * decision. Esc and a Remote Control expiry look the same here; any result
+   * the picker has is in its `PostToolUse`, so mark the picker cancelled and
+   * let that hook settle it; the owner withdraws it if nothing does within the
+   * bound.
    */
   const cancelled = (): 'left-to-terminal' => {
     updateSessionState(sessionId, deps.env, (state) => holding(state)

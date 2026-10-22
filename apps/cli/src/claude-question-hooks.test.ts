@@ -6,6 +6,7 @@ import type { ClaimDeliveryAttemptRequestT, RecordHarnessAnswerResponse, ReplyAn
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
   claudePickerAnswers,
+  CLAUDE_NOTES_ONLY,
   claudeTerminalAnswers,
   pickerDigest,
   pickerForm,
@@ -645,17 +646,22 @@ describe('Claude Code picker hooks', () => {
     expect(h.pendingOf(questionId)).toBeDefined()
     // The device answer that comes later takes the ordinary route: no picker holds it.
     expect(claudePickerHolds(h.state())).toBe(false)
-    // The same result reaching a picker still held (no cancellation seen) means the same.
+    // Claude Code 2.1.308 sends the waiting handler no signal on an auto-continue:
+    // the result reaches a picker still held, and the handler then lets go without withdrawing.
     const held = setup()
-    await claudePermissionRequest(held.deps, held.envelope(), held.logger, {
+    const outcome = await claudePermissionRequest(held.deps, held.envelope(), held.logger, {
       sleep: async () => {
+        if (questionId !== '' && held.state().claude_picker === undefined) return
         questionId = held.held()
         held.confirm()
-        claudePostToolUse(held.deps, held.envelope(ENVIRONMENT, { tool_response: { answers: {}, afkTimeoutMs: 5_000 } }), held.logger)
+        claudePostToolUse(held.deps, held.envelope(ENVIRONMENT, { tool_response: { ...ENVIRONMENT, answers: {}, annotations: {}, afkTimeoutMs: 5_000 } }), held.logger)
       },
     })
+    expect(outcome).toBe('left-to-terminal')
     expect(held.context()).toBe(claudePickerAutoContinued(questionId))
     expect(held.pendingOf(questionId)).toBeDefined()
+    expect(held.state().retiring ?? []).toEqual([])
+    expect(held.gates.at(-1)).toMatchObject({ hook: 'permission-request', stage: 'picker-resolved-elsewhere' })
   })
 
   it('records text the User typed instead of choosing as the terminal answer', async () => {
@@ -681,6 +687,39 @@ describe('Claude Code picker hooks', () => {
       { question_id: 'which-environment', text: 'Neither' }, { question_id: 'which-checks-should-run-first', text: 'Neither' }])
     expect(claudeTerminalAnswers(registration, { answers: {}, response: '  ' })).toBeNull()
     expect(claudeTerminalAnswers(registration, { response: 7 })).toBeNull()
+  })
+
+  it('records the notes the User typed, never Claude Code\'s notes-only placeholder, as the terminal answer', async () => {
+    const h = setup()
+    let questionId = ''
+    await claudePermissionRequest(h.deps, h.envelope(FORM), h.logger, {
+      sleep: async () => {
+        questionId = h.held()
+        h.confirm()
+        // Claude Code 2.1.308, notes typed with no option chosen: the answer is a placeholder and the notes ride in annotations.
+        claudePostToolUse(h.deps, h.envelope(FORM, { tool_response: {
+          answers: { 'Which environment?': CLAUDE_NOTES_ONLY, 'Which checks should run first?': 'Lint, Tests' },
+          annotations: { 'Which environment?': { notes: 'Whichever is free' }, 'Which checks should run first?': { notes: 'Lint is quick' } },
+        } }), h.logger)
+      },
+    })
+    const recorded = h.state().native_answer_operations![0]!
+    expect(recorded).toMatchObject({ question_id: questionId, operation_id: CLAUDE_TERMINAL_OPERATION })
+    expect([...recorded.answers].sort((a, b) => a.question_id.localeCompare(b.question_id))).toEqual([
+      { question_id: 'which-checks-should-run-first', choice_ids: ['lint', 'tests'], text: 'Lint is quick' },
+      { question_id: 'which-environment', text: 'Whichever is free' }])
+    expect(JSON.stringify(recorded.answers)).not.toContain(CLAUDE_NOTES_ONLY)
+    const registration = h.registration(questionId)
+    // A placeholder with no notes answers nothing.
+    expect(claudeTerminalAnswers(registration, { answers: { 'Which environment?': CLAUDE_NOTES_ONLY, 'Which checks should run first?': 'Lint' } })).toBeNull()
+    expect(claudeTerminalAnswers(registration, { answers: { 'Which environment?': CLAUDE_NOTES_ONLY }, response: 'Ask me later' })).toEqual([
+      { question_id: 'which-environment', text: 'Ask me later' }, { question_id: 'which-checks-should-run-first', text: 'Ask me later' }])
+    // The extended schema can report a multi-select answer as a list of labels.
+    expect(claudeTerminalAnswers(registration, { answers: { 'Which environment?': 'Staging', 'Which checks should run first?': ['Tests', 'End to end'] } })).toEqual([
+      { question_id: 'which-environment', choice_ids: ['staging'] }, { question_id: 'which-checks-should-run-first', choice_ids: ['tests', 'end-to-end'] }])
+    expect(classifyClaudePickerResult({ answers: { 'Which environment?': CLAUDE_NOTES_ONLY } })).toBe('unanswered')
+    expect(classifyClaudePickerResult({ answers: { 'Which environment?': CLAUDE_NOTES_ONLY }, annotations: { 'Which environment?': { notes: 'Later' } } })).toBe('answered')
+    expect(classifyClaudePickerResult({ answers: { 'Which checks should run first?': ['Lint'] } })).toBe('answered')
   })
 
   it('withdraws the question when the User asked for another round of questions', async () => {
