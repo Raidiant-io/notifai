@@ -375,7 +375,12 @@ the owner reads with `notifai guidance` before its first Notification Request. *
 (`subagent-start`) gives ordinary Claude and Codex workers a reporting-only
 context instead. The parent owns User-visible Notification Requests unless it
 explicitly delegates that ownership in text; a delegated worker then loads the
-Notifai skill and runs `notifai guidance`. These contexts are local-only and run before project setup,
+Notifai skill and runs `notifai guidance`. An orchestrator that launches its
+workers as separate top-level Agent Sessions leaves the harness no parent to
+report, and their environment matches a session the User started, so those
+workers receive the owner context. That context therefore says that an Agent
+Session another agent started with a task brief belongs to that agent, which
+keeps Notification Requests unless the brief delegates them. These contexts are local-only and run before project setup,
 authentication, Device Installations, or network access, so those missing
 prerequisites cannot make activation disappear. OpenCode uses its Agent Session
 relationship data to give parent Agent Sessions owner context and child Agent

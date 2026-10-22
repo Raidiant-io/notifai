@@ -24,6 +24,7 @@ import type { PendingQuestion } from './hook-types.js'
 import { currentProcessIdentity, pidExists, processIdentityLiveness } from './process-identity.js'
 import { LEGACY_QUESTION_CLAIM_TTL_SECONDS, QUESTION_STOP_TEARDOWN_HEADROOM_SECONDS } from './question-timing.js'
 import { atomicWriteFileSync } from './atomic-file.js'
+import { FILE_LOCK_WAIT_MS } from './file-lock.js'
 import { packageVersion } from './release.js'
 import { compareVersions } from './version.js'
 /**
@@ -321,7 +322,7 @@ export function claimHolderMayRun(
 /** Remove a claim file only while it still carries this holder's token. */
 export function releaseClaimFile(file: string, token: string): void {
   const guard = `${file}.guard`
-  if (!acquireClaimGuard(guard)) return
+  if (!acquireClaimGuard(guard, FILE_LOCK_WAIT_MS)) return
   try {
     if (readClaimFile(file)?.['token'] === token) rmSync(file, { force: true })
   } finally {
@@ -389,7 +390,7 @@ export function releaseQuestionPush(sessionId: string, env: NodeJS.ProcessEnv): 
   // Missing or replaced claims are not ours to release; a claim a successor
   // asked this owner to hand over is, so the successor can take it now.
   const guard = `${file}.guard`
-  if (!acquireClaimGuard(guard)) return
+  if (!acquireClaimGuard(guard, FILE_LOCK_WAIT_MS)) return
   try {
     const holder = readClaimFile(file)
     if (holder?.['token'] === token || (holder?.['handoff'] === true && holder['handoff_from'] === token &&
@@ -399,17 +400,28 @@ export function releaseQuestionPush(sessionId: string, env: NodeJS.ProcessEnv): 
   }
 }
 
+const CLAIM_GUARD_POLL_MS = 5
+const guardSleep = new Int32Array(new SharedArrayBuffer(4))
+
 /**
  * The guard serializes stale replacement and release. It appears already
  * naming its holder, so a guard left by a process that died inside its few
  * file operations is recovered at once instead of refusing every owner until
  * it ages out. Only a guard whose holder cannot be named or checked waits for
  * `CLAIM_GUARD_TTL_MS`.
+ *
+ * A contender that finds the guard busy retries on its own schedule. A release
+ * has no later retry: giving up would leave a live process holding the claim
+ * it meant to let go, and every contender polling for it would wait out its
+ * deadline. Releases therefore wait out a live holder's few file operations.
  */
-function acquireClaimGuard(file: string): boolean {
-  for (let attempt = 0; attempt < 3; attempt += 1) {
+function acquireClaimGuard(file: string, waitMs = 0): boolean {
+  const deadline = Date.now() + waitMs
+  for (let attempt = 0; attempt < 3;) {
     if (createClaimGuard(file)) return true
-    if (!removeDeadClaimGuard(file)) return false
+    if (removeDeadClaimGuard(file)) attempt += 1
+    else if (Date.now() >= deadline) return false
+    else Atomics.wait(guardSleep, 0, 0, CLAIM_GUARD_POLL_MS)
   }
   return false
 }

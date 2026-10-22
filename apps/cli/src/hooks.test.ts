@@ -74,7 +74,7 @@ import {
   readProjectSession,
   writeProjectSession,
 } from './hook-project-sessions.js'
-import { acquireClaimFile, claimQuestionPush, questionPushHeld, releaseQuestionPush, standDownQuestionOwners, supersedeQuestionOwner } from './hook-question-lock.js'
+import { acquireClaimFile, claimQuestionPush, questionPushHeld, releaseClaimFile, releaseQuestionPush, standDownQuestionOwners, supersedeQuestionOwner } from './hook-question-lock.js'
 import { hubHistoryPath } from './hub-ipc.js'
 import { attendantClaimPath, writeAttendantStatus } from './session-attendant-state.js'
 import { deliveryJournalPath, readDeliveryJournal } from './session-delivery.js'
@@ -4093,6 +4093,7 @@ describe('session-start hook', () => {
       const context = first.hookSpecificOutput?.additionalContext ?? ''
       // Root activation must reach owners before they discover or load the skill.
       expect(context).toMatch(/you own Notification Requests unless your assignment delegates them elsewhere/i)
+      expect(context).toMatch(/another agent started this Agent Session with a task brief, that agent owns them unless the brief delegates them to you/i)
       expect(context).toMatch(/load the Notifai skill before your first Notification Request/i)
       expect(context).toMatch(/`notifai ask`.*same turn/i)
       expect(context).toMatch(/ask for readiness, never for a credential/i)
@@ -5946,6 +5947,27 @@ describe('two hooks racing one question', () => {
     utimesSync(guard, new Date(0), new Date(Date.now() - 5_000))
     expect(claimQuestionPush('guard-live', h.env, REAL)).toBe(false)
     expect(readFileSync(guard, 'utf8')).toBe(held)
+  })
+
+  it('releases its claim while another process briefly holds the guard', async () => {
+    const h = harness()
+    const claim = path.join(stateDir(h.env), 'sessions', 'guard-busy.submission')
+    const token = acquireClaimFile(claim, {})
+    expect(token).not.toBeNull()
+    // A contender polling for the claim holds the guard for a few file operations.
+    const contender = spawn(process.execPath, ['--eval', `
+      const { writeFileSync, rmSync } = require('node:fs');
+      writeFileSync(process.argv[1], JSON.stringify({ pid: process.pid }) + '\\n', { flag: 'wx' });
+      process.stdout.write('held\\n');
+      setTimeout(() => rmSync(process.argv[1], { force: true }), 200);
+    `, `${claim}.guard`], { stdio: ['ignore', 'pipe', 'inherit'] })
+    const exited = new Promise(resolve => contender.once('exit', resolve))
+    await new Promise<void>(resolve => contender.stdout!.once('data', () => resolve()))
+
+    releaseClaimFile(claim, token!)
+
+    expect(existsSync(claim)).toBe(false)
+    await exited
   })
 
   it('settles a stopped session once a guard nobody can name ages out, not never', async () => {

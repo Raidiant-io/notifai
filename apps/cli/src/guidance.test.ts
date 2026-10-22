@@ -556,6 +556,11 @@ describe('session-start guidance', () => {
     expect(opening).toMatch(/Load the Notifai skill before your first Notification Request/)
     expect(opening).toMatch(/job changes completely[^.]*rename this Agent Session/)
     expect(opening).toMatch(/unless your assignment delegates them elsewhere/)
+    // An orchestrator's worker can be a top-level session with no parent the
+    // harness knows; its task brief keeps ownership with the agent that wrote it.
+    const owner = opening.search(/You own Notification Requests/)
+    const briefed = opening.search(/If another agent started this Agent Session with a task brief, that agent owns them unless the brief delegates them to you: report Agent Events to it and send none yourself\./)
+    expect(briefed).toBeGreaterThan(owner)
     const subordinate = opening.search(/The guidance below governs; unless it says otherwise/)
     const question = opening.search(/register it with `notifai ask` in the same turn/)
     expect(subordinate).toBeGreaterThan(0)
