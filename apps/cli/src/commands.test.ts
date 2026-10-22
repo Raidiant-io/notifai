@@ -112,7 +112,6 @@ import type { AnsweredPending } from './hook-types.js'
 import { currentProcessIdentity } from './process-identity.js'
 import { hostBinaryIdentity, recordCodexAttachResult } from './codex-attach-signal.js'
 import { recordTurnStart } from './session-attendant-state.js'
-import { recordCodexSubagent } from './codex-subagent.js'
 import { readDeliveryJournal } from './session-delivery.js'
 import {
   nativeSkills as realNativeSkills,
@@ -9275,67 +9274,147 @@ describe('asking before the hooks have ever run', () => {
     expect(compatibility).toHaveBeenCalledTimes(2)
   })
 
-  it('registers a delegated Codex subagent\'s question to its root and never hands the subagent the card', async () => {
-    const cwd = scratchDir('notifai-codex-subagent-ask-')
+  describe('a Codex subagent asking', () => {
     const root = '019ff69d-a07f-7161-ab6e-bd06b3b93c8e'
     const child = '019ff69d-b1c2-7d3e-8f40-516273849abc'
-    // Codex gives a spawned child's shell its own thread and the root's session.
-    const env = { HOME: cwd, XDG_CONFIG_HOME: cwd, XDG_STATE_HOME: cwd, CODEX_HOME: path.join(cwd, 'codex'),
-      CODEX_THREAD_ID: child, CODEX_SESSION_ID: root }
-    const io = new CapturedIo()
-    const compatibility = vi.fn(async () => ({ server_capabilities: ['harness_answers'] }))
-    const codexAnswerControl = vi.fn(async () => ({ namespace: 'codex', threadId: root, currentTurn: async () => true, steer: async () => {}, close: vi.fn() }))
-    const spawn = vi.fn()
-    const deps = { ...makeDeps(io, { compatibility } as unknown as ApiClient), cwd, env, now: () => 42, spawnQuestionSettlement: spawn, codexAnswerControl }
-    writeProjectSettings(cwd, env, 'project = "subagent-ask"\n')
-    expect(hooksInstallCommand(deps, { harness: 'codex', execPath, scriptPath })).toBe(EXIT.ok)
-    trustInstalledCodexHooks(cwd, env)
-    // The root is activated, hosted by this process, and its Codex offers the card.
-    const owner = beginSessionIncarnation(root, env, { stamp: lifecycleStamp(), harnessProcess: currentProcessIdentity()! })
-    const file = path.join(env.CODEX_HOME, 'sessions', 'owned.jsonl')
-    mkdirSync(path.dirname(file), { recursive: true })
-    writeFileSync(file, [
-      { type: 'session_meta', payload: { id: root, source: 'cli' } },
-      { type: 'turn_context', payload: { turn_id: 'turn-1', model: 'gpt-6-sol' } },
-      { type: 'event_msg', payload: { type: 'task_started', turn_id: 'turn-1' } },
-    ].map(item => JSON.stringify(item) + '\n').join(''))
-    recordTurnStart(root, env, owner.key, 'turn-1')
-    writeCurrentCodexSessionState(cwd, env, root, {
-      last_prompt_at: 42,
-      codex_native_turn: { key: owner.key, turn_id: 'turn-1', transcript_path: file },
-      codex_tool_hook: { incarnation: owner.incarnation, fingerprint: 'controlled', root_observed: { turn_id: 'turn-1', at: 42 } },
-      codex_card_tool: { key: owner.key, model: 'gpt-6-sol', transcript_path: file },
+
+    /** A Codex root hosted by this process, with a spawned subagent's shell below it. */
+    function subagentRig(client: Partial<ApiClient> = {}, activated = true, hookPlatform: NodeJS.Platform = process.platform) {
+      const cwd = scratchDir('notifai-codex-subagent-ask-')
+      // Codex gives a spawned subagent's shell its own thread and the root's session.
+      const env = { HOME: cwd, XDG_CONFIG_HOME: cwd, XDG_STATE_HOME: cwd, CODEX_HOME: path.join(cwd, 'codex'),
+        CODEX_THREAD_ID: child, CODEX_SESSION_ID: root }
+      const io = new CapturedIo()
+      const compatibility = vi.fn(async () => ({ server_capabilities: ['harness_answers'] }))
+      const codexAnswerControl = vi.fn(async () => ({ namespace: 'codex', threadId: root, currentTurn: async () => true, steer: async () => {}, close: vi.fn() }))
+      const spawn = vi.fn()
+      const deps = { ...makeDeps(io, { compatibility, ...client } as unknown as ApiClient), cwd, env, now: () => 42,
+        spawnQuestionSettlement: spawn, codexAnswerControl, hookPlatform }
+      writeProjectSettings(cwd, env, 'project = "subagent-ask"\n')
+      expect(hooksInstallCommand(deps, { harness: 'codex', execPath, scriptPath })).toBe(EXIT.ok)
+      trustInstalledCodexHooks(cwd, env)
+      // The root is hosted by this process, an ancestor of every test shell, and its Codex offers the card.
+      const owner = beginSessionIncarnation(root, env, { stamp: lifecycleStamp(), harnessProcess: currentProcessIdentity()! })
+      if (activated) {
+        const file = path.join(env.CODEX_HOME, 'sessions', 'owned.jsonl')
+        mkdirSync(path.dirname(file), { recursive: true })
+        writeFileSync(file, [
+          { type: 'session_meta', payload: { id: root, source: 'cli' } },
+          { type: 'turn_context', payload: { turn_id: 'turn-1', model: 'gpt-6-sol' } },
+          { type: 'event_msg', payload: { type: 'task_started', turn_id: 'turn-1' } },
+        ].map(item => JSON.stringify(item) + '\n').join(''))
+        recordTurnStart(root, env, owner.key, 'turn-1')
+        writeCurrentCodexSessionState(cwd, env, root, {
+          last_prompt_at: 42,
+          codex_native_turn: { key: owner.key, turn_id: 'turn-1', transcript_path: file },
+          codex_tool_hook: { incarnation: owner.incarnation, fingerprint: 'controlled', root_observed: { turn_id: 'turn-1', at: 42 } },
+          codex_card_tool: { key: owner.key, model: 'gpt-6-sol', transcript_path: file },
+        })
+      }
+      io.outLines = []
+      return { cwd, env, io, deps, owner, compatibility, codexAnswerControl, spawn }
+    }
+
+    function expectWorkerNext(next: Record<string, unknown>, questionId: string) {
+      expect(next).toEqual({
+        end_turn: true,
+        in_this_turn: expect.stringContaining('belongs to the root Agent Session that started you'),
+        route_neutral: expect.any(String),
+        keep_session_open: expect.stringContaining('The root Agent Session must stay open'),
+        on_answer: expect.stringContaining('you take no action on it'),
+        answered_outside_notifai: expect.stringContaining(`the root retires the question with \`notifai close ${questionId}\``),
+      })
+      expect(next['in_this_turn']).toContain('Tell your parent the question id')
+      for (const field of Object.values(next)) {
+        if (typeof field !== 'string') continue
+        expect(field).not.toMatch(/comes back into this Agent Session|arrives as your next message|Ask (it|the question) in the conversation/u)
+      }
+    }
+
+    it.skipIf(process.platform === 'win32')('registers the question to the root, which owns its answer, and gives the subagent one handoff in every output', async () => {
+      const h = subagentRig()
+      const ask = (question: string, flags: Record<string, unknown>) =>
+        askCommand(h.deps, question, { title: 'Decision', choice: ['Staging', 'Production'], ...flags })
+
+      expect(await ask('Where?', { json: true })).toBe(EXIT.ok)
+      const output = JSON.parse(h.io.outLines.join('\n'))
+      expect(output).toMatchObject({ registered: true })
+      expectWorkerNext(output.next, output.question_id)
+      // No subagent can open the card, so none is offered or even checked for.
+      expect(output.open_form).toBeUndefined()
+      expect(h.compatibility).not.toHaveBeenCalled()
+      expect(h.codexAnswerControl).not.toHaveBeenCalled()
+      // The root owns the question, under its current start, and its answer wakes the root.
+      expect(readSessionState(root, h.env).pending?.[0]).toMatchObject({ question_id: output.question_id, source: { session_id: root, harness: 'codex' } })
+      expect(readSessionState(child, h.env).pending).toBeUndefined()
+      expect(h.spawn).toHaveBeenCalledWith(expect.objectContaining({ envelope: expect.objectContaining({ session_id: root }) }))
+
+      // A duplicate and a wait say the same.
+      h.io.outLines = []
+      expect(await ask('Where?', { json: true, wait: true })).toBe(EXIT.ok)
+      const duplicate = JSON.parse(h.io.outLines.join('\n'))
+      expect(duplicate).toMatchObject({ registered: false, question_id: output.question_id,
+        message: expect.stringContaining('already open in the root Agent Session') })
+      expectWorkerNext(duplicate.next, output.question_id)
+      h.io.outLines = []
+      expect(await ask('Which size?', { json: true, wait: true })).toBe(EXIT.ok)
+      const waited = JSON.parse(h.io.outLines.join('\n'))
+      expect(waited.open_form).toBeUndefined()
+      expectWorkerNext(waited.next, waited.question_id)
+
+      // The human output is the same handoff, with nothing telling the subagent to ask or wait itself.
+      for (const [question, flags] of [['Which region?', {}], ['Which tier?', { wait: true }], ['Which region?', {}]] as const) {
+        h.io.outLines = []
+        expect(await ask(question, flags)).toBe(EXIT.ok)
+        const human = h.io.outLines.join('\n')
+        expect(human).toContain('belongs to the root Agent Session that started you')
+        expect(human).toContain('If the answer is "Staging": the work it means.')
+        expect(human).toContain('the root retires the question with `notifai close')
+        expect(human).not.toMatch(/comes back into this Agent Session|arrives as your next message|Ask (it|the question)? ?in the conversation/u)
+      }
     })
-    io.outLines = []
 
-    // The variables alone prove nothing: without Codex's record of the spawn
-    // the child is an unactivated session, as before.
-    expect(await askCommand(deps, 'Where?', { title: 'Decision', choice: ['Staging', 'Production'], json: true })).toBe(EXIT.usage)
-    // A subagent cannot send a prompt of its own, so the remedy sends it to its parent.
-    expect(JSON.parse(io.outLines.at(-1)!)).toMatchObject({ code: 'session_not_activated', registered: false,
-      remedy: expect.stringContaining('your parent') })
+    it.skipIf(process.platform === 'win32').each(['ended', 'restarted'] as const)('registers nothing when the root has %s before registration', async (change) => {
+      const image = path.join(scratchDir('notifai-codex-subagent-media-'), 'proof.png')
+      writeFileSync(image, 'proof')
+      let rig: ReturnType<typeof subagentRig> | undefined
+      const h = rig = subagentRig({
+        createMediaUpload: async () => ({ media_id: 'med_uploaded_1', upload_url: 'https://upload.invalid/1', upload_headers: {},
+          expires_at: new Date(Date.now() + 60_000).toISOString() }),
+        // The root ends or restarts while the image uploads: resolution saw the earlier start.
+        uploadMedia: async () => {
+          if (change === 'ended') markSessionEnded(root, rig!.env, Date.now())
+          else beginSessionIncarnation(root, rig!.env, { stamp: lifecycleStamp(), harnessProcess: currentProcessIdentity()!, restart: true })
+        },
+      } as unknown as Partial<ApiClient>)
+      expect(await askCommand(h.deps, 'Ship it?', { title: 'Decision', image: [image], json: true })).toBe(EXIT.failed)
+      expect(JSON.parse(h.io.outLines.at(-1)!)).toMatchObject({ code: 'session_changed', registered: false })
+      expect(readSessionState(root, h.env).pending).toBeUndefined()
+      expect(h.spawn).not.toHaveBeenCalled()
+    })
 
-    expect(recordCodexSubagent({ rootSessionId: root, childThreadId: child, hookSourcePid: process.pid, env, now: 42 })).toBe(true)
-    io.outLines = []
-    expect(await askCommand(deps, 'Where?', { title: 'Decision', choice: ['Staging', 'Production'], json: true })).toBe(EXIT.ok)
-    const output = JSON.parse(io.outLines.join('\n'))
-    expect(output).toMatchObject({ registered: true, next: { in_this_turn: expect.stringContaining('the root Agent Session') } })
-    expect(output.next.in_this_turn).not.toContain('comes back into this Agent Session')
-    // No subagent can open the card, so none is offered or even checked for.
-    expect(output.open_form).toBeUndefined()
-    expect(compatibility).not.toHaveBeenCalled()
-    expect(codexAnswerControl).not.toHaveBeenCalled()
-    expect(readSessionState(root, env).pending?.[0]).toMatchObject({ question_id: output.question_id, source: { session_id: root, harness: 'codex' } })
-    expect(readSessionState(child, env).pending).toBeUndefined()
-    expect(spawn).toHaveBeenCalledWith(expect.objectContaining({ envelope: expect.objectContaining({ session_id: root }) }))
+    it('refuses with a remedy for its parent where its root cannot be placed: unactivated, gone, or on Windows', async () => {
+      // The root never fired UserPromptSubmit.
+      const unactivated = subagentRig({}, false)
+      expect(await askCommand(unactivated.deps, 'Where?', { title: 'Decision', choice: ['Staging', 'Production'], json: true })).toBe(EXIT.usage)
+      expect(JSON.parse(unactivated.io.outLines.at(-1)!)).toMatchObject({ code: 'session_not_activated', registered: false,
+        remedy: 'give the question to your parent agent, which can ask it' })
 
-    // A wait never hands back a form either, and still names the root.
-    io.outLines = []
-    expect(await askCommand(deps, 'Which size?', { title: 'Size', choice: ['Small', 'Large'], wait: true, json: true })).toBe(EXIT.ok)
-    const waited = JSON.parse(io.outLines.join('\n'))
-    expect(waited).toMatchObject({ registered: true, next: { end_turn: true, in_this_turn: expect.stringContaining('the root Agent Session') } })
-    expect(waited.open_form).toBeUndefined()
-    expect(waited.next.in_this_turn).not.toContain('arrives as your next message')
+      // Windows offers no process tree to place the subagent below its root.
+      const windows = subagentRig({}, true, 'win32')
+      expect(await askCommand(windows.deps, 'Where?',
+        { title: 'Decision', choice: ['Staging', 'Production'], json: true })).toBe(EXIT.usage)
+      expect(JSON.parse(windows.io.outLines.at(-1)!)).toMatchObject({ code: 'session_not_activated', registered: false,
+        remedy: 'give the question to your parent agent, which can ask it' })
+      expect(readSessionState(root, windows.env).pending).toBeUndefined()
+
+      // A root whose recorded Codex process has gone: an inherited pane cannot reach its successor.
+      const elsewhere = subagentRig()
+      beginSessionIncarnation(root, elsewhere.env, { stamp: lifecycleStamp(), harnessProcess: { ...currentProcessIdentity()!, pid: 999_999_999 }, restart: true })
+      expect(await askCommand(elsewhere.deps, 'Where?', { title: 'Decision', choice: ['Staging', 'Production'], json: true })).toBe(EXIT.usage)
+      expect(JSON.parse(elsewhere.io.outLines.at(-1)!)).toMatchObject({ code: 'session_not_activated',
+        remedy: 'give the question to your parent agent, which can ask it' })
+    })
   })
 
   it('registers a first-turn question from a linked worktree with account-specific Codex state', async () => {

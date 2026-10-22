@@ -102,8 +102,7 @@ import {
 } from './hook-session-state.js'
 import { type PendingQuestion, type SessionState } from './hook-types.js'
 import { readOpenclawGeneration } from './openclaw-generation.js'
-import { currentProcessIdentity, processStartTime } from './process-identity.js'
-import { delegatedCodexRoot } from './codex-subagent.js'
+import { processStartTime } from './process-identity.js'
 import { activeOpenclawGeneration, openclawOwnsMessage, openclawOwnsReply } from './openclaw-session-access.js'
 import { REPLY_MAX_WINDOW_SECONDS, type ClaimDeliveryAttemptRequestT } from '@raidiant/notifai-protocol'
 import { buildHookConfig, codexHookIdentityHash, codexTrustKey, findInstallations, QUESTION_STOP_TIMEOUT_SECONDS } from './install-hooks.js'
@@ -4010,31 +4009,6 @@ describe('session-start hook', () => {
     expect(await start('next-week')).toContain('A newer Notifai is available.')
     expect(lookup).toHaveBeenCalledTimes(2)
     expect(h.recorder.submitted).toEqual([])
-  })
-
-  it('records a Codex subagent against its root only when the root\'s own Codex process reports the spawn', async () => {
-    const h = harness()
-    const root = 'codex-root-session'
-    const child = 'codex-child-thread'
-    const host = currentProcessIdentity()!
-    sessionStateModule.beginSessionIncarnation(root, h.env, { stamp: sessionStateModule.lifecycleStamp(), harnessProcess: host })
-    const shell = { ...h.env, CODEX_THREAD_ID: child, CODEX_SESSION_ID: root }
-    const insideCodex = [{ pid: 9_000_001, name: 'zsh' }, { pid: host.pid, name: 'codex' }]
-    // Codex names the root in session_id and the child in agent_id.
-    const spawn = stdin({ session_id: root, agent_id: child, agent_type: 'default', cwd: h.deps.cwd, hook_event_name: 'SubagentStart' })
-
-    // A hook run by any other process is not the root's Codex speaking.
-    h.env['NOTIFAI_HOOK_SOURCE_PID'] = String(host.pid + 1)
-    await hookRunCommand(h.deps, 'subagent-start', spawn, 'codex')
-    expect(delegatedCodexRoot(shell, insideCodex)).toBeNull()
-
-    h.env['NOTIFAI_HOOK_SOURCE_PID'] = String(host.pid)
-    h.io.outLines = []
-    await hookRunCommand(h.deps, 'subagent-start', spawn, 'codex')
-    expect(delegatedCodexRoot(shell, insideCodex)).toEqual({ rootSessionId: root, childThreadId: child })
-    // The child still gets only worker context, and is not activated itself.
-    expect(h.io.outLines.at(-1)).toContain('Notifai worker context')
-    expect(sessionStateModule.readSessionState(child, h.env).harness).toBeUndefined()
   })
 
   it('puts the notice in Cursor\'s session context and never spends it on workers', async () => {
