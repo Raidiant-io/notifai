@@ -45,6 +45,7 @@ import {
   submitSessionQuestions,
 } from './hook-lifecycle.js'
 import { cursorHookEnvironment } from './cursor-imported-hook.js'
+import { grokHookEnvironment } from './grok-imported-hook.js'
 import { drainRetirements } from './hook-question-retirement.js'
 import {
   lifecycleStamp,
@@ -277,8 +278,9 @@ export async function hookRunCommand(
     return EXIT.ok
   }
   // Grok can import other harness settings. Its native Notifai definition is
-  // the sole owner; imported copies stop before reading stdin.
-  if ((harness === 'claude-code' || harness === 'cursor') && (deps.env['GROK_HOOK_EVENT'] ?? '') !== '') {
+  // the sole owner; imported copies stop before reading stdin. The launcher
+  // and the runtime entry end them earlier; this covers hooks the hub serves.
+  if ((harness === 'claude-code' || harness === 'cursor') && grokHookEnvironment(deps.env)) {
     start({ outcome: 'grok-compatibility-copy-skipped' })
     logger.info('hook.end', {
       hook: event,

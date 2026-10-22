@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import { isatty } from 'node:tty'
 import { cursorBareHookRun } from './cursor-imported-hook.js'
+import { grokImportedHookRun } from './grok-imported-hook.js'
 import { belowNodeFloor, nodeFloorMessage } from './node-floor.js'
 
 // Before anything else is parsed. `node-floor.js` imports nothing and uses no
@@ -14,5 +15,8 @@ if (belowNodeFloor(process.version)) {
 // Cursor's copy of a Claude Code hook, with its arguments dropped: nothing to
 // do, so nothing loads, prints or records.
 if (cursorBareHookRun(process.argv.slice(2), process.env, isatty(0))) process.exit(0)
+// Grok's copy of a Claude Code or Cursor hook: its native Grok hook serves the
+// event, so this one ends the same way.
+if (grokImportedHookRun(process.argv.slice(2), process.env)) process.exit(0)
 
 await import('./main-run.js')
