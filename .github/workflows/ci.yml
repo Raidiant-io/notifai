@@ -242,6 +242,11 @@ jobs:
         uses: ilammy/msvc-dev-cmd@0b201ec74fa43914dc39ae48a89fd1d8cb592756 # v1
         with:
           arch: x64
+      # The artifact tests start Windows PowerShell under a time bound; its first
+      # start on a fresh hosted runner can exceed that bound.
+      - name: Warm Windows PowerShell
+        shell: pwsh
+        run: powershell.exe -NoProfile -NonInteractive -Command '(Get-Process -Id $PID).StartTime.ToFileTimeUtc(); Get-CimInstance Win32_Process -Filter "ProcessId = $PID" | Out-Null'
       - name: Verify signed npm artifact validation on Windows
         shell: bash
         run: node --test scripts/verify-packed-install.test.mjs scripts/windows-npm-process.test.mjs scripts/windows-hook-command.test.mjs
@@ -299,6 +304,11 @@ jobs:
         uses: ilammy/msvc-dev-cmd@0b201ec74fa43914dc39ae48a89fd1d8cb592756 # v1
         with:
           arch: arm64
+      # The artifact tests start Windows PowerShell under a time bound; its first
+      # start on a fresh hosted runner can exceed that bound.
+      - name: Warm Windows PowerShell
+        shell: pwsh
+        run: powershell.exe -NoProfile -NonInteractive -Command '(Get-Process -Id $PID).StartTime.ToFileTimeUtc(); Get-CimInstance Win32_Process -Filter "ProcessId = $PID" | Out-Null'
       - name: Verify signed npm artifact validation on Windows
         shell: bash
         run: node --test scripts/verify-packed-install.test.mjs scripts/windows-npm-process.test.mjs scripts/windows-hook-command.test.mjs
