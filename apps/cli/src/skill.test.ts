@@ -689,8 +689,8 @@ describe('Notifai agent skill', () => {
     expect(harnessReference).toMatch(/exact `HERMES_SESSION_ID`/i)
     expect(harnessReference).toMatch(/`notifai hooks install --harness hermes`\s+installs and enables Notifai's native plugin/i)
     expect(loose(harnessFile('hermes'))).toMatch(/On other Hermes surfaces `ask` refuses: use `notifai ask --wait`, which waits in the command/)
-    expect(harnessFile('hermes')).toMatch(/bounded system prompt section/)
-    expect(harnessFile('hermes')).not.toMatch(/two system prompt sections/i)
+    expect(loose(harnessFile('hermes'))).toMatch(/in two system prompt sections: the activation and notices, then the trust text, terms and topics/)
+    expect(loose(harnessFile('hermes'))).toMatch(/On a Hermes older than v0\.21\.5 one section/)
     expect(harnessReference).toMatch(/built-in Notifai skill installer/i)
     expect(harnessReference).toMatch(/Hermes plugin does not include a copy/i)
     // The agent runs what a process can run; the human only does the human part.

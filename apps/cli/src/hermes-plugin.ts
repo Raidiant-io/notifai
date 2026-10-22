@@ -32,6 +32,7 @@ waits on an approval, so a write can never answer a confirmation prompt.
 import atexit
 import json
 import os
+import re
 import select
 import subprocess
 import threading
@@ -46,8 +47,21 @@ SESSION_SWITCH_COMMANDS = frozenset("new clear resume sessions branch compress h
 # Without a model request or tool in flight, a turn that never reported its
 # end (an interrupted turn fires no post_llm_call) counts as idle after this.
 TURN_QUIET_SECONDS = 30.0
+# Hermes renders plugin prompt sections in id order and leaves out one that
+# would pass the budget every plugin shares. Each is safe alone: the first
+# holds the activation, notices and a pointer to \`notifai guidance\`, the second
+# the trust text, terms and topics, so no topic renders without the trust text
+# above it and nothing needs to detect a left-out section.
+ACTIVATION_SECTION = "notifai.1-activation"
+GUIDANCE_SECTION = "notifai.2-guidance"
+# The oldest Hermes whose own render path was checked with both sections. An
+# older or unidentified Hermes gets the whole context in the first, as before.
+TWO_SECTIONS_SINCE = (0, 21, 5)
+_two_sections = None
 _attendants = {}
 _lock = threading.RLock()
+# The latest rendered session and its guidance section.
+_sections = {"session": "", "guidance": ""}
 _session = {"id": "", "turn": False, "tools": 0, "requests": 0, "approvals": 0,
             "switching": False, "activity_at": 0.0}
 
@@ -267,23 +281,39 @@ def _stop_all():
     for session_id in list(_attendants):
         _stop_attendant(session_id)
 
-def _activation(info):
-    platform = str(info.get("platform") or "")
-    if platform not in ("cli", "subagent"):
-        return ""
+def _hermes_version():
+    # The identity \`hermes --version\` reports; older releases have only __version__.
+    try:
+        from hermes_cli.version_info import get_version_info
+        text = str(get_version_info().base_version)
+    except Exception:
+        try:
+            import hermes_cli
+            text = str(hermes_cli.__version__)
+        except Exception:
+            text = ""
+    match = re.match(r"(\\d+)\\.(\\d+)\\.(\\d+)", text)
+    return tuple(int(part) for part in match.groups()) if match else ()
+
+def _use_two_sections():
+    # Read once, outside _lock: a source install's version may run git.
+    global _two_sections
+    if _two_sections is None:
+        _two_sections = _hermes_version() >= TWO_SECTIONS_SINCE
+    return _two_sections
+
+def _classic_cli():
     if os.environ.get("HERMES_SESSION_SOURCE", "").lower() not in ("", "cli"):
-        return ""
+        return False
     # Hermes may import gateway.run inside a classic CLI and set its process
     # marker there, so the exact session's own markers are the proof.
     if os.environ.get("HERMES_TUI_ACTIVE_SESSION_FILE"):
-        return ""
+        return False
     if os.environ.get("TERMINAL_ENV", "").lower() not in ("", "local"):
-        return ""
-    if os.environ.get("HERMES_SESSION_KEY") or os.environ.get("HERMES_SESSION_PLATFORM"):
-        return ""
-    session_id = str(info.get("session_id") or "").strip()
-    if not session_id:
-        return ""
+        return False
+    return not (os.environ.get("HERMES_SESSION_KEY") or os.environ.get("HERMES_SESSION_PLATFORM"))
+
+def _session_cwd(info):
     cwd = str(info.get("cwd") or "").strip()
     if not cwd:
         # A set but invalid TERMINAL_CWD cannot fall back to the launch dir.
@@ -293,27 +323,67 @@ def _activation(info):
             cwd = os.getcwd()
         except OSError:
             return ""
-    if not os.path.isdir(cwd):
-        return ""
-    worker = platform == "subagent"
+    return cwd if os.path.isdir(cwd) else ""
+
+def _render(session_id, cwd, worker, two):
+    # One CLI call gives both sections; None when there is nothing to show.
     event = "subagent-start" if worker else "session-start"
     envelope = {"session_id": session_id, "cwd": cwd,
                 "hook_event_name": "SubagentStart" if worker else "SessionStart"}
+    if two:
+        envelope["hermes_prompt_sections"] = 2
     try:
         result = subprocess.run(COMMAND + ["hook", event, "--owner", "notifai", "--harness", "hermes", "--integration-revision", NOTIFAI_INTEGRATION_REVISION],
                                 input=json.dumps(envelope), text=True, capture_output=True,
                                 timeout=10, check=False)
     except (OSError, subprocess.TimeoutExpired):
-        return ""
+        return None
     content = result.stdout.strip() if result.returncode == 0 else ""
-    if content and not worker:
+    if not content:
+        return None
+    try:
+        parts = json.loads(content) if two else None
+    except ValueError:
+        parts = None
+    if parts is None:
+        # An earlier Notifai answers with one context sized for one section.
+        return {"activation": content, "guidance": ""}
+    if not isinstance(parts, dict) or not str(parts.get("activation") or "").strip():
+        return None
+    return {"activation": str(parts["activation"]).strip(), "guidance": str(parts.get("guidance") or "").strip()}
+
+def _activation(info):
+    platform = str(info.get("platform") or "")
+    session_id = str(info.get("session_id") or "").strip()
+    with _lock:
+        _sections.update({"session": session_id, "guidance": ""})
+    if platform not in ("cli", "subagent") or not _classic_cli() or not session_id:
+        return ""
+    cwd = _session_cwd(info)
+    if not cwd:
+        return ""
+    worker = platform == "subagent"
+    parts = _render(session_id, cwd, worker, _use_two_sections())
+    if parts is None:
+        return ""
+    with _lock:
+        if _sections["session"] == session_id:
+            _sections["guidance"] = parts["guidance"]
+    if not worker:
         _start_attendant(_ctx, session_id, cwd)
-    return content
+    return parts["activation"]
+
+def _guidance(info):
+    session_id = str(info.get("session_id") or "").strip()
+    with _lock:
+        return _sections["guidance"] if session_id and session_id == _sections["session"] else ""
 
 def register(ctx):
     global _ctx
     _ctx = ctx
-    ctx.register_system_prompt_section("notifai.activation", _activation,
+    ctx.register_system_prompt_section(ACTIVATION_SECTION, _activation,
+                                       position="after_memory", max_chars=4000)
+    ctx.register_system_prompt_section(GUIDANCE_SECTION, _guidance,
                                        position="after_memory", max_chars=4000)
     ctx.register_hook("pre_llm_call", _on_turn_start)
     ctx.register_hook("post_llm_call", _on_turn_end)

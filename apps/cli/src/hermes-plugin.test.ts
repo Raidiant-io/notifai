@@ -196,3 +196,152 @@ it.skipIf(process.platform === 'win32')('holds writes from a session-switching c
   expect(resumed.calls).toEqual([])
   expect(resumed.ended).toBe(true)
 })
+
+// A copy of Hermes's render loop (hermes_cli/plugins.py,
+// PluginManager.render_system_prompt_sections, unchanged in what it decides
+// from v0.20.6 through v0.22.4): sections in id order, the section count
+// checked before a section is rendered, then each at most its max_chars and
+// all within one shared 8,000-character budget. It is a copy, so it proves
+// the plugin's side only. Prompt freezing and history are not modelled,
+// because the plugin depends on neither.
+const SECTIONS_HARNESS = String.raw`import importlib.util, json, sys, types
+hermes = json.loads(sys.argv[6])
+if hermes.get("version") is None:
+    sys.modules["hermes_cli"] = None
+else:
+    package = types.ModuleType("hermes_cli")
+    package.__path__ = []
+    package.__version__ = hermes["version"]
+    sys.modules["hermes_cli"] = package
+    if hermes.get("base_version"):
+        info = types.ModuleType("hermes_cli.version_info")
+        info.get_version_info = lambda: types.SimpleNamespace(base_version=hermes["base_version"])
+        sys.modules["hermes_cli.version_info"] = info
+spec = importlib.util.spec_from_file_location('plugin', sys.argv[1])
+module = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(module)
+module.COMMAND = [sys.executable, sys.argv[2], sys.argv[3]]
+case, cwd = sys.argv[4], sys.argv[5]
+sections, hooks = {}, {}
+class Ctx:
+    def register_system_prompt_section(self, id, content, position="after_memory", max_chars=4000):
+        sections[id] = (content, max_chars)
+    def register_hook(self, name, callback):
+        hooks[name] = callback
+    def inject_message(self, *args, **kwargs):
+        return True
+module.register(Ctx())
+START, END = "<!-- hermes-plugin-sections:start -->", "<!-- hermes-plugin-sections:end -->"
+def frame(section_id, text):
+    return "## Plugin Context: %s\n<!-- hermes-plugin-section-chars:%d -->\n\n%s" % (section_id, len(text), text)
+def render(info, used=0, earlier=0):
+    rendered, total = [], len(START) + len(END) + 2 + used
+    for section_id in sorted(sections):
+        content, max_chars = sections[section_id]
+        if earlier + len(rendered) >= 32:
+            continue
+        text = content(info).strip()
+        if not text or len(text) > max_chars:
+            continue
+        cost = len(frame(section_id, text)) + (2 if rendered else 0)
+        if total + cost > 8000:
+            continue
+        rendered.append([section_id, text[:1]])
+        total += cost
+    return rendered
+main = {"session_id": "main", "platform": "cli", "cwd": cwd}
+child = {"session_id": "child", "platform": "subagent", "cwd": cwd}
+room = 8000 - len(START) - len(END) - 2
+if case == "activation-left-out":
+    rendered = render(main, used=room - len(frame("notifai.2-guidance", "G" * 1000)) - 10)
+elif case == "guidance-left-out":
+    rendered = render(main, used=room - len(frame("notifai.1-activation", "A" * 1500)) - 10)
+elif case == "count":
+    rendered = render(main, earlier=32)
+elif case == "worker":
+    rendered = render(main) + render(child)
+else:
+    rendered = render(main)
+turns = [hooks["pre_llm_call"](session_id="main", platform="cli", parent_session_id="") for _ in range(2)]
+print(json.dumps({"rendered": rendered, "turns": turns}))
+`
+
+// Stands in for the Notifai CLI: two sections when the plugin asks for them,
+// or one context as an earlier CLI prints whatever the plugin asks.
+const SECTIONS_CLI = String.raw`import json, os, sys
+envelope = json.loads(sys.stdin.read())
+with open(sys.argv[1], "a") as calls:
+    calls.write(json.dumps({"event": sys.argv[3], "sections": envelope.get("hermes_prompt_sections")}) + "\n")
+event = sys.argv[3]
+if envelope.get("hermes_prompt_sections") == 2 and not os.environ.get("EARLIER_CLI"):
+    print(json.dumps({"activation": "A" * 1500, "guidance": "G" * 1000} if event == "session-start"
+                     else {"activation": "W" * 1000, "guidance": ""}))
+else:
+    print(("O" if event == "session-start" else "W") * 2000)
+`
+
+interface SectionsRun { rendered: [string, string][]; turns: unknown[]; calls: { event: string; sections: number | null }[] }
+
+function runSectionsCase(root: string, scenario: string, hermes: { version: string | null; base_version?: string } = { version: '0.21.5' },
+  earlierCli = false): SectionsRun {
+  const plugin = path.join(root, 'plugin.py'), cli = path.join(root, 'cli.py'), calls = path.join(root, `${scenario}.calls`)
+  rmSync(calls, { force: true })
+  writeFileSync(plugin, hermesPluginSource('/unused/adapter'))
+  writeFileSync(cli, SECTIONS_CLI)
+  const env = Object.fromEntries(Object.entries(process.env).filter(([key]) =>
+    !key.startsWith('HERMES_') && key !== 'TERMINAL_ENV' && key !== 'TERMINAL_CWD' && key !== 'EARLIER_CLI'))
+  const run = spawnSync('python3', ['-c', SECTIONS_HARNESS, plugin, cli, calls, scenario, root, JSON.stringify(hermes)], {
+    encoding: 'utf8', timeout: 15_000, env: earlierCli ? { ...env, EARLIER_CLI: '1' } : env,
+  })
+  expect(run.error).toBeUndefined()
+  expect(run.stderr).not.toMatch(/Traceback/)
+  expect(run.status).toBe(0)
+  return {
+    ...(JSON.parse(run.stdout) as Omit<SectionsRun, 'calls'>),
+    calls: existsSync(calls) ? readFileSync(calls, 'utf8').trim().split('\n').map(line => JSON.parse(line) as SectionsRun['calls'][number]) : [],
+  }
+}
+
+it.skipIf(process.platform === 'win32')('renders activation and guidance as two Hermes sections from one CLI call', () => {
+  const root = mkdtempSync(path.join(os.tmpdir(), 'notifai-hermes-sections-')); roots.push(root)
+  const fits = runSectionsCase(root, 'fits')
+  expect(fits.rendered).toEqual([['notifai.1-activation', 'A'], ['notifai.2-guidance', 'G']])
+  expect(fits.calls).toEqual([{ event: 'session-start', sections: 2 }])
+  // A worker renders its own context, never the main session's.
+  expect(runSectionsCase(root, 'worker').rendered).toEqual([['notifai.1-activation', 'A'], ['notifai.2-guidance', 'G'], ['notifai.1-activation', 'W']])
+  // A Hermes that reports its release through version_info, not __version__.
+  expect(runSectionsCase(root, 'fits', { version: '0.0.0', base_version: '0.22.4' }).calls).toEqual([{ event: 'session-start', sections: 2 }])
+})
+
+it.skipIf(process.platform === 'win32')('renders whichever section fits on its own and adds nothing to later turns', () => {
+  // Each section is safe alone (the CLI puts the trust text and topics in the
+  // second), so the plugin neither watches for a left-out section nor hands
+  // its text in with a turn, which Hermes would keep in history every turn.
+  const root = mkdtempSync(path.join(os.tmpdir(), 'notifai-hermes-skipped-')); roots.push(root)
+  for (const [scenario, rendered] of [
+    ['fits', [['notifai.1-activation', 'A'], ['notifai.2-guidance', 'G']]],
+    ['activation-left-out', [['notifai.2-guidance', 'G']]],
+    ['guidance-left-out', [['notifai.1-activation', 'A']]],
+    ['count', []],
+  ] as const) {
+    const result = runSectionsCase(root, scenario)
+    expect(result.rendered, scenario).toEqual(rendered)
+    expect(result.turns, scenario).toEqual([null, null])
+  }
+  // Left out by the section count before Hermes asked: nothing rendered, so
+  // no notice was claimed for it.
+  expect(runSectionsCase(root, 'count').calls).toEqual([])
+})
+
+it.skipIf(process.platform === 'win32')('keeps one section on a Hermes older than the split, an unidentified Hermes, or an earlier CLI', () => {
+  const root = mkdtempSync(path.join(os.tmpdir(), 'notifai-hermes-one-section-')); roots.push(root)
+  for (const hermes of [{ version: '0.20.6' }, { version: null }, { version: '0.0.0' }]) {
+    const older = runSectionsCase(root, 'fits', hermes)
+    expect(older.rendered, String(hermes.version)).toEqual([['notifai.1-activation', 'O']])
+    expect(older.calls, String(hermes.version)).toEqual([{ event: 'session-start', sections: null }])
+  }
+  // An earlier CLI ignores the request and prints one context sized for one section.
+  const earlier = runSectionsCase(root, 'fits', undefined, true)
+  expect(earlier.rendered).toEqual([['notifai.1-activation', 'O']])
+  expect(earlier.calls).toEqual([{ event: 'session-start', sections: 2 }])
+})

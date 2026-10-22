@@ -8933,3 +8933,17 @@ describe('Session Message acknowledgement debt', () => {
     expect(dispositions).toEqual(['retire'])
   })
 })
+
+describe('Hermes session start at the CLI boundary', () => {
+  it('prints two prompt sections only for a plugin that asks for them', async () => {
+    const h = harness()
+    const envelope = { session_id: '20261022_120000_hermes', cwd: h.deps.cwd, hook_event_name: 'SessionStart' }
+    await hookRunCommand(h.deps, 'session-start', stdin(envelope), 'hermes')
+    // An earlier plugin renders whatever it reads as one section.
+    expect(h.io.outLines.at(-1)).toMatch(/^Notifai is enabled for this Project/)
+    await hookRunCommand(h.deps, 'session-start', stdin({ ...envelope, hermes_prompt_sections: 2 }), 'hermes')
+    const sections = JSON.parse(h.io.outLines.at(-1)!) as { activation: string; guidance: string }
+    expect(sections.activation).toMatch(/^Notifai is enabled for this Project/)
+    expect(sections.guidance).toMatch(/^# How to read this guidance/)
+  })
+})

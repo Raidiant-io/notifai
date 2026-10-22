@@ -54,6 +54,8 @@ export interface HookEnvelope {
   openclaw_resumed_from?: string
   /** Internal Gateway-service reconciliation of a prepared answer hand-off. */
   openclaw_request_ids?: string[]
+  /** 2 from a Notifai Hermes plugin that renders its context as two prompt sections. */
+  hermes_prompt_sections?: number
   cwd?: string
   hook_event_name?: string
   /** How a harness lifecycle began: startup, resume, clear, compact, or fork. */

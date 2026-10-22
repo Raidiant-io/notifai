@@ -337,7 +337,7 @@ How they appear depends on the harness — Claude Code names them in
 `[hooks]` in that layer's `config.toml`, when the user's own hooks already live
 there), Cursor uses its own hook shapes, OpenCode and OpenClaw get generated
 plugins, and Hermes gets a native Python plugin through Hermes's own CLI.
-Hermes's plugin supplies a bounded system-prompt section for an enabled
+Hermes's plugin supplies bounded system-prompt sections for an enabled
 Project. In an attended local classic CLI session, its live writer also routes
 question answers to that exact session. On other Hermes surfaces
 `notifai ask --wait` waits for the answer inside the asking command. Other
