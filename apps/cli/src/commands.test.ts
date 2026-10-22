@@ -187,6 +187,12 @@ it.each([
 })
 
 /** Keep unrelated command cases focused while exercising the current authored shape. */
+/** Image bytes local uploads accept: the type's own header, then distinct content. */
+function fakeImage(type: 'png' | 'gif', content: string): Buffer {
+  const header = type === 'png' ? Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]) : Buffer.from('GIF89a')
+  return Buffer.concat([header, Buffer.from(content)])
+}
+
 function sendCommand(
   deps: CommandDeps,
   flags: Omit<SendFlags, 'summary'> & {
@@ -1672,7 +1678,7 @@ describe('command contracts', () => {
     writeProjectSession(cwd, env, 'codex-invalid-image', 42, 'codex')
     io.errLines = []
     const image = path.join(cwd, 'result.png')
-    writeFileSync(image, 'fixture image')
+    writeFileSync(image, fakeImage('png', 'fixture image'))
     const flags = { title: 'Result use', body: '![Result](attachment:1)', image: [image] }
     const result = command === 'send'
       ? await sendCommand(deps, { title: 'Result ready', kind: 'update', ...flags })
@@ -1690,8 +1696,8 @@ describe('command contracts', () => {
     const root = mkdtempSync(path.join(os.tmpdir(), 'notifai-media-order-'))
     const first = path.join(root, 'first.png')
     const second = path.join(root, 'second.gif')
-    writeFileSync(first, 'first image')
-    writeFileSync(second, 'second image')
+    writeFileSync(first, fakeImage('png', 'first image'))
+    writeFileSync(second, fakeImage('gif', 'second image'))
     const uploaded: string[] = []
     let grants = 0
     let submitted: SubmitNotificationRequestT | undefined
@@ -9514,7 +9520,7 @@ describe('asking before the hooks have ever run', () => {
   it('rejects a legacy Codex session without a Stop-definition fingerprint before uploading or registering', async () => {
     const cwd = scratchDir('notifai-codex-legacy-stop-definition-')
     const image = path.join(cwd, 'proof.png')
-    writeFileSync(image, 'proof')
+    writeFileSync(image, fakeImage('png', 'proof'))
     const io = new PlainInteractiveIo()
     const env = {
       ...isolatedEnv(cwd),
@@ -9734,7 +9740,7 @@ describe('asking before the hooks have ever run', () => {
     async (shape) => {
       const cwd = scratchDir(`notifai-codex-${shape}-stop-handlers-`)
       const image = path.join(cwd, 'proof.png')
-      writeFileSync(image, 'proof')
+      writeFileSync(image, fakeImage('png', 'proof'))
       const io = new PlainInteractiveIo()
       const env = {
         ...isolatedEnv(cwd),
@@ -9858,7 +9864,7 @@ describe('asking before the hooks have ever run', () => {
     const io = new CapturedIo()
     const env = { ...isolatedEnv(cwd), CLAUDECODE: '1', CLAUDE_CODE_SESSION_ID: 'claude-closed' }
     const image = path.join(cwd, 'proof.png')
-    writeFileSync(image, 'proof')
+    writeFileSync(image, fakeImage('png', 'proof'))
     let grants = 0
     const client = {
       compatibility: vi.fn(async () => ({ server_capabilities: ['harness_answers'] })),
@@ -10275,8 +10281,8 @@ describe('asking before the hooks have ever run', () => {
     const cwd = scratchDir('notifai-ask-media-')
     const first = path.join(cwd, 'first.png')
     const second = path.join(cwd, 'second.gif')
-    writeFileSync(first, 'first')
-    writeFileSync(second, 'second')
+    writeFileSync(first, fakeImage('png', 'first'))
+    writeFileSync(second, fakeImage('gif', 'second'))
     const io = new CapturedIo()
     const env = {
       XDG_CONFIG_HOME: path.join(cwd, 'config'),
@@ -10339,7 +10345,7 @@ describe('asking before the hooks have ever run', () => {
   it.each(['another-machine', 'unpaired'] as const)('refuses to relabel question ownership when media upload races %s', async transition => {
     const cwd = scratchDir('notifai-ask-media-owner-')
     const media = path.join(cwd, 'image.png')
-    writeFileSync(media, 'image')
+    writeFileSync(media, fakeImage('png', 'image'))
     const io = new CapturedIo()
     const env = { ...isolatedEnv(cwd), CODEX_THREAD_ID: 'codex-media-owner' }
     let entered!: () => void

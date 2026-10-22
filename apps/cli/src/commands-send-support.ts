@@ -1,6 +1,6 @@
 import { NOTIFICATION_IMAGE_MAX_BYTES, type ListRepliesResponse } from '@raidiant/notifai-protocol'
 import { sha256Hex } from '@raidiant/notifai-protocol/node'
-import { existsSync, readFileSync } from 'node:fs'
+import { existsSync } from 'node:fs'
 import path from 'node:path'
 import { ApiCallError, isRetryableReplyPollError, RequestCancelledError, type ApiClient } from './client.js'
 import { fetchMediaUrl } from './url-policy.js'
@@ -9,6 +9,7 @@ import { readSessionState } from './hook-session-state.js'
 import { inferredProjectName } from './project-enablement.js'
 import { readHarnessSessionTitle } from './harness-session-title.js'
 import { type DraftInvocation, type SendFlags } from './send.js'
+import { readLocalImage, type LocalImageType } from './local-input.js'
 import { EXIT, reportError, type CommandDeps } from './commands-core.js'
 import type { ActiveHarnessSession } from './commands-harness-context.js'
 
@@ -241,13 +242,6 @@ export function printAcknowledgementStatus(deps: CommandDeps, response: ListRepl
   deps.io.out('Agent Acknowledgement: required after a user reply; no reply is recorded yet.')
 }
 
-const MEDIA_TYPES: Record<string, 'image/jpeg' | 'image/png' | 'image/gif'> = {
-  '.jpg': 'image/jpeg',
-  '.jpeg': 'image/jpeg',
-  '.png': 'image/png',
-  '.gif': 'image/gif',
-}
-
 type UploadResult =
   | { ok: true; mediaId: string }
   /** `error: null` means `reportError` already said it; do not print it twice. */
@@ -299,6 +293,8 @@ export async function readCappedBytes(
  * destinations only through the User's `media_origins` — never a
  * repository's. `--image` values routinely arrive from an agent that read
  * them in a working tree, so the URL is hostile input until proven otherwise.
+ * A local path is read under the local file policy (`local-input.ts`) for
+ * the same reason: a repository can commit a link to anywhere.
  */
 export async function uploadImage(
   deps: CommandDeps,
@@ -307,7 +303,7 @@ export async function uploadImage(
   allowOrigins: readonly string[] = [],
 ): Promise<UploadResult> {
   let bytes: Uint8Array
-  let mediaType: 'image/jpeg' | 'image/png' | 'image/gif' | undefined
+  let mediaType: LocalImageType | undefined
   if (/^https?:\/\//.test(source)) {
     try {
       const fetched = await fetchMediaUrl(source, { allowOrigins }, deps.fetchImpl)
@@ -329,11 +325,13 @@ export async function uploadImage(
       return { ok: false, error: `Could not fetch ${source}: ${String(err)}`, exit: EXIT.network }
     }
   } else {
-    if (!existsSync(source)) {
+    if (!existsSync(path.resolve(deps.cwd, source))) {
       return { ok: false, error: `--image: "${source}" is not a media id, file, or URL.`, exit: EXIT.usage }
     }
-    bytes = new Uint8Array(readFileSync(source))
-    mediaType = MEDIA_TYPES[path.extname(source).toLowerCase()]
+    const local = readLocalImage(deps.cwd, source, '--image')
+    if (!local.ok) return { ok: false, error: local.error, exit: EXIT.usage }
+    bytes = local.bytes
+    mediaType = local.mediaType
   }
   if (!mediaType) {
     return { ok: false, error: 'Images must be JPEG, PNG, or GIF.', exit: EXIT.usage }

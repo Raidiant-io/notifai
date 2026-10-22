@@ -64,6 +64,7 @@ import { installedChangelog } from './update-handoff.js'
 import { LOCAL_CONTINUITY, LOCAL_CONTINUITY_CAPABILITIES } from './local-continuity.js'
 import { NativeSelectionChanged, retryNativeSelection } from './native-launch-retry.js'
 import { PROJECT_LAYER_REMOVED, takeRepositoryConfigNotice } from './repository-config-retirement.js'
+import { readLocalText } from './local-input.js'
 
 /**
  * One source of truth for the version: the manifest npm actually published.
@@ -165,6 +166,16 @@ const defaultRunners = {
  * options in command-line order, so a `--choice-description` records the
  * choice it follows; pairing never depends on counting positions afterwards.
  */
+/** `--body-file` and `--form`: stdin as given, a path under the local file policy. */
+function readInputFile(deps: CommandDeps, file: string, name: string): { ok: true; text: string } | { ok: false; error: string } {
+  if (file !== '-') return readLocalText(deps.cwd, file, name)
+  try {
+    return { ok: true, text: readFileSync(0, 'utf8') }
+  } catch (err) {
+    return { ok: false, error: `Could not read ${name} from stdin: ${String(err)}` }
+  }
+}
+
 function choiceCount(command: Command): number {
   const choices: unknown = command.getOptionValue('choice')
   return Array.isArray(choices) ? choices.length : 0
@@ -697,12 +708,12 @@ export function buildProgram(deps: CommandDeps, options: BuildProgramOptions = {
           deps.io.err('Pass either --body or --body-file, not both.')
           return exit(2)
         }
-        try {
-          sendOpts['body'] = readFileSync(bodyFile === '-' ? 0 : bodyFile, 'utf8')
-        } catch (err) {
-          deps.io.err(`Could not read ${bodyFile}: ${String(err)}`)
+        const read = readInputFile(deps, bodyFile, '--body-file')
+        if (!read.ok) {
+          deps.io.err(read.error)
           return exit(2)
         }
+        sendOpts['body'] = read.text
       }
       exit(await runners.send(deps, sendOpts as unknown as Parameters<typeof sendCommand>[1]))
     })
@@ -828,27 +839,27 @@ export function buildProgram(deps: CommandDeps, options: BuildProgramOptions = {
             message: 'Pass either --body or --body-file, not both.',
           }))
         }
-        try {
-          body = readFileSync(opts.bodyFile === '-' ? 0 : opts.bodyFile, 'utf8')
-        } catch (err) {
+        const read = readInputFile(deps, opts.bodyFile, '--body-file')
+        if (!read.ok) {
           return exit(reportAskFailure(deps, opts, {
             code: 'input_unreadable', check_id: 'body_file', exit_code: 2,
-            remedy: 'fix the body-file path or permissions, then retry',
-            message: `Could not read ${opts.bodyFile}: ${String(err)}`,
+            remedy: 'write the Body to a regular file and pass that path, or pass it on stdin with --body-file -, then retry',
+            message: read.error,
           }))
         }
+        body = read.text
       }
       let form: string | undefined
       if (typeof opts.form === 'string') {
-        try {
-          form = readFileSync(opts.form === '-' ? 0 : opts.form, 'utf8')
-        } catch (err) {
+        const read = readInputFile(deps, opts.form, '--form')
+        if (!read.ok) {
           return exit(reportAskFailure(deps, opts, {
             code: 'input_unreadable', check_id: 'form_file', exit_code: 2,
-            remedy: 'fix the form-file path or permissions, then retry',
-            message: `Could not read ${opts.form}: ${String(err)}`,
+            remedy: 'write the form to a regular file and pass that path, or pass it on stdin with --form -, then retry',
+            message: read.error,
           }))
         }
+        form = read.text
       }
       // Commander collectors default to []; an empty list means "not passed".
       const flags: Parameters<typeof askCommand>[2] = {

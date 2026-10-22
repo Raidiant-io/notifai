@@ -1,5 +1,5 @@
 import { execFileSync } from 'node:child_process'
-import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, symlinkSync, writeFileSync } from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { describe, expect, it, vi } from 'vitest'
@@ -29,6 +29,17 @@ it('self-check advertises npm route capability without loading credentials or mu
   const result = await parse(['self-check', '--json'], {}, deps)
   expect(JSON.parse(result.deps.outLines.join('\n'))).toMatchObject({ capabilities: { npm_adapter_routes: 1 } })
 })
+
+/** Windows creates symbolic links only with Developer Mode or elevation. */
+function canLink(): boolean {
+  const dir = mkdtempSync(path.join(os.tmpdir(), 'notifai-link-probe-'))
+  try {
+    symlinkSync(dir, path.join(dir, 'probe'), 'dir')
+    return true
+  } catch {
+    return false
+  }
+}
 
 function makeDeps(): CommandDeps & { outLines: string[]; errLines: string[] } {
   const outLines: string[] = []
@@ -320,7 +331,35 @@ describe('program argv parsing', () => {
       { send },
     )
     expect(missing.exitCode).toBe(2)
-    expect(missing.deps.errLines.join('\n')).toContain('Could not read')
+    expect(missing.deps.errLines.join('\n')).toContain('does not exist')
+  })
+
+  it.runIf(canLink())('refuses a --body-file or --form a repository linked to an SSH key', async () => {
+    // A cloned repository commits a link to the key and asks for it as the
+    // Body. Neither command may read through it, and nothing is dispatched.
+    const home = mkdtempSync(path.join(os.tmpdir(), 'notifai-program-link-'))
+    const repo = path.join(home, 'src', 'cloned')
+    mkdirSync(path.join(home, '.ssh'), { recursive: true })
+    mkdirSync(repo, { recursive: true })
+    writeFileSync(path.join(home, '.ssh', 'id_ed25519'), '-----BEGIN OPENSSH PRIVATE KEY-----\n')
+    symlinkSync(path.join('..', '..', '.ssh', 'id_ed25519'), path.join(repo, 'summary.md'))
+    const deps = () => ({ ...makeDeps(), cwd: repo })
+    const send = vi.fn(async () => 0) as unknown as ProgramRunners['send']
+    const ask = vi.fn(async () => 0) as unknown as ProgramRunners['ask']
+
+    const sent = await parse(['send', '--kind', 'done', '--title', 'T', '--summary', 'S', '--body-file', 'summary.md'], { send }, deps())
+    expect(sent.exitCode).toBe(2)
+    expect(sent.deps.errLines.join('\n')).toContain('--body-file "summary.md" is a symbolic link')
+
+    const asked = await parse(['ask', 'Ship it?', '--title', 'Ship', '--body-file', 'summary.md', '--json'], { ask }, deps())
+    expect(asked.exitCode).toBe(2)
+    expect(asked.deps.outLines.join('\n')).toContain('--body-file \\"summary.md\\" is a symbolic link')
+
+    const formed = await parse(['ask', '--form', 'summary.md', '--json'], { ask }, deps())
+    expect(formed.exitCode).toBe(2)
+    expect(formed.deps.outLines.join('\n')).toContain('--form \\"summary.md\\" is a symbolic link')
+    expect(send).not.toHaveBeenCalled()
+    expect(ask).not.toHaveBeenCalled()
   })
 
   it('builds ask flags without empty collectors and passes the question through', async () => {
