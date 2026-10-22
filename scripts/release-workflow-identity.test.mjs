@@ -94,7 +94,7 @@ test('Ubuntu owns consolidated generic evidence while native jobs stay boundary-
 
 test('public hosted workflows exist only for release preparation, publication and the Codex card canary', () => {
   assert.deepEqual(
-    ['ci.yml', 'codex-card-canary.yml', 'prepare-native-release.yml', 'publish-native-release.yml', 'publish.yml', 'release-please.yml', 'standalone-candidate.yml', 'windows-access.yml'],
+    ['ci.yml', 'codex-card-canary.yml', 'prepare-native-release.yml', 'publish-native-release.yml', 'publish.yml', 'release-please.yml', 'standalone-candidate.yml', 'windows-access.yml', 'windows-question-forms.yml'],
     readdirSync('.github/workflows').filter(name => name.endsWith('.yml')).sort(),
   )
   assert.equal(ciWorkflow.jobs['dependency-review'], undefined)
@@ -103,6 +103,10 @@ test('public hosted workflows exist only for release preparation, publication an
   assert.deepEqual(workflow.permissions, {contents: 'read'})
   assert.equal(workflow.on.workflow_dispatch.inputs.expected_sha.required, true)
   assert.equal(workflow.on.workflow_call.inputs.expected_sha.required, true)
+  const windowsForms = parse(read('.github/workflows/windows-question-forms.yml'))
+  assert.deepEqual(Object.keys(windowsForms.on).sort(), ['workflow_call', 'workflow_dispatch'])
+  assert.deepEqual(windowsForms.permissions, {contents: 'read'})
+  assert.doesNotMatch(read('.github/workflows/windows-question-forms.yml'), /secrets\./)
 })
 
 test('the Codex card canary is the only clock-driven workflow and watches an external dependency without secrets', () => {
