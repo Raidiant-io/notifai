@@ -8912,6 +8912,28 @@ describe('Session Message acknowledgement debt', () => {
     expect(readSessionState('message-prompt', h.env).message_acknowledgement_due).toBeUndefined()
   })
 
+  it.each(['claude-code', 'codex'] as const)('reminds %s of an owed answer acknowledgement at the next prompt, since its detached Stop cannot block', async (harnessName) => {
+    const h = harness([])
+    const acknowledged = new Set<string>()
+    const factory = h.deps.clientFactory!
+    h.deps.clientFactory = () => ({
+      ...factory(),
+      agentAcknowledgement: async (requestId: string) => acknowledged.has(requestId)
+        ? { request_id: requestId, text: 'On it.', created_at: new Date(NOW).toISOString() } : null,
+    }) as ApiClient
+    writeSessionState('answer-debt', h.env, { acknowledgement_due: [{ request_id: 'req_owed', recorded_at: NOW }] })
+
+    await hookRunCommand(h.deps, 'user-prompt-submit', stdin({ session_id: 'answer-debt', cwd: h.deps.cwd, prompt: 'keep going' }), harnessName)
+    const context = (JSON.parse(h.io.outLines.at(-1)!) as { hookSpecificOutput: { additionalContext: string } })
+      .hookSpecificOutput.additionalContext
+    expect(context).toContain('notifai acknowledge req_owed')
+
+    acknowledged.add('req_owed')
+    h.io.outLines.length = 0
+    await hookRunCommand(h.deps, 'user-prompt-submit', stdin({ session_id: 'answer-debt', cwd: h.deps.cwd, prompt: 'next' }), harnessName)
+    expect(h.io.outLines.join('\n')).not.toContain('req_owed')
+  })
+
   it('cancels owed Session Message acknowledgements at SessionEnd', () => {
     const h = harness([])
     writeSessionState('message-end', h.env, {
