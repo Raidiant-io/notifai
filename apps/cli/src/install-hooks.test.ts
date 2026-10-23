@@ -55,6 +55,8 @@ import {
 import { hookAdapterPath, installHookAdapter } from './hook-adapter.js'
 import { OWNER_STEP_BUDGETS, hookInvocation, hookStepBudgets, hookSteps, hookTimeoutSeconds, hookWorkAllowanceMs } from './hook-budgets.js'
 import { HOOK_INSTALLABLE_HARNESSES } from './harnesses.js'
+import { EXIT, type CommandDeps } from './commands-core.js'
+import { hooksInstallCommand } from './commands-hook-install.js'
 import {
   CODEX_ATTEND_TIMEOUT_SECONDS,
   NON_ROUTING_BLOCKING_STOP_TIMEOUT_SECONDS,
@@ -1468,7 +1470,7 @@ describe('the OpenCode adapter', () => {
     )
     const empty = mkdtempSync(path.join(os.tmpdir(), 'notifai-opencode-xdg-empty-'))
     expect(
-      detectedHarnesses(empty, {
+      detectedHarnesses({
         HOME: path.join(empty, 'home'),
         XDG_CONFIG_HOME: path.join(empty, 'xdg'),
       }),
@@ -1477,7 +1479,7 @@ describe('the OpenCode adapter', () => {
     const xdg = path.join(xdgHome, 'xdg')
     mkdirSync(path.join(xdg, 'opencode'), { recursive: true })
     expect(
-      detectedHarnesses(xdgHome, {
+      detectedHarnesses({
         HOME: path.join(xdgHome, 'home'),
         XDG_CONFIG_HOME: xdg,
       }),
@@ -1829,95 +1831,54 @@ describe('the OpenClaw adapter', () => {
 })
 
 describe('detectHarness', () => {
-  function project(...entries: string[]): string {
-    const dir = mkdtempSync(path.join(os.tmpdir(), 'notifai-detect-'))
-    for (const entry of entries) {
-      if (entry.endsWith('.md')) writeFileSync(path.join(dir, entry), '# project\n')
-      else mkdirSync(path.join(dir, entry), { recursive: true })
-    }
-    return dir
+  function home(...entries: string[]): NodeJS.ProcessEnv {
+    const dir = mkdtempSync(path.join(os.tmpdir(), 'notifai-detect-home-'))
+    for (const entry of entries) mkdirSync(path.join(dir, entry), { recursive: true })
+    return { HOME: dir, XDG_CONFIG_HOME: path.join(dir, '.config') }
   }
 
-  it('detects Claude Code from a project .claude directory', () => {
-    expect(detectHarness(project('.claude'))).toBe('claude-code')
+  it('detects each harness from its home on this machine', () => {
+    expect(detectHarness(home('.claude'))).toBe('claude-code')
+    expect(detectHarness(home('.codex'))).toBe('codex')
+    expect(detectHarness(home('.cursor'))).toBe('cursor')
+    expect(detectHarness(home(path.join('.config', 'opencode')))).toBe('opencode')
+    expect(detectHarness(home('.grok'))).toBe('grok')
   })
 
-  it('detects Claude Code from CLAUDE.md alone', () => {
-    // A repository worked in daily through Claude Code may never accumulate a
-    // .claude/ directory; its project file is the only marker there is.
-    expect(detectHarness(project('CLAUDE.md'))).toBe('claude-code')
-  })
-
-  it('detects Claude Code from .claude and CLAUDE.md together without double-counting', () => {
-    expect(detectHarness(project('.claude', 'CLAUDE.md'))).toBe('claude-code')
-  })
-
-  it('does not infer a harness from AGENTS.md', () => {
-    // AGENTS.md began as a Codex convention and is now read by most agent
-    // tooling, Claude Code included. Naming a harness from it would be a guess
-    // wearing detection's clothes. With no other project evidence this falls
-    // through to machine evidence, which on a multi-tool machine is ambiguous.
-    const dir = project('AGENTS.md')
-    const answer = detectHarness(dir)
-    expect(answer).not.toBe('codex')
-    expect(HOOK_INSTALLABLE_HARNESSES.includes(answer as never) || answer === null).toBe(true)
-  })
-
-  it('pairs AGENTS.md with CLAUDE.md as Claude Code, not Codex', () => {
-    // The shape this very repository has, and four of the five projects the
-    // release was verified in.
-    expect(detectHarness(project('CLAUDE.md', 'AGENTS.md'))).toBe('claude-code')
-  })
-
-  it('detects each harness from its own project directory', () => {
-    expect(detectHarness(project('.codex'))).toBe('codex')
-    expect(detectHarness(project('.cursor'))).toBe('cursor')
-    expect(detectHarness(project('.opencode'))).toBe('opencode')
-    expect(detectHarness(project('.openclaw'))).toBe('openclaw')
-  })
-
-  it('returns null when the project itself names two harnesses', () => {
-    // Genuine ambiguity for a single-harness caller. detectedHarnesses lists
-    // both so install can wire them together.
-    expect(detectHarness(project('.claude', '.codex'))).toBeNull()
-  })
-
-  it('lists every project-named harness in declared order', () => {
-    const isolated = { HOME: mkdtempSync(path.join(os.tmpdir(), 'notifai-detect-home-')) }
-    expect(detectedHarnesses(project('.codex', '.claude'), isolated)).toEqual([
-      'claude-code',
-      'codex',
-    ])
+  it('lists every harness this machine has, in declared order, and picks none of several', () => {
+    const both = home('.codex', '.claude')
+    expect(detectedHarnesses(both)).toEqual(['claude-code', 'codex'])
+    expect(detectHarness(both)).toBeNull()
+    expect(detectHarness(home())).toBeNull()
   })
 
   it('detects Codex from the active custom CODEX_HOME', () => {
-    const home = mkdtempSync(path.join(os.tmpdir(), 'notifai-detect-home-'))
-    const codexHome = path.join(home, 'managed', 'codex')
+    const env = home()
+    const codexHome = path.join(env['HOME']!, 'managed', 'codex')
     mkdirSync(codexHome, { recursive: true })
-
-    expect(detectedHarnesses(project(), { HOME: home, CODEX_HOME: codexHome })).toEqual(['codex'])
+    expect(detectedHarnesses({ ...env, CODEX_HOME: codexHome })).toEqual(['codex'])
   })
 
-  it('prefers project evidence over anything installed on the machine', () => {
-    // The regression. Machine-global markers used to be OR-ed in per harness,
-    // so a developer with several agent tools installed got a candidate for
-    // every one of them, the "exactly one" test never passed, and detection
-    // returned null in every repository on that machine — including ones whose
-    // own contents named a single harness unambiguously.
-    //
-    // This asserts the ordering rather than the machine state, so it holds on
-    // a CI box with a bare home directory and on a developer laptop carrying
-    // all four.
-    expect(detectHarness(project('.cursor'))).toBe('cursor')
-    expect(detectHarness(project('CLAUDE.md'))).toBe('claude-code')
-  })
-
-  it('falls back to machine evidence only when the project offers none', () => {
-    const empty = mkdtempSync(path.join(os.tmpdir(), 'notifai-detect-empty-'))
-    // Whatever this machine has, an empty project must never crash and must
-    // return either a single harness or null — never an arbitrary pick.
-    const answer = detectHarness(empty)
-    expect(answer === null || HOOK_INSTALLABLE_HARNESSES.includes(answer)).toBe(true)
+  it('never lets a repository decide the machine-wide install', () => {
+    // A cloned repository carries every harness marker there is. Lifecycle
+    // wiring lands for the whole machine, so those folders count for nothing:
+    // with no harness at home, install names none and asks for --harness.
+    const repo = mkdtempSync(path.join(os.tmpdir(), 'notifai-detect-repo-'))
+    for (const marker of ['.claude', '.codex', '.cursor', '.opencode', '.openclaw', '.grok']) {
+      mkdirSync(path.join(repo, marker))
+    }
+    writeFileSync(path.join(repo, 'CLAUDE.md'), '# project\n')
+    const env = home()
+    expect(detectedHarnesses(env)).toEqual([])
+    const err: string[] = []
+    const deps = {
+      cwd: repo,
+      env,
+      io: { out: () => undefined, err: (line: string) => err.push(line), confirm: async () => false, openUrl: () => undefined },
+    } as unknown as CommandDeps
+    expect(hooksInstallCommand(deps, {})).toBe(EXIT.usage)
+    expect(err.join('\n')).toContain('pass --harness')
+    for (const marker of ['.claude', '.codex', '.cursor']) expect(existsSync(path.join(env['HOME']!, marker))).toBe(false)
   })
 })
 

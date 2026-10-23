@@ -187,6 +187,12 @@ it.each([
 })
 
 /** Keep unrelated command cases focused while exercising the current authored shape. */
+/** Image bytes local uploads accept: the type's own header, then distinct content. */
+function fakeImage(type: 'png' | 'gif', content: string): Buffer {
+  const header = type === 'png' ? Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]) : Buffer.from('GIF89a')
+  return Buffer.concat([header, Buffer.from(content)])
+}
+
 function sendCommand(
   deps: CommandDeps,
   flags: Omit<SendFlags, 'summary'> & {
@@ -1672,7 +1678,7 @@ describe('command contracts', () => {
     writeProjectSession(cwd, env, 'codex-invalid-image', 42, 'codex')
     io.errLines = []
     const image = path.join(cwd, 'result.png')
-    writeFileSync(image, 'fixture image')
+    writeFileSync(image, fakeImage('png', 'fixture image'))
     const flags = { title: 'Result use', body: '![Result](attachment:1)', image: [image] }
     const result = command === 'send'
       ? await sendCommand(deps, { title: 'Result ready', kind: 'update', ...flags })
@@ -1690,8 +1696,8 @@ describe('command contracts', () => {
     const root = mkdtempSync(path.join(os.tmpdir(), 'notifai-media-order-'))
     const first = path.join(root, 'first.png')
     const second = path.join(root, 'second.gif')
-    writeFileSync(first, 'first image')
-    writeFileSync(second, 'second image')
+    writeFileSync(first, fakeImage('png', 'first image'))
+    writeFileSync(second, fakeImage('gif', 'second image'))
     const uploaded: string[] = []
     let grants = 0
     let submitted: SubmitNotificationRequestT | undefined
@@ -5288,7 +5294,9 @@ describe('logs', () => {
     writeProjectSettings(deps.cwd, deps.env, 'log_level = "off"\n')
     expect(logsCommand(deps, {})).toBe(EXIT.ok)
     expect(io.errLines.join('\n')).toContain('log_level is off')
-    expect(io.errLines.join('\n')).toContain('config set log_level info')
+    // The off switch sits in this project's override, so removing it there is
+    // what turns recording back on; setting the shipped default is refused.
+    expect(io.errLines.join('\n')).toContain('When the User asks to record again, run `notifai config unset log_level --local --yes`.')
   })
 
   it('points at the files, and says they stay here', () => {
@@ -6756,10 +6764,12 @@ describe('init', () => {
     expect(io.errLines.join('\n')).toContain('`--skills-scope` requires `--skills`')
   })
 
-  it('installs every detected project harness when --hooks is set', async () => {
+  it('installs every harness this machine has when --hooks is set, whatever the repository holds', async () => {
     const cwd = mkdtempSync(path.join(os.tmpdir(), 'init-hooks-all-detected-'))
-    mkdirSync(path.join(cwd, '.claude'))
-    mkdirSync(path.join(cwd, '.codex'))
+    mkdirSync(path.join(cwd, 'home', '.claude'), { recursive: true })
+    mkdirSync(path.join(cwd, 'home', '.codex'), { recursive: true })
+    // A repository's own marker for a harness the machine lacks counts for nothing.
+    mkdirSync(path.join(cwd, '.cursor'))
     const io = new CapturedIo()
     const calls = { submit: 0 }
     const nativeSkills = inertSkills
@@ -6851,7 +6861,7 @@ describe('init', () => {
 
   it('grants Claude Code command approval only when asked, and reports it without blocking setup', async () => {
     const cwd = mkdtempSync(path.join(os.tmpdir(), 'init-claude-commands-'))
-    mkdirSync(path.join(cwd, '.claude'))
+    mkdirSync(path.join(cwd, 'home', '.claude'), { recursive: true })
     const io = new CapturedIo()
     const nativeSkills = inertSkills
     const deps = setupReadyDeps(io, cwd, nativeSkills, { submit: 0 })
@@ -6882,7 +6892,7 @@ describe('init', () => {
 
   it('offers and grants Claude Code command approval unless the session is known to run outside default mode', async () => {
     const cwd = mkdtempSync(path.join(os.tmpdir(), 'init-claude-commands-mode-'))
-    mkdirSync(path.join(cwd, '.claude'))
+    mkdirSync(path.join(cwd, 'home', '.claude'), { recursive: true })
     const io = new CapturedIo()
     const base = setupReadyDeps(io, cwd, inertSkills, { submit: 0 })
     const deps = { ...base, env: { ...base.env, CLAUDECODE: '1', CLAUDE_CODE_SESSION_ID: 'claude-mode-session' } }
@@ -6932,7 +6942,7 @@ describe('init', () => {
 
   it('reports Codex without a shared server as ready, and init leaves it alone', async () => {
     const cwd = mkdtempSync(path.join(os.tmpdir(), 'doctor-codex-cards-'))
-    mkdirSync(path.join(cwd, '.codex'))
+    mkdirSync(path.join(cwd, 'home', '.codex'), { recursive: true })
     const io = new CapturedIo()
     const base = setupReadyDeps(io, cwd, inertSkills, { submit: 0 })
     let asked = 0
@@ -6958,7 +6968,7 @@ describe('init', () => {
 
   it('grants Codex command approval only when asked, checks it with Codex, and removes it with the wiring', async () => {
     const cwd = mkdtempSync(path.join(os.tmpdir(), 'init-codex-commands-'))
-    mkdirSync(path.join(cwd, '.codex'))
+    mkdirSync(path.join(cwd, 'home', '.codex'), { recursive: true })
     const io = new CapturedIo()
     const checks: string[][] = []
     const deps: CommandDeps = {
@@ -9376,7 +9386,7 @@ describe('asking before the hooks have ever run', () => {
 
     it.skipIf(process.platform === 'win32').each(['ended', 'restarted'] as const)('registers nothing when the root has %s before registration', async (change) => {
       const image = path.join(scratchDir('notifai-codex-subagent-media-'), 'proof.png')
-      writeFileSync(image, 'proof')
+      writeFileSync(image, fakeImage('png', 'proof'))
       let rig: ReturnType<typeof subagentRig> | undefined
       const h = rig = subagentRig({
         createMediaUpload: async () => ({ media_id: 'med_uploaded_1', upload_url: 'https://upload.invalid/1', upload_headers: {},
@@ -9514,7 +9524,7 @@ describe('asking before the hooks have ever run', () => {
   it('rejects a legacy Codex session without a Stop-definition fingerprint before uploading or registering', async () => {
     const cwd = scratchDir('notifai-codex-legacy-stop-definition-')
     const image = path.join(cwd, 'proof.png')
-    writeFileSync(image, 'proof')
+    writeFileSync(image, fakeImage('png', 'proof'))
     const io = new PlainInteractiveIo()
     const env = {
       ...isolatedEnv(cwd),
@@ -9734,7 +9744,7 @@ describe('asking before the hooks have ever run', () => {
     async (shape) => {
       const cwd = scratchDir(`notifai-codex-${shape}-stop-handlers-`)
       const image = path.join(cwd, 'proof.png')
-      writeFileSync(image, 'proof')
+      writeFileSync(image, fakeImage('png', 'proof'))
       const io = new PlainInteractiveIo()
       const env = {
         ...isolatedEnv(cwd),
@@ -9858,7 +9868,7 @@ describe('asking before the hooks have ever run', () => {
     const io = new CapturedIo()
     const env = { ...isolatedEnv(cwd), CLAUDECODE: '1', CLAUDE_CODE_SESSION_ID: 'claude-closed' }
     const image = path.join(cwd, 'proof.png')
-    writeFileSync(image, 'proof')
+    writeFileSync(image, fakeImage('png', 'proof'))
     let grants = 0
     const client = {
       compatibility: vi.fn(async () => ({ server_capabilities: ['harness_answers'] })),
@@ -10275,8 +10285,8 @@ describe('asking before the hooks have ever run', () => {
     const cwd = scratchDir('notifai-ask-media-')
     const first = path.join(cwd, 'first.png')
     const second = path.join(cwd, 'second.gif')
-    writeFileSync(first, 'first')
-    writeFileSync(second, 'second')
+    writeFileSync(first, fakeImage('png', 'first'))
+    writeFileSync(second, fakeImage('gif', 'second'))
     const io = new CapturedIo()
     const env = {
       XDG_CONFIG_HOME: path.join(cwd, 'config'),
@@ -10339,7 +10349,7 @@ describe('asking before the hooks have ever run', () => {
   it.each(['another-machine', 'unpaired'] as const)('refuses to relabel question ownership when media upload races %s', async transition => {
     const cwd = scratchDir('notifai-ask-media-owner-')
     const media = path.join(cwd, 'image.png')
-    writeFileSync(media, 'image')
+    writeFileSync(media, fakeImage('png', 'image'))
     const io = new CapturedIo()
     const env = { ...isolatedEnv(cwd), CODEX_THREAD_ID: 'codex-media-owner' }
     let entered!: () => void

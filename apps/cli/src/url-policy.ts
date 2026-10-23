@@ -209,7 +209,7 @@ export async function checkMediaUrl(
   }
   const userAllowed = policy.allowOrigins.includes(target.origin)
   const escapeHatch =
-    'Remote images use public HTTPS; for a self-hosted or intranet image server, allow its exact origin with `notifai config set media_origins <origin>`.'
+    'Remote images use public HTTPS; when the User asks to allow a self-hosted or intranet image server, add its exact origin with `notifai config set media_origins <origin>`.'
   if (!userAllowed && target.protocol !== 'https:') {
     return { ok: false, reason: `${target.origin} is http. ${escapeHatch}` }
   }

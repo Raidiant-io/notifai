@@ -14,7 +14,7 @@ export const PROJECT_LAYER_REMOVED =
 
 export const REPOSITORY_CONFIG_NOTICE = [
   'notifai: this repository has .notifai/ settings, which Notifai no longer reads.',
-  'To keep a setting for this project, run `notifai config set <key> <value> --local` ' +
+  'When the User asks to keep one for this project, run `notifai config set <key> <value> --local` ' +
     '(guidance: `notifai guidance set <topic> --local`).',
 ]
 

@@ -907,34 +907,14 @@ function ourHandlerEvents(document: SettingsDocument | null): string[] {
   return [...new Set(locateHandlers(document).map((handler) => handler.event))]
 }
 
-/** Best-effort detection so `hooks install` usually needs no flags. */
 /**
- * Harnesses this *project* shows evidence of, in the working directory only.
+ * Harnesses this machine shows evidence of, in the account homes they use.
  *
- * `CLAUDE.md` counts because it is Claude Code's own project file and is
- * frequently the only marker: a repository can be worked in daily through
- * Claude Code and never accumulate a `.claude/` directory.
- *
- * `AGENTS.md` deliberately counts for nothing. It began as a Codex
- * convention and is now read by most agent tooling — including Claude Code,
- * and including this repository, where the two filenames are the same
- * document. Treating it as evidence of any one harness would be a guess
- * dressed up as detection.
+ * Lifecycle wiring is installed for the whole machine, so only the machine
+ * decides it. A repository's own folders (`.cursor/`, `.codex/`, `CLAUDE.md`
+ * and the like) are content the repository controls, and content cannot
+ * choose what Notifai installs for every Project on the machine.
  */
-function localHarnessEvidence(cwd: string): HookInstallableHarness[] {
-  const found: HookInstallableHarness[] = []
-  if (existsSync(path.join(cwd, '.claude')) || existsSync(path.join(cwd, 'CLAUDE.md'))) {
-    found.push('claude-code')
-  }
-  if (existsSync(path.join(cwd, '.codex'))) found.push('codex')
-  if (existsSync(path.join(cwd, '.cursor'))) found.push('cursor')
-  if (existsSync(path.join(cwd, '.opencode'))) found.push('opencode')
-  if (existsSync(path.join(cwd, '.openclaw'))) found.push('openclaw')
-  if (existsSync(path.join(cwd, '.grok'))) found.push('grok')
-  return found
-}
-
-/** Harnesses installed anywhere on this machine — a much weaker signal. */
 function globalHarnessEvidence(
   env: NodeJS.ProcessEnv = process.env,
   platform: NodeJS.Platform | HookHostPlatform = process.platform,
@@ -953,43 +933,25 @@ function globalHarnessEvidence(
   return found
 }
 
-/**
- * Every supported harness this project or machine shows evidence of, in
- * declared order. Project markers come first, then machine installs that the
- * project did not already name.
- *
- * `AGENTS.md` still counts for nothing — see `localHarnessEvidence`.
- */
+/** Every supported harness this machine shows evidence of, in declared order. */
 export function detectedHarnesses(
-  cwd: string,
   env: NodeJS.ProcessEnv = process.env,
   platform: NodeJS.Platform | HookHostPlatform = process.platform,
 ): HookInstallableHarness[] {
-  const seen = new Set<HookInstallableHarness>([
-    ...localHarnessEvidence(cwd),
-    ...globalHarnessEvidence(env, platform),
-  ])
+  const seen = new Set(globalHarnessEvidence(env, platform))
   return HOOK_INSTALLABLE_HARNESSES.filter((harness) => seen.has(harness))
 }
 
 /**
- * Which *single* harness to wire when a caller still needs exactly one, or
- * null when it is genuinely unclear.
- *
- * Project evidence decides, and machine evidence is consulted only when the
- * project offers none. Several markers are not a failure of detection — they
- * are several harnesses. `detectedHarnesses` is the default for install;
- * this helper stays for uninstall and any caller that cannot take a list.
+ * The one harness this machine shows evidence of, for a caller that cannot
+ * take a list (uninstall), or null when there are none or several.
  */
 export function detectHarness(
-  cwd: string,
   env: NodeJS.ProcessEnv = process.env,
   platform: NodeJS.Platform | HookHostPlatform = process.platform,
 ): HookInstallableHarness | null {
-  const local = localHarnessEvidence(cwd)
-  if (local.length > 0) return local.length === 1 ? local[0]! : null
-  const global = globalHarnessEvidence(env, platform)
-  return global.length === 1 ? global[0]! : null
+  const found = detectedHarnesses(env, platform)
+  return found.length === 1 ? found[0]! : null
 }
 
 export interface SettingsDocument {

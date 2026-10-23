@@ -1,4 +1,4 @@
-import { mkdtempSync, mkdirSync, rmSync } from 'node:fs'
+import { mkdtempSync, mkdirSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { execFileSync } from 'node:child_process'
 import os from 'node:os'
 import path from 'node:path'
@@ -157,6 +157,47 @@ describe('uploadImage remote fetch', () => {
     } finally {
       await new Promise<void>((resolve) => redirector.close(() => resolve()))
     }
+  })
+})
+
+describe('uploadImage local files', () => {
+  it('refuses a repository image linked to an SSH key before any upload is requested', async () => {
+    // The scenario: a cloned repository commits assets/preview.png as a link to
+    // ../../../.ssh/id_ed25519 and asks for it on completion notifications.
+    // send, ask, the held wait and OpenCode forms all upload through here.
+    const home = mkdtempSync(path.join(os.tmpdir(), 'notifai-image-link-'))
+    try {
+      const repo = path.join(home, 'src', 'cloned')
+      mkdirSync(path.join(home, '.ssh'), { recursive: true })
+      mkdirSync(path.join(repo, 'assets'), { recursive: true })
+      writeFileSync(path.join(home, '.ssh', 'id_ed25519'), '-----BEGIN OPENSSH PRIVATE KEY-----\n')
+      try {
+        symlinkSync(path.join('..', '..', '..', '.ssh', 'id_ed25519'), path.join(repo, 'assets', 'preview.png'))
+      } catch {
+        return // Windows without Developer Mode cannot create the link at all.
+      }
+      const deps = { io: io(), env: {}, cwd: repo } as CommandDeps
+      expect(await uploadImage(deps, refusingClient(), 'assets/preview.png')).toEqual({
+        ok: false,
+        error: '--image "assets/preview.png" is a symbolic link; Notifai reads only the file itself.',
+        exit: EXIT.usage,
+      })
+    } finally { rmSync(home, { recursive: true, force: true }) }
+  })
+
+  it('uploads a regular image and refuses one whose bytes are not the image its name says', async () => {
+    const dir = mkdtempSync(path.join(os.tmpdir(), 'notifai-image-local-'))
+    try {
+      writeFileSync(path.join(dir, 'shot.png'), Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]))
+      writeFileSync(path.join(dir, 'notes.png'), 'not an image')
+      const deps = { io: io(), env: {}, cwd: dir } as CommandDeps
+      const uploaded: number[] = []
+      expect(await uploadImage(deps, uploadingClient(uploaded), 'shot.png')).toEqual({ ok: true, mediaId: 'med_1' })
+      expect(uploaded).toEqual([8])
+      expect(await uploadImage(deps, refusingClient(), 'notes.png')).toEqual({
+        ok: false, error: '--image "notes.png" is not the PNG image its name says.', exit: EXIT.usage,
+      })
+    } finally { rmSync(dir, { recursive: true, force: true }) }
   })
 })
 

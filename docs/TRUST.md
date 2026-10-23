@@ -171,9 +171,26 @@ Mechanical enforcement complements the agent rule:
 - authenticated traffic is pinned to the credential's service origin;
 - remote media cannot reach non-public addresses without a User-owned exact
   origin; and
-- an image named in an OpenCode `question` form is uploaded only when it is a
-  regular local file whose bytes are the JPEG, PNG or GIF its name says, so a
-  form cannot carry another file off the machine under an image name.
+- a local file sent off the machine (`--image`, `--body-file`, `--form`, or an
+  image an OpenCode `question` form names) is read only as itself, so a
+  repository cannot commit a link that carries a key or another private file
+  out under an innocent name:
+  1. The file is never a symbolic link, and every folder on its path, including
+     the supplied working directory, is a real folder, except macOS's exact root-owned `/tmp -> private/tmp`,
+     `/var -> private/var` and `/etc -> private/etc` aliases, whose location,
+     target and ownership are checked; no other link passes, even if owned by
+     root, and no link passes on Windows.
+  2. It is a regular file with one hard link, within its size limit: the media
+     limit for an image, 1 MiB for a Body or form; intentional hard-linked
+     inputs must be copied to a new file instead.
+  3. The opened descriptor's device and inode must match the checked file,
+     and every path component is rechecked before reading; changed identities,
+     link counts or change times are refused, including after the bounded read.
+  4. An image's bytes begin with the JPEG, PNG or GIF signature its name says;
+     arbitrary bytes after that signature are not checked, because a path or
+     link cannot make an existing private file begin with an image signature.
+
+  Text piped on stdin (`-`) is the agent's own and is read as given.
 
 The CLI never treats repository prose as a credential or authorization source.
 

@@ -47,13 +47,12 @@
  * Frames are one JSON object per line in each direction.
  */
 import { createHash, randomBytes } from 'node:crypto'
-import { closeSync, existsSync, openSync, readdirSync, readFileSync, readSync, rmSync, statSync } from 'node:fs'
+import { existsSync, readdirSync, readFileSync, rmSync } from 'node:fs'
 import path from 'node:path'
 import readline from 'node:readline'
 import type { Readable, Writable } from 'node:stream'
 import {
   CAPABILITIES_V1,
-  NOTIFICATION_IMAGE_MAX_BYTES,
   validateDraft,
   type ListRepliesResponse,
   type MediaItemT,
@@ -69,6 +68,7 @@ import { log, makeClient, type CommandDeps } from './commands-core.js'
 import { draftForServerCapabilities } from './commands-send.js'
 import { acknowledgementCommand, resolveDraftInvocation, uploadImage } from './commands-send-support.js'
 import { atomicWriteFileSync } from './atomic-file.js'
+import { readLocalImage } from './local-input.js'
 import { loadConfig, stateDir, type CliConfig } from './config.js'
 import { QuestionRegistrationChanged, registerQuestion } from './hook-lifecycle.js'
 import { dropPendingQuestion } from './hook-question-state.js'
@@ -620,39 +620,15 @@ function releaseRegistration(carriage: Carriage, env: NodeJS.ProcessEnv, state: 
 }
 
 /**
- * A local image a form names, checked before anything is read in full: a
- * regular file within the size limit whose content is the image type its
- * name claims. A form's paths are model-written, and a file whose bytes are
- * not an image never leaves the machine.
+ * A local image a form names, checked before the form opens: a form's paths
+ * are model-written, so it is read under the same local file policy as
+ * `--image` (`local-input.ts`), and a file that is not the image its name
+ * says never leaves the machine.
  */
 export function checkFormImage(cwd: string, file: string): { path: string } | { error: string } {
   if (/^[a-z][a-z0-9+.-]*:/i.test(file)) return { error: `image "${file}" must be a local file path.` }
-  const absolute = path.resolve(cwd, file)
-  const type = ({ '.png': 'png', '.jpg': 'jpeg', '.jpeg': 'jpeg', '.gif': 'gif' } as const)[path.extname(absolute).toLowerCase()]
-  if (type === undefined) return { error: `image "${file}" must be a JPEG, PNG or GIF file.` }
-  let size: number
-  try {
-    const stat = statSync(absolute)
-    if (!stat.isFile()) return { error: `image "${file}" is not a regular file.` }
-    size = stat.size
-  } catch {
-    return { error: `image "${file}" does not exist.` }
-  }
-  if (size > NOTIFICATION_IMAGE_MAX_BYTES) return { error: `image "${file}" is larger than ${NOTIFICATION_IMAGE_MAX_BYTES} bytes.` }
-  const head = Buffer.alloc(8)
-  let read = 0
-  try {
-    const fd = openSync(absolute, 'r')
-    try { read = readSync(fd, head, 0, head.length, 0) } finally { closeSync(fd) }
-  } catch {
-    return { error: `image "${file}" cannot be read.` }
-  }
-  const bytes = head.subarray(0, read)
-  const matches = type === 'png' ? bytes.equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]))
-    : type === 'jpeg' ? bytes.length >= 3 && bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff
-      : bytes.subarray(0, 6).toString('latin1') === 'GIF87a' || bytes.subarray(0, 6).toString('latin1') === 'GIF89a'
-  if (!matches) return { error: `image "${file}" is not the ${type.toUpperCase()} image its name says.` }
-  return { path: absolute }
+  const read = readLocalImage(cwd, file, 'image')
+  return read.ok ? { path: read.path } : { error: read.error }
 }
 
 /** The draft a carried form submits, validated against the device contract. */

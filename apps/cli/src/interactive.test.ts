@@ -115,8 +115,9 @@ function makeDeps(
   }
 }
 
-function markClaudeProject(cwd: string): void {
-  mkdirSync(path.join(cwd, '.claude'), { recursive: true })
+/** Claude Code on this machine: its home under the isolated account. Repository markers count for nothing. */
+function markClaudeMachine(cwd: string): void {
+  mkdirSync(path.join(cwd, 'home', '.claude'), { recursive: true })
 }
 
 function writeClaudeHooks(file: string): void {
@@ -316,7 +317,7 @@ describe('interactiveCommand', () => {
 
   it('goes back to the root menu when Escape is pressed on question routing', async () => {
     const cwd = mkdtempSync(path.join(os.tmpdir(), 'notifai-interactive-routing-esc-'))
-    markClaudeProject(cwd)
+    markClaudeMachine(cwd)
     answers = ['routing', CANCEL, CANCEL]
 
     expect(await interactiveCommand(makeDeps(cwd), '0.0.0-test')).toBe(EXIT.ok)
@@ -335,7 +336,7 @@ describe('interactiveCommand', () => {
 
   it('never asks where hooks should go — there is one place they can go', async () => {
     const cwd = mkdtempSync(path.join(os.tmpdir(), 'notifai-interactive-install-scope-'))
-    markClaudeProject(cwd)
+    markClaudeMachine(cwd)
     const env = isolatedEnv(cwd)
     const deps = makeDeps(cwd, env)
     answers = ['routing', 'install', 'quit']
@@ -348,9 +349,9 @@ describe('interactiveCommand', () => {
     ])
   })
 
-  it('offers install hooks when a harness applies here and omits uninstall when none are wired', async () => {
+  it('offers install hooks when this machine has a harness and omits uninstall when none are wired', async () => {
     const cwd = mkdtempSync(path.join(os.tmpdir(), 'notifai-interactive-install-offer-'))
-    markClaudeProject(cwd)
+    markClaudeMachine(cwd)
     answers = ['routing', 'back', 'quit']
 
     expect(await interactiveCommand(makeDeps(cwd), '0.0.0-test')).toBe(EXIT.ok)
@@ -381,7 +382,7 @@ describe('interactiveCommand', () => {
 
   it('clears a leftover Project-scoped copy along with the Machine one', async () => {
     const cwd = mkdtempSync(path.join(os.tmpdir(), 'notifai-interactive-legacy-'))
-    markClaudeProject(cwd)
+    markClaudeMachine(cwd)
     const env = isolatedEnv(cwd)
     const deps = makeDeps(cwd, env)
     writeClaudeHooks(path.join(cwd, '.claude', 'settings.local.json'))
