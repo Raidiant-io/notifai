@@ -18,6 +18,7 @@ import {
   recordGuidanceGiven,
   shippedSkill,
   guidanceRead,
+  conversationToken,
   installedSkill,
   startingCurrency,
 } from './guidance-currency.js'
@@ -124,4 +125,30 @@ describe('Notification Request currency admission', () => {
     expect(claimGuidanceChange('s', env, 'd2', true)).toBeUndefined()
     expect(claimGuidanceChange('s', env, 'd2', true)).toBeUndefined()
   })
+})
+
+
+it('never lets a Claude child read advance its root receipt when their environment id is shared', async () => {
+  const { cwd, env } = setup()
+  env.CLAUDECODE = '1'
+  env.CLAUDE_CODE_SESSION_ID = 'shared-parent'
+  env.CLAUDE_CONFIG_DIR = path.join(env.HOME!, '.claude')
+  const deps = { cwd, env, io: { out: () => undefined, err: () => undefined } } as unknown as CommandDeps
+  await guidanceShowCommand(deps, {})
+  const original = guidanceRead('shared-parent', env)
+  expect(original).toBeDefined()
+  const children = path.join(env.HOME!, '.claude/projects/project/shared-parent/subagents')
+  mkdirSync(children, { recursive: true })
+  writeFileSync(path.join(children, 'agent-worker.jsonl'), '')
+  const topics = personalProjectGuidanceDir(cwd, env)
+  mkdirSync(topics, { recursive: true })
+  writeFileSync(path.join(topics, 'titles.md'), '# Titles\n\nUpdated while a child is active.')
+  await guidanceShowCommand(deps, {})
+  expect(guidanceRead('shared-parent', env)).toBe(original)
+  expect(currentCommandGuidance(deps)?.code).toBe('guidance_required')
+  const childToken = conversationToken(env)!
+  await guidanceShowCommand(deps, { sessionToken: childToken })
+  expect(currentCommandGuidance(deps, childToken)).toBeNull()
+  expect(currentCommandGuidance(deps)?.code).toBe('guidance_required')
+  expect(guidanceRead('shared-parent', env)).toBe(original)
 })

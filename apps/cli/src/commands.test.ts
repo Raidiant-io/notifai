@@ -1,3 +1,4 @@
+import { guidanceSessionNeedsToken } from './command-guidance.js'
 import { conversationToken } from './guidance-currency.js'
 import { guidanceShowCommand as readCurrentGuidance } from './commands-guidance.js'
 import {
@@ -209,10 +210,12 @@ function sendCommand(
     baseUrl?: string
   },
 ) {
-  void readCurrentGuidance({ ...deps, io: { ...deps.io, out: () => undefined } }, {})
+  const token = flags.guidanceToken ?? (guidanceSessionNeedsToken(deps) ? conversationToken(deps.env) ?? undefined : undefined)
+  void readCurrentGuidance({ ...deps, io: { ...deps.io, out: () => undefined } }, { ...(token === undefined ? {} : { sessionToken: token }) })
   return sendAuthoredCommand(deps, {
     summary: flags.summary ?? flags.body ?? flags.title,
     ...flags,
+    ...(token === undefined ? {} : { guidanceToken: token }),
   })
 }
 
@@ -221,7 +224,7 @@ function askCommand(
   question: string | undefined,
   flags: AskFlags,
 ) {
-  const token = flags.guidanceToken ?? (deps.env.CURSOR_AGENT ? conversationToken(deps.env) ?? undefined : undefined)
+  const token = flags.guidanceToken ?? (guidanceSessionNeedsToken(deps) ? conversationToken(deps.env) ?? undefined : undefined)
   void readCurrentGuidance({ ...deps, io: { ...deps.io, out: () => undefined } }, { ...(token === undefined ? {} : { sessionToken: token }) })
   return askAuthoredCommand({ spawnQuestionSettlement: () => undefined, ...deps }, question, { ...flags, ...(token === undefined ? {} : { guidanceToken: token }) })
 }

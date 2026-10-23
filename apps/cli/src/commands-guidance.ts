@@ -35,7 +35,7 @@ export function guidanceCheckCommand(deps: CommandDeps, seen?: string): number {
   const changed = guidanceRead(`conversation/${token}`, deps.env) !== digest
   const output = changed ? sessionActivationOutput('cursor', 'SessionStart', deps.cwd, deps.env, [], false,
     seen === undefined ? undefined : guidanceChangedNotice()) : undefined
-  deps.io.out(JSON.stringify({ enabled, token, skill_file: installedSkill(deps.cwd, deps.env).file,
+  deps.io.out(JSON.stringify({ enabled, token, read_command: `notifai guidance --session-token ${token}`, request_flag: `--guidance-token ${token}`, skill_file: installedSkill(deps.cwd, deps.env).file,
     ...(output === undefined ? {} : { context: (JSON.parse(output) as { additional_context: string }).additional_context }) }))
   return EXIT.ok
 }

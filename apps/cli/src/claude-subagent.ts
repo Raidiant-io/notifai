@@ -124,3 +124,19 @@ export function claudeAskingSubagent(sessionId: string, env: NodeJS.ProcessEnv, 
     commands.some((command) => wanted.some((text) => normalized(command).includes(text))))
   return matching.length === 1 ? matching[0]!.asker : undefined
 }
+
+/** Native children share their root's environment. Once one exists, a shell's
+ * session id alone cannot identify which conversation read guidance. */
+export function claudeSessionHasSubagents(sessionId: string, env: NodeJS.ProcessEnv): boolean {
+  if (!/^[0-9A-Za-z-]{1,128}$/.test(sessionId)) return true
+  const projects = path.join(path.dirname(claudeDescriptorDir(env)), 'projects')
+  let folders: string[]
+  try { folders = readdirSync(projects) } catch (error) { return (error as NodeJS.ErrnoException).code !== 'ENOENT' }
+  if (folders.length > 256) return true
+  return folders.some(folder => {
+    try {
+      return readdirSync(path.join(projects, folder, sessionId, 'subagents'))
+        .some(name => /^agent-.+\.(jsonl|meta\.json)$/.test(name))
+    } catch (error) { return (error as NodeJS.ErrnoException).code !== 'ENOENT' }
+  })
+}
