@@ -106,7 +106,11 @@ export interface OpencodeQuestionInfo {
   custom?: boolean
 }
 
-/** The pending question request, exactly as OpenCode published it. */
+/**
+ * The pending question request, exactly as OpenCode 1 published it. The
+ * OpenCode 2 plugin reports its form in the same shape: the form's ID, and the
+ * questions of the tool call that opened it.
+ */
 export interface OpencodeQuestionRequest {
   id: string
   sessionID: string
@@ -189,7 +193,8 @@ function opencodeQuestions(questions: unknown): OpencodeQuestionInfo[] | null {
 export function opencodeQuestionRequest(value: unknown): OpencodeQuestionRequest | null {
   if (typeof value !== 'object' || value === null) return null
   const { id, sessionID, questions, tool } = value as Record<string, unknown>
-  if (!isString(id) || !/^que_[A-Za-z0-9_-]{1,128}$/.test(id) || !isString(sessionID) || sessionID === '') return null
+  // OpenCode 1 question requests are `que_…`; OpenCode 2 forms are `frm_…`.
+  if (!isString(id) || !/^(?:que|frm)_[A-Za-z0-9_-]{1,128}$/.test(id) || !isString(sessionID) || sessionID === '') return null
   const parsed = opencodeQuestions(questions)
   if (parsed === null) return null
   const call = typeof tool === 'object' && tool !== null ? tool as Record<string, unknown> : null

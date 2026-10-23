@@ -62,6 +62,8 @@ describe('OpenCode question forms as device questions', () => {
         { ...REQUEST.questions[1], options: REQUEST.questions[1]!.options.map(({ label }) => ({ label })) },
       ],
     })
+    // OpenCode 2's plugin reports its form by the form's own ID.
+    expect(opencodeQuestionRequest({ ...REQUEST, id: 'frm_16574734c001E9W7EPH87wAlrO' })?.id).toBe('frm_16574734c001E9W7EPH87wAlrO')
     expect(opencodeQuestionRequest({ ...REQUEST, id: 'not-a-question' })).toBeNull()
     expect(opencodeQuestionRequest({ ...REQUEST, sessionID: '' })).toBeNull()
     expect(opencodeQuestionRequest({ ...REQUEST, questions: [] })).toBeNull()

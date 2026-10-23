@@ -5,6 +5,7 @@ import {
 } from './harnesses.js'
 import { codexSubagentRoot } from './codex-subagent.js'
 import { readSessionIncarnation } from './hook-session-state.js'
+import { OPENCODE_2_SHELL_MARKER, trustedOpencodeShellSession } from './opencode-shell-session.js'
 import { processAncestry, type AncestorProcess } from './process-ancestry.js'
 
 /**
@@ -12,7 +13,10 @@ import { processAncestry, type AncestorProcess } from './process-ancestry.js'
  * harness. Configuration-directory variables are deliberately absent: they
  * describe where a tool stores files, not which tool owns the current shell.
  * OpenCode's generated plugin supplies the Notifai-owned marker because its
- * plugin API exposes Agent Session identity but the ordinary environment does not.
+ * plugin API exposes Agent Session identity but the ordinary environment does
+ * not. OpenCode 2's plugin cannot name the session in a shell, so there the
+ * marker says to read OpenCode's own `OPENCODE_SESSION_ID`, believed only for
+ * a session the plugin recorded (`opencode-shell-session.ts`).
  *
  * Hermes contributes `HERMES_SESSION_ID` only — the durable Agent Session id
  * bridged into tool subprocesses. `HERMES_SESSION_KEY` is a gateway routing
@@ -52,7 +56,16 @@ export interface ActiveHarnessSession {
  */
 function harnessEnvCandidates(env: NodeJS.ProcessEnv): ActiveHarnessSession[] {
   const candidates: ActiveHarnessSession[] = []
-  if (env['NOTIFAI_ACTIVE_HARNESS'] === 'opencode') {
+  if (env['NOTIFAI_ACTIVE_HARNESS'] === 'opencode' && env['NOTIFAI_OPENCODE_PLUGIN'] === OPENCODE_2_SHELL_MARKER) {
+    // OpenCode 2 names the session only in its own variable; see opencode-shell-session.ts.
+    const trusted = trustedOpencodeShellSession(env, env['OPENCODE_SESSION_ID'], () => (callerChain ??= processAncestry()))
+    candidates.push({ harness: 'opencode', label: 'OpenCode', ...(trusted === null ? {} : {
+      sessionId: trusted.sessionId,
+      worker: trusted.worker,
+      ...(trusted.sessionLabel === undefined ? {} : { sessionLabel: trusted.sessionLabel }),
+      ...(trusted.sessionLabelPending === true ? { sessionLabelPending: true } : {}),
+    }) })
+  } else if (env['NOTIFAI_ACTIVE_HARNESS'] === 'opencode') {
     const sessionId = env['NOTIFAI_ACTIVE_SESSION_ID']
     const sessionLabel = env['NOTIFAI_ACTIVE_SESSION_LABEL']
     const sessionLabelPending = env['NOTIFAI_ACTIVE_SESSION_LABEL_PENDING'] === '1'

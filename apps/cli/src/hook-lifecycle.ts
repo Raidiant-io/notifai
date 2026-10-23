@@ -129,6 +129,7 @@ import {
   QUESTION_WAITER_CEILING_SECONDS,
 } from './question-timing.js'
 import { buildDraft, UNTITLED_FORM_TITLE } from './send.js'
+import { forgetOpencodeSession } from './opencode-shell-session.js'
 
 /**
  * The wire contract's shortest reply window. A question submitted with less
@@ -799,7 +800,10 @@ async function owedAcknowledgementReminder(ctx: HookContext, sessionId: string):
   // neither reads a detached hook's block decision, so the Stop reminder for an
   // owed answer acknowledgement never reaches the model there. Their prompt
   // carries it instead; Stop still counts the turns before it is abandoned.
-  const owed = ctx.harness === 'claude-code' || ctx.harness === 'codex' ? owedAcknowledgements(state) : messages
+  // OpenCode 2 may reload its plugin between the device answer and context.
+  // Its next prompt/context recovery reads the durable CLI obligation too.
+  const owed = ctx.harness === 'claude-code' || ctx.harness === 'codex' || ctx.harness === 'opencode'
+    ? owedAcknowledgements(state) : messages
   if (owed.length === 0) return null
   const still = await reconcileAcknowledgementObligations(ctx, sessionId, owed)
   return still.length === 0 ? null : acknowledgementBlockContext(still)
@@ -2642,6 +2646,7 @@ export function handleSessionEnd(
   const ending = candidate === undefined ? markSessionEnded(sessionId, env, now) : concludeEndCandidate(sessionId, env, candidate, now)
   if (ending === null) return { notes, log: { outcome: 'preserved', reason: 'end-superseded' } }
   if (envelope.cwd !== undefined) clearMatchingProjectSession(envelope.cwd, env, sessionId)
+  forgetOpencodeSession(env, sessionId)
 
   const state = readSessionState(sessionId, env)
   let stateWithHistory = state

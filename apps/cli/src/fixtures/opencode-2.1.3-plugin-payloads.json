@@ -1,0 +1,400 @@
+{
+  "_source": "Captured live from @opencode/cli 2.1.3 (macOS, isolated home) by a throwaway probe plugin, 2026-10-22. Directory paths are neutralised.",
+  "setup_location": {
+    "directory": "/work/proj",
+    "project": {
+      "id": "b9106ff9d44b40cb18c6e9d6377f6df31a282d1b",
+      "directory": "/work/proj",
+      "canonical": "/work/proj"
+    }
+  },
+  "prompt_root": {
+    "sessionID": "ses_e9a8be986ffeiCBgRwwkIijsgi",
+    "messageID": "msg_16574167a001nx9PKrSqjD5jp6",
+    "prompt": {
+      "text": "CAP-SHELL please",
+      "files": [],
+      "agents": []
+    },
+    "delivery": "steer"
+  },
+  "session_get_root": {
+    "id": "ses_e9a8be986ffeiCBgRwwkIijsgi",
+    "projectID": "b9106ff9d44b40cb18c6e9d6377f6df31a282d1b",
+    "agent": "build",
+    "model": {
+      "id": "stub",
+      "providerID": "stub",
+      "variant": "default"
+    },
+    "cost": 0,
+    "tokens": {
+      "input": 0,
+      "output": 0,
+      "reasoning": 0,
+      "cache": {
+        "read": 0,
+        "write": 0
+      }
+    },
+    "time": {
+      "created": 1792703469217,
+      "updated": 1792703469217
+    },
+    "location": {
+      "directory": "/work/proj"
+    }
+  },
+  "prompt_child": {
+    "sessionID": "ses_e9a89c0afffex2t5tA7yt7OVfF",
+    "messageID": "msg_165763f67002n3URtdvZOHXAI2",
+    "prompt": {
+      "text": "You are a subagent spawned by another session.\nCAP-CHILD do a thing"
+    },
+    "delivery": "steer"
+  },
+  "session_get_child": {
+    "id": "ses_e9a89c0afffex2t5tA7yt7OVfF",
+    "parentID": "ses_e9a8be986ffeiCBgRwwkIijsgi",
+    "projectID": "b9106ff9d44b40cb18c6e9d6377f6df31a282d1b",
+    "agent": "general",
+    "model": {
+      "id": "stub",
+      "providerID": "stub",
+      "variant": "default"
+    },
+    "cost": 0,
+    "tokens": {
+      "input": 0,
+      "output": 0,
+      "reasoning": 0,
+      "cache": {
+        "read": 0,
+        "write": 0
+      }
+    },
+    "time": {
+      "created": 1792703610726,
+      "updated": 1792703610726
+    },
+    "title": "probe child",
+    "location": {
+      "directory": "/work/proj"
+    }
+  },
+  "context_question_input": {
+    "type": "object",
+    "properties": {
+      "questions": {
+        "type": "array",
+        "items": {
+          "type": "object",
+          "properties": {
+            "question": {
+              "type": "string",
+              "description": "Complete question"
+            },
+            "header": {
+              "type": "string",
+              "description": "Very short label (max 30 chars)"
+            },
+            "options": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "label": {
+                    "type": "string",
+                    "description": "Display text (1-5 words, concise)"
+                  },
+                  "description": {
+                    "type": "string",
+                    "description": "Explanation of choice"
+                  }
+                },
+                "required": [
+                  "label",
+                  "description"
+                ],
+                "additionalProperties": false
+              },
+              "description": "Available choices"
+            },
+            "multiple": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "question",
+            "header",
+            "options"
+          ],
+          "additionalProperties": false
+        },
+        "minItems": 1,
+        "description": "Questions to ask"
+      }
+    },
+    "required": [
+      "questions"
+    ],
+    "additionalProperties": false
+  },
+  "context_child_tools": [
+    "edit",
+    "glob",
+    "grep",
+    "read",
+    "shell",
+    "skill",
+    "webfetch",
+    "websearch",
+    "write",
+    "execute"
+  ],
+  "shell_create_before_keys": [
+    "command",
+    "cwd",
+    "timeout",
+    "shell",
+    "env"
+  ],
+  "execute_before_question": {
+    "tool": "question",
+    "sessionID": "ses_e9a8be986ffeiCBgRwwkIijsgi",
+    "agent": "build",
+    "messageID": "msg_1657472e4001eo5VNsDd3DXUPA",
+    "id": "call_c272b2a0d442c57d87fc",
+    "input": {
+      "questions": [
+        {
+          "question": "Which colour?",
+          "header": "Colour",
+          "options": [
+            {
+              "label": "Blue",
+              "description": "Calm"
+            },
+            {
+              "label": "Green",
+              "description": "Fresh"
+            }
+          ]
+        }
+      ]
+    }
+  },
+  "tool_context_keys": [
+    "sessionID",
+    "agent",
+    "messageID",
+    "id",
+    "progress",
+    "signal"
+  ],
+  "form_created": {
+    "id": "evt_16574734c002dHiu3RlbSXLI2k",
+    "created": 1792703492940,
+    "type": "form.created",
+    "data": {
+      "form": {
+        "id": "frm_16574734c001E9W7EPH87wAlrO",
+        "sessionID": "ses_e9a8be986ffeiCBgRwwkIijsgi",
+        "title": "Questions",
+        "metadata": {
+          "kind": "question",
+          "tool": {
+            "messageID": "msg_1657472e4001eo5VNsDd3DXUPA",
+            "id": "call_c272b2a0d442c57d87fc"
+          }
+        },
+        "fields": [
+          {
+            "key": "q0",
+            "title": "Colour",
+            "description": "Which colour?",
+            "type": "string",
+            "options": [
+              {
+                "value": "Blue",
+                "label": "Blue",
+                "description": "Calm"
+              },
+              {
+                "value": "Green",
+                "label": "Green",
+                "description": "Fresh"
+              }
+            ],
+            "custom": true
+          }
+        ]
+      }
+    }
+  },
+  "form_replied": {
+    "id": "evt_16575cb34001C6Mk1wEqWnw6Ik",
+    "created": 1792703580980,
+    "type": "form.replied",
+    "location": {
+      "directory": "/work/proj"
+    },
+    "data": {
+      "id": "frm_16574734c001E9W7EPH87wAlrO",
+      "sessionID": "ses_e9a8be986ffeiCBgRwwkIijsgi",
+      "answer": {
+        "q0": "Green"
+      }
+    }
+  },
+  "form_cancelled": {
+    "id": "evt_165760ac80013e9hwDJ4aVf43I",
+    "created": 1792703597256,
+    "type": "form.cancelled",
+    "location": {
+      "directory": "/work/proj"
+    },
+    "data": {
+      "id": "frm_16575f6c1001CS7mfANnMC0JAL",
+      "sessionID": "ses_e9a8be986ffeiCBgRwwkIijsgi"
+    }
+  },
+  "native_result_answered": {
+    "output": {
+      "answers": [
+        [
+          "Green"
+        ]
+      ]
+    },
+    "content": "User has answered your questions: \"Which colour?\"=\"Green\". You can now continue with the user's answers in mind.",
+    "metadata": {
+      "answers": [
+        [
+          "Green"
+        ]
+      ]
+    }
+  },
+  "execute_after_dismissed": {
+    "tool": "question",
+    "sessionID": "ses_e9a8be986ffeiCBgRwwkIijsgi",
+    "agent": "build",
+    "messageID": "msg_16575f6ab001Y8OUhR6jicpbED",
+    "id": "call_8b04dcb2a6594d1ebc4f",
+    "input": {
+      "questions": [
+        {
+          "question": "Which colour?",
+          "header": "Colour",
+          "options": [
+            {
+              "label": "Blue",
+              "description": "Calm"
+            },
+            {
+              "label": "Green",
+              "description": "Fresh"
+            }
+          ]
+        }
+      ]
+    },
+    "status": "error",
+    "error": {
+      "_tag": "Tool.Error",
+      "message": "The user dismissed this question",
+      "error": {
+        "_tag": "QuestionTool.CancelledError"
+      }
+    }
+  },
+  "execution_succeeded": {
+    "id": "evt_165741a160016PWf56yiYRUftJ",
+    "created": 1792703470102,
+    "type": "session.execution.succeeded",
+    "durable": {
+      "aggregateID": "ses_e9a8be986ffeiCBgRwwkIijsgi",
+      "seq": 19,
+      "version": 1
+    },
+    "data": {
+      "sessionID": "ses_e9a8be986ffeiCBgRwwkIijsgi"
+    }
+  },
+  "execution_interrupted_after_dismissal": {
+    "id": "evt_165760ad7002ErsW3Ooj72TaAr",
+    "created": 1792703597271,
+    "type": "session.execution.interrupted",
+    "durable": {
+      "aggregateID": "ses_e9a8be986ffeiCBgRwwkIijsgi",
+      "seq": 48,
+      "version": 1
+    },
+    "data": {
+      "sessionID": "ses_e9a8be986ffeiCBgRwwkIijsgi",
+      "reason": "shutdown"
+    }
+  },
+  "session_renamed": {
+    "id": "evt_16574173a001w7hctVFAtPErNd",
+    "created": 1792703469370,
+    "type": "session.renamed",
+    "durable": {
+      "aggregateID": "ses_e9a8be986ffeiCBgRwwkIijsgi",
+      "seq": 6,
+      "version": 1
+    },
+    "location": {
+      "directory": "/work/proj"
+    },
+    "data": {
+      "sessionID": "ses_e9a8be986ffeiCBgRwwkIijsgi",
+      "title": "Testkit session"
+    }
+  },
+  "session_deleted": {
+    "id": "evt_165769a80001SYctSLow9dJoBm",
+    "created": 1792703634048,
+    "type": "session.deleted",
+    "durable": {
+      "aggregateID": "ses_e9a89c0afffex2t5tA7yt7OVfF",
+      "seq": 11,
+      "version": 2
+    },
+    "data": {
+      "sessionID": "ses_e9a89c0afffex2t5tA7yt7OVfF"
+    }
+  },
+  "session_created_child": {
+    "id": "evt_165763f66001JQB9QkBXXAZ8xG",
+    "created": 1792703610726,
+    "type": "session.created",
+    "durable": {
+      "aggregateID": "ses_e9a89c0afffex2t5tA7yt7OVfF",
+      "seq": 0,
+      "version": 1
+    },
+    "location": {
+      "directory": "/work/proj"
+    },
+    "data": {
+      "sessionID": "ses_e9a89c0afffex2t5tA7yt7OVfF",
+      "projectID": "b9106ff9d44b40cb18c6e9d6377f6df31a282d1b",
+      "location": {
+        "directory": "/work/proj"
+      },
+      "subpath": "",
+      "parentID": "ses_e9a8be986ffeiCBgRwwkIijsgi",
+      "slug": "quick-wizard",
+      "title": "probe child",
+      "agent": "general",
+      "model": {
+        "id": "stub",
+        "providerID": "stub",
+        "variant": "default"
+      },
+      "version": "2.1.3"
+    }
+  }
+}

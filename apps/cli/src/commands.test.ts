@@ -4635,7 +4635,7 @@ describe('harness activation guidance', () => {
     const cwd = mkdtempSync(path.join(os.tmpdir(), 'notifai-blocking-update-'))
     const io = new CapturedIo()
     const env = { ...isolatedEnv(cwd), ...(harness === 'cursor' ? { CURSOR_AGENT: '1' } : { NOTIFAI_ACTIVE_HARNESS: harness, NOTIFAI_ACTIVE_SESSION_ID: 'current-session' }) }
-    const deps = { ...makeDeps(io, {} as ApiClient), cwd, env, hookPlatform }
+    const deps = { ...makeDeps(io, {} as ApiClient), cwd, env, hookPlatform, opencodeVersion: () => '1.19.4' }
     expect(hooksInstallCommand(deps, { harness, execPath, scriptPath })).toBe(EXIT.ok)
     const now = Date.now()
     writeProjectSession(cwd, env, 'current-session', now, harness)
@@ -8621,7 +8621,7 @@ describe('init', () => {
     ] as const)('reports %s on %s without answer continuation as a harness limit that passes doctor', async (harness, hookPlatform, markers) => {
       const cwd = project(`notifai-limit-${harness}-`)
       const base = setupReadyDeps(new CapturedIo(), cwd, inertSkills, { submit: 0 })
-      const deps = { ...base, env: { ...base.env, ...markers }, hookPlatform }
+      const deps = { ...base, env: { ...base.env, ...markers }, hookPlatform, opencodeVersion: () => '1.19.4' }
       expect(hooksInstallCommand(deps, { harness, execPath: process.execPath, scriptPath: fileURLToPath(import.meta.url) })).toBe(EXIT.ok)
       const first = await initJson(deps)
       expect(first.exit, JSON.stringify(first.report.states?.filter((state) => state['status'] === 'gap'))).toBe(EXIT.ok)
@@ -8652,7 +8652,7 @@ describe('init', () => {
       it.each(['signed out', 'rejected credentials', 'no active devices'] as const)('keeps Question Routing unready with %s', async (failure) => {
         const cwd = project(`notifai-delivery-${harness}-`)
         const base = setupReadyDeps(new CapturedIo(), cwd, inertSkills, { submit: 0 })
-        const deps = { ...base, env: { ...base.env, ...markers }, hookPlatform }
+        const deps = { ...base, env: { ...base.env, ...markers }, hookPlatform, opencodeVersion: () => '1.19.4' }
         expect(hooksInstallCommand(deps, { harness, execPath: process.execPath, scriptPath: fileURLToPath(import.meta.url) })).toBe(EXIT.ok)
         expect((await initJson(deps)).exit).toBe(EXIT.ok)
         const now = Date.now()

@@ -28,6 +28,7 @@ import {
   opencodeConfigDir,
   opencodePluginPath,
   opencodePluginTarget,
+  type OpencodePluginLine,
 } from './opencode-plugin.js'
 import {
   legacyOpenclawProjectPluginPath,
@@ -1469,6 +1470,8 @@ export interface Installation {
   handlers: InstalledHandler[]
   /** Structural defects that require reinstalling this generated adapter. */
   problems?: string[]
+  /** OpenCode only: the OpenCode major the generated plugin is written for. */
+  opencodeLine?: OpencodePluginLine
 }
 
 /** Codex's canonical event spelling inside its persisted trust keys. */
@@ -1939,6 +1942,7 @@ function collectInstallations(
         harness,
         file,
         ...(problems.length > 0 ? { problems } : {}),
+        ...(harness === 'opencode' && 'line' in target ? { opencodeLine: target.line as OpencodePluginLine } : {}),
         handlers: events.map(([event, hookEvent]) => ({
           event,
           groupIndex: 0,

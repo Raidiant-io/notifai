@@ -3,15 +3,21 @@
 Read with [Harness setup and recovery](harness-setup.md), which holds what every
 harness shares.
 
-This covers OpenCode 1. OpenCode 2 does not load Notifai's plugin yet, so its
-sessions get no Notifai guidance and its question forms stay in OpenCode;
-`notifai doctor` reports it.
+This covers OpenCode 1, and OpenCode 2.1 and later. The two lines load
+different plugins, so Notifai writes the one for the OpenCode it finds. After
+switching between them, run `notifai hooks install --harness opencode`;
+`notifai update` does it too when explicitly run. Automatic updates report
+a major mismatch and preserve the installed plugin; put the intended OpenCode
+on PATH before reinstalling. `notifai doctor` reports a plugin for the other
+line, an unread version, and OpenCode 2.0, which is unsupported: upgrade it.
 
 ## Activation
 
-Restart OpenCode after installation, because plugins load at startup. Then
-start one fresh Agent Session, send one prompt, and run `notifai doctor`.
-Notifai owns its generated plugin file and will not overwrite a foreign one.
+Restart OpenCode after installation, because plugins load at startup; on
+OpenCode 2, `opencode service restart` restarts the background service its
+terminals share. Then start one fresh Agent Session, send one prompt, and run
+`notifai doctor`. Notifai owns its generated plugin file and will not
+overwrite a foreign one.
 
 A session with a parent is a worker: it reports to its parent and does not
 notify. When the plugin cannot tell, it treats the session as a worker. A
@@ -32,10 +38,19 @@ form, or with `--projectless` in a Project that is not disabled or outside a
 Project, it waits in the command instead, for at most
 110 seconds, then withdraws
 an unanswered question (exit 3). Keep the command running until it returns.
-The OpenCode 1 form carries free text and up to 10 questions. Notifai accepts
+Both OpenCode 1.19.4 and OpenCode 2.1.3 carry free-text questions
+(`options: []`) and forms of 1 to 10 questions. Notifai accepts 2 to 6 choices
+per question, with single or multiple selection. OpenCode 2.1.3's native
+schema has no upper question count or minimum option count; Notifai's
+10-question and 6-choice limits still apply. Notifai accepts
 at most one recommended choice per question; its label ends in
 `(Recommended)`. Several recommendations within one question are refused by
 Notifai's protocol before any form opens; offer one recommendation instead.
+
+Session Notes and Answer Edits are not supported yet. OpenCode 2 shell
+attribution requires readable process ancestry (currently macOS and Linux).
+On Windows, version probing supports npm command shims, but agent shells
+remain unidentified and `ask --wait` uses the held-command fallback.
 
 ## Question form
 
@@ -60,6 +75,14 @@ OpenCode only and still works there.
 ## After a Notifai update
 
 The loaded plugin calls the updated CLI on each event and reads guidance once
-per User prompt. Changed plugin code loads only at startup: arrange a restart
-only when the update's diagnosis says that scope still needs one, then confirm
-a natural callback.
+per User prompt. OpenCode 1 loads changed plugin code only at startup, and
+OpenCode 2 when the file changes: arrange a restart only when the update's
+diagnosis says that scope still needs one, then confirm a natural callback.
+
+A plugin reload restores owed answer acknowledgements from the CLI on the
+next prompt or model context. It still loses the set of sessions served by
+the old instance: a turn that ends before either hook runs again can miss its
+turn-end notification. Avoid rewriting the plugin in the middle of a turn
+when that notification matters. A native question executor that ignores abort
+gets at most three seconds to finish; then the device answer returns anyway,
+though that executor's native form may remain visible until OpenCode closes it.

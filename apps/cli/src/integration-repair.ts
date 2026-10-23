@@ -17,7 +17,7 @@ import { isHookInstallableHarness, questionRoutingCapability } from './harnesses
 import { buildHookConfig, buildCursorHookConfig, NON_ROUTING_BLOCKING_STOP_TIMEOUT_SECONDS, settingsFile, codexTrustProblems,
   findInstallations, installedHookRevision, machineHookFiles, type Installation } from './install-hooks.js'
 import { hookAdapterPath, inspectHookAdapter } from './hook-adapter.js'
-import { opencodePluginSource } from './opencode-plugin.js'
+import { opencodePluginLine, opencodePluginSourceFor, opencodeVersionFor } from './opencode-version.js'
 import { openclawPluginSource } from './openclaw-plugin.js'
 import { hermesPluginSource } from './hermes-plugin.js'
 import { installationFaults } from './integration-health.js'
@@ -56,7 +56,8 @@ function desiredRevision(deps: CommandDeps, installation: Installation): string 
   const options = { adapterPath, platform, integrationScope: installation.file,
     ...(nodePath === undefined ? {} : { nodePath }) }
   const source = installation.harness === 'hermes' ? hermesPluginSource(adapterPath, nodePath, installation.file)
-    : installation.harness === 'opencode' ? opencodePluginSource({ ...options, timeoutSeconds: NON_ROUTING_BLOCKING_STOP_TIMEOUT_SECONDS })
+    : installation.harness === 'opencode' ? opencodePluginSourceFor(opencodePluginLine(opencodeVersionFor(deps), installation.opencodeLine),
+      { ...options, timeoutSeconds: NON_ROUTING_BLOCKING_STOP_TIMEOUT_SECONDS })
     : installation.harness === 'openclaw' ? openclawPluginSource({ ...options, timeoutSeconds: NON_ROUTING_BLOCKING_STOP_TIMEOUT_SECONDS })
     : JSON.stringify(installation.harness === 'cursor' ? buildCursorHookConfig(options)
       : buildHookConfig({ ...options, harness: installation.harness,

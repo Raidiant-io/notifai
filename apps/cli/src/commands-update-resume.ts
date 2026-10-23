@@ -9,7 +9,7 @@ import { skillInventory } from './commands-skill.js'
 import { updateSkillCommand } from './commands-update-skill.js'
 import { hookAdapterTargetsArtifact, inspectHookAdapter, installHookAdapter, isNpxAdapterTarget } from './hook-adapter.js'
 import { pendingList, readSessionState } from './hook-session-state.js'
-import { installationFaults, localIntegrationAssessment } from './integration-health.js'
+import { installationFaults, localIntegrationAssessment, opencodeLineFaults } from './integration-health.js'
 import { packageVersion } from './release.js'
 import { installedChangelog } from './update-handoff.js'
 import { isSemVer } from './version.js'
@@ -128,6 +128,12 @@ export async function updateResumeCommand(deps: CommandDeps, flags: { json?: boo
         diagnostics.push('claude-code hooks stay in shell form while an older Notifai attends a Claude Code session; the hub switches them to exec form once it hands that session over.')
       }
       if (installationFaults(installation, deps.hookPlatform, { ...deps, env }).length === 0) continue
+      if (flags.automatic === true && opencodeLineFaults(installation, { ...deps, env }).length > 0) {
+        // Both majors install `opencode`. The updater's PATH does not prove
+        // which one owns this plugin, so only an explicit install may switch it.
+        pending.push('OpenCode plugin major differs from the opencode on PATH; automatic updates leave it unchanged. Run notifai hooks install --harness opencode with the intended OpenCode on PATH.')
+        continue
+      }
       if (flags.automatic === true && TRUST_SENSITIVE_HOOK_HARNESSES.has(installation.harness) &&
           installationFaults(installation, deps.hookPlatform).length > 0) {
         // An automatic update never rewrites these: Codex would skip the changed

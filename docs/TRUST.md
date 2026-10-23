@@ -133,6 +133,43 @@ destination. The upload request refuses redirects rather than replaying those
 headers at another origin. There is no repository-controlled exception for
 authenticated API or signed-upload redirects.
 
+## Agent Session identity in OpenCode 2 shells
+
+A command run from an agent's shell attributes its question or notification to
+the Agent Session that shell belongs to. OpenCode 2 gives Notifai's plugin no
+way to name that session in the shell, so Notifai reads `OPENCODE_SESSION_ID`,
+which OpenCode itself sets for every agent command. Anything that runs in the
+shell, including a repository script, can set that variable to another value,
+so the value alone proves nothing. The CLI believes it only when all of these
+hold:
+
+- A local record for that session exists, written through
+  `notifai hook opencode-session`. It keeps the declared host's PID and start
+  time, worker classification and title. Reading the shell's session ID uses
+  those recorded values; it does not authenticate who wrote them.
+- The session has not ended, and the recorded OpenCode process still runs.
+- Where the process tree can be read (macOS and Linux), that OpenCode process
+  is an ancestor of the command.
+
+Recording requires the declared host to be an ancestor of the recording
+process; where ancestry cannot be read, no record is created. A record owned
+by a different live host (or one whose liveness is unknown) is not replaced.
+These checks catch inherited or mistaken values. They do not authenticate a
+shell or protect against a hostile same-user script: it can remove
+`NOTIFAI_OPENCODE_PLUGIN` and use OpenCode 1's freely writable markers, invoke
+the recording hook itself, or edit the local state files.
+
+OpenCode 2's shared background service hosts every session on the machine,
+including sessions from different directories. A script under that service
+can name or record another session hosted by it, including worker/title
+values. PID ancestry cannot distinguish those sessions. Source Context is not
+authority or a security boundary; do not use it for access control.
+
+With the OpenCode 2 marker present, a value that fails a check names no
+session: the command behaves as in a shell OpenCode did not identify, and a
+root session's `notifai ask --wait` then holds in the command instead of
+handing back a form.
+
 ## Guidance authority
 
 `notifai guidance` resolves two authorities:
