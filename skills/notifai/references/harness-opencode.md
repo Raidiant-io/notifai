@@ -32,8 +32,9 @@ Session.
 Nothing can yet bring an answer back once an OpenCode session goes idle, so
 ask in a way that waits; `notifai doctor` reports that as an OpenCode limit,
 not a fault to repair. To wait, run `notifai ask --wait`: it hands back the
-`question` form with your title, Body and images; open it unchanged. In a
-worker, or with a plugin that cannot prove a root session or hand back the
+`question` form with your title, Body and images; open it unchanged. Without
+a `question` tool, retire it with `notifai close <question_id>` and ask in the
+conversation. In a worker, or with a plugin that cannot prove a root session or hand back the
 form, or with `--projectless` in a Project that is not disabled or outside a
 Project, it waits in the command instead, for at most
 110 seconds, then withdraws

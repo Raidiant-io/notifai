@@ -37,7 +37,7 @@ it('says the plugin is saved for the next start when no Gateway runs or OpenClaw
   const missing = Object.assign(new Error('spawn openclaw ENOENT'), { code: 'ENOENT' })
   const absent = applyOpenclawPluginLive({}, runner(null, '', '', missing))
   expect(absent).toEqual({ status: 'saved', reason: 'openclaw-cli-unavailable' })
-  expect(openclawLiveApplyText(absent)).toContain('openclaw plugins reload notifai')
+  expect(openclawLiveApplyText(absent)).toContain('a reload keeps waiting questions, while a restart expires them')
 })
 
 it('keeps a refused replacement visible: the previous generation still serves', () => {
@@ -53,5 +53,5 @@ it('keeps a refused replacement visible: the previous generation still serves', 
 it('names a required restart when the Gateway applied metadata over loaded code', () => {
   const outcome = applyOpenclawPluginLive({}, runner(0, APPLIED.replace('"restartRequired": false', '"restartRequired": true')))
   expect(outcome).toEqual({ status: 'applied', generation: 3, restartRequired: true })
-  expect(openclawLiveApplyText(outcome)).toContain('restart the Gateway')
+  expect(openclawLiveApplyText(outcome)).toContain('A restart expires waiting Notifai questions: restart the Gateway once none waits.')
 })

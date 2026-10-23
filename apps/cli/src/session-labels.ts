@@ -352,15 +352,13 @@ function uniqueLabel(
 /**
  * Freeze the first accepted human name for one immutable session.
  *
- * A title supplied by a trusted harness adapter wins, then explicit
- * agent/User input, then a generated fallback. The environment-first order is
- * what makes `--session-label` safe to pass unconditionally: an agent never
- * needs to know which environments name their own sessions, because where one
- * does, the explicit label is simply not used. A frozen generated fallback is
- * the one exception to permanence: it names nothing, so the first semantic
- * candidate to arrive later — a trusted harness title first, then explicit —
- * replaces it once. Semantic names then stay frozen even when their branch,
- * worktree, title candidate, or notification changes.
+ * An explicit task label wins, then a title supplied by a trusted harness
+ * adapter, then a generated fallback: the agent naming its own job knows it
+ * best, and a harness title is the next semantic name. A frozen generated
+ * fallback is the one exception to permanence: it names nothing, so the first
+ * semantic candidate to arrive later — explicit first, then a trusted harness
+ * title — replaces it once. Semantic names then stay frozen even when their
+ * branch, worktree, title candidate, or notification changes.
  */
 export function resolveSessionLabel(input: SessionLabelInput): SessionLabelResolution {
   const now = input.now ?? Date.now()
@@ -378,14 +376,13 @@ export function resolveSessionLabel(input: SessionLabelInput): SessionLabelResol
             .map(([, record]) => collisionKey(record.label)),
         )
         if (existing.source === 'fallback') {
-          const native = harnessLabelIsPending(input.harnessLabel, input)
-            ? null
-            : harnessCandidate(input.harnessLabel, input)
-          const explicit = native === null ? explicitCandidate(input.explicitLabel, input) : null
+          const explicit = explicitCandidate(input.explicitLabel, input)
           if (explicit !== null && 'error' in explicit) {
             return { ok: false, error: explicit.error }
           }
-          const upgrade = native ?? explicit
+          const upgrade = explicit ?? (harnessLabelIsPending(input.harnessLabel, input)
+            ? null
+            : harnessCandidate(input.harnessLabel, input))
           if (upgrade !== null) {
             const label = uniqueLabel(upgrade.label, upgrade.source, input.harness, now, used)
             store.sessions[key] = {
@@ -430,13 +427,11 @@ export function resolveSessionLabel(input: SessionLabelInput): SessionLabelResol
         return { ok: true, label, source: existing.source }
       }
 
-      const nativePending = harnessLabelIsPending(input.harnessLabel, input)
-      const native = nativePending ? null : harnessCandidate(input.harnessLabel, input)
-      const explicit = native === null ? explicitCandidate(input.explicitLabel, input) : null
+      const explicit = explicitCandidate(input.explicitLabel, input)
       if (explicit !== null && 'error' in explicit) {
         return { ok: false, error: explicit.error }
       }
-      if (explicit === null && nativePending) {
+      if (explicit === null && harnessLabelIsPending(input.harnessLabel, input)) {
         return {
           ok: false,
           error:
@@ -444,7 +439,7 @@ export function resolveSessionLabel(input: SessionLabelInput): SessionLabelResol
         }
       }
       const candidate: SessionLabelCandidate =
-        native ?? explicit ?? fallbackCandidate(input.sessionId)
+        explicit ?? harnessCandidate(input.harnessLabel, input) ?? fallbackCandidate(input.sessionId)
       const used = new Set(
         Object.values(store.sessions).map((record) => collisionKey(record.label)),
       )

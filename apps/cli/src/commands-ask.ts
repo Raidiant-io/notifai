@@ -1159,7 +1159,7 @@ export function askCommand(
       return askFailure(
         deps, flags, 'openclaw_generation_stale', 'exact_session',
         'This OpenClaw tool subprocess cannot prove the current Gateway session generation.',
-        'run the question from a current OpenClaw turn after the Notifai plugin has recorded it',
+        'run the same notifai ask from a current OpenClaw turn after the Notifai plugin has recorded it; if it is refused again, ask in the conversation',
       )
     }
     if (active!.harness === 'openclaw' && !openclawGatewayReady(deps.env)) {

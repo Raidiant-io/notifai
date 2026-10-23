@@ -58,9 +58,7 @@ describe('semantic session labels', () => {
     ).toEqual({ ok: true, label: 'Semantic session names', source: 'explicit' })
   })
 
-  it('prefers the environment-supplied title over an explicit label, making the flag safe everywhere', () => {
-    // An agent must never need to know which environments name their own
-    // sessions: where one does, the explicit label is simply not used.
+  it('prefers an explicit label over the environment-supplied title', () => {
     const { env, now } = fixture()
     expect(
       resolveSessionLabel({
@@ -71,10 +69,10 @@ describe('semantic session labels', () => {
         harnessLabel: 'NotifAI question lifecycle',
         explicitLabel: 'Agent-chosen name',
       }),
-    ).toEqual({ ok: true, label: 'NotifAI question lifecycle', source: 'harness' })
+    ).toEqual({ ok: true, label: 'Agent-chosen name', source: 'explicit' })
   })
 
-  it('ignores an invalid repeated explicit label when a trusted harness title is available', () => {
+  it('rejects an invalid explicit label even when a trusted harness title is available', () => {
     const { env, now } = fixture()
     expect(
       resolveSessionLabel({
@@ -85,10 +83,13 @@ describe('semantic session labels', () => {
         harnessLabel: 'Native Codex title',
         explicitLabel: '/private/path-that-must-not-win',
       }),
-    ).toEqual({ ok: true, label: 'Native Codex title', source: 'harness' })
+    ).toEqual({
+      ok: false,
+      error: '--session-label (or NOTIFAI_SESSION_LABEL) must not contain a session identifier, hash, or filesystem path.',
+    })
   })
 
-  it('upgrades a frozen fallback to the environment title even when an explicit label rides along', () => {
+  it('upgrades a frozen fallback to the explicit label before the environment title', () => {
     const { env, now } = fixture()
     const frozen = resolveSessionLabel({ env, now, sessionId: 'late-title' })
     expect(frozen).toMatchObject({ ok: true, source: 'fallback' })
@@ -103,8 +104,8 @@ describe('semantic session labels', () => {
       }),
     ).toEqual({
       ok: true,
-      label: 'Worktree semantic title',
-      source: 'harness',
+      label: 'Agent-chosen name',
+      source: 'explicit',
       previousSource: 'fallback',
     })
   })

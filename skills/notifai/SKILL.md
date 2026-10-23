@@ -122,10 +122,10 @@ config from supplying Project identity. A User-disabled Project refuses
 ### Name the Agent Session
 
 Name the Agent Session when the current environment exposes its exact
-identifier; supported harnesses provide it. Pass `--session-label`: 2-6 words
-about the Agent Session's job, never the Project, branch, status, result,
-identifier, hash, or filesystem path. A `--session-label` without an exact
-Agent Session is a usage error; without that identifier, omit `--session-label`.
+identifier. Pass `--session-label`: 2-6 words about the Agent Session's job,
+never the Project, branch, status, result, identifier, hash, or filesystem
+path. A `--session-label` without an exact Agent Session is a usage error;
+without that identifier, omit `--session-label` and skip renaming.
 Pass the same `--session-label` on every send and ask; to rename, use
 `notifai session rename`.
 
@@ -180,7 +180,7 @@ When `ask` hands back a question form, open it unchanged: the question is
 already registered with your title, Body and images. A question form you open
 yourself carries only its own fields, and reaches the
 User's devices only where Notifai links it; when its tool context says Notifai
-registered it, never also `ask` it. Never promise form closure.
+registered it, never also `ask` it. Promise nothing about a form closing.
 
 **Registering is not the end of the turn.** Say what each answer will make
 you do before you open a handed-back form or start a wait. A handed-back form

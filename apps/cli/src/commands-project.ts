@@ -45,13 +45,17 @@ export function projectStatusCommand(deps: CommandDeps, json = false): number {
   if (json) {
     deps.io.out(JSON.stringify({ project: binding?.project ?? null, enabled: decision === 'enabled', disabled: decision === 'disabled' }))
   } else if (binding === null) {
-    deps.io.out('No Project can be inferred here; lifecycle behavior is disabled.')
+    deps.io.out('No Project can be inferred here; lifecycle behavior is off.')
   } else if (decision === 'disabled') {
     deps.io.out(
       `Project "${binding.project}": lifecycle behavior disabled. The User disabled Notifai here: nothing from it reaches the User's devices.`,
     )
+  } else if (decision === 'enabled') {
+    deps.io.out(`Project "${binding.project}": lifecycle behavior enabled.`)
   } else {
-    deps.io.out(`Project "${binding.project}": lifecycle behavior ${decision === 'enabled' ? 'enabled' : 'disabled'}.`)
+    deps.io.out(
+      `Project "${binding.project}": lifecycle behavior off; the User has neither enabled nor disabled Notifai here. When they ask for Notifai here, run \`notifai project enable\`.`,
+    )
   }
   return EXIT.ok
 }

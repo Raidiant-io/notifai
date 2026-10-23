@@ -615,6 +615,25 @@ describe('command contracts', () => {
     expect(projectEnabled(projectBinding(cwd, env))).toBe(true)
   })
 
+  it('tells a Cursor agent its Agent Session has no name to rename', async () => {
+    const cwd = mkdtempSync(path.join(os.tmpdir(), 'notifai-cursor-rename-'))
+    const io = new CapturedIo()
+    const deps = { ...makeDeps(io, {} as ApiClient), cwd, env: { ...isolatedEnv(cwd), CURSOR_AGENT: '1' } }
+    expect(await agentSessionRenameCommand(deps, 'Repair search indexing')).toBe(EXIT.usage)
+    expect(io.errLines.join('\n')).toBe(
+      'Cursor does not identify its Agent Session to Notifai, so this session has no name to rename. Omit --session-label and keep working.',
+    )
+  })
+
+  it('reports an untouched Project as off, never as disabled by the User', () => {
+    const cwd = mkdtempSync(path.join(os.tmpdir(), 'notifai-untouched-status-'))
+    execFileSync('git', ['init', '--quiet', cwd])
+    const io = new CapturedIo()
+    const deps = { ...makeDeps(io, {} as ApiClient), cwd, env: isolatedEnv(cwd) }
+    expect(projectStatusCommand(deps)).toBe(EXIT.ok)
+    expect(io.outLines.at(-1)).toMatch(/^Project ".+": lifecycle behavior off; the User has neither enabled nor disabled Notifai here\. When they ask for Notifai here, run `notifai project enable`\.$/)
+  })
+
   it.each([false, true])('sends nothing from a Project the User disabled until they enable it again (projectless: %s)', async (projectless) => {
     const cwd = mkdtempSync(path.join(os.tmpdir(), 'notifai-disabled-send-'))
     execFileSync('git', ['init', '--quiet', cwd])
@@ -9431,7 +9450,7 @@ describe('asking before the hooks have ever run', () => {
     const refusal = JSON.parse(io.outLines.at(-1)!)
     expect(refusal).toMatchObject({
       code: 'openclaw_generation_stale', registered: false,
-      remedy: 'run the question from a current OpenClaw turn after the Notifai plugin has recorded it',
+      remedy: 'run the same notifai ask from a current OpenClaw turn after the Notifai plugin has recorded it; if it is refused again, ask in the conversation',
     })
     // An OpenClaw ask enables a Project with no decision, like any other ask.
     expect(projectEnabled(binding!)).toBe(true)

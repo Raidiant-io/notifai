@@ -701,8 +701,7 @@ describe('Notifai agent skill', () => {
     expect(loose(harnessFile('hermes'))).toMatch(/in two system prompt sections: the activation and notices, then the trust text, terms and topics/)
     // Install refuses any other Hermes, so no older-Hermes state is taught.
     expect(harnessFile('hermes')).not.toMatch(/older than v0\.21\.5/)
-    expect(harnessReference).toMatch(/built-in Notifai skill installer/i)
-    expect(harnessReference).toMatch(/Hermes plugin does not include a copy/i)
+    expect(loose(harnessFile('hermes'))).toMatch(/The Hermes plugin carries no copy of the Notifai skill: install it with `notifai init --skills --skills-scope <project\|global> --skills-harness hermes --json`/)
     // The agent runs what a process can run; the human only does the human part.
     expect(harnessSetupReference).toMatch(/no scope to ask about[\s\S]{0,150}one lifecycle mechanism per harness[\s\S]{0,60}machine/i)
     expect(harnessReference).toContain('notifai init --hooks --json')

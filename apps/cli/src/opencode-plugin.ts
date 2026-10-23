@@ -51,7 +51,7 @@ export const OPENCODE_PLUGIN_MARKER = '// notifai managed opencode plugin'
 export const OPENCODE_PLUGIN_FILENAME = 'notifai.js'
 
 /** Bump when an installed generated file must be rewritten to remain functional. */
-const OPENCODE_ADAPTER_VERSION = 15
+const OPENCODE_ADAPTER_VERSION = 16
 
 /** The same for the OpenCode 2 module (`opencode2-plugin.ts`), which counts on its own. */
 export const OPENCODE2_ADAPTER_VERSION = 2
@@ -359,7 +359,8 @@ export const NotifAIPlugin = async ({ directory, client }) => {
   // request: one turn can make many requests, and each used to start a CLI.
   // A User prompt clears it, so enabling a Project applies from the next one.
   const activations = new Map()
-  // An acknowledgement the agent owes for a device answer, shown once.
+  // Acknowledgements the agent owes for device answers, by session then
+  // request, each shown once: parallel forms each keep their own.
   const owedAcknowledgements = new Map()
   // OpenCode question requests whose device question is open, by request id.
   const forms = new Map()
@@ -410,20 +411,25 @@ export const NotifAIPlugin = async ({ directory, client }) => {
     form.applying = frame.answers
     // OpenCode can start the next model request before the reply call
     // returns, so the acknowledgement it owes is in place first.
-    const owed = typeof frame.acknowledgement === "string" && frame.acknowledgement.length > 0
-      ? "Notifai: the answer to your question came from the user's device, for request " + frame.request_id +
-        ". Before the work it causes, run \`" + frame.acknowledgement + "\` saying what you will do because of it."
-      : null
-    const earlier = owedAcknowledgements.get(form.sessionID)
-    if (owed !== null) owedAcknowledgements.set(form.sessionID, owed)
+    const owed = typeof frame.acknowledgement_context === "string" && frame.acknowledgement_context.length > 0
+      ? frame.acknowledgement_context
+      : typeof frame.acknowledgement === "string" && frame.acknowledgement.length > 0
+        ? "Notifai: the answer to your question came from the user's device, for request " + frame.request_id +
+          ". Before the work it causes, run \`" + frame.acknowledgement + "\` exactly as shown, giving any --text the work you will do because of it."
+        : null
+    const owing = owedAcknowledgements.get(form.sessionID) ?? new Map()
+    if (owed !== null) {
+      owing.set(frame.request_id, owed)
+      owedAcknowledgements.set(form.sessionID, owing)
+    }
     if (await replyRequest(form.requestID, frame.answers)) {
       form.settled = true
       send(form, { type: "applied" })
     } else {
       form.applying = null
-      if (owed !== null && owedAcknowledgements.get(form.sessionID) === owed) {
-        if (earlier === undefined) owedAcknowledgements.delete(form.sessionID)
-        else owedAcknowledgements.set(form.sessionID, earlier)
+      if (owed !== null && owing.get(frame.request_id) === owed) {
+        owing.delete(frame.request_id)
+        if (owing.size === 0 && owedAcknowledgements.get(form.sessionID) === owing) owedAcknowledgements.delete(form.sessionID)
       }
       send(form, { type: "stale" })
     }
@@ -544,10 +550,10 @@ export const NotifAIPlugin = async ({ directory, client }) => {
       const { worker, resolved } = await pending
       // A failed lookup is retried on the next request instead of remembered.
       if (resolved === null && activations.get(sessionID) === pending) activations.delete(sessionID)
-      const owed = owedAcknowledgements.get(sessionID)
-      if (owed !== undefined) {
+      const owing = owedAcknowledgements.get(sessionID)
+      if (owing !== undefined) {
         owedAcknowledgements.delete(sessionID)
-        output.system.push(owed)
+        output.system.push(...owing.values())
       }
       // Successful empty output is the runtime's deliberate guidance-off no-op.
       if (resolved !== null && resolved.trim().length === 0) return

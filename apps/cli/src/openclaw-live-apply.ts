@@ -84,12 +84,12 @@ export function openclawLiveApplyText(outcome: OpenclawLiveApply): string {
   switch (outcome.status) {
     case 'applied':
       return outcome.restartRequired
-        ? `The running OpenClaw Gateway applied Notifai plugin generation ${outcome.generation} but reports that a restart is required to load it; restart the Gateway.`
+        ? `The running OpenClaw Gateway applied Notifai plugin generation ${outcome.generation} but reports that a restart is required to load it. A restart expires waiting Notifai questions: restart the Gateway once none waits.`
         : `The running OpenClaw Gateway applied the Notifai plugin as generation ${outcome.generation}.`
     case 'saved':
       return outcome.reason === 'no-running-gateway'
         ? 'No running OpenClaw Gateway answered; the plugin is saved and loads when the Gateway next starts.'
-        : 'The `openclaw` command is not on PATH, so a running Gateway keeps its previous Notifai plugin until you run `openclaw plugins reload notifai` or restart it.'
+        : 'The `openclaw` command is not on PATH, so a running Gateway keeps its previous Notifai plugin until `openclaw plugins reload notifai` runs; a reload keeps waiting questions, while a restart expires them.'
     case 'failed':
       return `The running OpenClaw Gateway kept its previous Notifai plugin generation (${outcome.reason}). Answers wait for the installed generation; run \`openclaw plugins reload notifai --wait\` once its current work finishes.`
   }
