@@ -7,8 +7,12 @@ on:
         description: Exact commit SHA that this run must check
         required: true
         type: string
+      reproduce_process_baseline:
+        description: Diagnose the old process-test baseline (may deliberately fail)
+        type: boolean
+        default: false
       reliability_proof:
-        description: Run the bounded before/after reliability experiment
+        description: Run bounded candidate reliability checks
         required: false
         type: boolean
         default: false
@@ -392,12 +396,12 @@ jobs:
     needs: scope
     # Baseline failures are retained as evidence; only the candidate gates CI.
     continue-on-error: ${{ matrix.revision == 'before' }}
-    if: ${{ inputs.reliability_proof }}
+    if: ${{ inputs.reliability_proof || inputs.reproduce_process_baseline }}
     strategy:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, windows-2025, windows-11-arm]
-        revision: [before, after]
+        revision: ${{ fromJSON(inputs.reproduce_process_baseline && '["before", "after"]' || '["after"]') }}
     runs-on: ${{ matrix.os }}
     timeout-minutes: 40
     steps:
@@ -414,6 +418,10 @@ jobs:
           cache: pnpm
       - run: pnpm install --frozen-lockfile
       - run: pnpm build
+      - name: Prepare pinned shell runtime and crash collection
+        if: runner.os == 'Windows' && matrix.revision == 'after'
+        shell: powershell
+        run: ./scripts/prepare-test-powershell.ps1
       - name: Repeat genuine contention and lifecycle regressions twenty times
         shell: bash
         run: |
@@ -424,3 +432,11 @@ jobs:
             node scripts/run-cli-tests.mjs src/session-child.test.ts src/hub.test.ts src/session-attendant-lifecycle.test.ts src/hook-adapter.test.ts src/shell-quoting.test.ts --maxWorkers=2 --testNamePattern 'adopts the harness through a shell|hub exchange driver|becomes the attendant despite|concurrent Windows installers|lossless shell transport' || failed=1
           done
           exit "$failed"
+      - name: Retain repetition shell crash dumps
+        if: always() && runner.os == 'Windows'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: shell-crash-dumps-repetition-${{ runner.arch }}-${{ matrix.revision }}
+          path: ${{ runner.temp }}/shell-crash-dumps
+          if-no-files-found: ignore
+          retention-days: 7
