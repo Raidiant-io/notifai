@@ -149,7 +149,7 @@ export function buildSourceContext(input: SourceContextInput): SourceContextBuil
   if (explicitLabel !== undefined && (sessionId === undefined || sessionId === '')) {
     return {
       ok: false,
-      error: '--session-label (or NOTIFAI_SESSION_LABEL) needs an exact Agent Session id.',
+      error: '--session-label (or NOTIFAI_SESSION_LABEL) names an Agent Session only where the harness identifies it, and none does here: omit it.',
     }
   }
   if (sessionId === '') {

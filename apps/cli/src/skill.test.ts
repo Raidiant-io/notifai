@@ -54,7 +54,8 @@ const examples = [...skill.matchAll(/```(?:bash|json)?\n([\s\S]*?)```/g)].map((m
 const shellExamples = examples.flatMap((block) =>
   block
     .replace(/\\\n\s*/g, ' ')
-    .split('\n')
+    // A single-quoted value may hold real line breaks; only one outside quotes ends a command.
+    .match(/(?:'[^']*'|[^'\n])+/g)!
     .map((line) => line.trim())
     .filter((line) => line.startsWith('notifai ')),
 )
@@ -233,7 +234,8 @@ describe('Notifai agent skill', () => {
     const send = section('## Send')
     expect(send).toContain('--summary')
     expect(send).not.toContain('--subtitle')
-    expect(send).toContain('--body-file')
+    expect(send).toContain("--body '")
+    expect(send).not.toContain('--body-file')
     expect(send).toMatch(/optional standalone Markdown for focused detail/i)
     expect(send).toContain('media:1')
     expect(send).toContain('[Sending details](references/send-details.md)')
@@ -246,10 +248,30 @@ describe('Notifai agent skill', () => {
     expect(send).toMatch(/at most 240\s+Unicode characters/i)
     expect(send).toMatch(/never both/i)
     expect(send).toContain('(references/writing-examples.md)')
-    // A Body that a shell would mangle, or approval rules would not match,
-    // goes through a file outside the repository, with the reason.
-    expect(send).toMatch(/system temp directory, never the repository/i)
-    expect(send).toMatch(/approval rules match only a plain `notifai …`\s+argument list/i)
+    // A Body goes inline in single quotes, real line breaks included: a file
+    // write would wait at its own approval, and one plain command is what
+    // the approval rules match.
+    expect(loose(send)).toMatch(/real line breaks inside the quotes/i)
+  })
+
+  it('keeps line-leading comments out of every shipped inline Body example', () => {
+    const documents = [skill, ...readdirSync(referencesDir)
+      .filter((name) => name.endsWith('.md'))
+      .map((name) => readFileSync(new URL(name, referencesDir), 'utf8'))]
+    const bodies = documents.flatMap((document) =>
+      [...document.matchAll(/--body(?:\s+|=)((?:'[^']*'|"(?:\\.|[^"\\])*")+)/g)]
+        .map((match) => match[1]!.replace(/'([^']*)'|"((?:\\.|[^"\\])*)"/g,
+          (_, single: string | undefined, double: string | undefined) => single ?? double ?? '')),
+    )
+    expect(bodies.length).toBeGreaterThan(0)
+    for (const body of bodies) expect(body, body).not.toMatch(/^\s*#/m)
+  })
+
+  it('reserves NOTIFAI_NO_INPUT for scripts and CI, never an agent prefix', () => {
+    const settings = loose(harnessSetupReference)
+    expect(settings).toMatch(/`NOTIFAI_NO_INPUT=1` is for scripts and CI/)
+    expect(settings).toMatch(/Run `notifai` without it/)
+    expect(settings).not.toMatch(/any shell with nobody at it/)
   })
 
   it('keeps initial labels stable and teaches the narrow exact-session rename exception', () => {
@@ -288,10 +310,10 @@ describe('Notifai agent skill', () => {
     expect(ask).toMatch(/conversation alone misses an\s+away User/i)
     const example = rawSection('## Ask a question').match(/```bash\n(notifai ask[\s\S]*?)```/)?.[1] ?? ''
     // The agent writes the title; the question is the Summary beneath it.
-    expect(example).toMatch(/--title "Production deploy"/)
+    expect(example).toMatch(/--title 'Production deploy'/)
     expect(ask).toMatch(/positional question is the Summary: the exact question/i)
-    expect(example).toMatch(/--choice-description "/)
-    expect(example).toMatch(/--recommended "/)
+    expect(example).toMatch(/--choice-description '/)
+    expect(example).toMatch(/--recommended '/)
     expect(ask).toMatch(/always type an answer/i)
     // `--title` is required and the `titles` topic says what it carries; the
     // skill never restates that, and the CLI never copies the question into it.
@@ -620,7 +642,20 @@ describe('Notifai agent skill', () => {
     expect(harnessFile('claude-code')).not.toMatch(/\*\*Codex:\*\*|OpenClaw|Hermes/)
     expect(harnessFile('claude-code')).toContain('notifai init --claude-commands --json')
     expect(harnessFile('codex')).toContain('notifai init --codex-commands --json')
-    expect(loose(skill)).toMatch(/--body-file <path>/)
+    // Every harness that asks before a command by default says how it
+    // approves Notifai commands, as harness-setup.md promises.
+    for (const name of ['claude-code', 'codex', 'cursor', 'grok'] as const) {
+      expect(harnessFile(name), name).toContain('## Command approval')
+    }
+    expect(loose(harnessSetupReference)).toMatch(/Claude Code, Codex, Cursor and Grok each say how they approve Notifai commands/)
+  })
+
+  it('offers the Claude Code rules in every permission mode that would ask, refuse or review a command', () => {
+    const approval = loose(harnessFile('claude-code').slice(harnessFile('claude-code').indexOf('## Command approval')))
+    for (const mode of ['default', 'acceptEdits', 'plan', 'dontAsk', 'auto']) expect(approval, mode).toContain(`\`${mode}\``)
+    expect(approval).toMatch(/Only in `bypassPermissions`[^.]*not needed/)
+    expect(approval).not.toMatch(/do not offer the rules, do not ask the User about them/)
+    expect(approval).toMatch(/send`, `ask`, `receive`, `acknowledge`, `status`, `replies`, `close`, `guidance` and\s+`session rename`/)
   })
 
   it('routes a self-opened form in every Project the User has not disabled, and names project disable as the switch', () => {

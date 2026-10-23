@@ -58,11 +58,12 @@ import { inspectCliInstallations } from './cli-bin.js'
 import { hookAdapterTargetsArtifact, inspectHookAdapter, installHookAdapter } from './hook-adapter.js'
 import {
   CLAUDE_COMMANDS_STATE_ID,
+  CLAUDE_COMMANDS_PROSE,
   claudeCommandRulesInstalled,
   claudeCommandsNotWritten,
   installClaudeCommandRules,
 } from './claude-command-approval.js'
-import { installCodexCommandRules } from './codex-command-rules.js'
+import { CODEX_COMMANDS_PROSE, installCodexCommandRules } from './codex-command-rules.js'
 import { packageVersion } from './release.js'
 import { HARNESS_LABELS, SOURCE_CONTEXT_HARNESSES, type SourceContextHarness } from './harnesses.js'
 
@@ -674,9 +675,9 @@ function wantsOptional(deps: CommandDeps, state: ReadinessState, flags: InitFlag
     state.id === 'hooks'
       ? 'Install harness hooks, so your agents use Notifai on their own and their questions reach your devices when you are away?'
       : state.id === 'claude-commands'
-        ? "Let Claude Code run Notifai's send, ask, receive and acknowledge commands without asking first? Otherwise a question waits for a terminal approval while you are away."
+        ? `Let Claude Code run Notifai's ${CLAUDE_COMMANDS_PROSE} commands without asking first? Otherwise a question can wait for a terminal approval while you are away.`
         : state.id === 'codex-commands'
-          ? "Let Codex run Notifai's send, ask, receive and acknowledge commands outside its sandbox without asking first? Otherwise a question waits for a terminal approval while you are away."
+          ? `Let Codex run Notifai's ${CODEX_COMMANDS_PROSE} commands outside its sandbox without asking first? Otherwise a question can wait for a terminal approval while you are away.`
           : 'Install or update the bundled Notifai skill for your agents?'
   return deps.io.confirm(question, true)
 }

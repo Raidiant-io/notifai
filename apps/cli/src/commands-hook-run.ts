@@ -384,7 +384,7 @@ export async function hookRunCommand(
   }
   // The User can switch Claude Code's permission mode mid-session, so every
   // main-session callback that carries it keeps the latest. Readiness offers
-  // command approval only in default mode.
+  // command approval in every mode but bypassPermissions.
   if (harness === 'claude-code' && envelope.permission_mode !== undefined &&
       envelope.session_id !== undefined && envelope.agent_id === undefined) {
     try {

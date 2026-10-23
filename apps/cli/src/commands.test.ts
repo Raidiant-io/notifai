@@ -1898,7 +1898,8 @@ describe('command contracts', () => {
       expect(grammar).toContain('show it in Body as ![description](media:N)')
       expect(grammar).toContain("'--image-alt <text>'")
     }
-    expect(sendGrammar).toContain(".option('--session-id")
+    // Kept for shipped automation, but help never invites an Agent Session id.
+    expect(sendGrammar).toMatch(/new Option\('--session-id <id>'[^\n]*\.hideHelp\(\)/)
     expect(sendGrammar).toContain(".option('--retry'")
     expect(sendGrammar).toContain(".option('--delivery-timeout")
     expect(askGrammar).not.toContain(".option('--session-id")
@@ -3641,7 +3642,8 @@ describe('credential origin pinning', () => {
         body: 'line1\\nline2',
       }),
     ).toBe(EXIT.usage)
-    expect(io.errLines.join('\n')).toContain('--body-file -')
+    expect(io.errLines.join('\n')).toContain("put the line break itself inside the single-quoted --body '...'")
+    expect(io.errLines.join('\n')).not.toContain('--body-file')
     expect(io.errLines.join('\n')).toContain('--literal-backslash-n')
 
     io.errLines = []
@@ -6968,7 +6970,7 @@ describe('init', () => {
     expect(JSON.parse(readFileSync(settings, 'utf8'))).toEqual({ model: 'kept', permissions: { deny: ['Read(.env)'] } })
   })
 
-  it('offers and grants Claude Code command approval unless the session is known to run outside default mode', async () => {
+  it('offers and grants Claude Code command approval unless the session is known to run in bypassPermissions mode', async () => {
     const cwd = mkdtempSync(path.join(os.tmpdir(), 'init-claude-commands-mode-'))
     mkdirSync(path.join(cwd, 'home', '.claude'), { recursive: true })
     const io = new CapturedIo()
@@ -6983,36 +6985,31 @@ describe('init', () => {
     // one, so the session is in Claude Code's default mode and it is offered.
     expect(await state()).toMatchObject({ status: 'optional-gap', technical: { permission_mode: null, applicable: true } })
 
-    // The User's settings name another mode before any hook has run: an
+    // The User's settings name bypassPermissions before any hook has run: an
     // explicit yes writes nothing and says why.
     const wired = JSON.parse(readFileSync(settings, 'utf8')) as Record<string, unknown>
-    writeFileSync(settings, JSON.stringify({ ...wired, permissions: { defaultMode: 'auto' } }))
+    writeFileSync(settings, JSON.stringify({ ...wired, permissions: { defaultMode: 'bypassPermissions' } }))
     expect(await state()).toMatchObject({
       status: 'ready',
-      technical: { permission_mode: 'auto', permission_mode_source: 'settings', applicable: false },
+      technical: { permission_mode: 'bypassPermissions', permission_mode_source: 'settings', applicable: false },
     })
     io.errLines = []
     await initCommand(deps, { hooks: true, skills: false, claudeCommands: true, json: true })
     expect(allowed()).toBeUndefined()
-    expect(io.errLines.join('\n')).toContain("Claude Code command approval was not added: this session runs in Claude Code's `auto` permission mode")
+    expect(io.errLines.join('\n')).toContain("Claude Code command approval was not added: this session runs in Claude Code's `bypassPermissions` permission mode")
 
-    for (const mode of ['auto', 'acceptEdits', 'plan', 'bypassPermissions']) {
+    // What the session's own hooks report outranks the settings file. Every
+    // other mode asks, refuses or reviews an unmatched command, so it is
+    // offered, and an explicit yes grants it.
+    for (const mode of ['dontAsk', 'acceptEdits', 'plan', 'auto', 'default']) {
       recordClaudePermissionMode('claude-mode-session', deps.env, mode)
-      const reported = await state()
-      expect(reported).toMatchObject({ status: 'ready', technical: { permission_mode: mode, applicable: false } })
-      expect(reported?.remedy).toBeUndefined()
-      // Even an explicit request does not grant the rules outside default mode.
-      await initCommand(deps, { hooks: true, skills: false, claudeCommands: true, json: true })
-      expect(allowed()).toBeUndefined()
+      expect(await state()).toMatchObject({
+        status: 'optional-gap',
+        technical: { permission_mode: mode, permission_mode_source: 'hook', applicable: true },
+        remedy: { by: 'cli', command: 'notifai init --claude-commands' },
+      })
     }
-
-    // What the session's own hooks report outranks the settings file.
-    recordClaudePermissionMode('claude-mode-session', deps.env, 'default')
-    expect(await state()).toMatchObject({
-      status: 'optional-gap',
-      technical: { permission_mode: 'default', permission_mode_source: 'hook', applicable: true },
-      remedy: { by: 'cli', command: 'notifai init --claude-commands' },
-    })
+    recordClaudePermissionMode('claude-mode-session', deps.env, 'dontAsk')
     await initCommand(deps, { hooks: true, skills: false, claudeCommands: true, json: true })
     expect(allowed()).toEqual(expect.arrayContaining(['Bash(notifai ask *)']))
     expect(await state()).toMatchObject({ status: 'ready' })

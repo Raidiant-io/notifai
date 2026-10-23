@@ -1330,8 +1330,8 @@ function readinessRemedy(
 /**
  * Whether Claude Code may run the commands an away User depends on without a
  * terminal approval. Reported only once Claude Code is wired, never a blocker,
- * and offered unless this runs in a Claude Code session known to be outside
- * its default permission mode; see claude-command-approval.ts.
+ * and offered unless this runs in a Claude Code session known to be in
+ * bypassPermissions mode; see claude-command-approval.ts.
  */
 function claudeCommandStates(deps: CommandDeps, installations: readonly { harness: string }[]): ReadinessState[] {
   if (!installations.some((installation) => installation.harness === 'claude-code')) return []

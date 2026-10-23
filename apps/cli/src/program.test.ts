@@ -8,6 +8,8 @@ import type { CommandDeps } from './commands.js'
 import { QUESTION_SETTLEMENT_INPUT_ENV } from './question-settlement-process.js'
 import { GROK_ATTEND_INPUT_ENV } from './grok-attendant.js'
 import { SEND_WAIT_DEPRECATED } from './commands-send.js'
+import { CLAUDE_COMMANDS_PROSE } from './claude-command-approval.js'
+import { CODEX_COMMANDS_PROSE } from './codex-command-rules.js'
 
 /**
  * The layer these tests own is the argv boundary: what a real command line
@@ -314,6 +316,65 @@ describe('program argv parsing', () => {
     const replies = vi.fn(async () => 0) as unknown as ProgramRunners['replies']
     expect((await parse(['replies', 'req_x', '--wait', '5'], { replies })).exitCode).toBe(0)
     expect(replies).toHaveBeenCalledWith(expect.anything(), 'req_x', { wait: 5 })
+  })
+
+  it('keeps Agent Session id overrides working but out of help', async () => {
+    const help = (name: string) => buildProgram(makeDeps(), { runners: {}, exit: () => {} }).commands.find((command) => command.name() === name)!
+    expect(help('send').helpInformation()).not.toContain('--session-id')
+    const config = help('config')
+    for (const sub of ['set', 'unset']) {
+      expect(config.commands.find((command) => command.name() === sub)!.helpInformation(), sub).not.toContain('--session ')
+    }
+    let seen: Record<string, unknown> | undefined
+    const send = (async (_deps, flags) => ((seen = flags as Record<string, unknown>), 0)) as ProgramRunners['send']
+    expect((await parse(['send', '--kind', 'update', '--title', 'T', '--summary', 'S', '--session-id', 'sess_1'], { send })).exitCode).toBe(0)
+    expect(seen).toMatchObject({ sessionId: 'sess_1' })
+    let configSeen: Record<string, unknown> | undefined
+    const configSet = (async (_deps, _key, _value, opts) => ((configSeen = opts as Record<string, unknown>), 0)) as ProgramRunners['configSet']
+    expect((await parse(['config', 'set', 'sound', 'none', '--session', 'sess_1', '--yes'], { configSet })).exitCode).toBe(0)
+    expect(configSeen).toMatchObject({ session: 'sess_1' })
+  })
+
+  it('names every command the approval rules allow in the init consent text', () => {
+    const help = buildProgram(makeDeps(), { runners: {}, exit: () => {} }).commands.find((command) => command.name() === 'init')!.helpInformation().replace(/\s+/g, ' ')
+    expect(help).toContain(`let Claude Code run the Notifai ${CLAUDE_COMMANDS_PROSE} commands without a permission prompt`)
+    expect(help).toContain(`let Codex run the Notifai ${CODEX_COMMANDS_PROSE} commands outside its sandbox without a permission prompt`)
+  })
+
+  it('accepts inline forms only with --form-json', async () => {
+    let seen: Record<string, unknown> | undefined
+    const ask = (async (_deps, _question, flags) => ((seen = flags as Record<string, unknown>), 0)) as ProgramRunners['ask']
+    const inline = '{"title":"Release","summary":"Release choices?","questions":[{"text":"Ship it?","choices":["Ship","Hold"]}]}'
+    for (const json of [inline, `\n  ${inline}`]) {
+      expect((await parse(['ask', '--form-json', json], { ask })).exitCode).toBe(0)
+      expect(seen).toEqual({ form: json })
+    }
+  })
+
+  it('keeps form file paths literal even when they start with braces or whitespace', async () => {
+    let seen: Record<string, unknown> | undefined
+    const ask = (async (_deps, _question, flags) => ((seen = flags as Record<string, unknown>), 0)) as ProgramRunners['ask']
+    const inline = '{"title":"Release","summary":"Release choices?","questions":[{"text":"Ship it?"}]}'
+    const dir = mkdtempSync(path.join(os.tmpdir(), 'notifai-program-form-'))
+    const deps = makeDeps()
+    deps.cwd = dir
+    for (const file of ['form.json', '{release}.json', '  {release}.json']) {
+      writeFileSync(path.join(dir, file), inline)
+      expect((await parse(['ask', '--form', file], { ask }, deps)).exitCode).toBe(0)
+      expect(seen).toEqual({ form: inline })
+    }
+    const missing = await parse(['ask', '--form', '{missing}.json'], { ask }, deps)
+    expect(missing.exitCode).toBe(2)
+    expect(missing.deps.errLines.join('\n')).toContain('{missing}.json')
+  })
+
+  it('rejects ambiguous form inputs before dispatching the question', async () => {
+    const ask = vi.fn(async () => 0) as ProgramRunners['ask']
+    const inline = '{"title":"Release","questions":[]}'
+    const both = await parse(['ask', '--form', 'form.json', '--form-json', inline], { ask })
+    expect(both.exitCode).toBe(2)
+    expect(both.deps.errLines.join('\n')).toContain('either --form or --form-json')
+    expect(ask).not.toHaveBeenCalled()
   })
 
   it('reads --body-file and refuses it alongside --body', async () => {

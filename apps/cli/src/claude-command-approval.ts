@@ -1,25 +1,26 @@
 /**
  * Claude Code permission rules for the Notifai commands an away User depends on.
  *
- * Outside a mode that skips permission prompts, Claude Code asks before each
- * Bash command it has no rule for. A question, its wake, and its
- * acknowledgement are all Bash commands, so without these rules the first one
- * waits at a terminal nobody is watching and nothing reaches a device.
+ * Claude Code checks each Bash command against its permission rules. When no
+ * rule matches, every mode but bypassPermissions holds the command up: default
+ * and acceptEdits ask at the terminal, dontAsk refuses it, and auto (and plan,
+ * where auto is available) hands it to a classifier that may block it and,
+ * after repeated blocks, asks. A question, its wake, and its acknowledgement
+ * are all Bash commands, so without these rules the first one can wait at a
+ * terminal nobody is watching, or never run, and nothing reaches a device. A
+ * matching rule runs the command at once in all of these modes.
  *
  * The rules are the User's to grant: setup offers them and writes them only on
  * a yes. They cover sending, asking, reading and acknowledging. Setup,
  * configuration, guidance edits, logs and sign-out keep their prompt.
  *
  * The offer is made at a terminal outside Claude Code, and inside a Claude
- * Code session unless the session is known to run in another permission mode
- * (auto, acceptEdits, plan, bypassPermissions): bypass does not need the
- * rules, and Claude Code does not say how its auto mode judges a command that
- * grants itself permission rules. The mode is known from, in order, what the
- * session's own hooks last reported, the mode the session was started with,
- * and `permissions.defaultMode` in the Claude Code settings. First-time setup
- * runs before any hook has reported, so a mode none of these names is
- * Claude Code's default and the offer stands: an explicit yes is never
- * dropped for want of a report.
+ * Code session unless the session is known to run in bypassPermissions mode,
+ * which runs every command without asking and so gains nothing. The mode is
+ * known from, in order, what the session's own hooks last reported, the mode
+ * the session was started with, and `permissions.defaultMode` in the Claude
+ * Code settings. First-time setup runs before any hook has reported, so the
+ * offer stands: an explicit yes is never dropped for want of a report.
  */
 import { existsSync } from 'node:fs'
 import path from 'node:path'
@@ -40,6 +41,15 @@ export const CLAUDE_COMMAND_RULES: readonly string[] = [
   'Bash(notifai guidance)',
   'Bash(notifai session rename *)',
 ]
+
+function proseList(items: readonly string[]): string {
+  return items.length < 2 ? items.join('') : `${items.slice(0, -1).join(', ')} and ${items.at(-1)}`
+}
+
+/** The commands the rules allow, as the consent and readiness text names them. */
+export const CLAUDE_COMMANDS_PROSE = proseList([
+  ...new Set(CLAUDE_COMMAND_RULES.map((rule) => /^Bash\(notifai ([a-z ]+?)(?: \*)?\)$/.exec(rule)![1]!)),
+])
 
 function allowList(document: SettingsDocument): unknown[] | null {
   const permissions = document['permissions']
@@ -113,8 +123,8 @@ export function installClaudeCommandRules(env: NodeJS.ProcessEnv): boolean {
   })
 }
 
-/** Claude Code's ordinary mode, where it asks before each command it has no rule for. */
-export const CLAUDE_DEFAULT_PERMISSION_MODE = 'default'
+/** The one Claude Code mode that runs every command without asking, so the rules add nothing there. */
+export const CLAUDE_UNGATED_PERMISSION_MODE = 'bypassPermissions'
 
 function usableMode(value: unknown): string | undefined {
   return typeof value === 'string' && /^[A-Za-z]{1,32}$/.test(value) ? value : undefined
@@ -208,7 +218,7 @@ export function claudeCommandsNotWritten(state: ReadinessState | undefined, inst
   if (installed || attempted) return null
   const technical = state?.technical as { permission_mode?: unknown; applicable?: unknown } | undefined
   if (state !== undefined && technical?.applicable === false && typeof technical.permission_mode === 'string') {
-    return `Claude Code command approval was not added: this session runs in Claude Code's \`${technical.permission_mode}\` permission mode, and the approval is only for its default mode. To add it, run \`notifai init --claude-commands\` from a terminal or from a Claude Code session in its default mode.`
+    return `Claude Code command approval was not added: this session runs in Claude Code's \`${technical.permission_mode}\` permission mode, which runs every command without asking. To add it for the other modes, run \`notifai init --claude-commands\` from a terminal or from a Claude Code session in another mode.`
   }
   if (state === undefined) {
     return 'Claude Code command approval was not added: Notifai is not set up for Claude Code on this machine yet. Run `notifai init --hooks --claude-commands` to set up both.'
@@ -224,22 +234,22 @@ export function claudeCommandReadiness(installed: boolean, context: ClaudeComman
     return {
       ...base,
       status: 'ready',
-      detail: 'Claude Code runs the Notifai send, ask, receive and acknowledge commands without asking first',
+      detail: `Claude Code runs the Notifai ${CLAUDE_COMMANDS_PROSE} commands without asking first`,
     }
   }
   const source = context?.source ?? null
-  if (context !== null && mode !== null && mode !== CLAUDE_DEFAULT_PERMISSION_MODE) {
+  if (context !== null && mode === CLAUDE_UNGATED_PERMISSION_MODE) {
     return {
       ...base,
       status: 'ready',
-      detail: `not applicable in this session's \`${mode}\` permission mode; it is offered only in Claude Code's default mode`,
+      detail: `not needed in this session's \`${mode}\` permission mode, which runs every command without asking`,
       technical: { permission_mode: mode, permission_mode_source: source, applicable: false },
     }
   }
   return {
     ...base,
     status: 'optional-gap',
-    detail: 'not granted, so in its default mode Claude Code asks at the terminal before each Notifai command and a question cannot leave while you are away',
+    detail: 'not granted, so depending on its permission mode Claude Code asks before each Notifai command, refuses it, or leaves it to its classifier, and a question can wait unseen while you are away',
     ...(context === null ? {} : { technical: { permission_mode: mode, permission_mode_source: source, applicable: true } }),
     remedy: {
       by: 'cli',

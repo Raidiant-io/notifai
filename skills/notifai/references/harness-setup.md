@@ -87,7 +87,8 @@ The prepared User message for this human-only action is:
 
 Read only the file for the harness you are in: when installing or verifying
 its activation, when you need how its questions, answers and notes arrive or
-how it approves Notifai commands, or after a Notifai update:
+how it approves Notifai commands, or after a Notifai update. Claude Code,
+Codex, Cursor and Grok each say how they approve Notifai commands.
 
 - [Claude Code](harness-claude-code.md)
 - [Codex](harness-codex.md)
@@ -148,7 +149,10 @@ With “Send questions to my devices” (`ask_notifications`) off, ask in the
 conversation, or in your own question form, which stays in the terminal.
 `doctor` reports that setting as the User's choice, not as a gap.
 
-`NOTIFAI_NO_INPUT=1` guarantees no command will ever prompt, which is what you
-want in CI or any shell with nobody at it. `NOTIFAI_CREDENTIALS=file` stores the
-machine credential in a plaintext file rather than the OS keychain — only when
-the user has asked for it, and never on a shared machine.
+`NOTIFAI_NO_INPUT=1` is for scripts and CI: with it, no command ever prompts.
+Run `notifai` without it: the CLI never prompts in a shell nobody is at, and
+harness approval rules do not match a command that starts with a variable.
+
+`NOTIFAI_CREDENTIALS=file` stores the machine credential in a plaintext file
+rather than the OS keychain — only when the user has asked for it, and never on
+a shared machine.

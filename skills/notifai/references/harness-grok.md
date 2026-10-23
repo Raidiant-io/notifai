@@ -65,6 +65,16 @@ on that host. On Windows the leader route is unverified. If the leader is
 unavailable or its protocol changes, message delivery stops rather than guess
 another session.
 
+## Command approval
+
+In its default permission mode Grok asks before each shell command it has no
+rule for, so an away User's question can wait at an approval nobody sees.
+Grok also applies the allow rules in the User's Claude Code settings, so once
+the User has granted Claude Code command approval (`notifai init
+--claude-commands`), Grok runs Notifai commands written as the skill's Send
+section shows without asking. Notifai writes no Grok rules; never change
+Grok's permission mode or rules yourself.
+
 ## After a Notifai update
 
 The native hooks call the updated CLI; reread guidance in the current Agent

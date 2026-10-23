@@ -56,15 +56,32 @@ outside the repository), no flag writes this machine, and `--yes` skips the
 CLI's confirmation once the User approved the value and layer:
 
 ```bash
-notifai guidance set when-to-notify "Only when you're blocked or CI-length work finishes" --local --yes
+notifai guidance set when-to-notify 'Only when you'"'"'re blocked or CI-length work finishes' --local --yes
 ```
 
 ## Send
 
+Preserve text exactly, including the User's guidance. Quote every text value
+for the tool's shell:
+
+- **bash/zsh**: single-quote the value;
+  nothing expands. For each ASCII apostrophe, close the single quotes,
+  double-quote the apostrophe, and reopen the single quotes: `'SELECT '"'"'ready'"'"';'`
+  passes `SELECT 'ready';`.
+- **PowerShell**: single-quote; nothing expands.
+  Double each single-quote character inside it: `'`, `’`,
+  `‘`, `‚` and `‛`: `'It''s ‘‘ready’’.'` passes `It's ‘ready’.`.
+  Windows PowerShell 5.1/Legacy: [use files](references/shell-quoting.md)
+  for empty values, trailing backslashes or double quotes.
+
+Keep `notifai` as one plain command for approval rules. When quoting or a file
+write needs approval, let the harness ask; never replace
+characters to avoid it ([shell limits](references/shell-quoting.md#harness-shells-and-approvals)).
+
 ```bash
 notifai send --kind done \
-  --title "Users can now create accounts" \
-  --summary "Sign-up, verification, and login now work on staging."
+  --title 'Users can now create accounts' \
+  --summary 'Sign-up, verification, and login now work on staging.'
 ```
 
 `--kind` is required and decides how insistently it arrives. **Declare the
@@ -78,8 +95,8 @@ kind that is true.**
 | `blocked` | waiting, and no User reply would resume the work; otherwise [ask](#ask-a-question) | attention tone |
 | `question` | set by `notifai ask`; never pass it | attention tone |
 
-Each field has a fixed shape; how to write it is the `titles` and `content`
-guidance, with worked examples in [Writing examples](references/writing-examples.md):
+Follow `titles`, `content` and
+[Writing examples](references/writing-examples.md). Field shapes:
 
 - **Title**: stands alone; the kind and the Project travel as their own
   fields, never in it.
@@ -89,19 +106,18 @@ guidance, with worked examples in [Writing examples](references/writing-examples
   the Summary says, then the detail; focused views show the Body or the
   Summary, never both. Omit it when the Summary suffices.
 
-Pass a Body that has Markdown, line breaks, backticks, `$` or quotes as a file:
-write it in the system temp directory, never the repository, and pass
-`--body-file <path>`. Command-approval rules match only a plain `notifai …`
-argument list, and inside quotes the shell expands `$` and backticks. Images
-(`--image`, referenced in the Body as `![alt](media:1)`), grouping, replacement and
-the User-owned `--sound`, `--level` and `--device`:
-[Sending details](references/send-details.md).
+Pass the Body inline as `--body '…'`, with real line breaks inside the quotes.
+Use `**Heading**` lines instead of line-leading `#` in inline Bodies.
+For files, see [shell details](references/shell-quoting.md);
+write it in the system temp directory, never the repository.
+Images (`--image`, referenced in the Body as
+`![alt](media:1)`), grouping, replacement and the User-owned `--sound`,
+`--level` and `--device`: [Sending details](references/send-details.md).
 
 Project and Agent Session are inferred; never pass `--session-id`. Outside a
 Project, or on a Projectless request, pass `--projectless`; it stops cwd or
-config from supplying Project identity. If the User disabled the Project you
-are working in, `send` and `ask` refuse even with `--projectless`; nothing
-from that Project reaches their devices until they enable it again.
+config from supplying Project identity. A User-disabled Project refuses
+`send` and `ask`, even with `--projectless`, until the User enables it.
 
 ### Name the Agent Session
 
@@ -115,7 +131,7 @@ Pass the same `--session-label` on every send and ask; to rename, use
 
 At each change of job, check whether the name still describes the work. If the
 job changed completely enough that the old name would mislead the User, run
-`notifai session rename "New job"` as you start it, without waiting for a
+`notifai session rename 'New job'` as you start it, without waiting for a
 notification or User reminder, and pass the new name as `--session-label` from
 then on. Keep the name for milestones, ordinary progress, and same-job
 refinements. The command takes no Agent Session id: the active harness must
@@ -140,11 +156,11 @@ Ask the way you would without Notifai:
   User's devices.
 
 ```bash
-notifai ask "Deploy the schema change to production now?" \
-  --title "Production deploy" \
-  --choice "Deploy now" --choice-description "About two minutes of downtime." \
-  --choice "Wait for off-peak" --choice-description "Deploys at 02:00 UTC, no downtime." \
-  --recommended "Wait for off-peak"
+notifai ask 'Deploy the schema change to production now?' \
+  --title 'Production deploy' \
+  --choice 'Deploy now' --choice-description 'About two minutes of downtime.' \
+  --choice 'Wait for off-peak' --choice-description 'Deploys at 02:00 UTC, no downtime.' \
+  --recommended 'Wait for off-peak'
 ```
 
 The positional question is the Summary: the exact question, at most 240
@@ -153,9 +169,10 @@ Offer 2-6 closed choices, one `--choice` each (commas are literal), each
 followed by its `--choice-description` when the label alone does not say what
 it does. Companion Apps show a description on its choice, so
 never restate the choices in the Body. The User can always type an answer
-instead. Add `--body-file` for standalone Markdown reasoning, `--image` for
-evidence, `--multi` when several choices may combine, or `--form <path>` for up
-to 10 questions decided together ([format](references/send-details.md)).
+instead. Add `--body '…'` for standalone Markdown reasoning, `--image` for
+evidence, `--multi` when several choices may combine, or `--form-json '{…}'` with
+the form's JSON for up to 10 questions decided together
+([format](references/send-details.md)).
 Register independent questions separately, and never register an open
 question again.
 
@@ -216,7 +233,7 @@ arrives through Notifai owes one acknowledgement before the work it unblocks.
 The context it arrives with gives the exact command:
 
 ```bash
-notifai acknowledge <request_id> --text "<the concrete work this reply sets in motion>"
+notifai acknowledge <request_id> --text '<the concrete work this reply sets in motion>'
 ```
 
 Keep the text under 200 characters. When acknowledgement text is off,
@@ -280,23 +297,20 @@ Ordinary sends are silent on success; `--json` gives a receipt.
 Acceptance proves the provider took it and a Companion Receipt that the app
 got it; neither proves the User read it, and `unknown` is not failure.
 
-When something did not happen and you cannot see why, most of all after `ask`,
-`notifai logs` is the only account: its `hook.gate` records carry a fixed
-reason. Read [Diagnosing what happened](references/diagnostics.md) for
-filters, the reasons, and sign-in versus plan problems. The log never leaves
-the machine and holds the User's answers: treat it as private.
+For unexplained failures, especially after `ask`, read `notifai logs` and its
+`hook.gate` reasons: [Diagnosing what happened](references/diagnostics.md).
+The log holds the User's answers and never leaves the machine.
 
 | exit | meaning | what to do |
 | --- | --- | --- |
 | 0 | it worked | carry on |
-| 1 | failed; inspect stderr and any JSON result | fix it; a bare retry fails again |
-| 2 | usage *or* setup; `ask --json` reports code and remedy on stdout, other commands explain on stderr | follow the fix |
-| 3 | command-specific: a held `ask --wait` ended unanswered and withdrew the question; `replies` found no reply in this read or bounded wait; legacy `send --reply` ended its wait without a reply | follow the command's state; `replies` does not withdraw the question |
+| 1 | failed | inspect stderr and any JSON result; fix before retrying |
+| 2 | usage or setup | follow the printed remedy |
+| 3 | no answer or reply | follow the [command-specific state](references/send-details.md#reading-command-results) |
 | 4 | this machine is not signed in | see [Set Notifai up](#set-notifai-up) |
 | 5 | network | for `send`, rerun the exact command with `--retry`; for `ask --wait`, follow its output |
 
-After an interrupted or killed `send`, do not correlate redacted logs by title
-or time. Recover only by re-running the exact semantic send with `--retry`;
-the CLI reuses one opaque matching attempt or refuses ambiguity. A refusal
-requires checking a known request id with `status` or asking the User before
-creating a new send. Never remove `--retry` just to bypass the refusal.
+After an interrupted or killed `send`, recover with the exact semantic send
+and `--retry`: it reuses one opaque matching attempt or refuses ambiguity.
+Never correlate redacted logs by title or time, or remove `--retry` to bypass
+a refusal; check a known request id with `status` or ask the User before a new send.

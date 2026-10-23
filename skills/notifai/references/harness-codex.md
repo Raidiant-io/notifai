@@ -142,9 +142,18 @@ The rule has three limits, and readiness names each:
   not ask. Never suggest ending that session while one of its questions is
   waiting, because closing the session expires the question.
 - Only a literal `notifai …` argument list matches. Call `notifai` by name,
-  never by absolute path or `node …/main.js`, and never through redirection, a
-  heredoc, `$()` or `VAR=…`: Codex cannot split such a script, so nothing
-  matches and the command stays in the sandbox.
+  never by absolute path or `node …/main.js`. Use the skill's POSIX rule:
+  single-quote each value and join literal pieces around each apostrophe,
+  as in `'SELECT '"'"'ready'"'"';'`. This preserves the exact text and matches
+  `notifai.rules`, including multiline Bodies and `--form-json` forms.
+  The backslash variant `'it'\''s'` is lossless in the shell but prevents
+  matching. Redirection, a heredoc, pipe, `VAR=…` or expansion can also leave
+  the command in the sandbox. For a Body or form already in a file, use
+  `--body-file <path>` or `--form <path>`; write it in the system temp directory,
+  never the repository. Preparing the file has its own
+  permission gate. On Windows, use the
+  [PowerShell rule and native argument limits](shell-quoting.md); matching
+  the Windows harness's command rules has not been verified.
 - Rules are experimental, and the most restrictive rule wins. When readiness
   says the rule check fails, or that your organization forbids it, approve
   Notifai commands when Codex asks; hooks keep working.

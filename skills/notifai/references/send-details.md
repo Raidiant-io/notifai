@@ -13,8 +13,11 @@ or a position with no `--image` is an error.
 User asked for it on this send. `--sound` takes a shipped name or a custom
 name/id from `notifai sounds`.
 
-`ask --form <path>` asks up to 10 questions decided together, answered as one
-reply. The file is JSON:
+`ask --form-json '{…}'` asks up to 10 questions decided together, answered as one
+reply. Quote inline JSON for your shell as the skill's Send section explains,
+line breaks and all. `--form <path>` reads a JSON file, and `--form -` reads
+stdin; paths are always paths, even when their names start with `{`.
+When creating a form file, write it in the system temp directory, never the repository.
 
 ```json
 {
@@ -44,6 +47,10 @@ recommended.
 are explained on stderr and do not promise a JSON error object. `ask --json`
 refusals instead return an object on stdout with `ok: false`, `code`, and
 `remedy`.
+
+Exit 3 depends on the command: a held `ask --wait` ended unanswered and withdrew
+the question; `replies` found no reply in this read or bounded wait without
+withdrawing anything; legacy `send --reply` ended its wait without a reply.
 
 `replies --pending --json` keeps its shipped result shapes: no pushed question
 returns `session_id`, `pending` and an empty `replies`; one pushed question

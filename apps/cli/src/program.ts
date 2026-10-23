@@ -65,6 +65,8 @@ import { LOCAL_CONTINUITY, LOCAL_CONTINUITY_CAPABILITIES } from './local-continu
 import { NativeSelectionChanged, retryNativeSelection } from './native-launch-retry.js'
 import { PROJECT_LAYER_REMOVED, takeRepositoryConfigNotice } from './repository-config-retirement.js'
 import { readLocalText } from './local-input.js'
+import { CLAUDE_COMMANDS_PROSE } from './claude-command-approval.js'
+import { CODEX_COMMANDS_PROSE } from './codex-command-rules.js'
 
 /**
  * One source of truth for the version: the manifest npm actually published.
@@ -356,9 +358,9 @@ export function buildProgram(deps: CommandDeps, options: BuildProgramOptions = {
     )
     .option('--hooks', 'install supported harness lifecycle hooks')
     .option('--no-hooks', 'skip the hooks without being asked')
-    .option('--claude-commands', 'let Claude Code run the Notifai send, ask, receive and acknowledge commands without a permission prompt; inside Claude Code, not added when the session is known to run outside its default permission mode')
+    .option('--claude-commands', `let Claude Code run the Notifai ${CLAUDE_COMMANDS_PROSE} commands without a permission prompt; inside Claude Code, not added when the session is known to run in bypassPermissions mode, which needs none`)
     .option('--no-claude-commands', 'leave Claude Code command approval as it is without being asked')
-    .option('--codex-commands', 'let Codex run the Notifai send, ask, receive and acknowledge commands outside its sandbox without a permission prompt')
+    .option('--codex-commands', `let Codex run the Notifai ${CODEX_COMMANDS_PROSE} commands outside its sandbox without a permission prompt`)
     .option('--no-codex-commands', 'leave Codex command approval as it is without being asked')
     .action(
       async (opts: {
@@ -644,7 +646,8 @@ export function buildProgram(deps: CommandDeps, options: BuildProgramOptions = {
     .option('--projectless', 'deliberately omit Project identity for this notification')
     .option('--device <id>', 'target a device id (repeatable)', (v: string, all: string[] = []) => [...all, v])
     .option('--all', 'target all routable devices (overrides configured devices)')
-    .option('--session-id <id>', 'low-level automation override for an opaque exact Agent Session (env: NOTIFAI_SESSION_ID)')
+    // Accepted for shipped automation; help never invites an Agent Session id.
+    .addOption(new Option('--session-id <id>', 'low-level automation override for an opaque exact Agent Session (env: NOTIFAI_SESSION_ID)').hideHelp())
     .option(
       '--session-label <text>',
       'initial Agent Session name; repeat the same name, use session rename for a changed job (env: NOTIFAI_SESSION_LABEL)',
@@ -797,7 +800,8 @@ export function buildProgram(deps: CommandDeps, options: BuildProgramOptions = {
       '--literal-backslash-n',
       'allow the two-character sequence \\n in --body instead of treating it as a mistaken escaped newline',
     )
-    .option('--form <path>', 'ask several questions as one form; JSON file (use - for stdin) with "title", "summary" and "questions", each question carrying its own "title" when there are several')
+    .option('--form <path>', 'ask several questions from a JSON file (use - for stdin), with "title", "summary" and "questions", each question carrying its own "title" when there are several')
+    .option('--form-json <json>', 'ask several questions from inline JSON; use --form for a file or stdin')
     .option(
       '--image <path|url|media_id>',
       'upload or attach an image; show it in Body as ![description](media:N), N in --image order (repeatable, maximum 8)',
@@ -826,6 +830,7 @@ export function buildProgram(deps: CommandDeps, options: BuildProgramOptions = {
       bodyFile?: string
       literalBackslashN?: boolean
       form?: string
+      formJson?: string
       image?: string[]
       imageAlt?: string[]
       project?: string
@@ -851,7 +856,14 @@ export function buildProgram(deps: CommandDeps, options: BuildProgramOptions = {
         }
         body = read.text
       }
-      let form: string | undefined
+      if (opts.form !== undefined && opts.formJson !== undefined) {
+        return exit(reportAskFailure(deps, opts, {
+          code: 'invalid_input', check_id: 'form', exit_code: 2,
+          remedy: 'pass either --form or --form-json, then retry',
+          message: 'Pass either --form or --form-json, not both.',
+        }))
+      }
+      let form = opts.formJson
       if (typeof opts.form === 'string') {
         const read = readInputFile(deps, opts.form, '--form')
         if (!read.ok) {
@@ -1028,8 +1040,9 @@ export function buildProgram(deps: CommandDeps, options: BuildProgramOptions = {
       'Set a configuration value (choose a layer interactively; unattended defaults machine-global and requires --yes)',
     )
     .option('--local', 'write a personal project preference on this machine (not in the repo)')
-    .option('--session <id>', 'apply only to one Agent Session')
+    .addOption(new Option('--session <id>', 'apply only to one Agent Session').hideHelp())
     .option('--yes', 'skip the confirmation gate, only when the User asked for this change directly')
+
     .addOption(removedProjectOption())
     .action(
       async (
@@ -1047,8 +1060,9 @@ export function buildProgram(deps: CommandDeps, options: BuildProgramOptions = {
       'Remove a configuration value so the next layer or shipped default applies (choose a layer interactively; unattended defaults machine-global and requires --yes)',
     )
     .option('--local', 'remove a personal project preference stored on this machine')
-    .option('--session <id>', 'remove from one Agent Session')
+    .addOption(new Option('--session <id>', 'remove from one Agent Session').hideHelp())
     .option('--yes', 'skip the confirmation gate, only when the User asked for this change directly')
+
     .addOption(removedProjectOption())
     .action(
       async (

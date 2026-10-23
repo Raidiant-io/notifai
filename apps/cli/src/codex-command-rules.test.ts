@@ -5,6 +5,7 @@ import path from 'node:path'
 import { describe, expect, it } from 'vitest'
 import {
   CODEX_ALLOWED_COMMANDS,
+  CODEX_COMMANDS_PROSE,
   CODEX_COMMAND_RULES_HEADER,
   CODEX_RULE_CHECK_COMMAND,
   assessCodexCommandRules,
@@ -39,11 +40,15 @@ function skillCommandExamples(source: string): string[][] {
   const examples: string[][] = []
   for (const block of source.matchAll(/```bash\n([\s\S]*?)```/g)) {
     const script = block[1]!.replace(/\\\n\s*/g, ' ')
-    for (const line of script.split('\n')) {
+    // Literal quoted pieces may hold real line breaks and concatenate;
+    // only an unquoted line break ends a command.
+    for (const line of script.match(/(?:'[^']*'|"[^"]*"|[^'"\n])+/g) ?? []) {
       const trimmed = line.trim()
       if (!trimmed.startsWith('notifai ')) continue
       // Quoted text is one word to a shell; operators matter only outside it.
-      const unquoted = trimmed.replace(/"[^"]*"|'[^']*'|<[^<>\s]+>/g, 'q')
+      const unquoted = trimmed.replace(/'[^']*'|"[^"$`\\]*"|<[^<>\s]+>/g, 'q')
+      // Every quoted piece is literal, including a double-quoted apostrophe.
+      expect(unquoted, trimmed).not.toContain('"')
       expect(unquoted, trimmed).not.toMatch(/<<|\$\(|`|(^|\s)[A-Z_]+=|\||&&|;|>|</)
       examples.push(shellWords(trimmed))
     }
@@ -204,6 +209,12 @@ describe('Codex command approval readiness', () => {
       status: 'optional-gap',
       remedy: { by: 'user-here', command: 'notifai init --codex-commands' },
     })
+  })
+
+  it('names every command the rule allows when it reports the rule in place', () => {
+    expect(CODEX_COMMANDS_PROSE).toBe('send, ask, receive, acknowledge, status, replies, close, guidance and session rename')
+    expect(codexCommandReadiness({ inspection: current, ownCheck: allow, layerCheck: allow }).detail).toContain(CODEX_COMMANDS_PROSE)
+    expect(codexCommandReadiness({ inspection: current, ownCheck: null }).detail).toContain(CODEX_COMMANDS_PROSE)
   })
 
   it('is ready once the rule is written, verified or not', () => {
