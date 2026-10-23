@@ -27,8 +27,8 @@ import { claudePickerHolds } from './claude-question-hooks.js'
 import { createClient, type ApiClient } from './client.js'
 import { codexInputObserver, refreshCodexInputActivity } from './codex-input-lifecycle.js'
 import { connectCodexQueue } from './codex-queue-control.js'
-import { codexAttachVerified, codexThreadAttachState, type CodexAttachInput, type CodexAttachState } from './codex-attach-signal.js'
-import { checkCodexServerBuild } from './codex-attach-canary.js'
+import { codexAttachVerified, codexThreadAttachState, codexAttachResultFor, hostBinaryIdentity, type CodexAttachInput, type CodexAttachState } from './codex-attach-signal.js'
+import { CODEX_ATTACH_RETRY_MS, checkCodexServerBuild, codexAttachRetryMs } from './codex-attach-canary.js'
 import {
   codexAppSurface,
   codexHostHoldsThread,
@@ -127,11 +127,15 @@ import {
   hasSessionInputs,
   pendingInputRevisionIds,
   inputWakeDeferred,
+  inputWakeBackoffMs,
+  inputWakeRetryDeferred,
+  recordInputWakeFailure,
   inputWakeOverdue,
   reconcileSessionInputWakes,
   stageSessionMessages,
   wakeCodexSessionInputs,
   wakeSessionInputs,
+  WAKE_SEND_TIMEOUT_MS,
 } from './session-inputs.js'
 import { compareVersions } from './version.js'
 import { QUESTION_WAITER_CEILING_SECONDS } from './question-timing.js'
@@ -274,7 +278,7 @@ export interface HubOptions {
     /** Whether Codex's behaviour was checked for the binary this host runs. */
     verified?: (host: ProcessIdentity) => boolean
     state?: (input: CodexAttachInput) => Promise<CodexAttachState>
-    checkBuild?: (host: ProcessIdentity) => Promise<{ outcome: 'passed' | 'failed'; step?: number; codexVersion: string | null; detail?: string } | null>
+    checkBuild?: (host: ProcessIdentity) => Promise<{ outcome: 'passed' | 'failed'; step?: number; startFailures?: number; codexVersion: string | null; detail?: string } | null>
     watchMs?: number
   }
   /** Test seam: whether a process holds a Codex thread's writer lock; production asks `lsof` or `/proc`. */
@@ -811,11 +815,11 @@ class HubSession implements AttendedSession {
     let pending = false
     const state = readSessionState(this.id, this.env)
     // A wake shown without its input handed in spaces out the next one.
-    if (inputWakeDeferred(state, this.hub.clock.wall())) return
+    if (inputWakeDeferred(state, this.hub.clock.wall()) || inputWakeRetryDeferred(state, this.hub.clock.wall())) return
     if (this.harness === 'claude-code') {
       pending = !claudePickerHolds(state) &&
         (!state.input_wake?.queued || (this.settledIdle() && inputWakeOverdue(state, this.hub.clock.wall()))) &&
-        hasSessionInputs(this.id, this.env, null)
+        hasSessionInputs(this.id, this.env, lease)
     } else {
       const waiting = !state.input_wake?.queued && hasSessionInputs(this.id, this.env, lease)
       pending = waiting && (this.codexObserver?.mayWake() ?? false)
@@ -865,7 +869,10 @@ class HubSession implements AttendedSession {
     // While the picker is on screen nothing else can be shown, and its handler
     // returns the answer as the picker's own result. A note still gets a wake.
     if (messages.length === 0 && claudePickerHolds(readSessionState(this.id, this.env))) return 'done'
-    await wakeSessionInputs(this.id, this.env, async (text) => (await this.writeClaude(text)) === 'written',
+    await wakeSessionInputs(this.id, this.env, async (text) => {
+      const result = await this.writeClaude(text)
+      return result === 'written' || result === 'failed' ? result : 'not-attempted'
+    },
       this.hub.logger, { unique: true, replaceLost: () => this.settledIdle(), now: () => this.hub.clock.wall() })
     return 'done'
   }
@@ -892,6 +899,7 @@ class HubSession implements AttendedSession {
     if (incarnation === null || generation === null || !this.mayWrite()) return 'retry-soon'
     const lease: DeliveryLease = { incarnation: this.lease.incarnation, generation }
     stageSessionMessages(this.id, this.env, lease, messages)
+    if (inputWakeRetryDeferred(readSessionState(this.id, this.env), this.hub.clock.wall())) return 'done'
     const mayWake = (): boolean => this.codexObserver?.mayWake() ?? false
     if (await wakeCodexSessionInputs({ sessionId: this.id, env: this.env, lease, mayWrite: () => this.mayWrite(), mayWake,
       unknownAllowed: () => this.codexObserver?.unknownAllowed() ?? false,
@@ -900,12 +908,14 @@ class HubSession implements AttendedSession {
     // Recheck eligibility and pending input immediately before queue admission;
     // a hook may have consumed the batch since the last exchange.
     const cwd = this.registration.cwd ?? process.cwd()
-    await wakeSessionInputs(this.id, this.env, async (text) => {
-      if (!this.mayWrite() || !mayWake() || !hasSessionInputs(this.id, this.env, lease)) return false
-      const result = await deliverIntoCodexThread({ threadId: this.id, cwd, env: this.env, adapters: this.hub.codexAdapters(this), text,
+    await wakeSessionInputs(this.id, this.env, async (text, signal) => {
+      if (!this.mayWrite() || !mayWake() || !hasSessionInputs(this.id, this.env, lease)) return 'not-attempted'
+      const deadlineAt = performance.now() + WAKE_SEND_TIMEOUT_MS
+      const result = await deliverIntoCodexThread({
+        signal, guard: { writable: () => !signal.aborted && this.mayWrite(), remainingMs: () => Math.max(0, deadlineAt - performance.now()) }, threadId: this.id, cwd, env: this.env, adapters: this.hub.codexAdapters(this), text,
         begin: () => this.mayWrite() && mayWake() && hasSessionInputs(this.id, this.env, lease) })
-      return result.status === 'written'
-    }, this.hub.logger)
+      return result.status === 'written' || result.status === 'failed' ? result.status : 'not-attempted'
+    }, this.hub.logger, { now: () => this.hub.clock.wall() })
     return 'done'
   }
 
@@ -2768,12 +2778,14 @@ export class Hub {
     if (readSessionState(session.id, session.env).input_wake?.queued === true || !hasSessionInputs(session.id, session.env, lease) || !open()) return
     this.stoppedWaking.add(session.id)
     try {
-      await wakeSessionInputs(session.id, session.env, async (text) => {
-        if (!open() || !hasSessionInputs(session.id, session.env, lease)) return false
-        const result = await deliverIntoCodexThread({ threadId: session.id, cwd: session.registration.cwd ?? process.cwd(), env: session.env,
+      await wakeSessionInputs(session.id, session.env, async (text, signal) => {
+        if (!open() || !hasSessionInputs(session.id, session.env, lease)) return 'not-attempted'
+        const deadlineAt = performance.now() + WAKE_SEND_TIMEOUT_MS
+        const result = await deliverIntoCodexThread({
+        signal, guard: { writable: () => !signal.aborted && open(), remainingMs: () => Math.max(0, deadlineAt - performance.now()) }, threadId: session.id, cwd: session.registration.cwd ?? process.cwd(), env: session.env,
           adapters: this.codexAdapters(session), text, begin: open })
         this.logger.info('hub.session', { event: 'stopped-wake', session: session.id, outcome: result.status })
-        return result.status === 'written'
+        return result.status === 'written' || result.status === 'failed' ? result.status : 'not-attempted'
       }, this.logger)
     } catch (err) {
       this.logger.error('hub.session', { event: 'stopped-wake', session: session.id, message: err instanceof Error ? err.message : String(err) })
@@ -3211,6 +3223,8 @@ export class Hub {
   private readonly sharedHosts = new Map<string, boolean>()
   private readonly attachChecking = new Set<string>()
   private codexBuildChecking = false
+  private readonly codexBuildFailures = new Map<string, number>()
+  private readonly codexBuildRetryAt = new Map<string, number>()
   private attachWatchTimer: ReturnType<typeof setInterval> | null = null
 
   /** Whether the session's Codex host is the shared server (asked once per host process). */
@@ -3259,7 +3273,17 @@ export class Hub {
     if (this.attachChecking.has(session.id) || session.ending !== null || session.stopped !== null || session.endCandidate !== null ||
         this.handingOver || this.exiting) return
     if (why === 'input' && this.clock.monotonic() - session.attachAskedAt < CODEX_ATTACH_WATCH_MS) return
-    if (!this.codexAttachVerified(session)) { this.checkCodexBuild(session); return }
+    if (!this.codexAttachVerified(session)) {
+      if (why === 'input') {
+        const binary = hostBinaryIdentity(session.harnessProcess)
+        const result = binary === null ? null : codexAttachResultFor(session.env, binary)
+        if (result?.outcome === 'failed' && codexAttachRetryMs(result) < CODEX_ATTACH_RETRY_MS && hasSessionInputs(session.id, session.env, session.lease.generation === null ? null : { incarnation: session.lease.incarnation, generation: session.lease.generation })) {
+          recordInputWakeFailure(session.id, session.env, 'codex-check', result.checkedAt, codexAttachRetryMs(result), this.logger)
+        }
+      }
+      this.checkCodexBuild(session)
+      return
+    }
     this.attachChecking.add(session.id)
     if (why === 'input') session.attachAskedAt = this.clock.monotonic()
     const host = session.harnessProcess
@@ -3293,22 +3317,45 @@ export class Hub {
       this.endSession(session, 'terminal-closed')
       return
     }
-    if (why === 'input') this.logger.info('hub.session', { event: 'wake-held', session: session.id, reason: result.reason })
+    if (why === 'input') {
+      this.logger.info('hub.session', { event: 'wake-held', session: session.id, reason: result.reason })
+      if (result.state === 'unknown' && result.reason !== 'thread-busy') {
+        recordInputWakeFailure(session.id, session.env, 'codex-attach', this.clock.wall(), undefined, this.logger)
+      }
+    }
   }
 
   /** Check, in the background and once per binary, that Codex still behaves as the shared-server checks need. */
   private checkCodexBuild(session: HubSession): void {
-    if (this.codexBuildChecking || this.exiting) return
+    const host = identityKey(session.harnessProcess)
+    if (this.codexBuildChecking || this.exiting || this.clock.wall() < (this.codexBuildRetryAt.get(host) ?? 0)) return
     this.codexBuildChecking = true
     const run = this.options.codexAttach?.checkBuild ?? ((host: ProcessIdentity) => checkCodexServerBuild(this.env, host, this.clock.wall(),
       undefined, (event) => this.logger.info('hub.session', { ...event, event: `codex-check-${String(event['event'])}` })))
-    void run(session.harnessProcess).then((result) => {
+    void Promise.resolve().then(() => run(session.harnessProcess)).then((result) => {
       if (result === null) return
       this.logger.info('hub.session', { event: 'codex-check-finished', outcome: result.outcome, step: result.step ?? null,
         codex_version: result.codexVersion, detail: result.detail ?? null })
+      this.codexBuildFailures.delete(host)
+      if (result.outcome === 'failed') {
+        const retryMs = codexAttachRetryMs(result)
+        this.codexBuildRetryAt.set(host, this.clock.wall() + retryMs)
+        for (const each of this.sessions.values()) if (identityKey(each.harnessProcess) === host && this.codexSharedServer(each) &&
+            hasSessionInputs(each.id, each.env, each.lease.generation === null ? null : { incarnation: each.lease.incarnation, generation: each.lease.generation }) && each.ending === null && !sessionHasEnded(each.id, each.env)) {
+          if (retryMs < CODEX_ATTACH_RETRY_MS) recordInputWakeFailure(each.id, each.env, 'codex-check', this.clock.wall(), retryMs, this.logger)
+        }
+      }
       if (result.outcome === 'passed') for (const each of this.sessions.values()) if (this.codexSharedServer(each)) each.checkInput()
     }).catch((err: unknown) => {
       this.logger.error('hub.session', { event: 'codex-check-failed', message: err instanceof Error ? err.message : String(err) })
+      const failures = Math.min(32, (this.codexBuildFailures.get(host) ?? 0) + 1)
+      this.codexBuildFailures.set(host, failures)
+      const retryMs = failures >= 8 ? CODEX_ATTACH_RETRY_MS : inputWakeBackoffMs(failures)
+      this.codexBuildRetryAt.set(host, this.clock.wall() + retryMs)
+      for (const each of this.sessions.values()) if (identityKey(each.harnessProcess) === host && this.codexSharedServer(each) &&
+            hasSessionInputs(each.id, each.env, each.lease.generation === null ? null : { incarnation: each.lease.incarnation, generation: each.lease.generation }) && each.ending === null && !sessionHasEnded(each.id, each.env)) {
+        recordInputWakeFailure(each.id, each.env, 'codex-check', this.clock.wall(), retryMs, this.logger)
+      }
     }).finally(() => { this.codexBuildChecking = false })
   }
 

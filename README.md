@@ -594,6 +594,14 @@ answered request. A Claude Code session without an inbox socket (for example
 `--bare`), or a Codex session whose hooks cannot find the `codex` executable,
 keeps presence only and accepts no notes.
 
+If a wake fails, input stays queued for retry or the next prompt or trusted tool
+callback. Transport failures retry with exponential backoff from 5 seconds up to
+5 minutes. Environmental check-start failures use that cadence for seven retries,
+then wait a day; permanent check failures use the daily cadence from the start.
+The next foreground turn receives the fault, and `notifai doctor --json` records
+it, including whether delivery has recovered; recovered diagnostics expire after
+an hour. Queue acceptance alone never proves the agent read an answer.
+
 On Codex the session child differs in three ways. Codex enforces every async
 hook timeout, so the attend handler declares the complete answer window (about
 72 hours) and the next prompt or turn end starts another child after that. Codex

@@ -43,6 +43,34 @@ afterEach(() => {
 const SESSION = '019ff69d-a07f-7161-ab6e-bd06b3b93c8e'
 const note = (id: string): AttendanceMessage => ({ message_id: id, kind: 'note', body: `Read ${id}`, created_at: new Date().toISOString(), agent_acknowledgement_text_required: true })
 
+it('delivers queued input and its durable wake fault on the next tool callback after a restart', async () => {
+  const h = setup()
+  h.stage([note('sm_recovery')])
+  await wakeSessionInputs(SESSION, h.env, async () => { throw new Error('ENOSPC') })
+  // Invoke the real hook from disk-backed state, with no wake or closure state.
+  await h.hook()
+  expect(h.output).toHaveLength(1)
+  expect(h.output[0]).toContain('Read sm_recovery')
+  expect(h.output[0]).toContain('could not wake this Agent Session')
+  expect(h.output[0]).toContain('notifai doctor')
+  expect(readSessionState(SESSION, h.env).input_wake_fault?.recovered_at).toBeTypeOf('number')
+  await h.hook()
+  expect(h.output).toHaveLength(1)
+})
+
+it('reports a wake fault on the next prompt even before the queued input can be claimed', async () => {
+  const h = setup()
+  await wakeSessionInputs(SESSION, h.env, async () => { throw new Error('daemon start failed') })
+  const prompt = () => hookRunCommand(h.deps, 'user-prompt-submit', async () => JSON.stringify({
+    session_id: SESSION, cwd: h.deps.cwd, hook_event_name: 'UserPromptSubmit', prompt: 'Continue', turn_id: 'turn-2',
+  }), 'codex')
+  await prompt()
+  expect(h.output.join('\n')).toContain('could not wake this Agent Session')
+  const before = h.output.join('\n').split('could not wake this Agent Session').length
+  await prompt()
+  expect(h.output.join('\n').split('could not wake this Agent Session')).toHaveLength(before)
+})
+
 function installTrustedHooks(env: NodeJS.ProcessEnv): void {
   const home = env['CODEX_HOME']!
   mkdirSync(home, { recursive: true })
@@ -768,12 +796,17 @@ describe('Codex tool-boundary Session Messages', () => {
   it('retries a failed wake without losing input and coalesces the successful wake', async () => {
     const h = setup()
     h.stage([note('sm_waiting')])
-    await expect(wakeSessionInputs(SESSION, h.env, async () => { throw new Error('queue unavailable') })).rejects.toThrow('queue unavailable')
+    let now = Date.now()
+    const options = { now: () => now }
+    await wakeSessionInputs(SESSION, h.env, async () => { throw new Error('queue unavailable') }, undefined, options)
     expect(readSessionState(SESSION, h.env).input_wake).toBeUndefined()
     let wakes = 0
-    const send = async () => { wakes += 1; return true }
-    await wakeSessionInputs(SESSION, h.env, send)
-    await wakeSessionInputs(SESSION, h.env, send)
+    const send = async () => { wakes += 1; return 'written' as const }
+    await wakeSessionInputs(SESSION, h.env, send, undefined, options)
+    expect(wakes).toBe(0)
+    now += 5_000
+    await wakeSessionInputs(SESSION, h.env, send, undefined, options)
+    await wakeSessionInputs(SESSION, h.env, send, undefined, options)
     expect(wakes).toBe(1)
     expect(readSessionMessages(SESSION, h.env, h.lease)).toHaveLength(1)
   })
@@ -1101,6 +1134,7 @@ it('falls back only before owned native admission and does not replay uncertain 
   expect(await h.schedule(null)).toBe(false)
   expect(await h.schedule({ ...h.control, add: async () => { throw new Error('uncertain receipt') } })).toBe(true)
   expect(h.wakes()[0]?.phase).toBe('unknown')
+  expect(readSessionState(SESSION, h.env).input_wake_fault).toMatchObject({ kind: 'transport' })
   expect(await h.schedule(null)).toBe(true)
   expect(h.adds()).toBe(0)
 })
@@ -1140,7 +1174,7 @@ it('coalesces behind the existing generic wake when optional control becomes ava
   const h = ownedWakeHarness(); h.stage([note('sm_transition')])
   expect(await h.schedule(null)).toBe(false)
   let genericAdds = 0
-  await wakeSessionInputs(SESSION, h.env, async () => { genericAdds++; return true })
+  await wakeSessionInputs(SESSION, h.env, async () => { genericAdds++; return 'written' as const })
   expect(await h.schedule()).toBe(true)
   expect(genericAdds + h.adds()).toBe(1)
 })
@@ -1162,6 +1196,16 @@ it.each(['replacement', 'regression'] as const)('rejects transcript %s after the
   expect(h.adds()).toBe(0)
 })
 
+it('does not fault native admission cancelled because input was consumed before send', async () => {
+  const h = ownedWakeHarness(); h.stage([note('sm_consumed')])
+  await h.schedule(h.control, { mayWake: () => {
+    stageSessionMessages(SESSION, h.env, h.lease, [])
+    return true
+  } })
+  expect(h.adds()).toBe(0)
+  expect(readSessionState(SESSION, h.env).input_wake_fault).toBeUndefined()
+})
+
 it('rechecks in-process authorization after an awaited recovery lookup', async () => {
   const h = ownedWakeHarness(); h.stage([note('sm_lease')])
   await h.schedule({ ...h.control, add: async () => { throw new Error('uncertain') } })
@@ -1180,7 +1224,7 @@ it('does not repeatedly wake an observed input while its delivery lease is fence
   const h = setup()
   h.stage([note('sm_fenced')])
   const wakes: string[] = []
-  const wake = () => wakeSessionInputs(SESSION, h.env, async text => { wakes.push(text); return true }, undefined, { unique: true })
+  const wake = () => wakeSessionInputs(SESSION, h.env, async text => { wakes.push(text); return 'written' as const }, undefined, { unique: true })
   await wake()
   observeSessionInputWake(SESSION, h.env, wakes[0])
   vi.spyOn(h.sequencer.client, 'claimDeliveryAttempt').mockRejectedValue(
@@ -1198,7 +1242,7 @@ it.each([1, 2])('rearms a refused wake after fresh attendance at generation %i',
   h.stage([note('sm_first')])
   const wakes: string[] = []
   let now = Date.now()
-  const wake = () => wakeSessionInputs(SESSION, h.env, async text => { wakes.push(text); return true }, undefined, { unique: true, now: () => now })
+  const wake = () => wakeSessionInputs(SESSION, h.env, async text => { wakes.push(text); return 'written' as const }, undefined, { unique: true, now: () => now })
   await wake()
   observeSessionInputWake(SESSION, h.env, wakes[0], now)
   vi.spyOn(h.sequencer.client, 'claimDeliveryAttempt').mockRejectedValueOnce(
@@ -1246,7 +1290,7 @@ describe('wakes after a drain that hands nothing in', () => {
     h.deps.now = () => now
     const wakes: string[] = []
     return { ...h, wakes, advance: (ms: number) => { now += ms },
-      wake: () => wakeSessionInputs(SESSION, h.env, async text => { wakes.push(text); return true }, undefined, { unique: true, now: () => now }),
+      wake: () => wakeSessionInputs(SESSION, h.env, async text => { wakes.push(text); return 'written' as const }, undefined, { unique: true, now: () => now }),
       // The agent is shown the latest wake; its prompt hook drains.
       shown: () => hookRunCommand(h.deps, 'user-prompt-submit', async () => JSON.stringify({
         session_id: SESSION, cwd: h.deps.cwd, hook_event_name: 'UserPromptSubmit', turn_id: 'turn-2', prompt: wakes.at(-1) }), 'codex') }

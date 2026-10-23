@@ -11764,6 +11764,25 @@ describe('asking before the hooks have ever run', () => {
     expect(out).toMatch(/ok\s+Direct wake route/)
     expect(out).toContain("queued into this thread's own inbox")
     expect(out).not.toContain('thread-writer-lock')
+
+    updateSessionState(env.CODEX_THREAD_ID, env, state => ({ ...state, input_wake_fault: {
+      kind: 'transport', attempts: 2, first_at: 1_000, last_at: 6_000, retry_at: 16_000,
+    } }))
+    const jsonIo = new CapturedIo()
+    await doctorCommand({ ...deps, io: jsonIo }, { json: true })
+    const report = JSON.stringify(JSON.parse(jsonIo.outLines.join('')))
+    expect(report).toContain('could not wake this Agent Session')
+    expect(report).toContain("queued into this thread's own inbox")
+    expect(report).toContain('"attempts":2')
+    updateSessionState(env.CODEX_THREAD_ID, env, state => ({ ...state,
+      input_wake_fault: { ...state.input_wake_fault!, recovered_at: (deps.now ?? Date.now)() - 60 * 60_000 },
+    }))
+    const expiredIo = new CapturedIo()
+    await doctorCommand({ ...deps, io: expiredIo }, { json: true })
+    const expired = expiredIo.outLines.join('')
+    expect(expired).not.toContain('wake_fault')
+    expect(expired).toContain("queued into this thread's own inbox")
+
   })
 
   it.each([

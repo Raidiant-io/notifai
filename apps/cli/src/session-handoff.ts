@@ -149,6 +149,7 @@ export async function deliverIntoCodexThread(options: {
   guard?: WriteGuard
   /** Receives the queue writer's process group as soon as it exists. */
   onSpawn?: (pgid: number) => void
+  signal?: AbortSignal
 }): Promise<SessionWriteResult> {
   const readiness = inspectCodexQueue(options.threadId, options.env)
   if (readiness.state === 'unavailable') return { status: 'unavailable', reason: readiness.reason }
@@ -158,6 +159,9 @@ export async function deliverIntoCodexThread(options: {
   }
   const budget = options.guard?.remainingMs() ?? Number.POSITIVE_INFINITY
   const deadline = new AbortController()
+  const abort = (): void => deadline.abort()
+  options.signal?.addEventListener('abort', abort, { once: true })
+  if (options.signal?.aborted) deadline.abort()
   const timer = Number.isFinite(budget) ? setTimeout(() => deadline.abort(), Math.max(0, budget)) : undefined
   try {
     await options.adapters.queue(readiness.threadId, options.cwd, options.text, options.onSpawn, deadline.signal)
@@ -165,6 +169,7 @@ export async function deliverIntoCodexThread(options: {
     return { status: 'failed', reason: err instanceof Error ? err.message : String(err), error: err }
   } finally {
     if (timer !== undefined) clearTimeout(timer)
+    options.signal?.removeEventListener('abort', abort)
   }
   if (deadline.signal.aborted) {
     // The writer finished, but only after its claim's write boundary.

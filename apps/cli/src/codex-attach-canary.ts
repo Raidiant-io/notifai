@@ -56,8 +56,15 @@ export const CODEX_ATTACH_CHECKS: Readonly<Record<number, string>> = Object.free
   8: 'keeping a wake for a put-away conversation until it is opened',
 })
 
-/** Fail, or could not run: retried at most once a day. */
+/** A behavioural failure is retried at most once a day. */
 export const CODEX_ATTACH_RETRY_MS = 24 * 60 * 60_000
+/** Environmental failures retry promptly, with a bounded exponential delay. */
+export function codexAttachRetryMs(result: Pick<CodexAttachCanaryResult, 'step' | 'startFailures' | 'detail' | 'environmental'>): number {
+  return result.step === 0 && (result.startFailures ?? 1) < 8 &&
+    (result.environmental === true || /ENOSPC|EAGAIN|EMFILE|ENFILE|ENOMEM|No space left on device|spawn .* (?:ENOENT|EACCES)|timed? out/i.test(result.detail ?? ''))
+    ? Math.min(5 * 60_000, 5_000 * 2 ** Math.min(6, Math.max(0, (result.startFailures ?? 1) - 1)))
+    : CODEX_ATTACH_RETRY_MS
+}
 const TOTAL_TIMEOUT_MS = 90_000
 /** Short, so the check sees the server put a conversation away in seconds. */
 const UNLOAD_DELAY_SECS = 8
@@ -80,6 +87,7 @@ export interface CodexAttachCanaryOutcome {
   outcome: 'passed' | 'failed'
   step?: number
   detail?: string
+  environmental?: boolean
   codexVersion: string | null
   /** Processes from the throwaway home still running after cleanup (should be none). */
   leftovers: number
@@ -122,6 +130,7 @@ export async function runCodexAttachCanary(options: CodexAttachCanaryOptions): P
     const run = async (args: string[], timeoutMs: number): Promise<string> =>
       (await execute(options.executable, args, { env, cwd: project, timeout: Math.min(timeoutMs, Math.max(1, deadline - performance.now())), maxBuffer: 1024 * 1024 })).stdout
     codexVersion = /(\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?)/.exec(await run(['--version'], 10_000))?.[1] ?? null
+    if (codexVersion === null) throw new CheckFailed(0, 'invalid --version output')
 
     // The private server. Its control socket must be named inside the
     // throwaway home and be held by the server this check started, whose
@@ -252,7 +261,7 @@ export async function runCodexAttachCanary(options: CodexAttachCanaryOptions): P
     result = { outcome: 'passed' }
   } catch (err) {
     const failed = err instanceof CheckFailed ? err : new CheckFailed(step, err instanceof Error ? err.message : String(err))
-    result = { outcome: 'failed', step: failed.step, detail: failed.message.slice(0, 300) }
+    result = { outcome: 'failed', step: failed.step, detail: failed.message.slice(0, 300), environmental: environmentalCheckError(err) }
     log({ event: 'check', step: failed.step, ok: false, detail: result.detail })
   }
   const leftovers = await cleanUp(home, options.executable, env, terminals, mock)
@@ -460,9 +469,17 @@ async function startMockModel(): Promise<MockModel> {
 
 // -- when the hub runs it ---------------------------------------------------------
 
-/** Whether this binary needs a run: never checked, or it failed (or could not run) more than a day ago. */
+/** Whether this binary needs a run; inability to run never imposes a day-long outage. */
 export function codexAttachCheckDue(result: CodexAttachCanaryResult | null, now: number): boolean {
-  return result === null || (result.outcome === 'failed' && now - result.checkedAt >= CODEX_ATTACH_RETRY_MS)
+  return result === null || (result.outcome === 'failed' && now - result.checkedAt >= codexAttachRetryMs(result))
+}
+
+function environmentalCheckError(error: unknown): boolean {
+  if (error instanceof CheckFailed || error === null || typeof error !== 'object') return false
+  const err = error as NodeJS.ErrnoException & { killed?: boolean }
+  return ['ENOSPC', 'EAGAIN', 'EMFILE', 'ENFILE', 'ENOMEM'].includes(String(err.code)) ||
+    err.syscall?.startsWith('spawn') === true || err.killed === true ||
+    /ENOSPC|EAGAIN|EMFILE|No space left on device|timed? out/i.test(err.message ?? '')
 }
 
 /**
@@ -481,7 +498,10 @@ export async function checkCodexServerBuild(env: NodeJS.ProcessEnv, host: Proces
 export async function checkCodexBinary(env: NodeJS.ProcessEnv, binary: CodexBinaryIdentity, now: number,
   run: (options: CodexAttachCanaryOptions) => Promise<CodexAttachCanaryOutcome> = runCodexAttachCanary,
   log?: (event: Record<string, unknown>) => void): Promise<CodexAttachCanaryResult> {
-  const outcome = await run({ executable: binary.path, ...(log === undefined ? {} : { log }) })
+  const previous = codexAttachResultFor(env, binary)
+  const outcome = await run({ executable: binary.path, ...(log === undefined ? {} : { log }) }).catch((error: unknown): CodexAttachCanaryOutcome => ({
+    outcome: 'failed', step: 0, environmental: environmentalCheckError(error), detail: error instanceof Error ? error.message.slice(0, 240) : 'check could not start', codexVersion: null, leftovers: 0,
+  }))
   // The binary changed while it ran: record nothing for either.
   const after = codexBinaryIdentity(binary.path)
   const result: CodexAttachCanaryResult = {
@@ -489,6 +509,8 @@ export async function checkCodexBinary(env: NodeJS.ProcessEnv, binary: CodexBina
     ...(outcome.step === undefined ? {} : { step: outcome.step }),
     ...(outcome.detail === undefined ? {} : { detail: outcome.detail }),
     checkedAt: now,
+    ...(outcome.environmental === undefined ? {} : { environmental: outcome.environmental }),
+    ...(outcome.outcome === 'failed' && outcome.step === 0 ? { startFailures: Math.min(32, (previous?.startFailures ?? 0) + 1) } : {}),
   }
   if (after !== null && after.size === binary.size && after.mtimeMs === binary.mtimeMs) recordCodexAttachResult(env, result)
   return result
