@@ -69,3 +69,12 @@ another session.
 
 The native hooks call the updated CLI; reread guidance in the current Agent
 Session. Changed hooks count as loaded once a natural callback shows them.
+
+## Question cards
+
+Notifai refuses an unregistered Grok question card before it opens. Use
+`notifai ask` and ask the question in the conversation. An exact question
+already registered in this Agent Session may open locally; never register
+it again. If it is answered in the conversation, close the registered question
+with `notifai close <question_id>`. Cards on a signed-out machine, with
+questions off, or in a disabled Project stay local.

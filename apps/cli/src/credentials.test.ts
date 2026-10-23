@@ -369,7 +369,7 @@ describe('SecretServiceStore', () => {
   it('fails closed with a remedy when the keyring refuses the write', () => {
     const { env } = sandbox('secret-service-refused')
     const store = new SecretServiceStore(env, { run: mockSecretTool({ failStore: true }).runner })
-    expect(() => store.save(SAMPLE)).toThrow(/unlock the keyring and retry, or set NOTIFAI_CREDENTIALS=file/)
+    expect(() => store.save(SAMPLE)).toThrow(/unlock the keyring and retry.*only if the User asks.*not a shared machine.*plaintext/)
     expect(existsSync(path.join(env.XDG_CONFIG_HOME!, 'notifai', 'credentials.json'))).toBe(false)
   })
 

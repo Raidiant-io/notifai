@@ -47,7 +47,7 @@ note arrives: a new terminal window runs `claude --resume` in its folder, in the
 permission mode it last ran in and never a more permissive one. When Notifai
 cannot reproduce how it started, it waits for the User instead. Do not ask the
 User to resume it.
-`notifai config set reopen.terminal off` (or `reopen.automatic off` for every
+`notifai config set reopen.terminal off --yes` (or `notifai config set reopen.automatic off --yes` for every
 place) makes it wait for the User; change these only when the User asks.
 
 ## Questions

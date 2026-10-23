@@ -113,7 +113,7 @@ the app, without opening on screen, while the app is running and the
 conversation is not archived (`reopen.codex_app`). When Notifai cannot
 reproduce how a conversation started, or its permissions changed since, it
 waits for the User instead. Do not ask the User to resume it.
-`notifai config set reopen.terminal off` (or `reopen.automatic off` for every
+`notifai config set reopen.terminal off --yes` (or `notifai config set reopen.automatic off --yes` for every
 place) makes it wait for the User; change these only when the User asks.
 
 ## Command approval

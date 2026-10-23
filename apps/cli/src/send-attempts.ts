@@ -148,14 +148,14 @@ export function beginSendAttempt(options: {
       return {
         ok: false,
         code: 'retry_not_found',
-        message: 'No unresolved opaque attempt matches this exact send on the current Approved Machine.',
+        message: 'No unresolved opaque attempt matches this exact send on the current Approved Machine. Check the original request with notifai status if its id is known; otherwise ask the User before sending again without --retry, which creates a new notification.',
       }
     }
     if (matches.length > 1) {
       return {
         ok: false,
         code: 'retry_ambiguous',
-        message: 'More than one unresolved opaque attempt matches this exact send; refusing to guess or create another notification.',
+        message: 'More than one unresolved opaque attempt matches this exact send; refusing to guess or create another notification. Check the known request ids with notifai status; if none identifies this event, ask the User before a new send without --retry.',
       }
     }
     const match = matches[0]!

@@ -287,12 +287,14 @@ the machine and holds the User's answers: treat it as private.
 | exit | meaning | what to do |
 | --- | --- | --- |
 | 0 | it worked | carry on |
-| 1 | failed; stderr names the code | fix it; a bare retry fails again |
-| 2 | usage *or* setup; stderr names the fix | follow the fix |
-| 3 | `ask --wait` ended unanswered; the question is off the User's devices | carry on without the answer, or ask in the conversation |
+| 1 | failed; inspect stderr and any JSON result | fix it; a bare retry fails again |
+| 2 | usage *or* setup; `ask --json` reports code and remedy on stdout, other commands explain on stderr | follow the fix |
+| 3 | command-specific: a held `ask --wait` ended unanswered and withdrew the question; `replies` found no reply in this read or bounded wait; legacy `send --reply` ended its wait without a reply | follow the command's state; `replies` does not withdraw the question |
 | 4 | this machine is not signed in | see [Set Notifai up](#set-notifai-up) |
 | 5 | network | for `send`, rerun the exact command with `--retry`; for `ask --wait`, follow its output |
 
 After an interrupted or killed `send`, do not correlate redacted logs by title
-or time and do not retry automatically. Re-run the exact semantic send with
-`--retry`; the CLI will reuse one opaque matching attempt or refuse ambiguity.
+or time. Recover only by re-running the exact semantic send with `--retry`;
+the CLI reuses one opaque matching attempt or refuses ambiguity. A refusal
+requires checking a known request id with `status` or asking the User before
+creating a new send. Never remove `--retry` just to bypass the refusal.

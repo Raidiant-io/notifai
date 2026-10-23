@@ -249,8 +249,11 @@ function questionNotes(entry: PickerQuestion): string[] {
  * into the title. An error names why the picker cannot be a device question
  * at all; it then stays in the terminal.
  */
-export function pickerForm(picker: readonly PickerQuestion[]): PickerForm | { error: string } {
-  if (picker.length < 1 || picker.length > Math.min(PICKER_MAX_QUESTIONS, REPLY_MAX_QUESTIONS)) {
+export function pickerForm(
+  picker: readonly PickerQuestion[],
+  limits: { maxQuestions?: number } = {},
+): PickerForm | { error: string } {
+  if (picker.length < 1 || picker.length > Math.min(limits.maxQuestions ?? PICKER_MAX_QUESTIONS, REPLY_MAX_QUESTIONS)) {
     return { error: 'unsupported-question-count' }
   }
   if (new Set(picker.map((question) => question.question)).size !== picker.length) return { error: 'duplicate-question' }

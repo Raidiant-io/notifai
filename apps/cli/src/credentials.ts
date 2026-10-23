@@ -266,7 +266,7 @@ export class FileStore implements CredentialStore {
       if (state.kind === 'unrecognized') throw new Error('Unrecognized credential file; left untouched')
       if (state.kind === 'authority' && state.authority === 'secret-service' &&
           this.env['NOTIFAI_CREDENTIALS'] !== 'file') {
-        throw new Error('Secret Service owns this credential; restore access or explicitly set NOTIFAI_CREDENTIALS=file')
+        throw new Error('Secret Service owns this credential; restore access or, only if the User asks and this is not a shared machine, set NOTIFAI_CREDENTIALS=file to store the credential in plaintext')
       }
     }
     this.write(serializeCredential(credential), expectedContentsSha256)
@@ -482,7 +482,7 @@ export class SecretServiceStore implements CredentialStore {
     const result = this.secretTool(['store', '--label=Notifai machine credential', ...SECRET_ATTRIBUTES], serialized)
     if (result.status !== 0) {
       throw new Error(
-        'Secret Service credential save failed; unlock the keyring and retry, or set NOTIFAI_CREDENTIALS=file',
+        'Secret Service credential save failed; unlock the keyring and retry, or, only if the User asks and this is not a shared machine, set NOTIFAI_CREDENTIALS=file to store the credential in plaintext',
       )
     }
     this.file.recordLinuxAuthority('secret-service', expectedContentsSha256)

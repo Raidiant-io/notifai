@@ -12,8 +12,7 @@
  * Nothing here submits: the form command submits once the form is open. A
  * hand-back that is never opened ends at the next Stop, like any OpenCode
  * question. A worker, a plugin too old to say whether the session is one, or
- * a question the form cannot ask unchanged (free text, more than four
- * questions or six choices) holds in the command instead.
+ * a question the form cannot ask unchanged holds in the command instead.
  */
 import { randomBytes } from 'node:crypto'
 import type { QuestionT } from '@raidiant/notifai-protocol'
@@ -37,6 +36,8 @@ const ON_ANSWER = 'When the answer arrives, resume the matching work without ask
  * has none and the wait holds in the command.
  */
 export function opencodeHandBack(deps: CommandDeps, input: HeldWaitInput): Promise<number> | null {
+  // Native forms in a disabled cwd Project stay local; an explicit Projectless wait must submit directly.
+  if (input.flags.projectless === true) return null
   const active = input.route.active
   if (active?.harness !== 'opencode' || active.worker !== false || active.sessionId === undefined) return null
   const sessionId = active.sessionId

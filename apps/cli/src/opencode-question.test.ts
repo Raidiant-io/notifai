@@ -524,8 +524,17 @@ describe('the input `ask --wait` hands back', () => {
     })
   })
 
+  it('carries free text and ten questions through the OpenCode form', () => {
+    const questions: QuestionT[] = Array.from({ length: 10 }, (_, i) => ({ id: `q${i}`, text: `Question ${i}?`,
+      ...(i === 0 ? {} : { choices: [{ id: 'a', label: 'First', recommended: true }, { id: 'b', label: 'Second' }] }) }))
+    const input = opencodeHandBackInput(questions, {}, 'q_many')
+    expect(input?.questions).toHaveLength(10)
+    expect(input?.questions[0]?.options).toEqual([])
+    expect(input?.questions[1]?.options.map(option => option.label)).toEqual(['First (Recommended)', 'Second'])
+  })
+
   it('has none for a question the form cannot ask unchanged', () => {
-    expect(opencodeHandBackInput([{ id: 'why', text: 'Why?' }], { title: 'Reason' }, 'q_1')).toBeNull()
+    expect(opencodeHandBackInput([{ id: 'q', text: 'Pick?', choices: DEPLOY[0]!.choices!.map(choice => ({ ...choice, recommended: true })) }], {}, 'q_1')).toBeNull()
     const seven = Array.from({ length: 7 }, (_, index) => ({ id: `c${index}`, label: `Choice ${index}` }))
     expect(opencodeHandBackInput([{ id: 'pick', text: 'Pick one', choices: seven }], { title: 'Pick' }, 'q_1')).toBeNull()
   })

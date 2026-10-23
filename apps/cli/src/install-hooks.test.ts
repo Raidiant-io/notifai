@@ -236,7 +236,7 @@ describe('hook config', () => {
 
   it('builds native Grok lifecycle hooks with a complete-window held Stop and no attendant', () => {
     const config = buildHookConfig({ adapterPath: ADAPTER, harness: 'grok' })
-    expect(Object.keys(config)).toEqual(['PostCompact', 'PostToolUse', 'SessionStart', 'UserPromptSubmit', 'Stop', 'SessionEnd', 'SubagentStop', 'PostToolUseFailure'])
+    expect(Object.keys(config)).toEqual(['PreToolUse', 'PostCompact', 'PostToolUse', 'SessionStart', 'UserPromptSubmit', 'Stop', 'SessionEnd', 'SubagentStop', 'PostToolUseFailure'])
     expect(config['SubagentStop']).toEqual(config['Stop'])
     expect(config['Stop']?.[0]?.hooks[0]).toEqual({
       type: 'command',

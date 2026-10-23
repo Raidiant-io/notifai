@@ -4349,6 +4349,28 @@ describe('Grok native lifecycle', () => {
     expect(h.io.outLines).toHaveLength(1)
   })
 
+  it.each(['ask_user_question', 'AskQuestion'])('refuses an unregistered Grok %s before its card opens', async (toolName) => {
+    const h = harness()
+    await hookRunCommand(h.deps, 'pre-tool-use', stdin({ sessionId: 'grok-pre-card', cwd: h.deps.cwd,
+      toolName, toolInput: { questions: [{ question: 'Ship it?', options: ['Ship', 'Hold'] }] } }), 'grok')
+    expect(JSON.parse(h.io.outLines.at(-1)!)).toMatchObject({ decision: 'deny', reason: expect.stringContaining('notifai ask') })
+    h.io.outLines = []
+    writeGlobalConfig(h, 'ask_notifications = false\n')
+    await hookRunCommand(h.deps, 'pre-tool-use', stdin({ sessionId: 'grok-pre-card', cwd: h.deps.cwd, toolName }), 'grok')
+    expect(h.io.outLines).toEqual([])
+  })
+
+  it('allows an exact registered Grok question without registering it again', async () => {
+    const h = harness()
+    const session = 'grok-existing-card'
+    registerQuestion(session, h.env, { question_id: 'q_existing', question: 'Ship it?',
+      questions: [{ id: 'ship', text: 'Ship it?', choices: [{ id: 'a', label: 'Ship' }, { id: 'b', label: 'Hold' }] }] })
+    await hookRunCommand(h.deps, 'pre-tool-use', stdin({ sessionId: session, cwd: h.deps.cwd,
+      toolName: 'ask_user_question', toolInput: { questions: [{ question: 'Ship it?', options: ['Ship', 'Hold'] }] } }), 'grok')
+    expect(h.io.outLines).toEqual([])
+    expect(readSessionState(session, h.env).pending).toHaveLength(1)
+  })
+
   it('tells the root agent when Grok\'s own question card never reached the devices', async () => {
     const h = harness()
     const input = { sessionId: 'grok-card', cwd: h.deps.cwd, promptId: 'card-turn', tool_name: 'ask_user_question' }

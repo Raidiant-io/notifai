@@ -37,3 +37,19 @@ own decision. A choice is a label or
 line of at most 160 characters; add `"multi": true` to a
 question whose choices may combine. Mark at most one choice per question as
 recommended.
+
+## Reading command results
+
+`send --json` returns the service receipt when submission succeeds; failures
+are explained on stderr and do not promise a JSON error object. `ask --json`
+refusals instead return an object on stdout with `ok: false`, `code`, and
+`remedy`.
+
+`replies --pending --json` keeps its shipped result shapes: no pushed question
+returns `session_id`, `pending` and an empty `replies`; one pushed question
+returns a `reply_result`; several return an array of `reply_result` objects. Check the shape
+before reading the replies. Exit 3 means this read found none, and does not
+withdraw a question. `receive` hands back actionable context and has no JSON mode.
+`close --pending --json` with nothing to retire exits 0 with
+`state: "nothing_pending"`, empty `withdrawn` and `closed` arrays, and the
+Agent Session id if one is known.

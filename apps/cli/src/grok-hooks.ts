@@ -21,6 +21,8 @@ export function grokHookEnvelope(input: HookEnvelope): HookEnvelope | null {
   return {
     ...input,
     session_id: sessionId,
+    ...(input.tool_name === undefined && input.toolName !== undefined ? { tool_name: input.toolName } : {}),
+    ...(input.tool_input === undefined && input.toolInput !== undefined ? { tool_input: input.toolInput } : {}),
     ...(childGate ? { reason: 'end_turn' } : {}),
     ...(input.stopHookActive === undefined ? {} : { stop_hook_active: input.stopHookActive }),
   }

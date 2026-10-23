@@ -2,6 +2,7 @@
 import type { CloseRepliesResponse, ListRepliesResponse } from '@raidiant/notifai-protocol'
 import { setTimeout as sleep } from 'node:timers/promises'
 import { DEFAULT_TIMEOUT_MS, type ApiClient } from './client.js'
+import { printReplies } from './commands-send.js'
 import { resolveCommandSession } from './command-session.js'
 import { terminateCodexQuestions } from './codex-question-bindings.js'
 import {
@@ -184,7 +185,10 @@ export async function closeCommand(
       )
     } else {
       deps.io.out(`Closed the reply window for ${requestId}.`)
-      if (response.replies.length > 0) printAcknowledgementStatus(deps, response)
+      if (response.replies.length > 0) {
+        printReplies(deps, response.replies)
+        printAcknowledgementStatus(deps, response)
+      }
     }
     return EXIT.ok
   } catch (err) {
@@ -200,8 +204,9 @@ export async function closeCommand(
 async function closePendingQuestions(deps: CommandDeps, json: boolean): Promise<number> {
   const lifecycleSession = resolveCommandSession(deps)
   if (lifecycleSession === null) {
-    deps.io.err('No active session pointer is available in this directory.')
-    return EXIT.noReply
+    if (json) deps.io.out(JSON.stringify({ state: 'nothing_pending', session_id: null, withdrawn: [], closed: [] }))
+    else deps.io.out('No active Agent Session has a registered question pending.')
+    return EXIT.ok
   }
   const sessionId = lifecycleSession.sessionId
   const initial = readSessionState(sessionId, deps.env)
@@ -209,12 +214,12 @@ async function closePendingQuestions(deps: CommandDeps, json: boolean): Promise<
   if (pending.length === 0 && (initial.retiring ?? []).length === 0) {
     if (json) {
       deps.io.out(
-        JSON.stringify({ session_id: sessionId, withdrawn: [], closed: [] }, null, 2),
+        JSON.stringify({ state: 'nothing_pending', session_id: sessionId, withdrawn: [], closed: [] }, null, 2),
       )
     } else {
       deps.io.err(`Session ${sessionId} has no registered question pending.`)
     }
-    return EXIT.noReply
+    return EXIT.ok
   }
 
   const { withdrawn, retiring } = retireQueuedQuestions(sessionId, deps.env)
@@ -305,7 +310,9 @@ async function closeLocalQuestion(
         (candidate) => candidate.question_id === id || candidate.request_id === id,
       )
       if (current?.request_id !== undefined) return closeLocalQuestion(deps, current.request_id, json)
-      return EXIT.noReply
+      if (json) deps.io.out(JSON.stringify({ state: 'nothing_pending', question_id: id, withdrawn: [], closed: [] }))
+      else deps.io.out('This question is no longer pending.')
+      return EXIT.ok
     }
     const output = {
       session_id: sessionId,
@@ -356,7 +363,10 @@ async function closeLocalQuestion(
       )
     } else {
       deps.io.out(`Closed the reply window for ${entry.request_id}.`)
-      if (response.replies.length > 0) printAcknowledgementStatus(deps, response)
+      if (response.replies.length > 0) {
+        printReplies(deps, response.replies)
+        printAcknowledgementStatus(deps, response)
+      }
     }
     return EXIT.ok
   } catch (err) {
