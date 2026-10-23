@@ -8,6 +8,46 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 This project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 and [Conventional Commits](https://www.conventionalcommits.org/en/v1.0.0/).
 
+## [14.1.0](https://github.com/Raidiant-io/notifai/compare/v14.0.0...v14.1.0) (2026-10-23)
+
+
+### Features
+
+* **cli:** give Hermes the whole session guidance in two prompt sections ([#400](https://github.com/Raidiant-io/notifai/issues/400)) ([40bac51](https://github.com/Raidiant-io/notifai/commit/40bac51d43a9a0188f4528b950cb4df36e8b8dce))
+* **cli:** link Claude Code pickers and Codex cards on Windows ([#401](https://github.com/Raidiant-io/notifai/issues/401)) ([de21573](https://github.com/Raidiant-io/notifai/commit/de21573fc3a47c61cebf0de9b587c6aae7b829a3))
+* **cli:** report when the installed OpenCode will not load the Notifai plugin ([#410](https://github.com/Raidiant-io/notifai/issues/410)) ([41abeec](https://github.com/Raidiant-io/notifai/commit/41abeec7ecd7f0ed5f38fac7c3e7bf0cbfee1c57))
+* **cli:** support OpenCode 2 question forms and lifecycle hooks ([#416](https://github.com/Raidiant-io/notifai/issues/416)) ([00328d2](https://github.com/Raidiant-io/notifai/commit/00328d2628471acc63c0b7145de75093c5fcc599))
+* **cli:** warn at unlinked question forms, remind owed acknowledgements, and keep setup in the CLI ([#406](https://github.com/Raidiant-io/notifai/issues/406)) ([fc82a05](https://github.com/Raidiant-io/notifai/commit/fc82a05a7903ee327b822575fc8965199f51108f))
+* **protocol:** expose detected session harness metadata ([#421](https://github.com/Raidiant-io/notifai/issues/421)) ([5067ae2](https://github.com/Raidiant-io/notifai/commit/5067ae287f7240d6b5665451efb309a09b61a474))
+
+
+### Bug Fixes
+
+* **cli:** close per-harness guidance gaps and wording leftovers ([#419](https://github.com/Raidiant-io/notifai/issues/419)) ([cc1cedb](https://github.com/Raidiant-io/notifai/commit/cc1cedb2bb8b00e54edc7165922dc4051b2bac32))
+* **cli:** end Grok's copies of Claude Code and Cursor hooks before anything runs ([#407](https://github.com/Raidiant-io/notifai/issues/407)) ([eb22a67](https://github.com/Raidiant-io/notifai/commit/eb22a674e79947751027c86c65c1475ef1ec40b6))
+* **cli:** keep Notification Requests with the briefing agent, and never drop a claim release ([#403](https://github.com/Raidiant-io/notifai/issues/403)) ([de82cd9](https://github.com/Raidiant-io/notifai/commit/de82cd9a2ccc33ea4265a26a9d6f6a5ff09e6cb4))
+* **cli:** keep repository content from sending private files or changing Notifai ([#413](https://github.com/Raidiant-io/notifai/issues/413)) ([e455b57](https://github.com/Raidiant-io/notifai/commit/e455b5704ce97a9f6048b2292af4a7e77b39e90c))
+* **cli:** let a Codex subagent ask the User through its root session ([#411](https://github.com/Raidiant-io/notifai/issues/411)) ([9fce429](https://github.com/Raidiant-io/notifai/commit/9fce42921be38a7bbb85d637009256b363a22faa))
+* **cli:** let Notifai commands run without prompts an away User never sees ([#414](https://github.com/Raidiant-io/notifai/issues/414)) ([2371fb9](https://github.com/Raidiant-io/notifai/commit/2371fb994fa976081b8f06ac6714f04a714da443))
+* **cli:** make question flags and recovery paths consistent ([#417](https://github.com/Raidiant-io/notifai/issues/417)) ([c969a58](https://github.com/Raidiant-io/notifai/commit/c969a5801a98d0e11323f319f2932a730856cb2b))
+* **cli:** preserve sessions through unconfirmed stops ([#423](https://github.com/Raidiant-io/notifai/issues/423)) ([d1f462e](https://github.com/Raidiant-io/notifai/commit/d1f462e7905483a1ae2de94f8459d99a7e832dd4))
+* **cli:** record picker notes as the terminal answer and explain Remote Control expiry ([#412](https://github.com/Raidiant-io/notifai/issues/412)) ([775a3d5](https://github.com/Raidiant-io/notifai/commit/775a3d5fb0bde16fc8f8eb658a95435f986832c1))
+* **cli:** recover failed answer wakes without losing queued input ([#420](https://github.com/Raidiant-io/notifai/issues/420)) ([5d5f087](https://github.com/Raidiant-io/notifai/commit/5d5f087dc09235be709d7c1a87452336cb64d37e))
+* **cli:** refresh guidance across session roles and retain answer work ([#418](https://github.com/Raidiant-io/notifai/issues/418)) ([0010ea0](https://github.com/Raidiant-io/notifai/commit/0010ea0ebd5bb56e884cf33ec4c21254725b09c4))
+* **cli:** report User choices and harness limits as information in doctor and init ([#415](https://github.com/Raidiant-io/notifai/issues/415)) ([973b730](https://github.com/Raidiant-io/notifai/commit/973b7306bd8f2a1800eef806b92a704884c1bad3))
+
+
+### Performance Improvements
+
+* **cli:** keep the Windows npm reader census well inside its bound ([#409](https://github.com/Raidiant-io/notifai/issues/409)) ([d14be97](https://github.com/Raidiant-io/notifai/commit/d14be97025b84bab2964054eb369b32fe6f2a283))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * @raidiant/notifai-protocol bumped from 9.0.0 to 9.1.0
+
 ## [14.0.0](https://github.com/Raidiant-io/notifai/compare/v13.1.0...v14.0.0) (2026-10-22)
 
 
