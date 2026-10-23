@@ -148,6 +148,43 @@ describe('choice labels', () => {
     ])
   })
 
+  it.each([' (recommended)', ' [RECOMMENDED] ', '\t( Recommended )\t', '[ recommended ]'])('normalizes a trailing marker %j before deriving ids', (marker) => {
+    expect(choices([`Deploy${marker}`, 'Wait'], {
+      descriptions: [{ after: 1, text: 'Ships now.' }],
+    })).toEqual([
+      { id: 'deploy', label: 'Deploy', description: 'Ships now.', recommended: true },
+      { id: 'wait', label: 'Wait' },
+    ])
+  })
+
+  it('accepts an explicit recommendation for the same marked choice', () => {
+    for (const label of ['Deploy', 'Deploy (recommended)']) {
+      expect(choices(['Deploy (recommended)', 'Wait'], { recommended: [label] })).toEqual([
+        { id: 'deploy', label: 'Deploy', recommended: true }, { id: 'wait', label: 'Wait' },
+      ])
+    }
+  })
+
+  it('refuses conflicting, empty and colliding normalized labels', () => {
+    expect(parseChoices(['A (recommended)', 'B [recommended]'])).toMatchObject({ ok: false, error: expect.stringContaining('at most one') })
+    expect(parseChoices(['A (recommended)', 'B'], { recommended: ['B'] })).toMatchObject({ ok: false, error: expect.stringContaining('conflicts') })
+    for (const marker of ['(recommended)', ' [ RECOMMENDED ] ']) {
+      expect(parseChoices([marker, 'B'])).toMatchObject({ ok: false, error: expect.stringContaining('non-empty') })
+    }
+    expect(choices(['A (recommended)', 'A'])).toBe('invalid')
+  })
+
+  it('leaves ordinary prose intact and strips only one trailing token', () => {
+    for (const label of ['Recommended plan', '(recommended) plan', 'Plan [recommended] today', 'Plan (recommended!)', 'Plan (recommended]']) {
+      const parsed = parseChoices([label, 'Wait'])
+      expect(parsed).toMatchObject({ ok: true, choices: [{ label }, { label: 'Wait' }] })
+      if (parsed.ok) expect(parsed.choices?.[0]?.recommended).toBeUndefined()
+    }
+    expect(choices(['Plan (recommended) [recommended]', 'Wait'])).toEqual([
+      { id: 'plan-recommended', label: 'Plan (recommended)', recommended: true }, { id: 'wait', label: 'Wait' },
+    ])
+  })
+
   it('refuses a description or recommendation that could land on the wrong choice', () => {
     const fails = (details: Parameters<typeof parseChoices>[1], labels: string[] | undefined = ['A', 'B']) => {
       const parsed = parseChoices(labels, details)

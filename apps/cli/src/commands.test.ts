@@ -12426,6 +12426,23 @@ describe('question sets', () => {
     expect(unknown).toMatchObject({ ok: false, error: expect.stringContaining('Unknown choice keys: detail') })
   })
 
+  it('normalizes recommendations in ask flags and each form question', () => {
+    expect(buildQuestions({ title: 'Release', choice: ['Deploy (recommended)', 'Wait'] }, 'Deploy?')).toMatchObject({
+      ok: true, questions: [{ choices: [{ id: 'deploy', label: 'Deploy', recommended: true }, { label: 'Wait' }] }],
+    })
+    const form = (choices: unknown[]) => buildQuestions({ form: JSON.stringify({
+      title: 'Release', summary: 'Decide.', questions: [{ text: 'Deploy?', choices }],
+    }) }, undefined)
+    for (const choice of ['Deploy [recommended]', { label: 'Deploy (recommended)', description: 'Ships now.', recommended: true }]) {
+      expect(form([choice, 'Wait'])).toMatchObject({ ok: true, questions: [{ choices: [
+        { id: 'deploy', label: 'Deploy', recommended: true }, { label: 'Wait' },
+      ] }] })
+    }
+    expect(form(['Deploy (recommended)', { label: 'Wait', recommended: true }])).toMatchObject({ ok: false, error: expect.stringContaining('conflicts') })
+    expect(form(['Deploy (recommended)', 'Wait [recommended]'])).toMatchObject({ ok: false, error: expect.stringContaining('at most one') })
+    expect(form(['(recommended)', 'Wait'])).toMatchObject({ ok: false, error: expect.stringContaining('non-empty') })
+  })
+
   it('carries flag descriptions and the recommended choice onto the single question', () => {
     expect(buildQuestions({
       title: 'Migration 0007',

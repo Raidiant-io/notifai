@@ -331,6 +331,16 @@ describe('draft building', () => {
     expect(explicit.draft.platform?.android).toEqual({ sound: null })
   })
 
+  it('normalizes recommendation markers in send --reply drafts', () => {
+    const config = loadConfig({ cwd: base.cwd, env: base.env })
+    const flags = { title: 'Release', summary: 'Deploy?', reply: true, choice: ['Deploy (recommended)', 'Wait'] }
+    const built = buildDraft(config, flags)
+    expect(built).toMatchObject({ ok: true, draft: { reply: { questions: [{ choices: [
+      { id: 'deploy', label: 'Deploy', recommended: true }, { label: 'Wait' },
+    ] }] } } })
+    expect(buildDraft(config, { ...flags, recommended: ['Wait'] })).toMatchObject({ ok: false, error: expect.stringContaining('conflicts') })
+  })
+
   it('keeps a question answerable for a day by default', () => {
     // A question asked before someone steps away should still be theirs to
     // answer when they come back; the CLI used to cut the wire contract's own
