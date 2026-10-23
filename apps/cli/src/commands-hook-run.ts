@@ -74,7 +74,7 @@ import {
 import { projectBinding, projectEnabled } from './project-enablement.js'
 import { releaseCodexCardHandbacks } from './codex-card-handback.js'
 import { codexCardPostToolUse, codexPreToolUse } from './codex-question-hooks.js'
-import { unlinkedQuestionFormContext } from './unlinked-question-forms.js'
+import { grokQuestionFormGate, unlinkedQuestionFormContext } from './unlinked-question-forms.js'
 import { spawnQuestionSettlement } from './question-settlement-process.js'
 import { QUESTION_WAITER_CEILING_SECONDS } from './question-timing.js'
 import { sessionActivationOutput, userPromptContextOutput } from './session-activation.js'
@@ -421,6 +421,7 @@ export async function hookRunCommand(
     start({ cwd })
     try {
       if (harness === 'codex') await codexPreToolUse(deps, envelope, logger)
+      if (harness === 'grok') grokQuestionFormGate(deps, envelope, cwd)
       logger.info('hook.end', { hook: event, outcome: 'checked', decided: false })
     } catch (err) {
       logger.error('hook.end', { hook: event, outcome: 'ignored', ...failureData(err) })

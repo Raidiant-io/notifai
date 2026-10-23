@@ -80,6 +80,9 @@ export interface HookEnvelope {
   permission_mode?: string
   /** Tool events: the tool, its input, and after it ran its response. */
   tool_name?: string
+  /** Grok native tool-event spellings. */
+  toolName?: string
+  toolInput?: unknown
   tool_input?: unknown
   tool_response?: unknown
   tool_use_id?: string

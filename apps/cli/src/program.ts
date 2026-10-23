@@ -773,7 +773,7 @@ export function buildProgram(deps: CommandDeps, options: BuildProgramOptions = {
     .helpGroup(GROUP.agent)
     .summary('Ask the User a question')
     .description('Register a question on the User\'s devices and keep working, or add --wait to wait for the answer the way you would without Notifai')
-    .option('--title <text>', 'always pass it: names the decision in a few words, never the question itself (see notifai guidance titles)')
+    .option('--title <text>', 'always pass it: names the decision in a few words, never the question itself (see notifai guidance)')
     .option(
       '--wait',
       'wait for the answer: where a later answer can reach this Agent Session, end your turn as the output says; elsewhere this command holds until the answer arrives or the wait ends (exit 0 answered, 3 ended unanswered and withdrawn, 5 network)',
@@ -809,6 +809,7 @@ export function buildProgram(deps: CommandDeps, options: BuildProgramOptions = {
       (v: string, all: string[] = []) => [...all, v],
     )
     .option('--project <id>', 'Project identifier override (otherwise configured or inferred)')
+    .option('--projectless', 'deliberately omit Project identity for this question')
     .option(
       '--session-label <text>',
       'initial Agent Session name; repeat the same name, use session rename for a changed job (env: NOTIFAI_SESSION_LABEL)',
@@ -828,6 +829,7 @@ export function buildProgram(deps: CommandDeps, options: BuildProgramOptions = {
       image?: string[]
       imageAlt?: string[]
       project?: string
+      projectless?: boolean
       sessionLabel?: string
     }) => {
       let body = opts.body
@@ -874,6 +876,7 @@ export function buildProgram(deps: CommandDeps, options: BuildProgramOptions = {
         ...(opts.image?.length ? { image: opts.image } : {}),
         ...(opts.imageAlt?.length ? { imageAlt: opts.imageAlt } : {}),
         ...(opts.project !== undefined ? { project: opts.project } : {}),
+        ...(opts.projectless === true ? { projectless: true } : {}),
         ...(opts.sessionLabel !== undefined ? { sessionLabel: opts.sessionLabel } : {}),
         ...(opts.json === true ? { json: true } : {}),
         ...(opts.literalBackslashN === true ? { literalBackslashN: true } : {}),

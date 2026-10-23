@@ -615,7 +615,7 @@ describe('command contracts', () => {
     expect(projectEnabled(projectBinding(cwd, env))).toBe(true)
   })
 
-  it('sends nothing from a Project the User disabled until they enable it again', async () => {
+  it.each([false, true])('sends nothing from a Project the User disabled until they enable it again (projectless: %s)', async (projectless) => {
     const cwd = mkdtempSync(path.join(os.tmpdir(), 'notifai-disabled-send-'))
     execFileSync('git', ['init', '--quiet', cwd])
     const io = new CapturedIo()
@@ -626,7 +626,7 @@ describe('command contracts', () => {
     expect(projectDisableCommand(deps)).toBe(EXIT.ok)
     expect(io.outLines.at(-1)).toMatch(/^Notifai is disabled for Project ".+": nothing from it reaches the User's devices until `notifai project enable`\.$/)
 
-    expect(await sendCommand(deps, { title: 'Ready', body: 'Ready.', kind: 'done' })).toBe(EXIT.usage)
+    expect(await sendCommand(deps, { title: 'Ready', body: 'Ready.', kind: 'done', projectless })).toBe(EXIT.usage)
     expect(io.errLines.join('\n')).toMatch(/^project_disabled: Notifai is disabled for Project ".+": nothing from it reaches the User's devices\. Nothing was sent\.$/m)
     expect(io.errLines.join('\n')).toContain('If the User asked for Notifai here, run `notifai project enable`, then run this send again; otherwise do not notify them.')
     expect(submissions).toBe(0)
@@ -655,7 +655,14 @@ describe('command contracts', () => {
     expect(() => JSON.parse(io.outLines.join('\n'))).not.toThrow()
   })
 
-  it.each([false, true])('registers no question in a Project the User disabled (json: %s)', (json) => {
+  it.each([
+    { json: false, wait: false, projectless: false },
+    { json: true, wait: false, projectless: false },
+    { json: true, wait: true, projectless: false },
+    { json: false, wait: false, projectless: true },
+    { json: true, wait: false, projectless: true },
+    { json: true, wait: true, projectless: true },
+  ])('registers no question in a Project the User disabled (%j)', async ({ json, wait, projectless }) => {
     const cwd = mkdtempSync(path.join(os.tmpdir(), 'notifai-disabled-ask-'))
     writeProjectSettings(cwd, isolatedEnv(cwd), 'project = "disabled-ask"\n')
     const io = new CapturedIo()
@@ -664,7 +671,7 @@ describe('command contracts', () => {
     const binding = projectBinding(cwd, env, 'disabled-ask')!
     disableProject(binding)
 
-    expect(askCommand(deps, 'Ship it?', { json })).toBe(EXIT.usage)
+    expect(await askCommand(deps, 'Ship it?', { json, wait, projectless })).toBe(EXIT.usage)
     const remedy = 'if the User asked for Notifai here, run `notifai project enable`, then ask again; otherwise ask in the conversation, as you would without Notifai'
     if (json) {
       expect(JSON.parse(io.outLines.at(-1)!)).toMatchObject({
@@ -691,6 +698,25 @@ describe('command contracts', () => {
     expect(submitted?.draft.project).toBeUndefined()
     expect(projectEnabled(projectBinding(cwd, env))).toBe(false)
   })
+  it('asks Projectless outside a Project without creating Enablement state', async () => {
+    const cwd = mkdtempSync(path.join(os.tmpdir(), 'notifai-projectless-ask-'))
+    const io = new CapturedIo()
+    const env = isolatedEnv(cwd)
+    let submitted: SubmitNotificationRequestT | undefined
+    const client = {
+      submit: async (body: SubmitNotificationRequestT) => ((submitted = body), receipt),
+      replies: async () => replyResponse([reply]),
+      closeReplies: async () => claimedReplyResponse([reply]),
+      putAgentAcknowledgement: async () => ({}),
+    } as unknown as ApiClient
+    const deps = { ...makeDeps(io, client), cwd, env }
+    expect(await askCommand(deps, 'Ship it?', { title: 'Shipping', wait: true, projectless: true, json: true })).toBe(EXIT.ok)
+    expect(submitted?.draft.project).toBeUndefined()
+    expect(projectBinding(cwd, env)).toBeNull()
+    expect(await askCommand(deps, 'Ship it?', { project: 'explicit', projectless: true, json: true })).toBe(EXIT.usage)
+    expect(JSON.parse(io.outLines.at(-1)!)).toMatchObject({ code: 'invalid_input', registered: false })
+  })
+
   it('tells an unsigned machine to run init, not login', () => {
     const io = new CapturedIo()
     const deps = makeDeps(io, {} as ApiClient)
@@ -2019,7 +2045,7 @@ describe('command contracts', () => {
     ).toBe(EXIT.usage)
     expect(submitCalls).toBe(0)
     expect(io.errLines).toEqual([
-      'Use --reply with --reply-timeout, --reply-window, or --choice.',
+      'Use notifai ask for a question, with --choice for its answers; use notifai ask --wait to wait for the answer.',
     ])
   })
 
@@ -2076,7 +2102,7 @@ describe('command contracts', () => {
     ).toBe(EXIT.ok)
     expect(polls).toHaveLength(3)
     expect(polls.every((poll) => poll.waitSeconds <= 25)).toBe(true)
-    expect(io.outLines).toContain('reply from iPhone: yes, after the migration')
+    expect(io.outLines).toContain('User reply: "yes, after the migration"')
     expect(io.outLines).toContain('Agent Acknowledgement required.')
     expect(io.outLines.join('\n')).toContain(
       `notifai acknowledge ${receipt.request_id} --text <text>`,
@@ -2168,7 +2194,7 @@ describe('command contracts', () => {
       }),
     ).toBe(EXIT.ok)
     expect(replyCalls).toBe(3)
-    expect(io.outLines).toContain('reply from iPhone: yes, after the migration')
+    expect(io.outLines).toContain('User reply: "yes, after the migration"')
     expect(io.outLines).toContain('Agent Acknowledgement required.')
     expect(io.outLines.join('\n')).toContain(
       `notifai acknowledge ${receipt.request_id} --text <text>`,
@@ -2379,7 +2405,7 @@ describe('command contracts', () => {
       replies: async () => replyResponse([reply]),
       closeReplies: async (requestId: string, disposition: string) => {
         closes.push({ requestId, disposition })
-        expect(io.outLines.join('\n')).not.toContain('reply from')
+        expect(io.outLines.join('\n')).not.toContain('User reply:')
         return claimedReplyResponse([reply, corrected])
       },
     } as unknown as ApiClient
@@ -2388,8 +2414,8 @@ describe('command contracts', () => {
       title: 'Question', body: 'Deploy?', reply: true, replyTimeout: 10,
     })).toBe(EXIT.ok)
     expect(closes).toEqual([{ requestId: receipt.request_id, disposition: 'deliver' }])
-    expect(io.outLines).toContain('reply from iPhone: no, wait')
-    expect(io.errLines.join('\n')).toContain('is the answer that counts')
+    expect(io.outLines).toContain('User reply: "no, wait"')
+    expect(io.errLines.join('\n')).toContain('extend or correct')
   })
 
   it('records a genuine foreground hand-off after the fenced answer reaches the exact Agent Session', async () => {
@@ -2409,7 +2435,7 @@ describe('command contracts', () => {
       claimDeliveryAttempt: async (session: string, body: unknown) => {
         expect(session).toBe(sessionId)
         expect(body).toEqual({ subject: { type: 'answer', request_id: receipt.request_id }, already_handed_off: true })
-        expect(io.outLines.join('\n')).toContain('reply from iPhone')
+        expect(io.outLines.join('\n')).toContain('User reply:')
         calls.push('recorded')
         return { attempt_id: 'att_foreground', claim_remaining_ms: 0, outcome: 'handed_off' as const }
       },
@@ -2458,7 +2484,7 @@ describe('command contracts', () => {
     deps.cwd = root
 
     expect(await sendCommand(deps, { title: 'Question', body: 'Deploy?', reply: true, replyTimeout: 10 })).toBe(EXIT.network)
-    expect(io.outLines.join('\n')).toContain('reply from iPhone')
+    expect(io.outLines.join('\n')).toContain('User reply:')
     expect(io.errLines.join('\n')).toContain('pending journal recovery')
     expect(readDeliveryJournal(sessionId, deps.env)).toMatchObject([
       { attempt_id: `unclaimed:${receipt.request_id}`, stage: 'written', unclaimed: true },
@@ -2477,7 +2503,7 @@ describe('command contracts', () => {
       },
       claimDeliveryAttempt: async (session: string) => {
         expect(session).toBe(sessionId)
-        expect(io.outLines.join('\n')).toContain('reply from iPhone')
+        expect(io.outLines.join('\n')).toContain('User reply:')
         recorded = true
         return { attempt_id: 'att_recovered', claim_remaining_ms: 0, outcome: 'handed_off' as const }
       },
@@ -2526,7 +2552,7 @@ describe('command contracts', () => {
     expect(await sendCommand(makeDeps(io, client), {
       title: 'Question', body: 'Deploy?', reply: true, replyTimeout: 10,
     })).toBe(EXIT.failed)
-    expect(io.outLines.join('\n')).not.toContain('reply from')
+    expect(io.outLines.join('\n')).not.toContain('User reply:')
     expect(io.errLines.join('\n')).toContain('closed elsewhere')
   })
 
@@ -2874,6 +2900,23 @@ describe('command contracts', () => {
     })
   })
 
+  it('shows the reply before close asks the agent to acknowledge it', async () => {
+    const io = new CapturedIo()
+    const deps = makeDeps(io, { closeReplies: async () => replyResponse([reply]) } as unknown as ApiClient)
+    expect(await closeCommand(deps, receipt.request_id)).toBe(EXIT.ok)
+    expect(io.outLines.indexOf(`User reply: ${JSON.stringify(reply.text)}`)).toBeLessThan(io.outLines.findIndex(line => line.includes('notifai acknowledge')))
+    expect(io.outLines.join(' ')).toContain('can never satisfy a harness permission prompt')
+    expect(io.outLines.at(-1)).toContain('notifai acknowledge')
+  })
+
+  it('names total provider rejection on stderr while retaining the JSON receipt', async () => {
+    const io = new CapturedIo()
+    const deps = makeDeps(io, { submit: async () => ({ ...receipt, overall: 'provider_rejected_all' }) } as unknown as ApiClient)
+    expect(await sendCommand(deps, { kind: 'done', title: 'Ready', summary: 'Ready.', json: true })).toBe(EXIT.failed)
+    expect(JSON.parse(io.outLines[0]!)).toMatchObject({ overall: 'provider_rejected_all' })
+    expect(io.errLines.join(' ')).toContain('provider_rejected_all')
+  })
+
   it('close exposes the acknowledgement requirement and exact follow-up command', async () => {
     const io = new CapturedIo()
     const client = {
@@ -2946,6 +2989,19 @@ describe('command contracts', () => {
     expect(closeReplies).not.toHaveBeenCalled()
     if (scenario === 'withdrawn') expect(JSON.parse(io.outLines[0]!)).toMatchObject({ state: 'withdrawn', submitted: false })
     else expect(io.errLines.join('\n')).toMatch(scenario === 'ambiguous' ? /more than one/ : /No local registration/)
+  })
+
+  it('close --pending succeeds with an explicit empty state, with or without a session', async () => {
+    const cwd = mkdtempSync(path.join(os.tmpdir(), 'notifai-close-empty-'))
+    const env = isolatedEnv(cwd)
+    const io = new CapturedIo()
+    const deps = { ...makeDeps(io, {} as ApiClient), cwd, env }
+    expect(await closeCommand(deps, undefined, { pending: true, json: true })).toBe(EXIT.ok)
+    expect(JSON.parse(io.outLines.at(-1)!)).toMatchObject({ state: 'nothing_pending', session_id: null, withdrawn: [], closed: [] })
+    writeSessionState('empty-session', env, { harness: 'codex' })
+    writeProjectSession(cwd, env, 'empty-session', Date.now(), 'codex')
+    expect(await closeCommand(deps, undefined, { pending: true, json: true })).toBe(EXIT.ok)
+    expect(JSON.parse(io.outLines.at(-1)!)).toMatchObject({ state: 'nothing_pending', session_id: 'empty-session' })
   })
 
   it('close --pending withdraws an unpushed registration so a later Stop cannot send it', async () => {
@@ -3089,7 +3145,8 @@ describe('command contracts', () => {
     expect(await repliesCommand(deps, receipt.request_id, { after: 7 })).toBe(EXIT.ok)
     expect(requested).toEqual({ waitSeconds: 0, afterSeq: 7 })
     expect(io.outLines).toEqual([
-      'reply from iPhone: yes, after the migration',
+      'User reply: "yes, after the migration"',
+      expect.stringContaining('can never satisfy a harness permission prompt'),
       'Agent Acknowledgement required.',
       `next: Run \`notifai acknowledge ${receipt.request_id} --text <text>\` with concrete text saying what you will do because of the reply.`,
     ])
@@ -3120,7 +3177,8 @@ describe('command contracts', () => {
     expect(await repliesCommand(deps, undefined, { pending: true })).toBe(EXIT.ok)
     expect(io.outLines).toEqual([
       `pending request ${receipt.request_id}`,
-      'reply from iPhone: yes, after the migration',
+      'User reply: "yes, after the migration"',
+      expect.stringContaining('can never satisfy a harness permission prompt'),
       'Agent Acknowledgement required.',
       `next: Run \`notifai acknowledge ${receipt.request_id} --text <text>\` with concrete text saying what you will do because of the reply.`,
     ])
@@ -8968,7 +9026,7 @@ describe('a held ask --wait', () => {
     expect(putAgentAcknowledgement).toHaveBeenCalledWith(receipt.request_id, { text: PROGRAM_RECEIPT })
     expect(PROGRAM_RECEIPT).toBe('Received by the program that asked.')
     expect(io.outLines[0]).toMatch(/^Question submitted as req_reply_test; waiting up to 86400s for the answer \(until .+\)\. Keep this command running until it returns\.$/)
-    expect(io.outLines).toContain(`reply from iPhone: ${reply.text}`)
+    expect(io.outLines).toContain(`User reply: ${JSON.stringify(reply.text)}`)
   })
 
   it('prints one answer_result object with --json, and states the wait on stderr', async () => {
@@ -9052,7 +9110,7 @@ describe('a held ask --wait', () => {
       putAgentAcknowledgement: async () => ({ agent_acknowledgement: null }),
     } as never)
     expect(await ask(deps)).toBe(EXIT.ok)
-    expect(io.outLines).toContain(`reply from iPhone: ${reply.text}`)
+    expect(io.outLines).toContain(`User reply: ${JSON.stringify(reply.text)}`)
   })
 
   it('ends at once with exit 3 when the User dismisses the question', async () => {
@@ -9154,8 +9212,9 @@ describe('a held ask --wait', () => {
     const { deps } = scriptDeps(io, {} as never)
     const env = { ...isolatedEnv(cwd), NOTIFAI_ACTIVE_HARNESS: 'opencode', NOTIFAI_ACTIVE_SESSION_ID: 'ses_opencode' }
     expect(await askCommand({ ...deps, cwd, env }, 'Deploy?', { title: 'Production deploy', json: true })).toBe(EXIT.usage)
-    const refusal = JSON.parse(io.outLines[0]!) as { code: string; remedy: string }
+    const refusal = JSON.parse(io.outLines[0]!) as { code: string; reason: string; remedy: string }
     expect(refusal.code).toBe('question_routing_unavailable')
+    expect(refusal.reason).toBe('answer_cannot_return')
     expect(refusal.remedy).toContain('`question` form')
     expect(refusal.remedy).toContain('`notifai ask --wait`')
     expect(refusal.remedy).toContain('ask in the conversation')
@@ -9172,6 +9231,31 @@ describe('a held ask --wait', () => {
     updateSessionState('ses_root', env, (state) => ({ ...state, harness: 'opencode', last_prompt_at: Date.now() - 1_000 }))
     return { cwd, env }
   }
+
+  it('refuses a Projectless OpenCode wait when the cwd Project is disabled', async () => {
+    const { cwd, env } = opencodeSession('0')
+    writeProjectSettings(cwd, env, 'project = "disabled-wait"\n')
+    const binding = projectBinding(cwd, env, 'disabled-wait')!
+    disableProject(binding)
+    const io = new CapturedIo()
+    const submit = vi.fn(async () => receipt)
+    const { deps } = scriptDeps(io, { submit, replies: async () => replyResponse([reply]), closeReplies: async () => claimedReplyResponse([reply]), claimDeliveryAttempt: async () => ({ status: 'recorded' }) } as never)
+    expect(await askCommand({ ...deps, cwd, env }, 'Why?', { title: 'Reason', wait: true, projectless: true, json: true })).toBe(EXIT.usage)
+    expect(submit).not.toHaveBeenCalled()
+    expect(JSON.parse(io.outLines.at(-1)!)).toMatchObject({ code: 'project_disabled', registered: false })
+    expect(io.outLines.join(' ')).not.toContain('open_form')
+    expect(projectEnablementState(binding)).toBe('disabled')
+  })
+
+  it('hands a free-text OpenCode ask --wait back as a form without submitting it', async () => {
+    const { cwd, env } = opencodeSession('0')
+    const io = new CapturedIo()
+    const submit = vi.fn()
+    const { deps } = scriptDeps(io, { submit } as never)
+    expect(await askCommand({ ...deps, cwd, env }, 'Why?', { title: 'Reason', wait: true, json: true })).toBe(EXIT.ok)
+    expect(submit).not.toHaveBeenCalled()
+    expect(JSON.parse(io.outLines[0]!).open_form.input.questions).toEqual([{ question: 'Why?', header: 'Reason', options: [] }])
+  })
 
   it('offers an OpenCode root session the hand-back when plain ask cannot return', async () => {
     const { cwd, env } = opencodeSession('0')
@@ -9212,7 +9296,6 @@ describe('a held ask --wait', () => {
 
   it.each([
     ['a worker\'s', '1' as const, ['Production', 'Staging']],
-    ['a free-text', '0' as const, undefined],
   ])('holds %s OpenCode ask --wait in the command', async (_case, worker, choice) => {
     const { cwd, env } = opencodeSession(worker)
     const io = new CapturedIo()
@@ -9312,10 +9395,11 @@ describe('asking before the hooks have ever run', () => {
     writeProjectSession(cwd, env, 'codex-other-thread', 42, 'codex')
     io.outLines = []
 
-    expect(askCommand(deps, 'Ship it?', { title: 'Decision', json: true })).toBe(EXIT.usage)
+    expect(askCommand(deps, 'Ship it?', { title: 'Decision', wait: true, json: true })).toBe(EXIT.usage)
     expect(JSON.parse(io.outLines.at(-1)!)).toMatchObject({
       ok: false,
       registered: false,
+      remedy: expect.stringMatching(/retry the same .*--wait.*original question/),
       code: 'session_not_activated',
       check_id: 'user_prompt_submit',
       exit_code: EXIT.usage,
@@ -11047,7 +11131,7 @@ describe('asking before the hooks have ever run', () => {
     io.outLines = []
 
     expect(askCommand(deps, 'Ship it?', { title: 'Decision' })).toBe(EXIT.usage)
-    expect(io.errLines.join(' ')).toMatch(/exact Claude Code session has not fired UserPromptSubmit/i)
+    expect(io.errLines.join(' ')).toMatch(/exact Claude Code Agent Session has not activated question routing/i)
   })
 
   it('accepts a Claude Code subprocess when its documented session id owns the pointer', () => {
@@ -12296,14 +12380,13 @@ describe('a second device that disagrees', () => {
     }
   }
 
-  it('says the latest answer counted and which were superseded', () => {
+  it('preserves distinct free-text replies as ordered parts to interpret', () => {
     const said = contradictingAnswer([
       view({ seq: 1, device_name: 'iPhone', text: 'Yes' }),
       view({ seq: 2, device_name: 'FurankuMac', text: 'No' }),
     ])
-    expect(said).toContain('"No" from FurankuMac')
-    expect(said).toContain('iPhone')
-    expect(said).toMatch(/corrects an earlier one/)
+    expect(said).toContain('extend or correct')
+    expect(said).not.toContain('superseded')
   })
 
   it('is silent when the second answer agrees', () => {

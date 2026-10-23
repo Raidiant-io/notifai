@@ -701,7 +701,7 @@ function isSkillScope(value: string | undefined): value is SkillScope {
 function checkSkillScopeFlags(deps: CommandDeps, flags: InitFlags): SkillScope | undefined | 'usage' {
   if (flags.skillsHarness !== undefined && (flags.skills !== true ||
       flags.skillsHarness.split(',').some(agent => !(SOURCE_CONTEXT_HARNESSES as readonly string[]).includes(agent.trim())))) {
-    deps.io.err('`--skills-harness` requires --skills and comma-separated supported harness names.')
+    deps.io.err(`--skills-harness requires --skills and comma-separated supported harness names: ${SOURCE_CONTEXT_HARNESSES.join(', ')}.`)
     return 'usage'
   }
   if (flags.skillsScope !== undefined && !isSkillScope(flags.skillsScope)) {

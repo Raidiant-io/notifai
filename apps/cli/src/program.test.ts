@@ -160,6 +160,15 @@ describe('program argv parsing', () => {
     expect(seen).toMatchObject({ projectless: true })
   })
 
+  it('preserves deliberate Projectless ask intent at the argv boundary', async () => {
+    let seen: unknown
+    const result = await parse(['ask', 'Ship it?', '--projectless', '--json'], {
+      ask: (async (_deps, _question, flags) => ((seen = flags), 0)) as ProgramRunners['ask'],
+    })
+    expect(result.exitCode).toBe(0)
+    expect(seen).toMatchObject({ projectless: true, json: true })
+  })
+
   it('dispatches User-owned Project enablement commands', async () => {
     let enabled = 0
     const result = await parse(['project', 'enable'], {

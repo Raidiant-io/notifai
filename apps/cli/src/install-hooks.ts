@@ -352,8 +352,8 @@ export function buildHookConfig(options: BuildOptions): HookConfig {
   for (const row of HOOK_EVENT_TABLE) {
     if (row.document === null) continue
     if (row.notifai === 'pre-tool-use') {
-      if (options.harness !== 'codex' || !installsSessionAttendant(options.harness)) continue
-      hooks[row.document] = [{ matcher: 'request_user_input_async', hooks: [{
+      if (options.harness !== 'grok' && (options.harness !== 'codex' || !installsSessionAttendant(options.harness))) continue
+      hooks[row.document] = [{ matcher: options.harness === 'grok' ? '^(ask_user_question|AskQuestion)$' : 'request_user_input_async', hooks: [{
         type: 'command', ...hookCommandFields(adapterPath, row.notifai, options.harness, commandOptions), timeout: row.timeoutSeconds,
       }] }]
       continue

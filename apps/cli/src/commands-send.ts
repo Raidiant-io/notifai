@@ -9,6 +9,7 @@ import {
   type ReplyView,
   type SubmissionReceipt,
 } from '@raidiant/notifai-protocol'
+import { quoted, TRANSPORT_LIMIT } from './injection-render.js'
 import { ApiCallError, NetworkError, isRetryableReplyPollError, type ApiClient } from './client.js'
 import type { FlagOverrides, loadConfig } from './config.js'
 import { MIN_REPLY_WINDOW_SECONDS } from './hook-lifecycle.js'
@@ -16,7 +17,7 @@ import { inspectQuestionState, type QuestionStateView } from './hook-question-st
 import { selectedForClaimedDelivery } from './hook-question-retirement.js'
 import { readSessionState, recordSessionNotified } from './hook-session-state.js'
 import { questionsAwaitingAnswer } from './native-answer-operation.js'
-import { enableProjectUnlessDisabled, projectBinding } from './project-enablement.js'
+import { enableProjectUnlessDisabled, inferredProjectName, projectBinding, projectDisabled } from './project-enablement.js'
 import {
   buildDraft,
   contentLengthNotes,
@@ -146,7 +147,7 @@ export async function sendCommand(
     !flags.reply &&
     (flags.replyTimeout !== undefined || flags.replyWindow !== undefined || hasChoice)
   ) {
-    deps.io.err('Use --reply with --reply-timeout, --reply-window, or --choice.')
+    deps.io.err('Use notifai ask for a question, with --choice for its answers; use notifai ask --wait to wait for the answer.')
     return EXIT.usage
   }
   const replyTimeout = flags.replyTimeout ?? 900
@@ -231,9 +232,13 @@ export async function sendCommand(
     deps.io.err(semanticBuild.error)
     return EXIT.usage
   }
-  if (semanticBuild.draft.project !== undefined) {
-    const binding = projectBinding(deps.cwd, deps.env, semanticBuild.draft.project)
-    if (binding !== null && enableProjectUnlessDisabled(binding) === 'disabled') {
+  // Omitting request identity never overrides the User's decision for this Project.
+  const originProject = semanticBuild.draft.project ?? config.project.value ?? inferredProjectName(deps.cwd, deps.env)
+  if (originProject !== null) {
+    const binding = projectBinding(deps.cwd, deps.env, originProject)
+    if (binding !== null && (flags.projectless === true
+      ? projectDisabled(binding)
+      : enableProjectUnlessDisabled(binding) === 'disabled')) {
       deps.io.err(
         `project_disabled: Notifai is disabled for Project "${binding.project}": nothing from it reaches the User's devices. ` +
           'Nothing was sent.\n' +
@@ -404,6 +409,7 @@ export async function sendCommand(
     })),
     ...(receipt.warnings.length > 0 ? { warnings: receipt.warnings } : {}),
   })
+  if (receiptExit === EXIT.failed) deps.io.err(`provider_rejected_all: no provider accepted request ${receipt.request_id}; run notifai status ${receipt.request_id} for the rejection reasons.`)
   if (!flags.json) {
     const quietOrdinarySuccess =
       !flags.reply &&
@@ -947,34 +953,19 @@ export function recordReplies(deps: CommandDeps, requestId: string, replies: rea
 }
 
 export function printReplies(deps: CommandDeps, replies: ReplyView[]): void {
-  for (const reply of replies) deps.io.out(`reply from ${reply.device_name}: ${reply.text}`)
+  for (const reply of replies) deps.io.out(`User reply: ${quoted(reply.text)}`)
+  if (replies.length > 0) deps.io.out(TRANSPORT_LIMIT.trim())
   const contradiction = contradictingAnswer(replies)
   if (contradiction !== null) deps.io.err(contradiction)
 }
 
-/**
- * The correction note for a wait that saw more than one answer.
- *
- * A later reply that conflicts with an earlier one is a correction, so the
- * latest answer is the one that counts. The server retires the question on
- * the other devices the moment one answers, which makes this rare; it is
- * still reachable, because a device can answer between the first reply
- * landing and its retirement arriving.
- *
- * Ordered by seq, so `replies.at(-1)` is the answer to act on.
- */
+/** Distinct text replies stay in send order; the agent interprets extension or correction. */
 export function contradictingAnswer(replies: ReplyView[]): string | null {
-  const winner = replies.at(-1)
-  if (winner === undefined || replies.length < 2) return null
-  const key = (reply: ReplyView) =>
-    reply.answers.length > 0 ? JSON.stringify(reply.answers) : reply.text
-  const corrected = replies.slice(0, -1).filter((reply) => key(reply) !== key(winner))
-  if (corrected.length === 0) return null
-  const names = [...new Set(corrected.map((reply) => reply.device_name))].join(', ')
-  return (
-    `note: "${winner.text}" from ${winner.device_name} is the answer that counts — a later ` +
-    `answer corrects an earlier one. Earlier differing answers from ${names} were superseded.`
-  )
+  const latest = replies.at(-1)
+  if (latest === undefined || replies.length < 2) return null
+  const key = (reply: ReplyView) => reply.answers.length > 0 ? JSON.stringify(reply.answers) : reply.text
+  if (replies.every(reply => key(reply) === key(latest))) return null
+  return 'Read every reply above in send order: later parts may extend or correct earlier ones. Clarify conflicting separate submissions before dependent work.'
 }
 
 function printNoReply(deps: CommandDeps, requestId: string, expiresAt?: string | null): void {

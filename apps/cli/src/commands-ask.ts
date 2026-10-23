@@ -37,7 +37,7 @@ import { cardHandbackInput, cardShown } from './codex-card-handback.js'
 import { CODEX_CARD_VERSION_FLOOR, codexCardHooksReady, codexCardToolOffered } from './codex-card-capability.js'
 import { activeOpenclawGeneration } from './openclaw-session-access.js'
 import { openclawGatewayReady } from './openclaw-gateway-readiness.js'
-import { enableProjectUnlessDisabled, inferredProjectName, projectBinding } from './project-enablement.js'
+import { enableProjectUnlessDisabled, inferredProjectName, projectBinding, projectDisabled } from './project-enablement.js'
 import { spawnQuestionSettlement } from './question-settlement-process.js'
 import { answerCannotReturnRemedy, heldAskWait, heldWaitRoute } from './commands-ask-wait.js'
 import { opencodeHandBack } from './opencode-hand-back.js'
@@ -79,6 +79,7 @@ export interface AskFlags {
   image?: string[]
   imageAlt?: string[]
   project?: string
+  projectless?: boolean
   sessionLabel?: string
 }
 
@@ -89,6 +90,8 @@ export interface AskFailure {
   check_id: string
   exit_code: number
   remedy: string
+  /** Distinguishes a harness limit from repairable routing while retaining released codes. */
+  reason?: 'answer_cannot_return' | 'routing_not_ready'
   message: string
   user_action?: {
     code: string
@@ -128,7 +131,7 @@ function askFailure(
   message: string,
   remedy: string,
   exitCode: number = EXIT.usage,
-  details: Pick<AskFailure, 'user_action'> = {},
+  details: Pick<AskFailure, 'user_action' | 'reason'> = {},
 ): number {
   return reportAskFailure(deps, flags, {
     code,
@@ -169,7 +172,7 @@ const FORM_SHAPE =
   '--form must be JSON: {"title": "...", "summary": "...", "questions": [{"title"?, "text", "choices"?, "multi"?}], "body"?}; ' +
   'a choice is a label or {"label", "description"?, "recommended"?}.'
 
-const TITLE_GUIDANCE = 'it names the decision in a few words and is never the question itself (`notifai guidance titles`)'
+const TITLE_GUIDANCE = 'it names the decision in a few words and is never the question itself (`notifai guidance`)'
 
 /** A title an older skill or script left out: the question still registers. */
 export const MISSING_TITLE_NOTE =
@@ -405,6 +408,7 @@ export function buildAskDraft(
       summary: built.summary,
       ...(built.body !== undefined ? { body: built.body } : {}),
       ...(flags.project !== undefined ? { project: flags.project } : {}),
+      ...(flags.projectless === true ? { projectless: true } : {}),
       ...(mediaIds.length > 0 ? { image: mediaIds } : {}),
       ...(flags.imageAlt !== undefined ? { imageAlt: flags.imageAlt } : {}),
       reply: true,
@@ -441,7 +445,7 @@ function recordRegisteredQuestion(
   // A wait ends the turn, and Codex drops every open card at turn end, so a
   // waiting ask never links one. Codex offers no subagent the card at all.
   if (wait || rootKey !== undefined) return ordinary()
-  if (!codexCardAsks(deps, sessionId) || built.questions.length > 10) return ordinary()
+  if (!codexCardAsks(deps, sessionId) || built.questions.length > 10 || formsDisabledInProject(deps, sessionId)) return ordinary()
   if (built.questions.some(question => question.multi === true)) return ordinary()
   const local = currentCodexQuestionContext(readSessionState(sessionId, deps.env), sessionId, deps.env)
   if (local === null) return ordinary()
@@ -588,6 +592,12 @@ const OPEN_FORM_HUMAN = `Then open ${CLAUDE_QUESTION_TOOL} with this input uncha
 
 const OPEN_FORM_UNAVAILABLE = `If ${CLAUDE_QUESTION_TOOL} is unavailable, end your turn instead: the answer arrives as your next message.`
 
+/** An explicit Projectless ask can run here, but native forms still follow the cwd Project. */
+function formsDisabledInProject(deps: CommandDeps, sessionId: string): boolean {
+  const config = loadConfig({ cwd: deps.cwd, env: deps.env, sessionId })
+  return projectDisabled(projectBinding(deps.cwd, deps.env, config.project.value))
+}
+
 /**
  * The picker `ask --wait` hands back on Claude Code, recorded as this turn's
  * hand-back, or null where the picker cannot carry the question and the agent
@@ -600,7 +610,7 @@ function claudeHandBack(
   sessionId: string,
   question: Pick<PendingQuestion, 'question_id' | 'title' | 'headers' | 'questions'>,
 ): ClaudePickerInput | null {
-  if (readSessionState(sessionId, deps.env).harness !== 'claude-code') return null
+  if (readSessionState(sessionId, deps.env).harness !== 'claude-code' || formsDisabledInProject(deps, sessionId)) return null
   if (!claudePickerHooksInstalled(deps)) return null
   const input = handBackInput(question)
   if (input === null) return null
@@ -834,7 +844,7 @@ function persistRegisteredQuestion(
             on_answer: ON_ANSWER,
             ...(handBack !== null ? {} : { answered_outside_notifai: native === undefined
               ? `If they answer in the conversation instead, run \`notifai close ${questionId}\` to retire this question.`
-              : nativeInstruction }),
+              : `If the User answers in the card, Notifai records it mechanically. If the card drops and they answer in the conversation, run \`notifai close ${questionId}\` to retire this question.` }),
           },
         },
         null,
@@ -987,6 +997,9 @@ export function askCommand(
   if (escapedBody !== null) {
     return askFailure(deps, flags, 'invalid_input', 'body', escapedBody, 'fix the body and retry')
   }
+  if (flags.projectless === true && flags.project !== undefined) {
+    return askFailure(deps, flags, 'invalid_input', 'project', 'Choose either --project or --projectless, not both.', 'pass one Project selection and retry')
+  }
   const built = buildQuestions(flags, question)
   if (!built.ok) {
     return askFailure(deps, flags, 'invalid_input', 'questions', built.error, 'fix the question input and retry')
@@ -1007,7 +1020,9 @@ export function askCommand(
   if (explicitBinding !== null) {
     let decision: 'enabled' | 'disabled'
     try {
-      decision = enableProjectUnlessDisabled(explicitBinding)
+      decision = flags.projectless === true
+        ? (projectDisabled(explicitBinding) ? 'disabled' : 'enabled')
+        : enableProjectUnlessDisabled(explicitBinding)
     } catch (err) {
       return askFailure(
         deps,
@@ -1058,8 +1073,10 @@ export function askCommand(
     if (flags.wait !== true) {
       return askFailure(
         deps, flags, held.code, held.checkId,
-        `${held.reason} Nothing was registered.`,
+        `${held.reason.trim().replace(/[.!?]$/, '')}. Nothing was registered.`,
         answerCannotReturnRemedy(held),
+        EXIT.usage,
+        { reason: 'answer_cannot_return' },
       )
     }
     const waitInput = { question, built, flags, config: explicitUseConfig, route: held }
@@ -1119,7 +1136,7 @@ export function askCommand(
         'codex_fresh_session_required',
         'stop_hook',
         `Question routing is not ready: ${CODEX_STALE_STOP_DEFINITION_PROBLEM}. This question was not registered.`,
-        'start one fresh Codex session, send one prompt in it, then retry `notifai ask --json`',
+        'start one fresh Codex session, send one prompt in it, then retry the same ask with the original question and every flag',
         EXIT.usage,
         { user_action: CODEX_FRESH_SESSION_USER_ACTION },
       )
@@ -1130,8 +1147,10 @@ export function askCommand(
         flags,
         'question_routing_unavailable',
         'hook_contract',
-        `Question routing is not ready: ${routeProblems.join('; ')}`,
+        `Question routing is not ready: ${routeProblems.join('; ')}. Nothing was registered.`,
         'run `notifai init --json` and follow its question-routing remedy',
+        EXIT.usage,
+        { reason: 'routing_not_ready' },
       )
     }
     const state = readSessionState(sessionId, deps.env)
@@ -1171,8 +1190,10 @@ export function askCommand(
         flags,
         'session_not_activated',
         'user_prompt_submit',
-        `This exact ${active!.label} session has not fired UserPromptSubmit.`,
-        `send one prompt in this ${active!.label} session, then retry \`notifai ask --json\``,
+        `This exact ${active!.label} Agent Session has not activated question routing. Nothing was registered.`,
+        active!.harness === 'hermes'
+          ? 'ask in the conversation: this Hermes session has no active classic CLI plugin writer; a background review cannot be activated by another prompt'
+          : `send one prompt in this ${active!.label} session, then retry the same notifai ask${flags.wait === true ? ' --wait' : ''} with the original question and every flag; if this harness cannot run that prompt hook, ask in the conversation`,
       )
     }
     if (active!.harness === 'hermes' &&
@@ -1180,7 +1201,7 @@ export function askCommand(
       return askFailure(
         deps, flags, 'question_routing_unavailable', 'plugin_writer',
         'This exact Hermes classic CLI session has no current attending plugin writer.',
-        'start a fresh local classic CLI session with the Notifai plugin enabled, then retry',
+        'ask in the conversation here; in an interactive Hermes classic CLI, enable the Notifai plugin in a fresh session, then retry the same ask with its original question and every flag, including --wait if used',
       )
     }
   }

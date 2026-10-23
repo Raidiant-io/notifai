@@ -53,6 +53,7 @@ import readline from 'node:readline'
 import type { Readable, Writable } from 'node:stream'
 import {
   CAPABILITIES_V1,
+  REPLY_MAX_QUESTIONS,
   validateDraft,
   type ListRepliesResponse,
   type MediaItemT,
@@ -238,14 +239,20 @@ export function opencodePickerQuestions(request: Pick<OpencodeQuestionRequest, '
     question: entry.question,
     ...(entry.header === undefined ? {} : { header: entry.header }),
     options: entry.options,
+    ...(entry.options.length === 0 ? { kind: 'text' } : {}),
     multiSelect: entry.multiple === true,
   }))
 }
 
+/** OpenCode 1 accepts free text and up to the protocol's question limit. */
+function opencodeForm(request: Pick<OpencodeQuestionRequest, 'questions'>): PickerForm | { error: string } {
+  return pickerForm(opencodePickerQuestions(request), { maxQuestions: REPLY_MAX_QUESTIONS })
+}
+
 /**
  * The `question` input that asks exactly these registered questions, or null
- * when the form cannot ask them unchanged: a free-text question, too many
- * questions or choices, or wording the form would shorten. With one question
+ * when the form cannot ask them unchanged: too many questions or choices,
+ * or wording the form would shorten. With one question
  * its header is the title; with several, each question's own title. A
  * recommended choice keeps OpenCode's convention: first, and marked
  * "(Recommended)".
@@ -255,13 +262,12 @@ export function opencodeHandBackInput(
   headers: { title?: string; headers?: string[] },
   questionId: string,
 ): OpencodeFormInput | null {
-  if (questions.some((question) => question.choices === undefined ||
-      question.choices.filter((choice) => choice.recommended === true).length > 1)) return null
+  if (questions.some(question => (question.choices ?? []).filter(choice => choice.recommended === true).length > 1)) return null
   const input: OpencodeFormInput = {
     questions: questions.map((question, index) => ({
       question: question.text,
       header: (questions.length > 1 ? headers.headers?.[index] : undefined) ?? headers.title ?? `Question ${index + 1}`,
-      options: question.choices!.map((choice) => ({
+      options: (question.choices ?? []).map((choice) => ({
         label: choice.recommended === true ? `${choice.label} (Recommended)` : choice.label,
         description: choice.description ?? '',
       })),
@@ -269,7 +275,7 @@ export function opencodeHandBackInput(
     })),
     source: `notifai:${questionId}`,
   }
-  const shape = pickerForm(opencodePickerQuestions(input))
+  const shape = opencodeForm(input)
   if ('error' in shape || !sameQuestions(shape.questions, questions)) return null
   return input
 }
@@ -676,7 +682,7 @@ function admitForm(deps: CommandDeps, form: FormContext): Admission {
   const credential = deps.store.load()
   if (credential === null) return { kind: 'terminal', reason: 'not-signed-in' }
   if (form.extrasError !== undefined) return { kind: 'refused', reason: 'invalid-fields', message: invalidForm(form.extrasError) }
-  const shape = pickerForm(opencodePickerQuestions(form))
+  const shape = opencodeForm(form)
   const owner = currentProcessIdentity()
   const state = readSessionState(sessionId, deps.env)
   const service = { base_url: credential.baseUrl, machine_id: credential.machineId }
@@ -946,8 +952,8 @@ async function awaitOpened(pipe: PluginPipe, form: FormContext): Promise<Opencod
   if (frame === null || frame === 'timeout' || frame.type !== 'opened') return null
   const request = opencodeQuestionRequest(frame.request)
   if (request === null || request.sessionID !== form.sessionId || request.tool?.callID !== form.callId) return null
-  const opened = pickerForm(opencodePickerQuestions(request))
-  const checked = pickerForm(opencodePickerQuestions(form))
+  const opened = opencodeForm(request)
+  const checked = opencodeForm(form)
   if ('error' in opened || 'error' in checked || !sameQuestions(opened.questions, checked.questions)) return null
   return request
 }
