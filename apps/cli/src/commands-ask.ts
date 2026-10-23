@@ -8,6 +8,7 @@ import {
   type Platform,
   type QuestionT,
 } from '@raidiant/notifai-protocol'
+import { currentCommandGuidance } from './command-guidance.js'
 import { EXIT, authedClient, log, makeClient, type CommandDeps } from './commands-core.js'
 import type { ServiceIdentity } from './credentials.js'
 import { resolveAskingHarness } from './commands-harness-context.js'
@@ -56,6 +57,10 @@ import {
 export interface AskFlags {
   /** Emit the registration and its turn obligation as one JSON object. */
   json?: boolean
+  /** Work this answer resumes in the asking Agent Session. Kept locally. */
+  resumes?: string
+  /** Opaque conversation receipt for hosts without an exact session id. */
+  guidanceToken?: string
   /**
    * Wait for the answer the way the agent would without Notifai. Where a
    * later answer can return to this Agent Session the agent ends its turn;
@@ -182,6 +187,7 @@ const missingQuestionTitlesNote = (numbers: number[]): string =>
   `notifai: give each question of a form its own "title", a word or two naming its decision; ${numbers.map(n => `question ${n}`).join(', ')} ${numbers.length === 1 ? 'has' : 'have'} none.`
 
 export interface BuiltQuestions {
+  resumes?: string
   questions: QuestionT[]
   /**
    * The agent's title for the question, or the form's title for everything it
@@ -740,6 +746,7 @@ function persistRegisteredQuestion(
         ...(draft.source !== undefined ? { source: draft.source } : {}),
         ...(draft.presentation.media !== undefined ? { media: draft.presentation.media } : {}),
         ...(asker === undefined ? {} : { asked_by: asker }),
+        ...(built.resumes === undefined ? {} : { resumes: built.resumes }),
       },
       (deps.now ?? Date.now)(),
       nativeAdmission,
@@ -1009,6 +1016,10 @@ export function askCommand(
   if (!built.ok) {
     return askFailure(deps, flags, 'invalid_input', 'questions', built.error, 'fix the question input and retry')
   }
+  if (flags.resumes !== undefined) {
+    if (flags.resumes.trim() === '' || flags.resumes.length > 2000) return askFailure(deps, flags, 'invalid_input', 'resumes', '--resumes must name the work in 1-2000 characters.', 'name the work this Agent Session will do')
+    built.resumes = flags.resumes.trim()
+  }
   for (const note of built.notes ?? []) deps.io.err(note)
   const mediaInputError = validateMediaInputs(flags.image, flags.imageAlt)
   if (mediaInputError !== null) {
@@ -1072,6 +1083,14 @@ export function askCommand(
   // `ask` is refused and `ask --wait` holds in this command; an OpenCode root
   // session's `ask --wait` hands back its `question` form instead.
   // Questions off keeps every route off the devices first.
+  if (explicitUseConfig.ask_notifications.value) {
+    const currency = currentCommandGuidance(deps, flags.guidanceToken)
+    if (currency !== null) {
+      if (flags.json) deps.io.out(JSON.stringify({ ok: false, registered: false, ...currency }))
+      else deps.io.err(`${currency.message}\n${currency.guidance}\n${currency.remedy}`)
+      return EXIT.usage
+    }
+  }
   const held = heldWaitRoute(active, contested, deps.hookPlatform ?? process.platform)
   if (held !== null) {
     if (!explicitUseConfig.ask_notifications.value) return questionsOff(deps, flags)

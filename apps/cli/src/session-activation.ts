@@ -1,6 +1,6 @@
 import type { HookHarness } from './hook-types.js'
 import { Buffer } from 'node:buffer'
-import { guidanceDigest, shippedSkill } from './guidance-currency.js'
+import { guidanceDigest, installedSkill } from './guidance-currency.js'
 import { GUIDANCE_CONTEXT_MAX_BYTES, lifecycleGuidance } from './guidance-render.js'
 import type { PendingNotice } from './pending-notice.js'
 
@@ -16,12 +16,11 @@ function rootOwnership(skillFile: string | null): string {
     'If another agent started this Agent Session with a task brief, that agent owns them unless the brief delegates them to you: report Agent Events to it and send none yourself. ' +
     `Load the Notifai skill${skillFile === null ? '' : ` (or read \`${skillFile}\`)`} before your first Notification Request; when your job changes completely, load it again and rename this Agent Session. ` +
     'The guidance below governs; unless it says otherwise, when work you own or coordinate needs a User decision, approval, sign-in, credential setup or physical action, register it with `notifai ask` in the same turn you ask it in the conversation: conversation alone misses an away User. ' +
-    'An answer comes back to the Agent Session that asked, and is acted on there. ' +
-    'When you brief an agent that runs in its own Agent Session, say whether it owns Notification Requests; if it does, it acts on its own answers before it reports back, so never brief it to ask and then end. ' +
+    'When you brief an agent in its own Agent Session, say whether it owns Notification Requests, and ask yourself any question whose answer you will act on. ' +
     'Ask for readiness, never for a credential. Harness permission prompts stay in the harness.'
 }
 
-const rootOwnershipText = (): string => rootOwnership(shippedSkill().file)
+const rootOwnershipText = (cwd: string, env: NodeJS.ProcessEnv): string => rootOwnership(installedSkill(cwd, env).file)
 
 /** The digest of what a root Agent Session is given here (`guidance-currency.ts`). */
 export function rootGuidanceDigest(cwd: string, env: NodeJS.ProcessEnv): string {
@@ -30,12 +29,10 @@ export function rootGuidanceDigest(cwd: string, env: NodeJS.ProcessEnv): string 
 }
 
 export const WORKER_ACTIVATION_CONTEXT =
-  'Notifai worker context: report Agent Events (work finished, failed, blocked, or needing the User) to your parent, which decides what reaches the User. Send no Notification Request yourself unless your assignment delegates them to you; then load the Notifai skill and run `notifai guidance` before your first one. If you ask, keep the work that acts on the answer until it is done; if the parent will act, give it the question to ask itself.'
+  'Notifai worker context: report Agent Events (work finished, failed, blocked, or needing the User) to your parent, which decides what reaches the User. Send no Notification Request yourself unless your assignment delegates them to you; then load the Notifai skill and run `notifai guidance` before your first one. If you ask, follow what `ask` prints.'
 
-function workerActivationContext(currency?: string): string {
-  const file = shippedSkill().file
-  return [WORKER_ACTIVATION_CONTEXT, ...(file === null ? [] : [`The Notifai skill is at \`${file}\`.`]), currency]
-    .filter(Boolean).join('\n\n')
+function workerActivationContext(_currency?: string): string {
+  return WORKER_ACTIVATION_CONTEXT
 }
 
 export const MISSING_LIFECYCLE_GUIDANCE_CONTEXT =
@@ -68,7 +65,7 @@ function rootActivationContext(
   maxBytes = GUIDANCE_CONTEXT_MAX_BYTES,
   currency?: string,
 ): string {
-  const head = [rootOwnershipText(), ...(currency === undefined ? [] : [currency])].join('\n\n')
+  const head = [rootOwnershipText(cwd, env), ...(currency === undefined ? [] : [currency])].join('\n\n')
   const guidance = lifecycleGuidance({ cwd, env, maxBytes: maxBytes - bytes(`${head}\n\n`) }).content
   const shown = claimNotices(notices, maxBytes - bytes(`${head}\n\n${guidance}`))
   return [head, ...shown, guidance].join('\n\n')
@@ -109,7 +106,7 @@ export interface HermesActivationSections {
 function hermesRootSections(cwd: string, env: NodeJS.ProcessEnv, notices: readonly PendingNotice[],
   currency?: string): HermesActivationSections {
   const guidance = lifecycleGuidance({ cwd, env, maxBytes: HERMES_SECTION_MAX_BYTES }).content
-  const ownership = [rootOwnershipText(), ...(currency === undefined ? [] : [currency])].join('\n\n')
+  const ownership = [rootOwnershipText(cwd, env), ...(currency === undefined ? [] : [currency])].join('\n\n')
   const head = `${ownership}\n\n${HERMES_GUIDANCE_MISSING_POINTER}`
   const room = Math.min(HERMES_SECTION_MAX_BYTES, HERMES_SECTIONS_MAX_BYTES - bytes(guidance)) - bytes(head)
   const shown = claimNotices(notices, room)

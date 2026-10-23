@@ -121,14 +121,15 @@ function answerContext(answered: AnsweredPending): string {
  */
 export function askerContext(pending: PendingQuestion): string {
   const asker = pending.asked_by
-  if (asker === undefined) return ''
+  const resumes = pending.resumes === undefined ? '' : ` This answer resumes: ${quoted(pending.resumes)}.`
+  if (asker === undefined) return resumes + ' Only this Agent Session received the answer. Do the work it resumes here.'
   const kind = asker.agent_type === undefined ? 'subagent' : `${quoted(asker.agent_type)} subagent`
   const described = asker.description === undefined ? '' : ` ${quoted(asker.description)}`
   const offered = (pending.questions ?? []).map((entry) =>
     `${quoted(entry.text)}${(entry.choices?.length ?? 0) === 0 ? ' (typed answer)' : `: ${entry.choices!.map((choice) => quoted(choice.label)).join(' / ')}`}`)
-  return ` Your ${kind}${described} (agent ${asker.agent_id}) asked it for this Agent Session` +
-    `${offered.length === 0 ? '' : `, offering ${offered.join('; ')}`}, so the work it unblocks is that subagent's: ` +
-    'send it this answer if it can still take messages, otherwise do that work yourself.'
+  return resumes + ` Your ${kind}${described} (agent ${asker.agent_id}) asked it for this Agent Session` +
+    `${offered.length === 0 ? '' : `, offering ${offered.join('; ')}`}. ` +
+    'Send it this answer if it can still take messages and say so in your acknowledgement; otherwise do that work yourself.'
 }
 
 export function acknowledgementContext(answered: AnsweredPending[]): string {

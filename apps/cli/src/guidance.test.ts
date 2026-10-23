@@ -314,30 +314,31 @@ function makeDeps(env: NodeJS.ProcessEnv, cwd: string, confirmAnswer = false) {
 }
 
 describe('guidance commands', () => {
-  it('returns context for a new or changed conversation receipt, stays quiet for the same receipt, and honors disabling', async () => {
-    const { guidanceCheckCommand } = await import('./commands-guidance.js')
+  it('requires a local random token and an explicit guidance read, and honors disabling', async () => {
+    const { guidanceCheckCommand, guidanceShowCommand } = await import('./commands-guidance.js')
+    const { rootGuidanceDigest } = await import('./session-activation.js')
     const { env, cwd } = setup()
     const { deps, captured } = makeDeps(env, cwd)
     execFileSync('git', ['init', '-q', cwd])
-    const binding = projectBinding(cwd, env, undefined)
-    if (binding === null) throw new Error('test needs a Project')
+    const binding = projectBinding(cwd, env, undefined)!
     enableProject(binding)
-    expect(guidanceCheckCommand(deps)).toBe(0)
-    const first = JSON.parse(captured.out.pop()!) as { digest: string; context: string; skill_file: string }
+    guidanceCheckCommand(deps, rootGuidanceDigest(cwd, env)) // a digest in a repository grants nothing
+    const first = JSON.parse(captured.out.pop()!) as { token: string; context: string; skill_file: string }
+    expect(first.token).toMatch(/^[a-f0-9]{48}$/)
     expect(first.context).toContain(GUIDANCE_TRUST_PREAMBLE)
     expect(existsSync(first.skill_file)).toBe(true)
-    guidanceCheckCommand(deps, first.digest)
+    guidanceCheckCommand(deps, first.token)
+    expect(JSON.parse(captured.out.pop()!)).toHaveProperty('context') // printing a notice is no read
+    await guidanceShowCommand(deps, { sessionToken: first.token })
+    guidanceCheckCommand(deps, first.token)
     expect(JSON.parse(captured.out.pop()!)).not.toHaveProperty('context')
     const dir = personalProjectGuidanceDir(cwd, env)
     mkdirSync(dir, { recursive: true })
-    writeFileSync(path.join(dir, 'questions.md'), '# Questions\n\nOffer two choices.\n')
-    guidanceCheckCommand(deps, first.digest)
-    const changed = JSON.parse(captured.out.pop()!) as { digest: string; context: string }
-    expect(changed.digest).not.toBe(first.digest)
-    expect(changed.context).toContain('Offer two choices.')
-    expect(changed.context).toMatch(/load the Notifai skill again/)
+    writeFileSync(path.join(dir, 'titles.md'), '# Titles\n\nUse a changed writing rule.\n')
+    guidanceCheckCommand(deps, first.token)
+    expect(JSON.parse(captured.out.pop()!).context).toContain("Notifai's guidance changed")
     disableProject(binding)
-    guidanceCheckCommand(deps, changed.digest)
+    guidanceCheckCommand(deps, first.token)
     expect(JSON.parse(captured.out.pop()!)).toEqual({ enabled: false })
   })
 
@@ -590,9 +591,7 @@ describe('session-start guidance', () => {
     expect(opening).toMatch(/conversation alone misses an away User/)
     expect(opening).toMatch(/never for a credential/)
     expect(opening).toMatch(/permission prompts stay in the harness/i)
-    // The asker acts on its answer, and a brief says so for a worker in its own Agent Session.
-    expect(opening).toMatch(/An answer comes back to the Agent Session that asked, and is acted on there\./)
-    expect(opening).toMatch(/When you brief an agent that runs in its own Agent Session, say whether it owns Notification Requests; if it does, it acts on its own answers before it reports back, so never brief it to ask and then end\./)
+    expect(opening).toContain('When you brief an agent in its own Agent Session, say whether it owns Notification Requests, and ask yourself any question whose answer you will act on.')
   })
 
   it('keeps an added topic that fits inline under its own provenance', () => {

@@ -1,28 +1,13 @@
-/**
- * Whether a running Agent Session still has the guidance Notifai ships.
- *
- * A session keeps what it read: its activation, the Notifai skill and
- * `notifai guidance`. An update, a change to the User's topics or a new
- * activation text replaces files, never what a session already read, and a
- * compacted Claude Code session gets its skill back as it was when it first
- * loaded it. So each owner session's record holds a digest of the guidance it
- * was given. When the current digest differs, the session is told once, at
- * its next turn, to load the skill again and run `notifai guidance` before
- * its next Notification Request; a compacted session is told the same.
- *
- * The digest covers the activation text, the shipped skill and every
- * effective topic, never the version: a release that changes none of them
- * changes nothing a session read. The record outlives the session's own
- * state, which a close deletes, so a conversation resumed after an update is
- * still known to carry older guidance.
- */
-import { createHash } from 'node:crypto'
+/** Content notices and read receipts are separate: only `guidance` records a read. */
+import { createHash, randomBytes } from 'node:crypto'
 import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, utimesSync } from 'node:fs'
 import path from 'node:path'
 import { atomicWriteFileSync } from './atomic-file.js'
 import { stateDir } from './config.js'
 import { resolveGuidance } from './guidance.js'
-import { shippedSkillSourceRoot } from './skill-integrity.js'
+import { skillTreeDigest, shippedSkillSourceRoot } from './skill-integrity.js'
+import { skillDestination } from './native-skills.js'
+import { SOURCE_CONTEXT_HARNESSES } from './harnesses.js'
 import { withTargetFileLock } from './file-lock.js'
 
 /** Recorded for a session started with guidance off: it was given nothing that could change. */
@@ -49,9 +34,27 @@ export function shippedSkill(root: string = shippedSkillSourceRoot()): ShippedSk
     // A build without its bundle still has topics and activation to compare.
   }
   const file = path.join(root, 'notifai', 'SKILL.md')
-  const skill = { digest, file: existsSync(file) ? file : null }
+  const skill = { digest, file: !file.startsWith('/$bunfs/') && !/^[A-Za-z]:[\\/]~BUN[\\/]/i.test(file) && existsSync(file) ? file : null }
   cachedSkill = { root, skill }
   return skill
+}
+
+/** Hash the actual harness copies. A bundled fallback never advertises a virtual FS path. */
+export function installedSkill(cwd: string, env: NodeJS.ProcessEnv): ShippedSkill {
+  const copies: Array<[string, string]> = []
+  let file: string | null = null
+  for (const harness of SOURCE_CONTEXT_HARNESSES) {
+    for (const scope of ['project', 'global'] as const) {
+      const root = skillDestination(scope, harness, cwd, env)
+      if (root === null || !existsSync(path.join(root, 'SKILL.md'))) continue
+      const digest = skillTreeDigest(root)
+      copies.push([`${harness}/${scope}`, digest ?? 'unreadable'])
+      file ??= path.join(root, 'SKILL.md')
+    }
+  }
+  return copies.length === 0 ? shippedSkill() : {
+    digest: createHash('sha256').update(JSON.stringify(copies)).digest('hex'), file,
+  }
 }
 
 /**
@@ -60,7 +63,7 @@ export function shippedSkill(root: string = shippedSkillSourceRoot()): ShippedSk
  * to a new version directory is not a change.
  */
 export function guidanceDigest(options: { cwd: string; env: NodeJS.ProcessEnv; activation: string; skill?: ShippedSkill }): string {
-  const skill = options.skill ?? shippedSkill()
+  const skill = options.skill ?? installedSkill(options.cwd, options.env)
   const topics = resolveGuidance({ cwd: options.cwd, env: options.env })
     .map((topic) => [topic.name, topic.authority, topic.content])
   return createHash('sha256')
@@ -100,19 +103,21 @@ export function guidanceGiven(sessionId: string, env: NodeJS.ProcessEnv): string
 }
 
 /** Record what this session was just given. Never fails a hook. */
-export function recordGuidanceGiven(sessionId: string, env: NodeJS.ProcessEnv, digest: string): void {
+export function recordGuidanceGiven(sessionId: string, env: NodeJS.ProcessEnv, digest: string): boolean {
   try {
     const file = recordFile(sessionId, env)
     if (guidanceGiven(sessionId, env) === digest) {
       // Active, unchanged sessions must not age out as abandoned records.
       const now = Date.now()
       if (now - statSync(file).mtimeMs > 6 * 3600_000) utimesSync(file, new Date(now), new Date(now))
-      return
+      return true
     }
     mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 })
-    atomicWriteFileSync(file, `${JSON.stringify({ digest })}\n`, { mode: 0o600 })
+    const prior = readReceipt(file)
+    atomicWriteFileSync(file, `${JSON.stringify({ ...prior, digest })}\n`, { mode: 0o600 })
+    return true
   } catch {
-    // A missing record only repeats the notice once more.
+    return false
   }
 }
 
@@ -129,7 +134,10 @@ export function startingCurrency(options: {
   source?: string | undefined
   compacted?: boolean
 }): string | undefined {
-  if (options.source === 'compact' || options.compacted === true) return compactedNotice()
+  if (options.source === 'compact' || options.compacted === true) {
+    invalidateGuidanceRead(options.sessionId, options.env)
+    return compactedNotice()
+  }
   const given = guidanceGiven(options.sessionId, options.env)
   if (given === undefined) return options.source === 'resume' ? guidanceChangedNotice() : undefined
   return given !== GUIDANCE_NOT_GIVEN && given !== options.digest ? guidanceChangedNotice() : undefined
@@ -154,13 +162,59 @@ export function claimGuidanceChange(sessionId: string, env: NodeJS.ProcessEnv, d
         return undefined
       }
       if (given === GUIDANCE_NOT_GIVEN || (given === undefined && !started)) return undefined
-      recordGuidanceGiven(sessionId, env, digest)
-      return guidanceChangedNotice()
+      return recordGuidanceGiven(sessionId, env, digest) ? guidanceChangedNotice() : undefined
     })
   } catch {
     // Keep the prior receipt: the next boundary can retry the claim.
     return undefined
   }
+}
+
+function readReceipt(file: string): { digest?: string; read?: string } {
+  try { return JSON.parse(readFileSync(file, 'utf8')) as { digest?: string; read?: string } } catch { return {} }
+}
+
+export function guidanceRead(sessionId: string, env: NodeJS.ProcessEnv): string | undefined {
+  return readReceipt(recordFile(sessionId, env)).read
+}
+
+/** Called only after `notifai guidance` printed the current text. */
+export function recordGuidanceRead(sessionId: string, env: NodeJS.ProcessEnv, digest: string): boolean {
+  try {
+    const file = recordFile(sessionId, env)
+    mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 })
+    return withTargetFileLock(file, () => {
+      atomicWriteFileSync(file, `${JSON.stringify({ ...readReceipt(file), read: digest })}\n`, { mode: 0o600 })
+      return true
+    })
+  } catch { return false }
+}
+
+export function invalidateGuidanceRead(sessionId: string, env: NodeJS.ProcessEnv): void {
+  try {
+    const file = recordFile(sessionId, env)
+    if (!existsSync(file)) return
+    withTargetFileLock(file, () => {
+      const prior = readReceipt(file)
+      delete prior.read
+      atomicWriteFileSync(file, `${JSON.stringify(prior)}\n`, { mode: 0o600 })
+    })
+  } catch { /* A changed digest still blocks at point of use. */ }
+}
+
+/** Conversation capabilities are random local values; a repository digest cannot stand in for one. */
+export function conversationToken(env: NodeJS.ProcessEnv, token?: string): string | null {
+  const directory = path.join(stateDir(env), 'guidance-tokens')
+  if (token !== undefined) {
+    if (!/^[a-f0-9]{48}$/.test(token)) return null
+    try { return readFileSync(path.join(directory, token), 'utf8') === token ? token : null } catch { return null }
+  }
+  try {
+    const fresh = randomBytes(24).toString('hex')
+    mkdirSync(directory, { recursive: true, mode: 0o700 })
+    atomicWriteFileSync(path.join(directory, fresh), fresh, { mode: 0o600 })
+    return fresh
+  } catch { return null }
 }
 
 /** Child hooks can carry their parent's session id. Never spend the parent's

@@ -41,8 +41,7 @@ export function acknowledgementCommand(id: string, textRequired = true): string 
  */
 export function acknowledgementDemand(textRequired: boolean, cause: 'reply' | 'message' = 'reply'): string {
   return textRequired
-    ? ` with non-empty text naming the concrete work this Agent Session starts now because of the ${cause}; ` +
-      `when that work is another agent's, pass the ${cause} to that agent first and say so; a bare acknowledgement is insufficient`
+    ? ` with non-empty text naming the concrete work this Agent Session starts now because of the ${cause}; a bare acknowledgement is insufficient`
     : ' exactly as shown; this account turned acknowledgement text off, so the receipt carries no words'
 }
 

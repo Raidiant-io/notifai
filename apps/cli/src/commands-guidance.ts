@@ -13,7 +13,8 @@ import { renderGuidance } from './guidance-render.js'
 import { projectBinding, projectEnablementState } from './project-enablement.js'
 import { loadConfig } from './config.js'
 import { rootGuidanceDigest, sessionActivationOutput } from './session-activation.js'
-import { guidanceChangedNotice, shippedSkill } from './guidance-currency.js'
+import { conversationToken, guidanceChangedNotice, guidanceRead, installedSkill } from './guidance-currency.js'
+import { recordCommandGuidanceRead } from './command-guidance.js'
 
 // ---------------------------------------------------------------------------
 // guidance show / set / unset
@@ -22,10 +23,6 @@ import { guidanceChangedNotice, shippedSkill } from './guidance-currency.js'
 /** A conversation-held receipt for hosts that discard hook context and expose
  * no exact session identity to tools. Never guesses an identity from cwd. */
 export function guidanceCheckCommand(deps: CommandDeps, seen?: string): number {
-  if (seen !== undefined && !/^[a-f0-9]{64}$/.test(seen)) {
-    deps.io.err('Pass the digest from this conversation\'s previous `notifai guidance check`, or omit it.')
-    return EXIT.usage
-  }
   const config = loadConfig({ cwd: deps.cwd, env: deps.env })
   const enabled = projectEnablementState(projectBinding(deps.cwd, deps.env, config.project.value)) === 'enabled'
   if (!enabled) {
@@ -33,10 +30,12 @@ export function guidanceCheckCommand(deps: CommandDeps, seen?: string): number {
     return EXIT.ok
   }
   const digest = rootGuidanceDigest(deps.cwd, deps.env)
-  const changed = seen !== digest
+  const token = conversationToken(deps.env, seen) ?? conversationToken(deps.env)
+  if (token === null) { deps.io.err('Could not store the local guidance token.'); return EXIT.failed }
+  const changed = guidanceRead(`conversation/${token}`, deps.env) !== digest
   const output = changed ? sessionActivationOutput('cursor', 'SessionStart', deps.cwd, deps.env, [], false,
     seen === undefined ? undefined : guidanceChangedNotice()) : undefined
-  deps.io.out(JSON.stringify({ enabled, digest, skill_file: shippedSkill().file,
+  deps.io.out(JSON.stringify({ enabled, token, skill_file: installedSkill(deps.cwd, deps.env).file,
     ...(output === undefined ? {} : { context: (JSON.parse(output) as { additional_context: string }).additional_context }) }))
   return EXIT.ok
 }
@@ -49,7 +48,7 @@ export function guidanceCheckCommand(deps: CommandDeps, seen?: string): number {
  * own marker, so a reader can tell the User's standing word from the shipped
  * default without the output stopping being Markdown.
  */
-export async function guidanceShowCommand(deps: CommandDeps, flags: { json?: boolean }): Promise<number> {
+export async function guidanceShowCommand(deps: CommandDeps, flags: { json?: boolean; sessionToken?: string }): Promise<number> {
   const topics = resolveGuidance({ cwd: deps.cwd, env: deps.env })
   if (flags.json) {
     deps.io.out(
@@ -68,10 +67,10 @@ export async function guidanceShowCommand(deps: CommandDeps, flags: { json?: boo
         2,
       ),
     )
-    return EXIT.ok
+    return recordCommandGuidanceRead(deps, flags.sessionToken) ? EXIT.ok : EXIT.failed
   }
   deps.io.out(renderGuidance(topics))
-  return EXIT.ok
+  return recordCommandGuidanceRead(deps, flags.sessionToken) ? EXIT.ok : EXIT.failed
 }
 
 type GuidanceMutationFlags = {

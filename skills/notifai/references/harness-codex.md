@@ -29,15 +29,7 @@ not notify. A worker explicitly delegated Notification Requests in its prompt
 loads the skill and guidance as their owner. Notifai cannot read the prompt, so
 only that delegation decides whether a worker asks, as on Claude Code.
 
-A worker's `notifai ask` registers the question to the root Agent Session that
-started it, and the answer arrives there, never to the worker. `ask` never
-hands a worker the card, and `ask --wait` does not wait in a worker. Do what
-its output says: tell your parent the question id and what each answer will
-change, then end your turn. Where `ask` cannot place the worker inside its
-live root, as on Windows, it refuses, and the parent asks instead.
-The answer tells the root which subagent asked and what choices it offered.
-The root sends it back to a worker that can still take messages before
-acknowledging, or does the work itself.
+A subagent's question and answer belong to the root; follow what `ask` prints.
 
 ## Questions
 

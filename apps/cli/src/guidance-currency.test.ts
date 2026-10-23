@@ -4,6 +4,10 @@ import { mkdirSync, mkdtempSync, utimesSync, writeFileSync } from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { describe, expect, it } from 'vitest'
+import { currentCommandGuidance } from './command-guidance.js'
+import { guidanceShowCommand } from './commands-guidance.js'
+import type { CommandDeps } from './commands-core.js'
+import { rootGuidanceDigest } from './session-activation.js'
 import { personalProjectGuidanceDir } from './guidance.js'
 import {
   GUIDANCE_NOT_GIVEN,
@@ -13,6 +17,8 @@ import {
   pruneGuidanceRecords,
   recordGuidanceGiven,
   shippedSkill,
+  guidanceRead,
+  installedSkill,
   startingCurrency,
 } from './guidance-currency.js'
 
@@ -81,5 +87,41 @@ describe('what a session was given', () => {
     expect(pruneGuidanceRecords(env)).toBe(1)
     expect(guidanceGiven('old', env)).toBeUndefined()
     expect(guidanceGiven('recent', env)).toBe('d1')
+  })
+})
+
+describe('Notification Request currency admission', () => {
+  it('blocks before side effects until guidance is read, including a writing-topic or installed-copy change', async () => {
+    const { cwd, env } = setup()
+    env.CODEX_THREAD_ID = 'currency-session'
+    const deps = { cwd, env, io: { out: () => undefined, err: () => undefined } } as unknown as CommandDeps
+    recordGuidanceGiven('currency-session', env, rootGuidanceDigest(cwd, env))
+    expect(guidanceRead('currency-session', env)).toBeUndefined()
+    expect(currentCommandGuidance(deps)?.code).toBe('guidance_required')
+    await guidanceShowCommand(deps, {})
+    expect(currentCommandGuidance(deps)).toBeNull()
+    const copy = path.join(env.HOME!, '.agents/skills/notifai')
+    mkdirSync(copy, { recursive: true })
+    writeFileSync(path.join(copy, 'SKILL.md'), 'Installed guidance v2')
+    expect(installedSkill(cwd, env).file).toBe(path.join(copy, 'SKILL.md'))
+    expect(currentCommandGuidance(deps)?.code).toBe('guidance_required')
+    await guidanceShowCommand(deps, {})
+    expect(currentCommandGuidance(deps)).toBeNull()
+    const topics = personalProjectGuidanceDir(cwd, env)
+    mkdirSync(topics, { recursive: true })
+    writeFileSync(path.join(topics, 'titles.md'), '# Titles\n\nA writing-only change.')
+    expect(currentCommandGuidance(deps)?.guidance).toContain('A writing-only change')
+    await guidanceShowCommand(deps, {})
+    expect(currentCommandGuidance(deps)).toBeNull()
+  })
+
+  it('returns no repeated notice if its receipt cannot be written', () => {
+    const { env, root } = setup()
+    const blocker = path.join(root, 'not-a-directory')
+    writeFileSync(blocker, 'blocked')
+    env.XDG_STATE_HOME = blocker
+    expect(recordGuidanceGiven('s', env, 'd1')).toBe(false)
+    expect(claimGuidanceChange('s', env, 'd2', true)).toBeUndefined()
+    expect(claimGuidanceChange('s', env, 'd2', true)).toBeUndefined()
   })
 })

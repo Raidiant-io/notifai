@@ -4,7 +4,7 @@ import { createHash } from 'node:crypto'
 import type { ContinuationEvent, EscalationDeliveryRoute, HookEnvelope } from './hook-types.js'
 import { updateSessionState } from './hook-session-state.js'
 import { grokActivationContext, rootGuidanceDigest } from './session-activation.js'
-import { compactedNotice, guidanceChangedNotice, guidanceGiven, GUIDANCE_NOT_GIVEN, recordGuidanceGiven, shippedSkill } from './guidance-currency.js'
+import { compactedNotice, guidanceChangedNotice, guidanceGiven, GUIDANCE_NOT_GIVEN, recordGuidanceGiven } from './guidance-currency.js'
 import type { PendingNotice } from './pending-notice.js'
 import { stopAnswerOutput } from './hook-acknowledgements.js'
 import { GrokLeaderSession } from './grok-leader.js'
@@ -55,7 +55,7 @@ export function claimGrokActivation(envelope: HookEnvelope, cwd: string, env: No
   if (sessionId === undefined) return undefined
   const worker = grokWorker(envelope)
   const plain = grokActivationContext(cwd, env, worker)
-  const digest = createHash('sha256').update(worker ? plain : `${plain}\n${shippedSkill().digest ?? ''}`).digest('hex')
+  const digest = createHash('sha256').update(worker ? plain : rootGuidanceDigest(cwd, env)).digest('hex')
   let claimed = false
   let compacted = false
   updateSessionState(sessionId, env, current => {
@@ -66,10 +66,7 @@ export function claimGrokActivation(envelope: HookEnvelope, cwd: string, env: No
     delete next.grok_compacted
     return next
   })
-  if (!claimed) {
-    if (!worker) recordGuidanceGiven(sessionId, env, rootGuidanceDigest(cwd, env))
-    return undefined
-  }
+  if (!claimed) return undefined
   if (worker) return plain
   const guidance = rootGuidanceDigest(cwd, env)
   const given = guidanceGiven(sessionId, env)

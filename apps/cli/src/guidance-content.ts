@@ -136,8 +136,7 @@ Bad:
 const ACKNOWLEDGEMENTS = `# Acknowledgements
 
 An acknowledgement names the concrete work a reply, note or edit sets in
-motion, and only work this Agent Session starts now. When that work belongs
-to another agent, pass the reply to that agent first and say so. When an edit
+motion, and only work this Agent Session will do itself. When an edit
 arrives after irreversible work, say what already happened and what you will
 do now; never imply it was undone.
 
@@ -150,7 +149,6 @@ Good:
 - \`Rolling out to staging now; I'll report the health checks.\`
 - \`Holding the deploy. I'll re-raise it once staging is green.\`
 - \`The email already went out with Monday; sending a correction for Friday now.\`
-- \`Passed your choice to the build worker; it deploys to staging now.\`
 
 Bad:
 
@@ -159,7 +157,7 @@ Bad:
 - \`Deploying now, and I'll also refactor the retry logic.\` — promises work
   the reply did not cause
 - \`I'll report your choice to the coordinator for the next round.\` — names
-  work no agent has started; act on it, or pass it on and say so
+  work no agent has started; do it now
 `
 
 /**

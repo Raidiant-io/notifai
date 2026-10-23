@@ -1,3 +1,4 @@
+import { guidanceShowCommand as readCurrentGuidance } from './commands-guidance.js'
 import { inputWakeToken, sessionInputWake } from './session-inputs.js'
 import { execFileSync, spawn, type ChildProcess } from 'node:child_process'
 import { CAPABILITIES_V1 } from '@raidiant/notifai-protocol'
@@ -43,13 +44,13 @@ import {
 import {
   EXIT,
   acknowledgeCommand,
-  askCommand,
+  askCommand as askWithCurrency,
   buildQuestions,
   closeCommand,
   hookRunCommand,
   repliesCommand,
   receiveCommand,
-  sendCommand,
+  sendCommand as sendWithCurrency,
   type CommandDeps,
   type CommandIo,
 } from './commands.js'
@@ -442,6 +443,15 @@ function harness(replies: ReplyView[] = []): Harness {
       spawnQuestionSettlement: () => {},
     },
   }
+}
+
+function askCommand(...args: Parameters<typeof askWithCurrency>) {
+  void readCurrentGuidance({ ...args[0], io: { ...args[0].io, out: () => undefined } }, {})
+  return askWithCurrency(...args)
+}
+function sendCommand(...args: Parameters<typeof sendWithCurrency>) {
+  void readCurrentGuidance({ ...args[0], io: { ...args[0].io, out: () => undefined } }, {})
+  return sendWithCurrency(...args)
 }
 
 describe('OpenClaw generation fencing at the CLI boundary', () => {
@@ -9178,22 +9188,24 @@ describe('guidance currency', () => {
   const CHANGED = /^Notifai's guidance changed after this Agent Session read it\. Before your next Notification Request, load the Notifai skill again \(or read `[^`]+SKILL\.md`\) and run `notifai guidance`; follow them over what you read earlier\.$/
   const COMPACTED = /This conversation was compacted\. Before your next Notification Request, load the Notifai skill again \(or read `[^`]+SKILL\.md`\) and run `notifai guidance`\./
 
-  it('keeps a child receipt separate and refreshes both contexts before their next tool', async () => {
+  it('does not deliver owner reload notices in worker context or on Claude tool calls', async () => {
     const h = harness()
     const root = { session_id: 'role-root', source: 'startup', cwd: h.deps.cwd }
     const child = { ...root, agent_id: 'child-1' }
     await hookRunCommand(h.deps, 'session-start', stdin(root), 'claude-code')
     await hookRunCommand(h.deps, 'subagent-start', stdin(child), 'claude-code')
     changeGuidance(h, '# Questions\n\nAsk about the deployment first.\n')
+    for (const input of [child, root]) {
+      h.io.outLines = []
+      await hookRunCommand(h.deps, 'pre-tool-use', stdin({ ...input, tool_name: 'Bash' }), 'claude-code')
+      expect(h.io.outLines).toEqual([])
+    }
     h.io.outLines = []
-    await hookRunCommand(h.deps, 'pre-tool-use', stdin({ ...child, tool_name: 'Bash' }), 'claude-code')
+    await hookRunCommand(h.deps, 'user-prompt-submit', stdin(child), 'claude-code')
+    expect(h.io.outLines.join('')).not.toContain("Notifai's guidance changed")
+    h.io.outLines = []
+    await hookRunCommand(h.deps, 'user-prompt-submit', stdin(root), 'claude-code')
     expect(contextOf(h.io.outLines[0])).toMatch(CHANGED)
-    h.io.outLines = []
-    await hookRunCommand(h.deps, 'pre-tool-use', stdin({ ...root, tool_name: 'Bash' }), 'claude-code')
-    expect(contextOf(h.io.outLines[0])).toMatch(CHANGED)
-    h.io.outLines = []
-    await hookRunCommand(h.deps, 'pre-tool-use', stdin({ ...child, tool_name: 'Bash' }), 'claude-code')
-    expect(h.io.outLines).toEqual([])
   })
 
   it('makes Grok load its initial and changed guidance before retrying its first tool', async () => {

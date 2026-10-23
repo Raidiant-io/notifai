@@ -27,17 +27,19 @@ describe('answer context', () => {
     const context = answersContext([answered({ asked_by: { agent_id: 'a1b2c3', agent_type: 'general-purpose', description: 'headline worker' } })], 0)
     expect(context).toContain('question "Which headline should v2 use?"; the user answered "Offline mode is here". ' +
       'Your "general-purpose" subagent "headline worker" (agent a1b2c3) asked it for this Agent Session, ' +
-      'offering "Which headline should v2 use?": "Faster sync for everyone" / "Offline mode is here", so the work it unblocks is that subagent\'s: ' +
-      'send it this answer if it can still take messages, otherwise do that work yourself.')
+      'offering "Which headline should v2 use?": "Faster sync for everyone" / "Offline mode is here". ' +
+      'Send it this answer if it can still take messages and say so in your acknowledgement; otherwise do that work yourself.')
     // The acknowledgement names only work this session starts, passing another agent's work on first.
-    expect(context).toContain("naming the concrete work this Agent Session starts now because of the reply; " +
-      "when that work is another agent's, pass the reply to that agent first and say so")
+    expect(context).toContain("naming the concrete work this Agent Session starts now because of the reply; a bare acknowledgement is insufficient")
   })
 
   it('names a Codex subagent by its thread, and says nothing of an asker for the session\'s own question', () => {
     expect(answersContext([answered({ asked_by: { agent_id: '019ff69d-b1c2' } })], 0))
       .toContain('Your subagent (agent 019ff69d-b1c2) asked it for this Agent Session')
-    expect(answersContext([answered({})], 0)).not.toMatch(/subagent/)
+    const ordinary = answersContext([answered({ resumes: 'Write the chosen headline into HEADLINE.txt' })], 0)
+    expect(ordinary).toContain('This answer resumes: \"Write the chosen headline into HEADLINE.txt\"')
+    expect(ordinary).toContain('Only this Agent Session received the answer')
+    expect(ordinary).not.toMatch(/subagent|pass the reply|send it this answer/i)
   })
 
   it('quotes agent-written names so they cannot pass for Notifai\'s own words', () => {

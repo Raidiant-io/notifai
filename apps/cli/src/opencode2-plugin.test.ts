@@ -206,7 +206,7 @@ describe('the generated OpenCode 2 plugin module', () => {
     expect(opencodePluginTarget(source)).toMatchObject({ adapter: '/a/notifai-hook', current: true, line: 2, timeoutSeconds: 5 })
   })
 
-  it('leaves the OpenCode 1 plugin byte for byte as it shipped', () => {
+  it('matches the reviewed OpenCode 1 compatibility fixtures', () => {
     const fixture = (name: string) => readFileSync(path.join(HERE, 'fixtures', name), 'utf8')
     expect(opencodePluginSource({ adapterPath: '/home/u/.notifai/bin/notifai-hook', timeoutSeconds: 5, platform: 'darwin',
       integrationScope: '/home/u/.config/opencode/plugins/notifai.js' })).toBe(fixture('opencode-1-plugin-posix.js.txt'))

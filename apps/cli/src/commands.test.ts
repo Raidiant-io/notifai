@@ -1,3 +1,5 @@
+import { conversationToken } from './guidance-currency.js'
+import { guidanceShowCommand as readCurrentGuidance } from './commands-guidance.js'
 import {
   CAPABILITIES_V1,
   NOTIFICATION_CONTRACT_FINGERPRINT,
@@ -166,7 +168,7 @@ it.each([
     })
   })
   try {
-    expect(await askCommand(deps, 'Continue?', { title: 'Decision', json })).toBe(EXIT.failed)
+    expect(await askAuthoredCommand(deps, 'Continue?', { title: 'Decision', json })).toBe(EXIT.failed)
     if (json) {
       expect(JSON.parse(io.outLines.join('\n'))).toMatchObject({
         ok: false, registered: false,
@@ -207,6 +209,7 @@ function sendCommand(
     baseUrl?: string
   },
 ) {
+  void readCurrentGuidance({ ...deps, io: { ...deps.io, out: () => undefined } }, {})
   return sendAuthoredCommand(deps, {
     summary: flags.summary ?? flags.body ?? flags.title,
     ...flags,
@@ -218,7 +221,9 @@ function askCommand(
   question: string | undefined,
   flags: AskFlags,
 ) {
-  return askAuthoredCommand({ spawnQuestionSettlement: () => undefined, ...deps }, question, flags)
+  const token = flags.guidanceToken ?? (deps.env.CURSOR_AGENT ? conversationToken(deps.env) ?? undefined : undefined)
+  void readCurrentGuidance({ ...deps, io: { ...deps.io, out: () => undefined } }, { ...(token === undefined ? {} : { sessionToken: token }) })
+  return askAuthoredCommand({ spawnQuestionSettlement: () => undefined, ...deps }, question, { ...flags, ...(token === undefined ? {} : { guidanceToken: token }) })
 }
 
 /**
@@ -12590,4 +12595,20 @@ describe('Agent Session rename command', () => {
     expect(await agentSessionRenameCommand(deps, 'A new job')).toBe(EXIT.usage)
     expect(io.errLines.join('\n')).toMatch(/exact active Agent Session/i)
   })
+})
+
+
+it.each(['send', 'ask'] as const)('refuses a stale %s before network or registration, and prints current writing guidance', async (command) => {
+  const cwd = mkdtempSync(path.join(os.tmpdir(), 'notifai-use-currency-'))
+  const env = { ...isolatedEnv(cwd), CODEX_THREAD_ID: 'use-currency-session' }
+  const io = new CapturedIo()
+  const submit = vi.fn()
+  const deps = { ...makeDeps(io, { submit } as unknown as ApiClient), cwd, env }
+  const code = command === 'send'
+    ? await sendAuthoredCommand(deps, { kind: 'done', title: 'Docs', summary: 'Finished.', json: true })
+    : await askAuthoredCommand(deps, 'Which headline?', { title: 'Headline', resumes: 'Write HEADLINE.txt', json: true })
+  expect(code).toBe(EXIT.usage)
+  expect(JSON.parse(io.outLines.at(-1)!)).toMatchObject({ code: 'guidance_required', guidance: expect.stringContaining('# Acknowledgements') })
+  expect(submit).not.toHaveBeenCalled()
+  expect(readSessionState(env.CODEX_THREAD_ID, env).pending).toBeUndefined()
 })

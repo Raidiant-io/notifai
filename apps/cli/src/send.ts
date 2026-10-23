@@ -26,6 +26,7 @@ import type { CliConfig } from './config.js'
 import { isCliSoundRef, unknownSoundMessage } from './sound-ref.js'
 
 export interface SendFlags {
+  guidanceToken?: string
   title: string
   /** Purpose-written plain text for native banners and notification lists. */
   summary: string

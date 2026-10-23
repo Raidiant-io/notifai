@@ -413,6 +413,8 @@ export interface PendingQuestion {
   service_identity?: ServiceIdentity
   /** Set when a subagent asked this for its root Agent Session. */
   asked_by?: QuestionAsker
+  /** Local commitment supplied by the asker, replayed with the answer. */
+  resumes?: string
   /** Stable local identity across racing state writers and submit recovery. */
   question_id?: string
   /** One-line summary: the single question's text, or the set's first. */

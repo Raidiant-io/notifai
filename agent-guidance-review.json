@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "behavior_digest": "sha256:bd5f7da81c141df634bf263673b193f1dc55ad03aa4af40cf923586f7da87d05",
+  "behavior_digest": "sha256:290d15aec1f11d5f67bbb036656748e9ea3f212886bbcb199565cc7544307f96",
   "outcome": "guidance-updated",
   "surfaces_reviewed": [
     "lifecycle-hooks",
@@ -9,5 +9,5 @@
     "cli-readiness",
     "domain-terms"
   ],
-  "reason": "Reviewed lifecycle activation, the complete bundled skill and harness references, effective topics, question registration and answer/note/edit context, setup/readiness and domain terms after rebasing on the current command, trust and question surfaces. Current receipts refresh root and worker guidance; child answer context and assignment retention remain intact. Disabled-Project checks, prompt-free shell quoting and --form-json are preserved. Grok activates before its first tool and still gates question cards; Codex returns guidance refresh and card decisions in one JSON document. Trimmed repeated skill prose and examples within the existing context budget without removing rules. Focused tests cover receipts, ownership, decision composition and compaction through the launcher. Native qualification beyond the recorded Claude Code/Codex evaluations remains unverified."
+  "reason": "Reviewed lifecycle activation, the installed skill and all harness references, effective writing topics, CLI admission, question registration and answer injection. Claude Code retains its existing hook set; guidance currency is checked before send and ask effects, and only guidance reads advance the separate session receipt. Cursor uses random local conversation tokens at Notification Request boundaries. Digests include installed skill bytes and every effective topic; Grok deduplicates on the complete root digest without recording silent delivery. Worker context defers to ask output. Ordinary answers name the sole receiving session and replay locally stored resumption work; only routed subagent metadata carries handoff instructions. Compiled builds omit embedded-filesystem pointers and prefer installed disk copies. OpenCode 1 compatibility fixtures include the reviewed compaction carrier while preserving the OpenCode 2 adapter from main. Public setup, disabled Projects, trust boundaries, question routes and domain terms remain aligned."
 }

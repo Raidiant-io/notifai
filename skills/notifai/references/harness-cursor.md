@@ -13,11 +13,12 @@ always-applied rule, `~/.cursor/skills/notifai-activation/SKILL.md`, which
   which activates Notifai.
 - A host built on the Cursor SDK, such as T3 Code, drops hook context but loads
   the rule. So does a new editor chat whose SessionStart context arrives late.
-- The rule checks `notifai guidance check` at each turn, carrying its returned
-  digest in this conversation as the next call's optional argument. A new or
-  changed receipt returns current activation and a working skill path; load
-  them before the next Notification Request. After compaction, omit the old
-  receipt. A disabled Project returns no guidance.
+- When work first needs a Notification Request, the rule runs `notifai guidance
+  check`. Before later requests it passes the random local token returned in
+  this conversation. Returned context tells it what to load, then it runs
+  `notifai guidance --session-token <token>`. It passes `--guidance-token <token>`
+  to `send` and `ask`, which refuse stale guidance before sending. After
+  compaction it obtains a new token. A disabled Project returns no guidance.
 - Standalone `cursor-agent` 2026.10.01 does not load the rule; its SessionStart
   context covers it.
 - No activation reaches an SDK host that omits the `user` setting source, an
@@ -47,8 +48,8 @@ settings. Never change those yourself.
 ## After a Notifai update
 
 The hooks call the updated CLI, and refreshing the hooks also rewrites the
-activation rule. A loaded current rule checks content digests, not versions,
-and asks for a reload only when the guidance changes. A changed hook command
+activation rule. A loaded current rule checks currency only when work calls for a Notification
+Request, and asks for a reload when the installed text changes. A changed hook command
 counts as loaded once a hook call shows it. A host must actually load the new
 rule; an older rule retained in a conversation gains no new callback merely
 because its file changed.

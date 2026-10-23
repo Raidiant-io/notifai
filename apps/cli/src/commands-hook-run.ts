@@ -556,7 +556,7 @@ export async function hookRunCommand(
         else grokQuestionFormGate(deps, envelope, cwd)
       }
       if (harness === 'grok' && !lifecycleEnabled()) grokQuestionFormGate(deps, envelope, cwd)
-      const changed = lifecycleEnabled() ? guidanceChangeFor(deps, harness, envelope, cwd) : undefined
+      const changed = harness === 'codex' && lifecycleEnabled() ? guidanceChangeFor(deps, harness, envelope, cwd) : undefined
       let wrote = false
       const io = { ...deps.io, out: (line: string) => {
         wrote = true
@@ -800,7 +800,7 @@ export async function hookRunCommand(
     const notices = [updateNotice, faultNotice].filter((part): part is PendingNotice => part !== undefined)
     // A root session's record of the guidance it was given decides whether
     // this start must also reload what it read before (`guidance-currency.ts`).
-    const owner = envelope.session_id !== undefined && harness !== 'grok'
+    const owner = event === 'session-start' && envelope.agent_id === undefined && envelope.session_id !== undefined && harness !== 'grok'
     const currencyKey = envelope.session_id === undefined ? '' : guidanceSessionKey(envelope.session_id, envelope.agent_id)
     let digest: string | undefined
     if (guidanceOn && owner) {
@@ -1485,7 +1485,7 @@ function scriptedRunElsewhere(deps: CommandDeps, harness: string | undefined, se
  * Codex tool boundaries.
  */
 function guidanceChangeFor(deps: CommandDeps, harness: HookHarness | undefined, envelope: HookEnvelope, cwd: string): string | undefined {
-  if ((harness !== 'claude-code' && harness !== 'codex') || envelope.session_id === undefined) return undefined
+  if ((harness !== 'claude-code' && harness !== 'codex') || envelope.session_id === undefined || envelope.agent_id !== undefined) return undefined
   try {
     return claimGuidanceChange(guidanceSessionKey(envelope.session_id, envelope.agent_id), deps.env, rootGuidanceDigest(cwd, deps.env),
       readSessionIncarnation(envelope.session_id, deps.env) !== null)

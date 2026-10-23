@@ -15,11 +15,7 @@ An ordinary subagent receives worker context: it reports to its parent and does
 not notify. A worker explicitly delegated Notification Requests in its prompt
 loads the skill and guidance as their owner.
 
-A subagent's `notifai ask` registers the question to the root Agent Session,
-and the answer arrives there, never to the subagent. Its output tells the
-subagent to hand its parent the question id and what each answer will change.
-The answer's context names the subagent that asked, so the root sends the
-answer on if that subagent can still take messages, or does the work itself.
+A subagent's question and answer belong to the root; follow what `ask` prints.
 
 ## What arrives and what to do
 
