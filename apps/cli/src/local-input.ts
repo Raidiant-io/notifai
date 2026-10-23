@@ -18,7 +18,7 @@
  * rechecked before reading. Changed paths or files are refused.
  * `docs/TRUST.md` states the policy.
  */
-import { closeSync, constants, fstatSync, lstatSync, openSync, readlinkSync, readSync, realpathSync, type BigIntStats } from 'node:fs'
+import { closeSync, constants, fstatSync, lstatSync, openSync, readlinkSync, readSync, type BigIntStats } from 'node:fs'
 import path from 'node:path'
 import { NOTIFICATION_IMAGE_MAX_BYTES } from '@raidiant/notifai-protocol'
 
@@ -111,18 +111,14 @@ function readChecked(cwd: string, file: string, name: string, maxBytes: number):
 }
 
 function readAttempt(cwd: string, file: string, name: string, maxBytes: number, anchor?: PathEntry[]): { ok: true; path: string; bytes: Buffer } | Refused | (Refused & { retry: PathEntry[] }) {
-  // A relative path starts from where the working folder really is, so a
-  // working folder reached through the User's own link still reads.
+  // The CLI supplies the OS working directory. Do not realpath a supplied cwd:
+  // a repository could have replaced that directory with a planted link.
   const absolute = path.resolve(cwd, file)
-  let real = absolute
-  if (!path.isAbsolute(file)) {
-    try { real = path.resolve(realpathSync(cwd), file) } catch { /* a missing cwd resolves as written */ }
-  }
   let entries: PathEntry[]
   try {
-    const checked = checkedPath(real)
+    const checked = checkedPath(absolute)
     if (!checked.ok) {
-      return { ok: false, error: checked.link === real
+      return { ok: false, error: checked.link === absolute
         ? `${name} "${file}" is a symbolic link; Notifai reads only the file itself.`
         : `${name} "${file}" goes through the symbolic link ${checked.link}; Notifai reads files only through real folders.` }
     }
@@ -140,7 +136,7 @@ function readAttempt(cwd: string, file: string, name: string, maxBytes: number, 
   }
   let fd: number
   try {
-    fd = openSync(real, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0) | (constants.O_NONBLOCK ?? 0))
+    fd = openSync(absolute, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0) | (constants.O_NONBLOCK ?? 0))
   } catch {
     return { ok: false, error: `${name} "${file}" cannot be read.` }
   }
@@ -151,7 +147,7 @@ function readAttempt(cwd: string, file: string, name: string, maxBytes: number, 
     // Bind the descriptor to the original leaf before reading any bytes; a
     // post-open walk alone would miss a parent restored immediately after open.
     const pathChanged = (): Refused | (Refused & { retry: PathEntry[] }) => {
-      const current = checkedPath(real)
+      const current = checkedPath(absolute)
       // A busy shared temp directory can change for an unrelated file. Retry
       // only with all original identities and the leaf's metadata still pinned.
       // A substituted file or folder never becomes a newly trusted input.

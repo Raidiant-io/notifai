@@ -175,8 +175,8 @@ Mechanical enforcement complements the agent rule:
   image an OpenCode `question` form names) is read only as itself, so a
   repository cannot commit a link that carries a key or another private file
   out under an innocent name:
-  1. The file is never a symbolic link, and every folder on its path is a real
-     folder, except macOS's exact root-owned `/tmp -> private/tmp`,
+  1. The file is never a symbolic link, and every folder on its path, including
+     the supplied working directory, is a real folder, except macOS's exact root-owned `/tmp -> private/tmp`,
      `/var -> private/var` and `/etc -> private/etc` aliases, whose location,
      target and ownership are checked; no other link passes, even if owned by
      root, and no link passes on Windows.

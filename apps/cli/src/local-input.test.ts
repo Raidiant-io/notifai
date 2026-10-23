@@ -265,12 +265,12 @@ describe('concurrent paths and hard links', () => {
     expect(readLocalText(process.cwd(), '/etc/hosts', '--body-file')).toEqual({ ok: true, text: readFileSync('/etc/hosts', 'utf8') })
   })
 
-  it.runIf(canLink)('reads relative input from a working directory reached through a user link', () => {
+  it.runIf(canLink)('refuses a linked cwd instead of erasing its link before inspection', () => {
     const { home, repo } = machine()
     const linked = path.join(home, 'workspace')
     symlinkSync(repo, linked, 'dir')
     writeFileSync(path.join(repo, 'body.md'), 'body')
-    expect(readLocalText(linked, 'body.md', '--body-file')).toEqual({ ok: true, text: 'body' })
+    expect(readLocalText(linked, 'body.md', '--body-file').ok).toBe(false)
   })
 
   it.runIf(process.platform === 'darwin').each(['target', 'owner'] as const)('refuses a system alias with the wrong %s', change => {
@@ -299,6 +299,16 @@ describe('concurrent paths and hard links', () => {
       try { same = lstatSync('/TMP').ino === lstatSync('/tmp').ino } catch { /* case-sensitive filesystem */ }
       expect(readLocalText(process.cwd(), path.join(scratch.replace('/tmp/', '/TMP/'), 'body.md'), '--body-file').ok).toBe(same)
     } finally { rmSync(scratch, { recursive: true, force: true }) }
+  })
+
+
+  it('refuses a repository cwd replaced by a link before validation starts', () => {
+    const { home, repo } = machine()
+    const privateDir = path.join(home, '.ssh')
+    writeFileSync(path.join(privateDir, 'summary.md'), KEY)
+    renameSync(repo, `${repo}-saved`)
+    symlinkSync(privateDir, repo, process.platform === 'win32' ? 'junction' : 'dir')
+    expect(readLocalText(repo, 'summary.md', '--body-file').ok).toBe(false)
   })
 
 })
