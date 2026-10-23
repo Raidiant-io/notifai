@@ -1,10 +1,12 @@
 import assert from 'node:assert/strict'
+import { execFileSync } from 'node:child_process'
 import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import test from 'node:test'
 import {
   behaviorDigest,
+  changedInputs,
   checkAgentGuidance,
   DEFAULT_INPUT_ROOTS,
   REQUIRED_SURFACES,
@@ -99,4 +101,30 @@ test('does not hide arbitrary text placed inside a release marker', () => {
 
 test('rejects stale review after a release-authored guidance note changes', () => {
   assertMutationIsCaught('skills/guidance-changes.json', source => source.replace('Read current guidance.', 'Reload the full skill.'))
+})
+
+
+test('stale preflight lists added, edited and removed inputs without approving the record', () => {
+  const { root, recordPath } = fixture()
+  const git = args => execFileSync('git', args, { cwd: root, stdio: 'pipe' })
+  try {
+    git(['init'])
+    git(['add', '.'])
+    git(['-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.invalid', '-c', 'core.hooksPath=/dev/null', 'commit', '-m', 'fixture'])
+    const record = readFileSync(recordPath, 'utf8')
+    write(root, 'apps/cli/src/added.ts', 'export const added = true')
+    write(root, 'apps/cli/src/program.ts', 'changed')
+    write(root, 'apps/cli/src/ignored.test.ts', 'test only')
+    rmSync(path.join(root, 'apps/cli/src/readiness.ts'))
+    assert.deepEqual(changedInputs(root, recordPath), [
+      'apps/cli/src/added.ts', 'apps/cli/src/program.ts', 'apps/cli/src/readiness.ts',
+    ])
+    assert.throws(() => checkAgentGuidance({ repo: root, recordPath }), error => {
+      assert.match(error.message, /apps\/cli\/src\/program.ts/)
+      assert.match(error.message, /node scripts\/check-agent-guidance.mjs --print/)
+      for (const surface of REQUIRED_SURFACES) assert.ok(error.message.includes(surface))
+      return true
+    })
+    assert.equal(readFileSync(recordPath, 'utf8'), record)
+  } finally { rmSync(root, { recursive: true, force: true }) }
 })

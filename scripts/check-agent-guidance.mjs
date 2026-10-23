@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { execFileSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
 import { readdirSync, readFileSync, statSync } from 'node:fs'
 import path from 'node:path'
@@ -57,6 +58,38 @@ export function behaviorDigest(repo, inputRoots = DEFAULT_INPUT_ROOTS) {
   return `sha256:${digest.digest('hex')}`
 }
 
+/** Compare inputs with the commit that last recorded a review, including local edits. */
+export function changedInputs(repo, recordPath, inputRoots = DEFAULT_INPUT_ROOTS) {
+  const git = args => execFileSync('git', args, { cwd: repo, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] })
+  try {
+    const reviewed = git(['log', '-1', '--format=%H', '--', path.relative(repo, recordPath)]).trim()
+    if (!reviewed) return ['(review baseline unavailable; inspect all input roots)']
+    const candidates = new Set([
+      ...git(['diff', '--name-only', reviewed, '--', ...inputRoots]).split('\n'),
+      ...git(['ls-files', '--others', '--exclude-standard', '--', ...inputRoots]).split('\n'),
+    ])
+    return [...candidates].filter(file => {
+      if (!file || file.endsWith('.test.ts') || file.endsWith('.test.mjs')) return false
+      try {
+        return behaviorInput(file, git(['show', `${reviewed}:${file}`])) !==
+          behaviorInput(file, readFileSync(path.join(repo, file), 'utf8'))
+      } catch { return true } // Added or removed input.
+    }).sort()
+  } catch { return ['(Git review baseline unavailable; inspect all input roots)'] }
+}
+
+function reviewHelp(repo, recordPath, inputRoots) {
+  return [
+    'Changed behavior input paths since the recorded review:',
+    ...changedInputs(repo, recordPath, inputRoots).map(file => `  ${file}`),
+    `Required review surfaces: ${REQUIRED_SURFACES.join(', ')}`,
+    'After reviewing, obtain the current digest: node scripts/check-agent-guidance.mjs --print',
+    'Update agent-guidance-review.json with that digest, an explicit outcome, reason, and all surfaces reviewed.',
+    'Validate the refreshed record: pnpm check:agent-guidance',
+    'Procedure: docs/AGENT-GUIDANCE-REVIEW.md. No digest is approved automatically.',
+  ].join('\n')
+}
+
 export function checkAgentGuidance({ repo, recordPath, inputRoots = DEFAULT_INPUT_ROOTS }) {
   const actual = behaviorDigest(repo, inputRoots)
   const record = JSON.parse(readFileSync(recordPath, 'utf8'))
@@ -65,18 +98,18 @@ export function checkAgentGuidance({ repo, recordPath, inputRoots = DEFAULT_INPU
       'Agent Guidance review is stale: shipped agent behavior inputs changed.',
       `expected ${record.behavior_digest}`,
       `actual   ${actual}`,
-      'Review every shipped Agent Guidance surface, then update the review record with the exact digest, outcome, and reason.',
+      reviewHelp(repo, recordPath, inputRoots),
     ].join('\n'))
   }
   if (!['guidance-updated', 'reviewed-no-impact'].includes(record.outcome)) {
-    throw new Error('Agent Guidance review outcome must be guidance-updated or reviewed-no-impact.')
+    throw new Error(`Agent Guidance review outcome must be guidance-updated or reviewed-no-impact.\n${reviewHelp(repo, recordPath, inputRoots)}`)
   }
   if (typeof record.reason !== 'string' || record.reason.trim().length < 20) {
-    throw new Error('Agent Guidance review needs a concrete review reason (at least 20 characters).')
+    throw new Error(`Agent Guidance review needs a concrete review reason (at least 20 characters).\n${reviewHelp(repo, recordPath, inputRoots)}`)
   }
   for (const surface of REQUIRED_SURFACES) {
     if (!record.surfaces_reviewed?.includes(surface)) {
-      throw new Error(`Agent Guidance review did not review required surface: ${surface}`)
+      throw new Error(`Agent Guidance review did not review required surface: ${surface}\n${reviewHelp(repo, recordPath, inputRoots)}`)
     }
   }
   return { actual, record }
