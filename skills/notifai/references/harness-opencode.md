@@ -6,8 +6,10 @@ harness shares.
 This covers OpenCode 1, and OpenCode 2.1 and later. The two lines load
 different plugins, so Notifai writes the one for the OpenCode it finds. After
 switching between them, run `notifai hooks install --harness opencode`;
-`notifai update` does it too. `notifai doctor` reports a plugin for the other
-line, and OpenCode 2.0, which is unsupported: upgrade it.
+`notifai update` does it too when explicitly run. Automatic updates report
+a major mismatch and preserve the installed plugin; put the intended OpenCode
+on PATH before reinstalling. `notifai doctor` reports a plugin for the other
+line, an unread version, and OpenCode 2.0, which is unsupported: upgrade it.
 
 ## Activation
 
@@ -36,7 +38,11 @@ form, or with `--projectless` in a Project that is not disabled or outside a
 Project, it waits in the command instead, for at most
 110 seconds, then withdraws
 an unanswered question (exit 3). Keep the command running until it returns.
-The OpenCode 1 form carries free text and up to 10 questions. Notifai accepts
+Both OpenCode 1.19.4 and OpenCode 2.1.3 carry free-text questions
+(`options: []`) and forms of 1 to 10 questions. Notifai accepts 2 to 6 choices
+per question, with single or multiple selection. OpenCode 2.1.3's native
+schema has no upper question count or minimum option count; Notifai's
+10-question and 6-choice limits still apply. Notifai accepts
 at most one recommended choice per question; its label ends in
 `(Recommended)`. Several recommendations within one question are refused by
 Notifai's protocol before any form opens; offer one recommendation instead.
@@ -69,3 +75,11 @@ The loaded plugin calls the updated CLI on each event and reads guidance once
 per User prompt. OpenCode 1 loads changed plugin code only at startup, and
 OpenCode 2 when the file changes: arrange a restart only when the update's
 diagnosis says that scope still needs one, then confirm a natural callback.
+
+A plugin reload restores owed answer acknowledgements from the CLI on the
+next prompt or model context. It still loses the set of sessions served by
+the old instance: a turn that ends before either hook runs again can miss its
+turn-end notification. Avoid rewriting the plugin in the middle of a turn
+when that notification matters. A native question executor that ignores abort
+gets at most three seconds to finish; then the device answer returns anyway,
+though that executor's native form may remain visible until OpenCode closes it.

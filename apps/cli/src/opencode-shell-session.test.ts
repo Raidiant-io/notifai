@@ -27,15 +27,15 @@ const insideHost = () => [{ pid: 9001, name: 'node' }, { pid: 73948, name: 'bash
 describe('OpenCode 2 shell session identity', () => {
   it('believes a shell\'s OPENCODE_SESSION_ID for a session the plugin recorded, running inside its host', () => {
     const env = home()
-    expect(recordOpencodeSession(env, { session_id: SESSION, worker: false, session_label: 'Fix the build' }, 1, start)).toBe('recorded')
+    expect(recordOpencodeSession(env, { session_id: SESSION, worker: false, session_label: 'Fix the build' }, 1, start, insideHost)).toBe('recorded')
     expect(trustedOpencodeShellSession(env, SESSION, insideHost, alive)).toEqual({ sessionId: SESSION, worker: false, sessionLabel: 'Fix the build' })
-    recordOpencodeSession(env, { session_id: SESSION, worker: true, session_label_pending: true }, 2, start)
+    recordOpencodeSession(env, { session_id: SESSION, worker: true, session_label_pending: true }, 2, start, insideHost)
     expect(trustedOpencodeShellSession(env, SESSION, insideHost, alive)).toEqual({ sessionId: SESSION, worker: true, sessionLabelPending: true })
   })
 
   it('refuses a value no plugin recorded, a forged or malformed one, and one from outside the recorded host', () => {
     const env = home()
-    recordOpencodeSession(env, { session_id: SESSION, worker: false }, 1, start)
+    recordOpencodeSession(env, { session_id: SESSION, worker: false }, 1, start, insideHost)
     expect(trustedOpencodeShellSession(env, 'ses_neverrecorded', insideHost, alive)).toBeNull()
     expect(trustedOpencodeShellSession(env, '../ses_x', insideHost, alive)).toBeNull()
     expect(trustedOpencodeShellSession(env, undefined, insideHost, alive)).toBeNull()
@@ -47,23 +47,45 @@ describe('OpenCode 2 shell session identity', () => {
 
   it('refuses a stale value: an ended session, a host that is gone, or a forgotten record', () => {
     const env = home()
-    recordOpencodeSession(env, { session_id: SESSION, worker: false }, 1, start)
+    recordOpencodeSession(env, { session_id: SESSION, worker: false }, 1, start, insideHost)
     expect(trustedOpencodeShellSession(env, SESSION, insideHost, (_: ProcessIdentity) => 'gone')).toBeNull()
     expect(trustedOpencodeShellSession(env, SESSION, insideHost, (_: ProcessIdentity) => 'unknown')).toBeNull()
     markSessionEnded(SESSION, env, 3)
     expect(trustedOpencodeShellSession(env, SESSION, insideHost, alive)).toBeNull()
     const other = home()
-    recordOpencodeSession(other, { session_id: SESSION, worker: false }, 1, start)
+    recordOpencodeSession(other, { session_id: SESSION, worker: false }, 1, start, insideHost)
     forgetOpencodeSession(other, SESSION)
     expect(trustedOpencodeShellSession(other, SESSION, insideHost, alive)).toBeNull()
   })
 
+  it('requires the declared host in the recording process ancestry, even when its PID is live', () => {
+    const env = home()
+    expect(recordOpencodeSession(env, { session_id: SESSION, worker: false }, 1, start, () => [{ pid: 99, name: 'node' }])).toBe('no-host')
+    expect(recordOpencodeSession(env, { session_id: SESSION, worker: false }, 1, start, () => null)).toBe('no-host')
+    expect(trustedOpencodeShellSession(env, SESSION, insideHost, alive)).toBeNull()
+  })
+
+  it('preserves another live or unreadable host record, but allows a dead host to be replaced', () => {
+    const env = home()
+    recordOpencodeSession(env, { session_id: SESSION, worker: true, session_label: 'Original' }, 1, start, insideHost)
+    const other = { ...env, NOTIFAI_HOOK_SOURCE_PID: '77' }
+    const otherChain = () => [{ pid: 77, name: 'opencode' }]
+    for (const state of ['alive', 'unknown'] as const) {
+      expect(recordOpencodeSession(other, { session_id: SESSION, worker: false, session_label: 'Replacement' }, 2,
+        () => 'other-start', otherChain, () => state)).toBe('host-conflict')
+      expect(trustedOpencodeShellSession(env, SESSION, insideHost, alive)).toMatchObject({ worker: true, sessionLabel: 'Original' })
+    }
+    expect(recordOpencodeSession(other, { session_id: SESSION, worker: false }, 3,
+      () => 'other-start', otherChain, () => 'gone')).toBe('recorded')
+    expect(trustedOpencodeShellSession(env, SESSION, otherChain, alive)).toMatchObject({ worker: false })
+  })
+
   it('records nothing without a host, or for a malformed report', () => {
     const env = home()
-    expect(recordOpencodeSession({ ...env, NOTIFAI_HOOK_SOURCE_PID: '' }, { session_id: SESSION, worker: false }, 1, start)).toBe('no-host')
-    expect(recordOpencodeSession({ ...env, NOTIFAI_HOOK_SOURCE_PID: '77' }, { session_id: SESSION, worker: false }, 1, start)).toBe('no-host')
-    expect(recordOpencodeSession(env, { session_id: SESSION }, 1, start)).toBe('invalid')
-    expect(recordOpencodeSession(env, { session_id: 'not-a-session', worker: false }, 1, start)).toBe('invalid')
+    expect(recordOpencodeSession({ ...env, NOTIFAI_HOOK_SOURCE_PID: '' }, { session_id: SESSION, worker: false }, 1, start, insideHost)).toBe('no-host')
+    expect(recordOpencodeSession({ ...env, NOTIFAI_HOOK_SOURCE_PID: '77' }, { session_id: SESSION, worker: false }, 1, start, insideHost)).toBe('no-host')
+    expect(recordOpencodeSession(env, { session_id: SESSION }, 1, start, insideHost)).toBe('invalid')
+    expect(recordOpencodeSession(env, { session_id: 'not-a-session', worker: false }, 1, start, insideHost)).toBe('invalid')
     expect(trustedOpencodeShellSession(env, SESSION, insideHost, alive)).toBeNull()
   })
 

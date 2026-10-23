@@ -16,6 +16,8 @@
  * API's session fields (upstream PR #57260), so 2.0.x is unsupported.
  */
 import { spawnSync } from 'node:child_process'
+import { existsSync, statSync } from 'node:fs'
+import path from 'node:path'
 import { opencodePluginSource, type OpencodePluginLine, type OpencodePluginOptions } from './opencode-plugin.js'
 import { opencode2PluginSource } from './opencode2-plugin.js'
 
@@ -37,7 +39,7 @@ export function probeOpencodeVersion(
   env: NodeJS.ProcessEnv,
   run: (env: NodeJS.ProcessEnv) => string | null = runOpencodeVersion,
 ): string | null {
-  const key = env['PATH'] ?? ''
+  const key = JSON.stringify([env['PATH'], env['Path'], env['PATHEXT'], env['ComSpec']])
   if (run === runOpencodeVersion && probed.has(key)) return probed.get(key)!
   const output = run(env)
   const version = output?.match(/\bv?(\d+\.\d+\.\d+)\b/)?.[1] ?? null
@@ -47,8 +49,27 @@ export function probeOpencodeVersion(
 
 function runOpencodeVersion(env: NodeJS.ProcessEnv): string | null {
   try {
-    const result = spawnSync('opencode', ['--version'], {
+    let command = 'opencode'
+    let args = ['--version']
+    if (process.platform === 'win32') {
+      const value = (key: string) => env[key] ?? Object.entries(env).find(([name]) => name.toUpperCase() === key)?.[1]
+      const extensions = (value('PATHEXT') ?? '.COM;.EXE;.BAT;.CMD').split(';').filter(Boolean)
+      const candidates = (value('PATH') ?? '').split(';').filter(Boolean).flatMap(directory =>
+        extensions.map(extension => path.win32.resolve(directory.replace(/^"|"$/g, ''), `opencode${extension}`)))
+      const executable = candidates.find(candidate => existsSync(candidate) && statSync(candidate).isFile())
+      if (executable === undefined) return null
+      command = executable
+      if (/\.(cmd|bat)$/i.test(command)) {
+        // npm's native Windows shim needs cmd.exe. The only argument is
+        // fixed; quote the resolved path and refuse expansion characters.
+        if (/["%\r\n]/.test(command)) return null
+        args = ['/d', '/s', '/c', `""${command}" --version"`]
+        command = value('COMSPEC') ?? 'cmd.exe'
+      }
+    }
+    const result = spawnSync(command, args, {
       env, encoding: 'utf8', timeout: PROBE_TIMEOUT_MS, stdio: ['ignore', 'pipe', 'ignore'], windowsHide: true,
+      ...(process.platform === 'win32' && args[0] === '/d' ? { windowsVerbatimArguments: true } : {}),
     })
     return result.status === 0 && typeof result.stdout === 'string' ? result.stdout : null
   } catch {
@@ -80,7 +101,14 @@ export function opencodePluginLine(version: string | null, installed?: OpencodeP
 export function opencodeSupport(version: string | null):
   { supported: true; problem: null; remedy: null } | { supported: false; problem: string; remedy: string } {
   const known = version === null ? null : parsed(version)
-  if (known === null || known.major <= 1 || (known.major === 2 && known.minor >= 1)) {
+  if (known === null) {
+    return {
+      supported: false,
+      problem: 'The OpenCode version could not be read; Notifai cannot verify that OpenCode loads the installed plugin.',
+      remedy: 'make the intended opencode executable available on PATH, then run notifai doctor again',
+    }
+  }
+  if (known.major <= 1 || (known.major === 2 && known.minor >= 1)) {
     return { supported: true, problem: null, remedy: null }
   }
   if (known.major === 2) {

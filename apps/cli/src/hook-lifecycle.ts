@@ -800,7 +800,10 @@ async function owedAcknowledgementReminder(ctx: HookContext, sessionId: string):
   // neither reads a detached hook's block decision, so the Stop reminder for an
   // owed answer acknowledgement never reaches the model there. Their prompt
   // carries it instead; Stop still counts the turns before it is abandoned.
-  const owed = ctx.harness === 'claude-code' || ctx.harness === 'codex' ? owedAcknowledgements(state) : messages
+  // OpenCode 2 may reload its plugin between the device answer and context.
+  // Its next prompt/context recovery reads the durable CLI obligation too.
+  const owed = ctx.harness === 'claude-code' || ctx.harness === 'codex' || ctx.harness === 'opencode'
+    ? owedAcknowledgements(state) : messages
   if (owed.length === 0) return null
   const still = await reconcileAcknowledgementObligations(ctx, sessionId, owed)
   return still.length === 0 ? null : acknowledgementBlockContext(still)

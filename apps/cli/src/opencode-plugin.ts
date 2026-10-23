@@ -54,7 +54,7 @@ export const OPENCODE_PLUGIN_FILENAME = 'notifai.js'
 const OPENCODE_ADAPTER_VERSION = 15
 
 /** The same for the OpenCode 2 module (`opencode2-plugin.ts`), which counts on its own. */
-export const OPENCODE2_ADAPTER_VERSION = 1
+export const OPENCODE2_ADAPTER_VERSION = 2
 
 /** The OpenCode major lines Notifai generates a plugin for. */
 export type OpencodePluginLine = 1 | 2

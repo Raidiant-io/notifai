@@ -404,7 +404,13 @@ export default {
         .then((result) => ({ result }), (error) => ({ error }))
       const first = await Promise.race([run.then((outcome) => ({ outcome })), device.then((frame) => ({ frame }))])
       if (first.outcome === undefined) controller.abort()
-      const outcome = first.outcome ?? await run
+      // A future native executor may ignore abort. Give it a short grace
+      // period to reveal a terminal answer already committed, then continue.
+      let timer
+      const outcome = first.outcome ?? await Promise.race([
+        run,
+        new Promise((resolve) => { timer = setTimeout(() => resolve({}), 3000) }),
+      ]).finally(() => clearTimeout(timer))
       if (opening.get(form.callID) === form.onOpened) opening.delete(form.callID)
       form.onDevice = null
       const answers = "result" in outcome ? nativeAnswers(outcome.result) : null
@@ -518,6 +524,13 @@ export default {
     await ctx.session.hook("context", async (event) => {
       const sessionID = event?.sessionID
       if (typeof sessionID !== "string" || sessionID.length === 0 || !Array.isArray(event.system)) return
+      if (!served.has(sessionID)) {
+        // A freshly reloaded plugin has no owed map. The CLI retains answer
+        // acknowledgements; recover them even without another User prompt.
+        served.add(sessionID)
+        const session = await sessionInfo(sessionID)
+        owe(sessionID, await runHook("user-prompt-submit", { session_id: sessionID, cwd: session.cwd, hook_event_name: "UserPromptSubmit" }))
+      }
       served.add(sessionID)
       let pending = activations.get(sessionID)
       if (pending === undefined) {

@@ -1,4 +1,4 @@
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -26,6 +26,15 @@ describe('OpenCode version', () => {
     expect(probeOpencodeVersion({}, () => 'opencode: command not found')).toBeNull()
   })
 
+  it.skipIf(process.platform !== 'win32')('reads a native npm cmd shim from a PATH directory with spaces using PATHEXT', () => {
+    const root = mkdtempSync(path.join(os.tmpdir(), 'notifai-opencode-cmd-'))
+    roots.push(root)
+    const bin = path.join(root, 'npm prefix')
+    mkdirSync(bin)
+    writeFileSync(path.join(bin, 'opencode.cmd'), '@echo off\r\necho opencode v2.1.3\r\n')
+    expect(probeOpencodeVersion({ ...process.env, PATH: bin, PATHEXT: '.EXE;.CMD' })).toBe('2.1.3')
+  })
+
   it('writes the OpenCode 2 plugin for OpenCode 2 or later, and the OpenCode 1 plugin otherwise', () => {
     expect(opencodePluginLine('1.19.4')).toBe(1)
     expect(opencodePluginLine('2.0.4')).toBe(2)
@@ -36,7 +45,7 @@ describe('OpenCode version', () => {
   })
 
   it('supports OpenCode 1 and OpenCode 2.1 or later, and says what to do about anything else', () => {
-    for (const version of ['1.19.4', '1.0.0', '2.1.0', '2.1.3', '2.7.12', null]) {
+    for (const version of ['1.19.4', '1.0.0', '2.1.0', '2.1.3', '2.7.12']) {
       expect(opencodeSupport(version)).toEqual({ supported: true, problem: null, remedy: null })
     }
     const early = opencodeSupport('2.0.9')
@@ -119,14 +128,21 @@ describe('OpenCode plugin line', () => {
     expect(state?.detail).toContain('OpenCode 2.1.3')
   })
 
-  it('installs the OpenCode 1 plugin on OpenCode 1, and when the version cannot be read', async () => {
-    for (const version of ['1.19.4', null]) {
+  it('installs the OpenCode 1 plugin on OpenCode 1', async () => {
+    for (const version of ['1.19.4']) {
       const f = fixture(() => version)
       expect(hooksInstallCommand(f.deps, f.flags)).toBe(EXIT.ok)
       expect(f.err).toEqual([])
       expect(f.installedLine()).toBe(1)
       expect(await opencodeState(f)).toMatchObject({ status: 'ready', technical: { opencode_version: version, opencode_plugin_line: 1 } })
     }
+  })
+
+  it('flags an unread version as needing attention, including after a fresh install', async () => {
+    const f = fixture(() => null)
+    expect(hooksInstallCommand(f.deps, f.flags)).toBe(EXIT.ok)
+    expect(f.installedLine()).toBe(1)
+    expect(await opencodeState(f)).toMatchObject({ status: 'gap', detail: expect.stringContaining('could not be read') })
   })
 
   it('reports OpenCode 2.0 as unsupported with an upgrade remedy, and warns at install', async () => {

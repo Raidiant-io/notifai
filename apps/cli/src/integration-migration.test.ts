@@ -739,3 +739,19 @@ it('rewrites exec-form Claude Code hooks to shell form before a runtime that rea
   }
   expect(readClaudeFormDeferral(f.deps.env)).toBeNull()
 })
+
+it('automatic resume reports an OpenCode major mismatch without rewriting either direction; explicit resume repairs it', async () => {
+  for (const [installed, found] of [['1.19.4', '2.1.3'], ['2.1.3', '1.19.4']]) {
+    const f = fixture()
+    f.deps.opencodeVersion = () => installed!
+    expect(hooksInstallCommand(f.deps, { harness: 'opencode', narrate: false })).toBe(0)
+    const plugin = findInstallations(f.deps.env, f.home, 'darwin').find(entry => entry.harness === 'opencode')!
+    const before = readFileSync(plugin.file, 'utf8')
+    f.deps.opencodeVersion = () => found!
+    expect(await updateResumeCommand(f.deps, { json: true, automatic: true })).toBe(1)
+    expect(readFileSync(plugin.file, 'utf8')).toBe(before)
+    expect(JSON.parse(f.out.at(-1)!).pending_actions.join(' ')).toContain('automatic updates leave it unchanged')
+    expect(await updateResumeCommand(f.deps, { json: true })).toBe(0)
+    expect(readFileSync(plugin.file, 'utf8')).not.toBe(before)
+  }
+})

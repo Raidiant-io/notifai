@@ -23,11 +23,12 @@
  */
 import { lstatSync, readFileSync, readdirSync, rmSync } from 'node:fs'
 import path from 'node:path'
+import { withFileLock } from './file-lock.js'
 import { atomicWriteFileSync } from './atomic-file.js'
 import { log, type CommandDeps } from './commands-core.js'
 import { sanitizeSessionId, stateDir } from './config.js'
 import { sessionHasEnded } from './hook-session-state.js'
-import type { AncestorProcess } from './process-ancestry.js'
+import { processAncestry, type AncestorProcess } from './process-ancestry.js'
 import { processIdentityLiveness, processStartTime, type ProcessIdentity, type ProcessLiveness } from './process-identity.js'
 
 /** The environment value the OpenCode 2 plugin sets in agent shells: read the session from `OPENCODE_SESSION_ID`. */
@@ -87,25 +88,33 @@ export function recordOpencodeSession(
   envelope: unknown,
   now: number,
   startOf: (pid: number) => string | null = processStartTime,
-): 'recorded' | 'invalid' | 'no-host' {
+  chain: () => readonly AncestorProcess[] | null = processAncestry,
+  liveness: (identity: ProcessIdentity) => ProcessLiveness = processIdentityLiveness,
+): 'recorded' | 'invalid' | 'no-host' | 'host-conflict' {
   if (typeof envelope !== 'object' || envelope === null) return 'invalid'
   const { session_id: sessionId, worker, session_label: label, session_label_pending: pending } = envelope as Record<string, unknown>
   if (typeof sessionId !== 'string' || !SESSION_ID.test(sessionId) || typeof worker !== 'boolean') return 'invalid'
   const pid = Number(env['NOTIFAI_HOOK_SOURCE_PID'])
   const start = Number.isInteger(pid) && pid > 1 ? startOf(pid) : null
-  if (start === null) return 'no-host'
-  const record: OpencodeSessionRecord = {
-    schema: 1,
-    session_id: sessionId,
-    worker,
-    ...(typeof label === 'string' && label.trim() !== '' && label.length <= 512 ? { session_label: label.trim() } : {}),
-    ...(pending === true ? { session_label_pending: true as const } : {}),
-    host: { pid, start },
-    recorded_at: now,
-  }
-  atomicWriteFileSync(recordFile(env, sessionId), `${JSON.stringify(record)}\n`, { mode: 0o600 })
-  sweepRecords(env, sessionId)
-  return 'recorded'
+  if (start === null || !chain()?.some((ancestor) => ancestor.pid === pid)) return 'no-host'
+  const file = recordFile(env, sessionId)
+  return withFileLock(`${file}.lock`, () => {
+    const previous = readRecord(file)
+    if (previous !== null && (previous.host.pid !== pid || previous.host.start !== start) &&
+        liveness(previous.host) !== 'gone') return 'host-conflict'
+    const record: OpencodeSessionRecord = {
+      schema: 1,
+      session_id: sessionId,
+      worker,
+      ...(typeof label === 'string' && label.trim() !== '' && label.length <= 512 ? { session_label: label.trim() } : {}),
+      ...(pending === true ? { session_label_pending: true as const } : {}),
+      host: { pid, start },
+      recorded_at: now,
+    }
+    atomicWriteFileSync(file, `${JSON.stringify(record)}\n`, { mode: 0o600 })
+    sweepRecords(env, sessionId)
+    return 'recorded'
+  })
 }
 
 /** Drop records whose OpenCode is gone: their sessions can no longer run a shell. */

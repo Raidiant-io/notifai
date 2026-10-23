@@ -92,7 +92,7 @@ type Hook = (event: object) => Promise<void> | void
 type LogRecord = { event?: string; envelope?: Record<string, unknown>; frame?: { type: string; [key: string]: unknown }; closed?: boolean }
 
 /** OpenCode's native `question` tool: one form per call, settled from outside or aborted. */
-function nativeQuestionTool(emit: (event: unknown) => void) {
+function nativeQuestionTool(emit: (event: unknown) => void, ignoresAbort = false) {
   const open = new Map<string, { reply(answer: string): void; dismiss(): void }>()
   const calls: Array<{ input: unknown }> = []
   const cancelled = { name: 'QuestionTool.CancelledError', message: 'The user dismissed this question' }
@@ -111,14 +111,14 @@ function nativeQuestionTool(emit: (event: unknown) => void) {
         },
         dismiss: () => { settle(); reject(cancelled) },
       })
-      context.signal.addEventListener('abort', () => { settle(); reject(new Error('All fibers interrupted without error')) }, { once: true })
+      context.signal.addEventListener('abort', () => { if (ignoresAbort) return; settle(); reject(new Error('All fibers interrupted without error')) }, { once: true })
       queueMicrotask(() => emit({ ...captured.form_created, id: `evt_${context.id}`, data: { form } }))
     })
   }
   return { execute, open, calls, cancelled }
 }
 
-async function load(options: { mode?: 'device' | 'expire' | 'wait'; verdict?: 'accepted' | 'refused' | 'terminal'; activation?: string; promptOutput?: string; questionFields?: Record<string, unknown>; parentID?: unknown } = {}) {
+async function load(options: { mode?: 'device' | 'expire' | 'wait'; verdict?: 'accepted' | 'refused' | 'terminal'; activation?: string; promptOutput?: string; questionFields?: Record<string, unknown>; parentID?: unknown; ignoresAbort?: boolean } = {}) {
   const root = mkdtempSync(path.join(os.tmpdir(), 'notifai-opencode2-plugin-'))
   roots.push(root)
   const adapter = path.join(root, 'adapter')
@@ -140,7 +140,7 @@ async function load(options: { mode?: 'device' | 'expire' | 'wait'; verdict?: 'a
   const queue: unknown[] = []
   let wake: (() => void) | null = null
   const emit = (event: unknown): void => { queue.push(event); wake?.() }
-  const native = nativeQuestionTool(emit)
+  const native = nativeQuestionTool(emit, options.ignoresAbort)
   const question: Record<string, unknown> = { id: 'question', input: { fields: options.questionFields ?? { questions: {} } }, execute: native.execute }
   const sessions: Record<string, unknown> = {
     [ROOT]: { ...captured.session_get_root, ...(options.parentID === undefined ? {} : { parentID: options.parentID }) },
@@ -254,6 +254,17 @@ describe.skipIf(process.platform === 'win32')('the generated OpenCode 2 plugin',
     expect((await t.context()).join('\n')).not.toContain('notifai acknowledge req_1')
   })
 
+  it('returns the device answer within a few seconds even when the native executor ignores abort', async () => {
+    const t = await load({ mode: 'device', ignoresAbort: true })
+    const started = Date.now()
+    const result = await t.call('call_uncooperative')
+    expect(Date.now() - started).toBeLessThan(4500)
+    expect(result.output).toEqual({ answers: [['Blue']] })
+    await t.until(() => t.frames().includes('applied'))
+    expect((await t.context()).join('\n')).toContain('notifai acknowledge req_1')
+    await t.cleanup()
+  }, 7000)
+
   it('passes an answer given in OpenCode through unchanged and reports it', async () => {
     const t = await load({ mode: 'wait' })
     const pending = t.call('call_terminal')
@@ -329,7 +340,8 @@ describe.skipIf(process.platform === 'win32')('the generated OpenCode 2 plugin',
 
   it('resolves activation once per User prompt and gives the next model request what the prompt hook returned', async () => {
     const t = await load({ promptOutput: 'SESSION NOTE TEXT' })
-    for (let request = 0; request < 3; request += 1) expect(await t.context()).toEqual(['ACTIVATION TEXT'])
+    expect(await t.context()).toEqual(['SESSION NOTE TEXT', 'ACTIVATION TEXT'])
+    for (let request = 0; request < 2; request += 1) expect(await t.context()).toEqual(['ACTIVATION TEXT'])
     expect(t.records().filter((record) => record.event === 'session-start')).toHaveLength(1)
     await t.hooks['session.prompt']!(captured.prompt_root)
     expect(t.records().find((record) => record.event === 'user-prompt-submit')!.envelope).toEqual({
@@ -337,6 +349,18 @@ describe.skipIf(process.platform === 'win32')('the generated OpenCode 2 plugin',
     expect(await t.context()).toEqual(['SESSION NOTE TEXT', 'ACTIVATION TEXT'])
     expect(await t.context()).toEqual(['ACTIVATION TEXT'])
     expect(t.records().filter((record) => record.event === 'session-start')).toHaveLength(2)
+  })
+
+  it('recovers CLI acknowledgement context after reload without another User prompt', async () => {
+    const before = await load({ mode: 'device' })
+    await before.context()
+    await before.call('call_before_reload')
+    await before.cleanup()
+    // The actual CLI's durable debt is covered by the prompt lifecycle test.
+    const after = await load({ promptOutput: 'notifai acknowledge req_1 --text <text>' })
+    expect((await after.context()).join('\n')).toContain('notifai acknowledge req_1')
+    expect((await after.context()).join('\n')).not.toContain('notifai acknowledge req_1')
+    await after.cleanup()
   })
 
   it('adds nothing in a Project the User disabled, and worker context in a child session', async () => {
