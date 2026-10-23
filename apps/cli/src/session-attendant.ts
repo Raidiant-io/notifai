@@ -622,12 +622,18 @@ export async function runSessionAttendant(options: SessionAttendantOptions): Pro
       const bound = new AbortController()
       const timer = setTimeout(() => bound.abort(), ATTENDANT_FINAL_REPORT_MS)
       try {
+        let confirmed = false
+        if (final === 'ended' && (reason === 'session-replaced' || decided === 'ended')) {
+          try { confirmed = (await abortable(client.compatibility(), AbortSignal.any([bound.signal, AbortSignal.timeout(500)]))).server_capabilities.includes('session_confirmed_end') }
+          catch { /* Discovery failure retains the legacy final report. */ }
+        }
         await client.attend(
           options.sessionId,
           {
             incarnation,
             ...(generation === null ? {} : { generation }),
             state: final,
+            ...(confirmed ? { end_reason: 'closed' as const } : {}),
           },
           { waitSeconds: 0, signal: bound.signal },
         )
@@ -654,9 +660,11 @@ export async function runSessionAttendant(options: SessionAttendantOptions): Pro
 function finalReport(reason: AttendantExitReason): 'ended' | 'withdrawn' | null {
   switch (reason) {
     case 'harness-gone':
-    case 'session-replaced':
     case 'session-end-hook':
     case 'signal':
+      // Losing an attendant or host is not positive conversation-close evidence.
+      return 'withdrawn'
+    case 'session-replaced':
       return 'ended'
     case 'superseded':
       // A newer start of the same session attends now; ending would end it.

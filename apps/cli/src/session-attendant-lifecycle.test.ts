@@ -994,7 +994,7 @@ describe('notifai hook attend for Codex', () => {
 
     markSessionEnded(THREAD, env, Date.now() + 1)
     await running
-    expect(deps.exits).toEqual([{ reason: 'session-end-hook', reported: 'ended' }])
+    expect(deps.exits).toEqual([{ reason: 'session-end-hook', reported: 'withdrawn' }])
   })
 
   it.each(['tool-drain', 'completion', 'first-tool', 'missing-tool', 'abort', 'owned-cancel'])('routes a staged Note safely: %s', async (mode) => {

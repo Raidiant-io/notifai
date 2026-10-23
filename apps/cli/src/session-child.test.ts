@@ -166,7 +166,7 @@ describe.skipIf(!supported)('native session child', () => {
     const { root, env } = scratch()
     recordSessionNotified(SESSION, env, Date.now())
     const fake = service()
-    const { stop } = startHub(env, fake)
+    const { hub, stop } = startHub(env, fake)
     const harness = await startHarness(root, env, 'direct')
     await until(() => fake.batches.some((batch) => batch.sessions.some((entry) => entry.session_id === SESSION && entry.state === 'running')))
     const spawned = harness.lines.find((line) => 'spawned' in line)!['spawned'] as number
@@ -181,7 +181,8 @@ describe.skipIf(!supported)('native session child', () => {
     expect(JSON.stringify(inbox)).not.toContain('hello') // a wake never carries the note itself
 
     harness.process.kill('SIGKILL')
-    await until(() => fake.batches.some((batch) => batch.sessions.some((entry) => entry.state === 'ended')))
+    await until(() => hub.sessions.get(SESSION)?.stopped != null)
+    expect(fake.batches.flatMap(batch => batch.sessions).some(entry => entry.state === 'ended')).toBe(false)
     expect(await stop()).toBe(0)
   }, 30_000)
 
@@ -285,9 +286,10 @@ describe.skipIf(!supported)('native session child', () => {
     expect(readSessionIncarnation(SESSION, env)?.harness_process?.pid).toBe(first.pid)
     await new Promise((resolve) => setTimeout(resolve, 1_000))
     expect(fake.batches.flatMap((batch) => batch.sessions).some((entry) => entry.state === 'ended')).toBe(false)
-    // The last place closes: ended after the end confirmation.
+    // Losing the last observer preserves the unread note.
     first.process.kill('SIGKILL')
-    await until(() => fake.batches.some((batch) => batch.sessions.some((entry) => entry.state === 'ended')))
+    await until(() => hub.sessions.get(SESSION)?.stopped != null)
+    expect(fake.batches.flatMap(batch => batch.sessions).some(entry => entry.state === 'ended')).toBe(false)
     expect(await stop()).toBe(0)
   }, 40_000)
 

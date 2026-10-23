@@ -22,6 +22,7 @@ export type ClaudePlace =
   | 'claude-ide'
   | 'claude-background'
   | 'orca-chat'
+  | 't3'
   | 'headless'
   /** An entrypoint this build does not know. */
   | 'unknown'
@@ -35,6 +36,8 @@ export interface ClaudePlaceSignals {
   sessionKind?: string | null | undefined
   /** `ORCA_STRUCTURED_SESSION=1`: an Orca chat tab drives this SDK session. */
   orcaStructured?: boolean | undefined
+  /** Direct host process, never a shell ancestor. */
+  hostName?: string | null | undefined
 }
 
 export function claudePlaceOf(signals: ClaudePlaceSignals): ClaudePlace {
@@ -43,7 +46,11 @@ export function claudePlaceOf(signals: ClaudePlaceSignals): ClaudePlace {
   if (entrypoint === 'claude-desktop' || entrypoint === 'claude-desktop-3p') return 'claude-desktop'
   if (entrypoint === 'claude-vscode') return 'claude-ide'
   if (entrypoint === 'cli') return signals.sessionKind === 'bg' ? 'claude-background' : 'terminal'
-  if (entrypoint.startsWith('sdk-')) return signals.orcaStructured === true ? 'orca-chat' : 'headless'
+  if (entrypoint.startsWith('sdk-') && /^T3 Code(?: \(Nightly\))?(?:\.exe)?$/.test(signals.hostName ?? '')) return 't3'
+  if (entrypoint.startsWith('sdk-')) {
+    if (signals.orcaStructured === true) return 'orca-chat'
+    return signals.hostName == null ? 'unknown' : 'headless'
+  }
   return 'unknown'
 }
 
@@ -95,9 +102,10 @@ export function placeReceives(place: SessionPlace): boolean {
 }
 
 /** The place signals in a hook's (or session child's) environment. */
-export function claudePlaceSignals(env: NodeJS.ProcessEnv): ClaudePlaceSignals {
+export function claudePlaceSignals(env: NodeJS.ProcessEnv, harnessPid?: number): ClaudePlaceSignals {
   return {
     entrypoint: env['CLAUDE_CODE_ENTRYPOINT'],
+    hostName: harnessPid === undefined ? null : claudeHostName(harnessPid),
     sessionKind: env['CLAUDE_CODE_SESSION_KIND'] ?? null,
     orcaStructured: env['ORCA_STRUCTURED_SESSION'] === '1',
   }
@@ -118,6 +126,12 @@ function parentAndName(pid: number): { ppid: number; name: string } | null {
   } catch {
     return null
   }
+}
+
+/** Only the direct parent distinguishes an SDK UI from a script launched through its shell tool. */
+export function claudeHostName(harnessPid: number): string | null {
+  const own = parentAndName(harnessPid)
+  return own === null ? null : parentAndName(own.ppid)?.name ?? null
 }
 
 /** The process that started this one, by pid and start time; null when it cannot be read. */

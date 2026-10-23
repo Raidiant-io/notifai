@@ -2,12 +2,16 @@ import { existsSync, mkdtempSync, rmSync, statSync } from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
-import { beginSessionIncarnation, lifecycleStamp, markSessionEnded, readSessionIncarnation, readSessionState, rehostSessionIncarnation, sessionStatePath, updateSessionState } from './hook-session-state.js'
+import { beginSessionIncarnation, lifecycleStamp, markSessionEnded, readSessionIncarnation, readSessionState, readSessionStateForEnd, rehostSessionIncarnation, sessionStatePath, updateSessionState } from './hook-session-state.js'
 
 const roots: string[] = []
 afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }) })
 
 describe('session state updates', () => {
+  it('treats a never-created state file as nothing waiting', () => {
+    const root = mkdtempSync(path.join(os.tmpdir(), 'session-state-')); roots.push(root)
+    expect(readSessionStateForEnd('never-started', { XDG_STATE_HOME: root })).toEqual({})
+  })
   it('rewrite the file only when an update changed something, and still create a missing one', () => {
     const root = mkdtempSync(path.join(os.tmpdir(), 'session-state-'))
     roots.push(root)

@@ -117,8 +117,10 @@ const attendanceIdentity = {
  * (machine auth, CLI capability `session_attendance`).
  *
  * - `running` acquires or renews the lease and waits for Session Messages.
- * - `ended` records that the harness session ended; presence becomes `ended`.
- *   Its open questions expire with it and an answer the agent never read is
+ * - `ended` with `end_reason: 'closed'` (server capability
+ *   `session_confirmed_end`) records a positively confirmed close. Bare ends
+ *   from older clients can describe crashes and are treated as stops by servers
+ *   with this capability. On a confirmed end, open questions expire and an answer the agent never read is
  *   dropped (reported `not_delivered`, reason `session_ended`).
  *   With `end_reason: 'continued'` and `successor_session_id` (server feature
  *   `session_stopped_hold`) the session continues under that Agent Session
@@ -140,17 +142,17 @@ const attendanceIdentity = {
  */
 const messageCursor = Type.String({ minLength: 1, maxLength: 512, pattern: '^[A-Za-z0-9_-]+$' })
 
-/** Why a session ended, when it did not simply close. */
-export const SESSION_END_REASONS = ['continued'] as const
+/** Positive end evidence. Legacy unqualified ends may describe process failure. */
+export const SESSION_END_REASONS = ['continued', 'closed'] as const
 export type SessionEndReason = (typeof SESSION_END_REASONS)[number]
 
 /**
- * `ended` fields. `end_reason` and `successor_session_id` travel together;
- * the successor is another Agent Session of the same Account.
+ * `closed` requires positive close evidence and server feature
+ * `session_confirmed_end`. `continued` requires a successor in this Account.
  */
 const endedFields = {
   state: Type.Literal('ended'),
-  end_reason: Type.Optional(Type.Literal('continued')),
+  end_reason: Type.Optional(Type.Union([Type.Literal('continued'), Type.Literal('closed')])),
   successor_session_id: Type.Optional(Type.String({ minLength: 1, maxLength: 128 })),
 } as const
 

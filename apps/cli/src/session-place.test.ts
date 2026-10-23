@@ -16,8 +16,8 @@ describe('Claude Code place', () => {
     expect(claudePlaceOf({ entrypoint: 'claude-desktop' })).toBe('claude-desktop')
     expect(claudePlaceOf({ entrypoint: 'claude-desktop-3p' })).toBe('claude-desktop')
     expect(claudePlaceOf({ entrypoint: 'claude-vscode' })).toBe('claude-ide')
-    expect(claudePlaceOf({ entrypoint: 'sdk-cli' })).toBe('headless')
-    expect(claudePlaceOf({ entrypoint: 'sdk-ts' })).toBe('headless')
+    expect(claudePlaceOf({ entrypoint: 'sdk-cli', hostName: 'zsh' })).toBe('headless')
+    expect(claudePlaceOf({ entrypoint: 'sdk-ts', hostName: 'node' })).toBe('headless')
     expect(claudePlaceOf({ entrypoint: 'sdk-ts', orcaStructured: true })).toBe('orca-chat')
     expect(claudePlaceOf({ entrypoint: 'local-agent' })).toBe('unknown')
   })
@@ -87,4 +87,14 @@ describe('a prompt in a scripted run of a conversation another process hosts', (
     expect(codexRunElsewhere(SESSION, env(), undefined, kind('exec'))).toBe(false)
     expect(asked).toEqual([5151, 5151])
   })
+})
+
+it('recognizes direct T3 SDK hosting without treating a shell script as interactive', () => {
+  expect(claudePlaceOf({ entrypoint: 'sdk-ts', hostName: 'T3 Code (Nightly)' })).toBe('t3')
+  expect(claudePlaceOf({ entrypoint: 'sdk-ts', hostName: 'T3 Code' })).toBe('t3')
+  expect(claudePlaceOf({ entrypoint: 'sdk-ts', hostName: 'zsh' })).toBe('headless')
+})
+
+it('keeps an SDK session unknown when host lookup fails', () => {
+  expect(claudePlaceOf({ entrypoint: 'sdk-ts', hostName: null })).toBe('unknown')
 })

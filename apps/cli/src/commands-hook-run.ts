@@ -1007,6 +1007,7 @@ export async function hookRunCommand(
         await holdSessionEnd(deps.env, envelope.session_id, {
           harnessPid: harness === 'claude-code' ? claudeHookSourcePid(deps.env, deps.hookPlatform ?? process.platform) : declaredHookSourcePid(deps),
           transcriptPath: envelope.transcript_path,
+          closeReason: harness === 'claude-code' ? envelope.reason : undefined,
         }) === 'held') {
       // SessionEnd is not final: the shared Codex server runs it for a reload
       // on resume, the desktop app for a respawn, a handoff starts the same
@@ -1014,7 +1015,7 @@ export async function hookRunCommand(
       // and an app unloads conversations it still lists. The hub that attends
       // it decides after the end confirmation, and cleans up only for a close.
       start({ cwd, stop_hook_active: envelope.stop_hook_active ?? null })
-      logger.info('hook.end', { hook: event, decided: false, outcome: 'held-for-confirmation' })
+      logger.info('hook.end', { hook: event, session_end_reason: envelope.reason ?? null, decided: false, outcome: 'held-for-confirmation' })
       return EXIT.ok
     }
     if (sessionEnd && (harness === 'claude-code' || harness === 'codex') && envelope.session_id !== undefined &&
@@ -1022,11 +1023,12 @@ export async function hookRunCommand(
       // The machine is going down and its hub may already be gone: the next
       // hub decides (stopped by the machine, or closed), never this hook.
       start({ cwd, stop_hook_active: envelope.stop_hook_active ?? null })
-      logger.info('hook.end', { hook: event, decided: false, outcome: 'held-for-shutdown' })
+      logger.info('hook.end', { hook: event, session_end_reason: envelope.reason ?? null, decided: false, outcome: 'held-for-shutdown' })
       return EXIT.ok
     }
     if (sessionEnd && (harness === 'claude-code' || harness === 'codex') && envelope.session_id !== undefined &&
-        deps.spawnEndConfirmation !== undefined) {
+        deps.spawnEndConfirmation !== undefined &&
+        !(harness === 'claude-code' && ['terminal', 'claude-ide'].includes(claudePlaceOf(claudePlaceSignals(deps.env, claudeHookSourcePid(deps.env, deps.hookPlatform ?? process.platform)))) && (envelope.reason === 'prompt_input_exit' || envelope.reason === 'logout'))) {
       const spawnEndConfirmation = deps.spawnEndConfirmation
       const sessionHarness = harness
       if (awaitEndConfirmation(deps.env, {
@@ -1041,7 +1043,7 @@ export async function hookRunCommand(
         // drop answers: a detached process waits out the end confirmation and
         // ends the session only if the same conversation has not come back.
         start({ cwd, stop_hook_active: envelope.stop_hook_active ?? null })
-        logger.info('hook.end', { hook: event, decided: false, outcome: 'awaiting-end-confirmation' })
+        logger.info('hook.end', { hook: event, session_end_reason: envelope.reason ?? null, decided: false, outcome: 'awaiting-end-confirmation' })
         return EXIT.ok
       }
     }
@@ -1076,7 +1078,7 @@ export async function hookRunCommand(
         : handleSessionEnd(deps.env, envelope, now())
       start({ cwd, stop_hook_active: envelope.stop_hook_active ?? null })
       if (config !== null) logConfigResolved(logger, config)
-      const data = { hook: event, decided: false, ...outcome.log }
+      const data = { hook: event, decided: false, ...outcome.log, session_end_reason: envelope.reason ?? null }
       if (configFailure === undefined) logger.info('hook.end', data)
       else {
         logger.error('hook.end', {
@@ -1472,7 +1474,7 @@ function codexWakeHasInput(deps: CommandDeps, sessionId: string): boolean {
  * place the conversation is in.
  */
 export function claudeRunElsewhere(sessionId: string, env: NodeJS.ProcessEnv, sourcePid: number | undefined): boolean {
-  if (placeReceives(claudePlaceOf(claudePlaceSignals(env)))) return false
+  if (placeReceives(claudePlaceOf(claudePlaceSignals(env, sourcePid)))) return false
   const host = readSessionIncarnation(sessionId, env)?.harness_process
   return host !== undefined && host.pid !== sourcePid
 }

@@ -1,29 +1,8 @@
 /**
- * Who ended a conversation: the User, its app, or the machine.
- *
- * A close by the User expires the conversation's questions. A stop the User
- * did not make keeps them open for their own window, and what is answered
- * meanwhile reaches the conversation when it comes back in place:
- *
- * - **the app**, stopping a conversation it still lists:
- *   - the Claude desktop app pauses or evicts it (an idle pause, its process
- *     cap, memory pressure). Its own log names the pause; without that line,
- *     or with the log unreadable, the stop is taken for the User's;
- *   - the Codex app or the Codex IDE extension unloads it while its own
- *     app-server keeps running;
- *   - an Orca chat or T3 Code stops it after 30 minutes idle while the app
- *     itself keeps running. Nothing but the timing tells this from the User
- *     closing the tab, so an earlier stop is the User's;
- *   - an Orca terminal pane loses its terminal host (Orca resumes it in the
- *     same pane when the User opens the tab); a pane the User closes leaves
- *     the host running.
- * - **the machine**: a shutdown, restart, crash or power loss. Recognised by a
- *   different boot at the next start, with the end still pending, never
- *   reported, or recorded after the machine said it was going down.
- *
- * Anything not positively attributed to the app or the machine is the User's
- * close: a missed keep can be asked again, a missed expiry leaves a stale
- * question on the phone.
+ * Positive close evidence is required to discard waiting work. Process loss,
+ * missing or unreadable files, and idle timing cannot prove a User close.
+ * Unconfirmed stops use the existing stopped-session path; it may end only
+ * after nothing waits, or after explicit archival/continuation evidence.
  */
 import { closeSync, openSync, readdirSync, readFileSync, readSync, statSync } from 'node:fs'
 import path from 'node:path'
@@ -44,7 +23,7 @@ const DESKTOP_RECORD_SCAN_LIMIT = 5_000
  */
 export const APP_IDLE_STOP_MS = 30 * 60_000
 
-export type AppStopReason = 'desktop-paused' | 'app-unloaded' | 'ide-unloaded' | 'idle-stopped' | 'terminal-host-died'
+export type AppStopReason = 'desktop-paused' | 'app-unloaded' | 'ide-unloaded' | 'idle-stopped' | 'terminal-host-died' | 'unconfirmed-stop'
 
 export type CloseVerdict = { cause: 'app'; reason: AppStopReason } | { cause: 'user'; reason: string }
 
@@ -58,15 +37,15 @@ export type Recorded = 'alive' | 'gone' | null
  */
 function appIdleStop(place: SessionPlace, hostApp: Recorded, idleMs: number | null): CloseVerdict | null {
   if (place !== 'orca-chat' && place !== 't3') return null
-  if (hostApp !== 'alive') return { cause: 'user', reason: 'app-quit' }
-  if (idleMs === null || idleMs < APP_IDLE_STOP_MS) return { cause: 'user', reason: 'closed-in-app' }
+  if (hostApp !== 'alive') return { cause: 'app', reason: 'unconfirmed-stop' }
+  if (idleMs === null || idleMs < APP_IDLE_STOP_MS) return { cause: 'app', reason: 'unconfirmed-stop' }
   return { cause: 'app', reason: 'idle-stopped' }
 }
 
-/** An Orca pane's terminal host: gone means Orca lost the pane's terminal, alive means the User closed the pane. */
+/** Losing a pane host explains a stop; a surviving host does not prove a close. */
 function terminalHostVerdict(terminalHost: Recorded | undefined): CloseVerdict | null {
   if (terminalHost === 'gone') return { cause: 'app', reason: 'terminal-host-died' }
-  if (terminalHost === 'alive') return { cause: 'user', reason: 'pane-closed' }
+  if (terminalHost === 'alive') return { cause: 'app', reason: 'unconfirmed-stop' }
   return null
 }
 
@@ -94,20 +73,21 @@ export interface ClaudeEndEvidence {
 
 /** The verdict for one end the confirmation did not cancel. */
 export function classifyClaudeEnd(evidence: ClaudeEndEvidence): CloseVerdict {
-  if (evidence.transcript === 'missing') return { cause: 'user', reason: 'transcript-missing' }
+  if (evidence.place === 'headless') return { cause: 'user', reason: 'run-ended' }
+  if (evidence.transcript === 'missing') return { cause: 'app', reason: 'unconfirmed-stop' }
   const idle = appIdleStop(evidence.place, evidence.hostApp ?? null, evidence.idleMs ?? null)
   if (idle !== null) return idle
   const pane = evidence.place === 'terminal' || evidence.place === 'unreported' ? terminalHostVerdict(evidence.terminalHost) : null
   if (pane !== null) return pane
-  if (evidence.place !== 'claude-desktop') return { cause: 'user', reason: 'closed' }
+  if (evidence.place !== 'claude-desktop') return { cause: 'app', reason: 'unconfirmed-stop' }
   const desktop = evidence.desktop
-  if (desktop === undefined || !desktop.appAlive) return { cause: 'user', reason: 'app-quit' }
-  if (desktop.record === 'missing') return { cause: 'user', reason: 'deleted' }
-  if (desktop.record === 'unreadable') return { cause: 'user', reason: 'record-unreadable' }
+  if (desktop === undefined || !desktop.appAlive) return { cause: 'app', reason: 'unconfirmed-stop' }
+  if (desktop.record === 'missing') return { cause: 'app', reason: 'unconfirmed-stop' }
+  if (desktop.record === 'unreadable') return { cause: 'app', reason: 'unconfirmed-stop' }
   if (desktop.record.archived) return { cause: 'user', reason: 'archived' }
   // The Stop button and the app's own pause both leave the app running and
   // the conversation listed: only the app's log tells them apart.
-  if (!desktop.pauseLogged) return { cause: 'user', reason: 'stopped-in-app' }
+  if (!desktop.pauseLogged) return { cause: 'app', reason: 'unconfirmed-stop' }
   return { cause: 'app', reason: 'desktop-paused' }
 }
 
@@ -128,34 +108,21 @@ export interface CodexEndEvidence {
   terminalHost: Recorded
 }
 
-/**
- * The verdict for one Codex end the confirmation did not cancel (a reload in
- * place cancels it earlier). In order:
- * 1. archived or deleted (the rollout moved or is gone): closed;
- * 2. a scripted run's end: closed;
- * 3. an Orca chat or T3 Code: the 30-minute idle stop while the app runs is
- *    the app's; any other stop there (an archive, a closed tab, a quit) the User's;
- * 4. an Orca terminal pane whose terminal host died: the app's; one whose
- *    host still runs was closed by the User;
- * 5. the host gone: closed (a terminal closed, the app quit, a crash);
- * 6. a thread the Codex app or IDE extension started, unloaded by that
- *    client's own app-server while it runs: the app's;
- * 7. anything else, including evidence that cannot be read: closed.
- */
+/** Archive and scripted completion are positive evidence; other losses are stops. */
 export function classifyCodexEnd(evidence: CodexEndEvidence): CloseVerdict {
   if (evidence.rollout === 'archived') return { cause: 'user', reason: 'archived' }
-  if (evidence.rollout === 'missing') return { cause: 'user', reason: 'deleted' }
-  if (evidence.rollout === 'unknown') return { cause: 'user', reason: 'rollout-unreadable' }
+  if (evidence.rollout === 'missing') return { cause: 'app', reason: 'unconfirmed-stop' }
+  if (evidence.rollout === 'unknown') return { cause: 'app', reason: 'unconfirmed-stop' }
   if (evidence.place === 'headless') return { cause: 'user', reason: 'run-ended' }
   const idle = appIdleStop(evidence.place, evidence.hostApp, evidence.idleMs)
   if (idle !== null) return idle
   if (evidence.host === 'gone') {
     const pane = evidence.place === 'terminal' ? terminalHostVerdict(evidence.terminalHost) : null
-    return pane ?? { cause: 'user', reason: 'harness-gone' }
+    return pane ?? { cause: 'app', reason: 'unconfirmed-stop' }
   }
   const surface = codexAppSurface(evidence.originator)
   if (surface !== null && evidence.hostKind === 'app-server') return { cause: 'app', reason: surface === 'app' ? 'app-unloaded' : 'ide-unloaded' }
-  return { cause: 'user', reason: 'closed' }
+  return { cause: 'app', reason: 'unconfirmed-stop' }
 }
 
 /**

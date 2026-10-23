@@ -16,12 +16,11 @@
  * all the same, so this process hands the candidate to it again and never
  * decides an end a hub holds.
  *
- * A signal that cannot be read counts as no restart: where nothing is
- * readable (a Codex writer lock on Windows) the session ends after the
- * confirmation, as it did at once before. A candidate whose process died is
+ * Missing restart evidence never proves a close. Waiting work survives an
+ * unreadable signal or a failed confirmation process. A candidate whose process died is
  * resolved by the next one, or by daily maintenance: late, never early.
  */
-import { readdirSync, readFileSync, rmSync } from 'node:fs'
+import { existsSync, readdirSync, readFileSync, rmSync } from 'node:fs'
 import path from 'node:path'
 import { atomicWriteFileSync } from './atomic-file.js'
 import { claudeDescriptorDir, parseDescriptor } from './claude-wake.js'
@@ -35,7 +34,7 @@ import {
   endCandidatesDir,
   lifecycleStamp,
   readSessionIncarnation,
-  readSessionState,
+  readSessionStateForEnd,
   sessionStatePath,
   withdrawEndCandidate,
   type LifecycleStamp,
@@ -144,7 +143,7 @@ export function openEndCandidate(env: NodeJS.ProcessEnv, details: {
   endingLease: DeliveryLease | null
 }, now: number): EndCandidate | null {
   return withFileLock(`${sessionStatePath(details.sessionId, env)}.lock`, () => {
-    if (!closeDiscardsWork(readSessionState(details.sessionId, env))) return null
+    if (!closeDiscardsWork(readSessionStateForEnd(details.sessionId, env))) return null
     const candidate: EndCandidate = {
       sessionId: details.sessionId,
       harness: details.harness,
@@ -163,8 +162,7 @@ export function openEndCandidate(env: NodeJS.ProcessEnv, details: {
 
 /**
  * Hand a SessionEnd to the end confirmation: open its candidate and start the
- * detached process. False when there is nothing to wait for or the process
- * could not start; the caller then ends the session at once.
+ * detached process. False only when nothing waits; failures preserve work.
  */
 export function awaitEndConfirmation(env: NodeJS.ProcessEnv, details: Parameters<typeof openEndCandidate>[1],
   now: number, launch: () => void): boolean {
@@ -172,15 +170,16 @@ export function awaitEndConfirmation(env: NodeJS.ProcessEnv, details: Parameters
   try {
     candidate = openEndCandidate(env, details, now)
   } catch {
-    return false
+    // A failed persistence attempt proves no close. Never fall into cleanup.
+    return true
   }
   if (candidate === null) return false
   try {
     launch()
     return true
   } catch {
-    withdrawEndCandidate(details.sessionId, env, candidate.since)
-    return false
+    // The next maintenance pass can resolve the durable candidate.
+    return true
   }
 }
 
@@ -263,6 +262,8 @@ async function resolveEndCandidate(deps: CommandDeps, candidate: EndCandidate, s
   }
   // The machine is going down: whoever runs next decides.
   if ((seams.shutdownUnderway ?? shutdownUnderway)(env)) return log('deferred', { reason: 'shutdown-in-progress' })
+  if (!existsSync(endCandidatePath(candidate.sessionId, env))) return log('superseded')
+  if (closeDiscardsWork(readSessionStateForEnd(candidate.sessionId, env))) return log('deferred', { reason: 'close-unconfirmed' })
   const outcome = handleSessionEnd(env, { session_id: candidate.sessionId, ...(candidate.cwd === null ? {} : { cwd: candidate.cwd }) },
     (deps.now ?? Date.now)(), candidate.since)
   const result = outcome.log ?? {}

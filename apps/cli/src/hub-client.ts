@@ -208,11 +208,12 @@ export async function notifyHubSessionEnded(env: NodeJS.ProcessEnv, sessionId: s
  * keep open.
  */
 export async function holdSessionEnd(env: NodeJS.ProcessEnv, sessionId: string,
-  details: { harnessPid?: number | undefined; transcriptPath?: string | undefined } = {}, timeoutMs = 800): Promise<'held' | 'refused' | 'unreachable'> {
+  details: { harnessPid?: number | undefined; transcriptPath?: string | undefined; closeReason?: string | undefined } = {}, timeoutMs = 800): Promise<'held' | 'refused' | 'unreachable'> {
   if (!hubSupported()) return 'unreachable'
   const reply = await requestHub(env, { type: 'session-end-candidate', session_id: sessionId,
     ...(details.harnessPid === undefined ? {} : { harness_pid: details.harnessPid }),
-    ...(details.transcriptPath === undefined ? {} : { transcript_path: details.transcriptPath }) }, { timeoutMs })
+    ...(details.transcriptPath === undefined ? {} : { transcript_path: details.transcriptPath }),
+    ...(details.closeReason === undefined ? {} : { close_reason: details.closeReason }) }, { timeoutMs })
   if (reply === null) return 'unreachable'
   return reply['type'] === 'ok' && reply['held'] === true ? 'held' : 'refused'
 }

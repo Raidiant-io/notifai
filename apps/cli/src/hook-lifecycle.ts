@@ -2741,7 +2741,8 @@ export function handleSessionEnd(
 }
 
 /** Whether closing this session now would expire or drop anything. */
-export function closeDiscardsWork(state: SessionState): boolean {
+export function closeDiscardsWork(state: SessionState | null): boolean {
+  if (state === null) return true
   return CLOSED_SESSION_DROPS.some((field) => {
     const value = state[field]
     return value !== undefined && (!Array.isArray(value) || value.length > 0)

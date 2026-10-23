@@ -144,7 +144,9 @@ export class SessionLease {
    * `ended` is always worth sending (the service fences it), a withdrawal only
    * from a generation this hub held.
    */
-  finalEntry(sessionId: string): AttendanceBatchEntryT | null {
+  confirmedEnd = false
+
+  finalEntry(sessionId: string, confirmedEnd = false): AttendanceBatchEntryT | null {
     if (this.final === null) return null
     if (this.final === 'withdrawn' && this.generation === null) return null
     return {
@@ -152,7 +154,8 @@ export class SessionLease {
       incarnation: this.incarnation,
       ...(this.generation === null ? {} : { generation: this.generation }),
       state: this.final,
-      ...(this.final === 'ended' && this.successor !== null ? { end_reason: 'continued' as const, successor_session_id: this.successor } : {}),
+      ...(this.final === 'ended' && this.successor !== null ? { end_reason: 'continued' as const, successor_session_id: this.successor }
+        : this.final === 'ended' && confirmedEnd && this.confirmedEnd ? { end_reason: 'closed' as const } : {}),
     } as AttendanceBatchEntryT
   }
 

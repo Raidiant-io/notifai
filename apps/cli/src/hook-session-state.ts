@@ -462,18 +462,20 @@ export function refreshSessionMarkers(
 }
 
 export function readSessionState(sessionId: string, env: NodeJS.ProcessEnv): SessionState {
-  const file = sessionStatePath(sessionId, env)
-  if (!existsSync(file)) return {}
+  return readSessionStateForEnd(sessionId, env) ?? {}
+}
+
+/** Closing distinguishes no saved work (ENOENT) from unreadable or corrupt evidence. */
+export function readSessionStateForEnd(sessionId: string, env: NodeJS.ProcessEnv): SessionState | null {
   try {
-    const parsed: unknown = JSON.parse(readFileSync(file, 'utf8'))
-    if (typeof parsed !== 'object' || parsed === null) return {}
+    const parsed: unknown = JSON.parse(readFileSync(sessionStatePath(sessionId, env), 'utf8'))
+    if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) return null
     const state = { ...(parsed as SessionState & { session_id?: unknown }) }
     delete state.session_id
     return state
-  } catch {
-    // A corrupt marker must not wedge the harness; treat it as "no evidence",
-    // which fails closed onto ordinary terminal behaviour.
-    return {}
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return {}
+    return null
   }
 }
 
