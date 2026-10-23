@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "behavior_digest": "sha256:8aa1ac3e27c7f9edcd3dfb339d04cc94dbc33e892568c24bb257f77e1e2e9a7d",
+  "behavior_digest": "sha256:afe3ca77ee18a7679791016be5c79e3cd2805359ce906a81038a86a8738dce5c",
   "outcome": "guidance-updated",
   "surfaces_reviewed": [
     "lifecycle-hooks",
@@ -9,5 +9,5 @@
     "cli-readiness",
     "domain-terms"
   ],
-  "reason": "Reviewed lifecycle, skill, setup, readiness and domain surfaces. Receipts store only validated bounded digests and generations. Change text comes from manifest-verified ordered release notes and freshly resolved escaped User topics, bounded to 800 UTF-8 bytes with full-history and topic pointers. Generation fencing rejects stale claims and reads. Release tooling requires an authored note for the exact shipped guidance digest, including reorders. Waiting question routing is restored to main; no headless exception is added. Answer custody, work-before-reporting, --resumes and the shared skill lifetime rule remain. The skill and Hermes budgets are unchanged. Release-authored catalog text participates in this review hash, so changing a note invalidates review too. CLI reads capture their generation and exact printed topics before output, rejecting a superseded read and never marking an unseen concurrent edit read."
+  "reason": "Reviewed lifecycle, skill, harness recovery, CLI guidance and domain terms. The aggregate read digest remains authoritative with bounded optional topic history. Claude session lookup uses its cwd project with an uncapped cheap fallback, never folder count as child evidence. Reload notices select the token remedy where needed. Ownership and acknowledgement wording names work the receiving Agent Session does itself; ordinary answer ownership appears once per injection. Cursor recovery and superseded-read diagnostics are explicit. No headless special route or parent handle is added."
 }

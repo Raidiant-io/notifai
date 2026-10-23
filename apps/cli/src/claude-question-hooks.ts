@@ -69,7 +69,7 @@ import { resolveDraftInvocation } from './commands-send-support.js'
 import { loadConfig } from './config.js'
 import { projectBinding, projectDisabled } from './project-enablement.js'
 import type { ServiceIdentity } from './credentials.js'
-import { acknowledgementContext, answersContext, askerContext } from './hook-acknowledgements.js'
+import { acknowledgementContext, answerResumptionContext, answersContext, askerContext } from './hook-acknowledgements.js'
 import { registerQuestion, type RegisteredQuestion } from './hook-lifecycle.js'
 import { dropPendingQuestion, questionSubmissionAttempted } from './hook-question-state.js'
 import { parkForRetirement, retireQueuedQuestions } from './hook-question-retirement.js'
@@ -538,7 +538,7 @@ function pickerPresentation(input: {
               answers,
               context: answersContext(selected, pendingList(latest).length),
               receipt: (skipped.length === 0 ? '' : ` The user left ${skipped.map(quoted).join(' and ')} unanswered.`) +
-                selected.map(entry => askerContext(entry.pending)).join('') + acknowledgementContext(selected) + TRANSPORT_LIMIT,
+                selected.map(entry => askerContext(entry.pending)).join('') + answerResumptionContext(selected) + acknowledgementContext(selected) + TRANSPORT_LIMIT,
               at: input.wall(),
             } }
           })

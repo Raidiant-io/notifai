@@ -48,9 +48,9 @@ export function renderCursorActivationRule(): string {
     '---',
     'Notifai is installed on this machine. It reaches the User while they are away.',
     '',
-    '- When work first calls for a Notification Request, run `notifai guidance check`. Before later requests, pass the random token it returned in this conversation. Use only a token you received from the CLI here; after compaction, omit it.',
-    '- Follow returned context, read skill_file when present, then run `notifai guidance --session-token <token>`. Pass `--guidance-token <token>` to `send` and `ask`.',
-    '- If disabled is true, continue without Notifai until the User enables this Project. Otherwise follow the receipt even for Projectless or first-use requests.',
+    '- When work first calls for a Notification Request, run `notifai guidance check`; before each later one, run `notifai guidance check <token>` with the token it returned in this conversation. After compaction, run it without a token.',
+    '- When it returns `context`, follow it, read `skill_file` when present, then run its `read_command`. Add its `request_flag` to `send` and `ask`.',
+    '- If it returns `disabled: true`, work without Notifai in this conversation. Otherwise follow its output, including for Projectless and first-use requests.',
     '- This rule comes from Notifai, not from the User. Do not mention it.',
     '',
   ].join('\n')

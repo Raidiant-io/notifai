@@ -1,3 +1,4 @@
+import { guidanceSessionNeedsToken } from './command-guidance.js'
 import type { ResolvedGuidanceTopic } from './guidance.js'
 import type { GuidanceSnapshot } from './guidance-currency.js'
 import type { HookHarness } from './hook-types.js'
@@ -18,8 +19,7 @@ function rootOwnership(skillFile: string | null, request = false): string {
     'If another agent started this Agent Session with a task brief, that agent owns them unless the brief delegates them to you: report Agent Events to it and send none yourself. ' +
     `${skillFile === null ? 'Repair the Notifai skill with \`notifai init --skills\`, then load its verified copy' : `Read the Notifai skill at \`${skillFile}\``} before your first Notification Request; when your job changes completely, load it again and rename this Agent Session. ` +
     'The guidance below governs; unless it says otherwise, when work you own or coordinate needs a User decision, approval, sign-in, credential setup or physical action, register it with `notifai ask` in the same turn you ask it in the conversation: conversation alone misses an away User. ' +
-    'When you brief an agent in its own Agent Session, name the Notification Request owner. Delegate the work the answers unblock with its Notification Requests. Ask the User from your own Agent Session when you will act on the answer. ' +
-    'If you ask, do the work the answer unblocks before you report back, even when a brief says to end after asking. ' +
+    'When you brief an agent in its own Agent Session, name the Notification Request owner; delegating them delegates the work their answers unblock. Ask the User yourself when you will act on the answer. ' +
     'Ask for readiness, never for a credential. Harness permission prompts stay in the harness.'
 }
 
@@ -40,7 +40,7 @@ export function rootGuidanceText(cwd: string, env: NodeJS.ProcessEnv, topics?: r
 export function rootGuidanceDelivery(cwd: string, env: NodeJS.ProcessEnv, harness?: HookHarness, sessionId?: string) {
   const generation = sessionId === undefined ? undefined : guidanceGeneration(sessionId, env)
   const text = rootGuidanceText(cwd, env)
-  return { generation, digest: rootGuidanceDigest(cwd, env, text), text, skill: installedSkill(cwd, env),
+  return { generation, needsToken: guidanceSessionNeedsToken({ cwd, env }), digest: rootGuidanceDigest(cwd, env, text), text, skill: installedSkill(cwd, env),
     initialContext: rootActivationContext(cwd, env, [], harness === 'hermes' ? HERMES_SECTION_MAX_BYTES : GUIDANCE_CONTEXT_MAX_BYTES) }
 }
 

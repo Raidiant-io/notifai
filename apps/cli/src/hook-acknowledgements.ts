@@ -123,14 +123,14 @@ function answerContext(answered: AnsweredPending): string {
 export function askerContext(pending: PendingQuestion): string {
   const asker = pending.asked_by
   const resumes = pending.resumes === undefined ? '' : ` This answer resumes: ${quoted(pending.resumes)}.`
-  if (asker === undefined) return resumes + ` ${ANSWER_RESUMPTION_CONTEXT}`
+  if (asker === undefined) return resumes
   const kind = asker.agent_type === undefined ? 'subagent' : `${quoted(asker.agent_type)} subagent`
   const described = asker.description === undefined ? '' : ` ${quoted(asker.description)}`
   const offered = (pending.questions ?? []).map((entry) =>
     `${quoted(entry.text)}${(entry.choices?.length ?? 0) === 0 ? ' (typed answer)' : `: ${entry.choices!.map((choice) => quoted(choice.label)).join(' / ')}`}`)
   return resumes + ` Your ${kind}${described} (agent ${asker.agent_id}) asked it for this Agent Session` +
     `${offered.length === 0 ? '' : `, offering ${offered.join('; ')}`}. ` +
-    'Send it this answer if it can still take messages and say so in your acknowledgement; otherwise do that work yourself.'
+    'Send it this answer if it can still take messages and say so in your acknowledgement; otherwise do the work it unblocks yourself.'
 }
 
 export function acknowledgementContext(answered: AnsweredPending[]): string {
@@ -185,12 +185,16 @@ function acknowledgementList(lead: string, owed: readonly ListedAcknowledgement[
  * tied to the question that asked it, with a truthful note about anything
  * still waiting.
  */
+export function answerResumptionContext(answered: AnsweredPending[]): string {
+  return answered.some(entry => entry.pending.asked_by === undefined) ? ` ${ANSWER_RESUMPTION_CONTEXT}` : ''
+}
+
 export function answersContext(answered: AnsweredPending[], remaining: number): string {
   const tail =
     remaining > 0
       ? ` (${remaining} more registered question${remaining === 1 ? ' is' : 's are'} still waiting for an answer.)`
       : ''
-  const guidance = acknowledgementContext(answered) + TRANSPORT_LIMIT
+  const guidance = answerResumptionContext(answered) + acknowledgementContext(answered) + TRANSPORT_LIMIT
   if (answered.length === 1) {
     return answerContext(answered[0]!) + tail + guidance
   }

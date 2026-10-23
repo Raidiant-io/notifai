@@ -90,6 +90,7 @@ export interface GuidanceDelivery {
   skill?: ShippedSkill
   /** Generation observed before computing this claim's content. */
   generation?: number | undefined
+  needsToken?: boolean
   initialContext?: string | undefined
 }
 
@@ -123,19 +124,20 @@ function changesSince(prior: GuidanceReceipt, current?: GuidanceSnapshot): strin
 }
 
 /** Load through native skills first, with the same verified pointer as start. */
-function reload(skill: ShippedSkill): string {
-  return `load the Notifai skill again${skill.file === null ? ' (repair it with `notifai init --skills` if missing)' : ` (use your Skill tool, or read \`${skill.file}\` again)`} and run \`notifai guidance\``
+function reload(skill: ShippedSkill, needsToken = false): string {
+  const command = needsToken ? 'notifai guidance check' : 'notifai guidance'
+  return `load the Notifai skill again${skill.file === null ? ' (repair it with `notifai init --skills` if missing)' : ` (from \`${skill.file}\`)`} and run \`${command}\`${needsToken ? ' and follow its output' : ''}`
 }
 
 /** Told once at a model-visible boundary, with changed lines before the pointer. */
-export function guidanceChangedNotice(skill: ShippedSkill = shippedSkill(), changes?: string): string {
+export function guidanceChangedNotice(skill: ShippedSkill = shippedSkill(), changes?: string, needsToken = false): string {
   return ["Notifai's guidance changed after this Agent Session read it.", changes,
-    `Before your next Notification Request, ${reload(skill)}; follow them over what you read earlier.`].filter(Boolean).join('\n\n')
+    `Before your next Notification Request, ${reload(skill, needsToken)}; follow them over what you read earlier.`].filter(Boolean).join('\n\n')
 }
 
-export function compactedNotice(skill: ShippedSkill = shippedSkill(), changes?: string): string {
+export function compactedNotice(skill: ShippedSkill = shippedSkill(), changes?: string, needsToken = false): string {
   return ['This conversation was compacted.', changes,
-    `Before your next Notification Request, ${reload(skill)}.`].filter(Boolean).join('\n\n')
+    `Before your next Notification Request, ${reload(skill, needsToken)}.`].filter(Boolean).join('\n\n')
 }
 
 function recordFile(sessionId: string, env: NodeJS.ProcessEnv): string {
@@ -216,11 +218,11 @@ export function claimGuidanceChange(sessionId: string, env: NodeJS.ProcessEnv, d
       if (options.compacted) {
         delete prior.read
         save(file, { ...prior, digest, generation: generation + 1 })
-        return compactedNotice(options.skill, changes)
+        return compactedNotice(options.skill, changes, options.needsToken)
       }
       if (prior.digest === digest || prior.digest === GUIDANCE_NOT_GIVEN || (prior.digest === undefined && !started)) return undefined
       save(file, { ...prior, digest, generation: generation + 1 })
-      return prior.digest === undefined ? options.initialContext : guidanceChangedNotice(options.skill, changes)
+      return prior.digest === undefined ? options.initialContext : guidanceChangedNotice(options.skill, changes, options.needsToken)
     })
   } catch { return undefined }
 }
@@ -273,7 +275,7 @@ export function recordGuidanceRead(sessionId: string, env: NodeJS.ProcessEnv, di
       if (generation !== (prior.generation ?? 0)) return false
       save(file, { ...prior, read: digest, generation: (prior.generation ?? 0) + 1,
         ...(text?.release === undefined ? {} : { readRelease: text.release }),
-        ...(text === undefined ? {} : { readTopics: Object.fromEntries(text.topics.map(topic => [hash(topic.name), topic.digest])) }),
+        ...(text === undefined ? {} : { readTopics: Object.fromEntries(text.topics.slice(0, 128).map(topic => [hash(topic.name), topic.digest])) }),
       })
       return true
     })

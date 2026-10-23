@@ -6,10 +6,10 @@ import { resolveGuidance } from './guidance.js'
 import { renderGuidance } from './guidance-render.js'
 import { rootGuidanceDigest, rootGuidanceText } from './session-activation.js'
 
-export function guidanceSessionNeedsToken(deps: CommandDeps): boolean {
+export function guidanceSessionNeedsToken(deps: Pick<CommandDeps, 'cwd' | 'env' | 'now'>): boolean {
   const active = sourceContextHarnessSession(deps.env, deps.cwd, (deps.now ?? Date.now)())
   return active?.harness === 'cursor' || (active?.harness === 'claude-code' && active.sessionId !== undefined &&
-    claudeSessionHasSubagents(active.sessionId, deps.env))
+    claudeSessionHasSubagents(active.sessionId, deps.env, deps.cwd))
 }
 
 export function commandGuidanceOwner(deps: CommandDeps): string {
@@ -41,7 +41,10 @@ export function recordCommandGuidanceRead(deps: CommandDeps, read: ReturnType<ty
     deps.io.err('This shell cannot identify one conversation. Run `notifai guidance check`, then its read_command; pass the returned --guidance-token on Notification Requests.')
     return false
   }
-  return session === null || recordGuidanceRead(session, deps.env, read.digest, read.text, read.generation)
+  if (session === null) return true
+  const recorded = recordGuidanceRead(session, deps.env, read.digest, read.text, read.generation)
+  if (!recorded) deps.io.err('Guidance changed while this read printed, so it was not recorded. Run `notifai guidance` again.')
+  return recorded
 }
 
 /** Before any upload, registration or send. Notices cannot satisfy this check. */

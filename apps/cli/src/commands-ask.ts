@@ -528,7 +528,7 @@ function codexCardAsks(deps: CommandDeps, sessionId: string): boolean {
   return owner !== null && codexCardToolOffered(readSessionState(sessionId, deps.env), owner, sessionId, deps.env)
 }
 
-const KEEP_SESSION_OPEN = 'Your assignment is incomplete while your question waits. Keep this Agent Session open until you do the work the answer unblocks, or the question closes or expires; report that you are waiting, never done.'
+const KEEP_SESSION_OPEN = 'Your assignment is incomplete while your question waits: report it as waiting, never done. Closing, clearing or switching this Agent Session ends the question, so keep it open until you have done the work the answer unblocks.'
 
 const ROUTE_NEUTRAL = 'Never say where the answer must arrive; it returns by whatever route the harness supports.'
 
@@ -548,11 +548,11 @@ const END_TURN = 'Ask it in the conversation, say what each answer will make you
  * it; it hands the question to its parent and ends its turn. Plain `ask`,
  * `ask --wait` and a duplicate all say the same.
  */
-const WORKER_ASK = 'You are a subagent: this question belongs to the root Agent Session that started you, and its answer arrives there, never to you. Do not ask it in your own conversation or wait for it. Tell your parent the question id and what each answer will change, then end your turn.'
+const WORKER_ASK = 'You are a subagent: this question belongs to the root Agent Session that started you, and its answer arrives there, never to you. Do not ask it in your own conversation or wait for it. Tell your parent the question id, what each answer will change, and that your assignment is waiting on it, not done; then end your turn.'
 
 const WORKER_KEEP_ROOT_OPEN = 'The root Agent Session must stay open while the question waits: closing, clearing or switching it ends the question, so never suggest that.'
 
-const WORKER_ON_ANSWER = 'The root Agent Session receives the answer with your question and identity. It passes the answer back to you if you can still take messages, so you finish the work; otherwise it acknowledges and does that work itself.'
+const WORKER_ON_ANSWER = 'The root Agent Session receives the answer with your question and identity, acknowledges it, and passes it back to you if you can still take messages, so you finish the work; otherwise it does that work itself.'
 
 function workerAnsweredOutside(questionId: string): string {
   return `If the User answers in the conversation instead, the root retires the question with \`notifai close ${questionId}\`; include that in your report.`
@@ -897,7 +897,7 @@ function persistRegisteredQuestion(
     if (entry.choices !== undefined) {
       for (const choice of entry.choices) {
         deps.io.out(
-          `- ${questionPrefix}If the answer is ${JSON.stringify(choice.label)}: state the unblocked work you will do yourself before reporting; reporting the answer is not that work.`,
+          `- ${questionPrefix}If the answer is ${JSON.stringify(choice.label)}: state the work you will do yourself.`,
         )
       }
       deps.io.out(
@@ -910,7 +910,7 @@ function persistRegisteredQuestion(
     }
   }
   deps.io.out(
-    'The answer comes back to this Agent Session. Do the work it unblocks here before reporting; reporting the answer is not that work. Describe that work in --resumes. Do not ask the user to confirm again.',
+    'The answer comes back to this Agent Session. Do the work it unblocks here before reporting; reporting the answer is not that work. Do not ask the user to confirm again.',
   )
   deps.io.out(
     'A Notifai answer cannot answer a harness permission prompt; leave those to the harness and user.',

@@ -18,7 +18,7 @@
  * the same question, a format this does not read), nobody is named and the
  * question reads as the root's own.
  */
-import { closeSync, fstatSync, openSync, readdirSync, readFileSync, readSync } from 'node:fs'
+import { closeSync, existsSync, fstatSync, openSync, readdirSync, readFileSync, readSync } from 'node:fs'
 import path from 'node:path'
 import { claudeDescriptorDir } from './claude-wake.js'
 import type { QuestionAsker } from './hook-types.js'
@@ -127,16 +127,23 @@ export function claudeAskingSubagent(sessionId: string, env: NodeJS.ProcessEnv, 
 
 /** Native children share their root's environment. Once one exists, a shell's
  * session id alone cannot identify which conversation read guidance. */
-export function claudeSessionHasSubagents(sessionId: string, env: NodeJS.ProcessEnv): boolean {
+export function claudeSessionHasSubagents(sessionId: string, env: NodeJS.ProcessEnv, cwd?: string): boolean {
   if (!/^[0-9A-Za-z-]{1,128}$/.test(sessionId)) return true
   const projects = path.join(path.dirname(claudeDescriptorDir(env)), 'projects')
-  let folders: string[]
-  try { folders = readdirSync(projects) } catch (error) { return (error as NodeJS.ErrnoException).code !== 'ENOENT' }
-  if (folders.length > 256) return true
-  return folders.some(folder => {
+  const hasSubagents = (root: string): boolean => {
     try {
-      return readdirSync(path.join(projects, folder, sessionId, 'subagents'))
+      return readdirSync(path.join(root, sessionId, 'subagents'))
         .some(name => /^agent-.+\.(jsonl|meta\.json)$/.test(name))
     } catch (error) { return (error as NodeJS.ErrnoException).code !== 'ENOENT' }
-  })
+  }
+  // Claude Code encodes every non-alphanumeric cwd character as a dash.
+  // Confirm the session transcript before trusting cwd: shells can change it.
+  if (cwd !== undefined) {
+    const root = path.join(projects, cwd.replace(/[^a-zA-Z0-9]/g, '-'))
+    if (existsSync(path.join(root, `${sessionId}.jsonl`))) return hasSubagents(root)
+  }
+  let folders: string[]
+  try { folders = readdirSync(projects) } catch (error) { return (error as NodeJS.ErrnoException).code !== 'ENOENT' }
+  // Probe only this session's subagent directory, never unrelated transcripts.
+  return folders.some(folder => hasSubagents(path.join(projects, folder)))
 }

@@ -29,7 +29,7 @@ not notify. A worker explicitly delegated Notification Requests in its prompt
 loads the skill and guidance as their owner. Notifai cannot read the prompt, so
 only that delegation decides whether a worker asks, as on Claude Code.
 
-A subagent's question and answer belong to the root; follow what `ask` prints.
+A subagent's question registers on the root Agent Session, and its answer arrives there; follow what `ask` prints.
 
 ## Questions
 

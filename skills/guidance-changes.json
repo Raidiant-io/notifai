@@ -1,13 +1,13 @@
 {
-  "current": "80b3aa0ad8cd18beabf716cce700a4cdcd0a86ff410a3529a5962eeec9273012",
+  "current": "874bc6faffe7993da74e86c63cab9ff72fec1891885f3340ccee5674fc375f99",
   "releases": [
     {
       "digest": "3e47b01bc6bbfb43e910c660b9964fab6459d75148c3c02dcbcd0be64cfb2963",
-      "note": "Delegating Notification Requests delegates the work their answers unblock: keep the assignment pending, do that work before reporting, and use --resumes to name it. Reload the full skill and run notifai guidance after a guidance change or compaction. Change notices now use release-authored notes and fresh User topics; local receipts never supply instruction text. ask --wait keeps its existing routing."
+      "note": "A worker delegated Notification Requests also owns the work their answers unblock: report it as waiting, never done, until that work is done. Name that work with `ask --resumes`. After a guidance change or compaction, load the skill again and run `notifai guidance`."
     },
     {
-      "digest": "80b3aa0ad8cd18beabf716cce700a4cdcd0a86ff410a3529a5962eeec9273012",
-      "note": "A guidance read records only the topics it printed. If guidance changes while it prints or another read supersedes it, read the current guidance before a Notification Request."
+      "digest": "874bc6faffe7993da74e86c63cab9ff72fec1891885f3340ccee5674fc375f99",
+      "note": "If `notifai guidance` reports that guidance changed while it printed, run it again before your next Notification Request."
     }
   ]
 }

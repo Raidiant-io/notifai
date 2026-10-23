@@ -9,7 +9,7 @@ import { currentCommandGuidance } from './command-guidance.js'
 import { guidanceCheckCommand, guidanceShowCommand } from './commands-guidance.js'
 import type { CommandDeps } from './commands-core.js'
 import * as integrity from './skill-integrity.js'
-import { rootGuidanceDigest, rootGuidanceText } from './session-activation.js'
+import { rootGuidanceDelivery, rootGuidanceDigest, rootGuidanceText } from './session-activation.js'
 import { personalProjectGuidanceDir } from './guidance.js'
 import {
   GUIDANCE_NOT_GIVEN,
@@ -96,6 +96,30 @@ describe('what a session was given', () => {
 })
 
 describe('Notification Request currency admission', () => {
+  it('admits requests after a successful command read of 129 topics', async () => {
+    const { cwd, env } = setup()
+    env.CODEX_THREAD_ID = 'many-topics'
+    const dir = personalProjectGuidanceDir(cwd, env)
+    mkdirSync(dir, { recursive: true })
+    const defaults = rootGuidanceText(cwd, env).topics.length
+    for (let i = defaults; i < 129; i++) writeFileSync(path.join(dir, `extra-${i}.md`), `Topic ${i}`)
+    expect(rootGuidanceText(cwd, env).topics).toHaveLength(129)
+    const deps = { cwd, env, io: { out: () => undefined, err: () => undefined } } as unknown as CommandDeps
+    expect(await guidanceShowCommand(deps, {})).toBe(0)
+    expect(currentCommandGuidance(deps)).toBeNull()
+  })
+
+  it('reads Claude guidance without a token with more than 256 project folders', async () => {
+    const { cwd, env } = setup()
+    env.CLAUDECODE = '1'
+    env.CLAUDE_CODE_SESSION_ID = 'many-folders'
+    env.CLAUDE_CONFIG_DIR = path.join(env.HOME!, '.claude')
+    for (let i = 0; i < 275; i++) mkdirSync(path.join(env.CLAUDE_CONFIG_DIR, 'projects', `project-${i}`), { recursive: true })
+    const deps = { cwd, env, io: { out: () => undefined, err: () => undefined } } as unknown as CommandDeps
+    expect(await guidanceShowCommand(deps, {})).toBe(0)
+    expect(currentCommandGuidance(deps)).toBeNull()
+  })
+
   it('blocks before side effects until guidance is read, including a writing-topic or installed-copy change', async () => {
     const { cwd, env } = setup()
     env.CODEX_THREAD_ID = 'currency-session'
@@ -353,13 +377,15 @@ describe('trusted change delivery', () => {
     mkdirSync(dir, { recursive: true })
     writeFileSync(path.join(dir, 'titles.md'), '# Titles\n\nThe first rule.\n')
     let newer = ''
+    const errors: string[] = []
     const deps = { cwd, env, io: { out: () => {
       writeFileSync(path.join(dir, 'titles.md'), '# Titles\n\nThe newer rule.\n')
       newer = rootGuidanceDigest(cwd, env)
       recordGuidanceRead('updated', env, newer, rootGuidanceText(cwd, env))
-    }, err: () => undefined } } as unknown as CommandDeps
+    }, err: (line: string) => errors.push(line) } } as unknown as CommandDeps
     expect(await guidanceShowCommand(deps, {})).toBe(1)
     expect(guidanceRead('updated', env)).toBe(newer)
+    expect(errors).toContain('Guidance changed while this read printed, so it was not recorded. Run `notifai guidance` again.')
   })
 
   it('rejects an out-of-order claim and read under the generation fence', () => {
@@ -373,4 +399,19 @@ describe('trusted change delivery', () => {
     expect(recordGuidanceRead('updated', env, old, undefined, generation)).toBe(false)
     expect(guidanceGiven('updated', env)).toBe(newer)
   })
+})
+
+
+it('uses the token recovery command in a compacted shared Claude session notice', () => {
+  const { cwd, env } = setup()
+  env.CLAUDECODE = '1'
+  env.CLAUDE_CODE_SESSION_ID = 'shared-reload'
+  env.CLAUDE_CONFIG_DIR = path.join(env.HOME!, '.claude')
+  const children = path.join(env.CLAUDE_CONFIG_DIR, 'projects/p/shared-reload/subagents')
+  mkdirSync(children, { recursive: true })
+  writeFileSync(path.join(children, 'agent-worker.jsonl'), '')
+  const delivery = rootGuidanceDelivery(cwd, env, 'claude-code', 'shared-reload')
+  const notice = startingCurrency({ sessionId: 'shared-reload', env, digest: delivery.digest, compacted: true, delivery })
+  expect(notice).toContain('run `notifai guidance check` and follow its output')
+  expect(notice).not.toContain('Skill tool')
 })

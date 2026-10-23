@@ -2,7 +2,7 @@ import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { describe, expect, it } from 'vitest'
-import { claudeAskingSubagent } from './claude-subagent.js'
+import { claudeAskingSubagent, claudeSessionHasSubagents } from './claude-subagent.js'
 
 const SESSION = '3c0d5e6f-1111-4222-8333-944455556666'
 
@@ -77,5 +77,17 @@ describe('claudeAskingSubagent', () => {
     t.root(t.call('toolu_parent', './ask-headline.sh'))
     t.agent('color-worker', { finished: false }, t.call('toolu_color', "notifai ask 'Choose a color?'; sleep 60"))
     expect(claudeAskingSubagent(SESSION, t.env, ['Which headline should v2 use?'])).toBeUndefined()
+  })
+})
+
+
+describe('claudeSessionHasSubagents', () => {
+  it('uses the cwd project only when it contains the session transcript, otherwise scans', () => {
+    const t = transcripts()
+    t.root()
+    expect(claudeSessionHasSubagents(SESSION, t.env, '/work/project')).toBe(false)
+    t.agent('a1', {})
+    expect(claudeSessionHasSubagents(SESSION, t.env, '/work/project')).toBe(true)
+    expect(claudeSessionHasSubagents(SESSION, t.env, '/different/cwd')).toBe(true)
   })
 })

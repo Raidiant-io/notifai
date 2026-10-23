@@ -44,7 +44,7 @@ export function guidanceCheckCommand(deps: CommandDeps, seen?: string): number {
   const token = conversationToken(deps.env, seen, commandGuidanceOwner(deps)) ?? conversationToken(deps.env, undefined, commandGuidanceOwner(deps))
   if (token === null) { deps.io.err('Could not store the local guidance token.'); return EXIT.failed }
   const changed = guidanceRead(`conversation/${token}`, deps.env) !== digest
-  const output = changed ? requestGuidanceContext(deps.cwd, deps.env, seen === undefined ? undefined : guidanceChangedNotice(installedSkill(deps.cwd, deps.env), commandGuidanceChanges(deps, token))) : undefined
+  const output = changed ? requestGuidanceContext(deps.cwd, deps.env, seen === undefined ? undefined : guidanceChangedNotice(installedSkill(deps.cwd, deps.env), commandGuidanceChanges(deps, token), true)) : undefined
   deps.io.out(JSON.stringify({ enabled, token, read_command: `notifai guidance --session-token ${token}`, request_flag: `--guidance-token ${token}`, skill_file: installedSkill(deps.cwd, deps.env).file,
     ...(output === undefined ? {} : { context: output }) }))
   return EXIT.ok

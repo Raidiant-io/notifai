@@ -221,7 +221,7 @@ describe('opencode-question command', () => {
       acknowledgement: 'notifai acknowledge req_opencode --text <text>',
       acknowledgement_context: 'Notifai: the answer to your question came from the user\'s device, for request req_opencode. ' +
         'Before the work it causes, run `notifai acknowledge req_opencode --text <text>` with non-empty text naming the concrete ' +
-        'work this Agent Session starts now because of the reply; a bare acknowledgement is insufficient. Once a request reports recorded or ' +
+        'work this Agent Session will do itself because of the reply; a bare acknowledgement is insufficient. Once a request reports recorded or ' +
         'replayed, its acknowledgement is complete; do not repeat it for a later turn or unrelated event.',
     })
     t.send({ type: 'applied' })
