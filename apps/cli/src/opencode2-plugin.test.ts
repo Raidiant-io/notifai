@@ -76,7 +76,8 @@ process.stdin.on("data", (chunk) => {
       process.stdout.write(JSON.stringify({ type: "registered", request_id: "req_1" }) + "\\n")
       if (process.env.FAKE_MODE === "device") {
         process.stdout.write(JSON.stringify({ type: "answer", request_id: "req_1", answers: [["Blue"]],
-          acknowledgement: "notifai acknowledge req_1 --text <text>" }) + "\\n")
+          acknowledgement: "notifai acknowledge req_1 --text <text>",
+          acknowledgement_context: "OWED ACKNOWLEDGEMENT for " + frame.request.id + ": run notifai acknowledge req_1 --text <text>" }) + "\\n")
       } else if (process.env.FAKE_MODE === "expire") {
         process.stdout.write(JSON.stringify({ type: "expired", context: "EXPIRED CONTEXT" }) + "\\n")
       }
@@ -252,6 +253,17 @@ describe.skipIf(process.platform === 'win32')('the generated OpenCode 2 plugin',
     expect(t.frames()).toEqual(['form', 'opened', 'applied'])
     expect((await t.context()).join('\n')).toContain('notifai acknowledge req_1 --text <text>')
     expect((await t.context()).join('\n')).not.toContain('notifai acknowledge req_1')
+  })
+
+  it('owes each parallel form its own acknowledgement', async () => {
+    const t = await load({ mode: 'device' })
+    await t.context()
+    await Promise.all([t.call('call_a'), t.call('call_b')])
+    await t.until(() => t.frames().filter((frame) => frame === 'applied').length === 2)
+    const turn = (await t.context()).join('\n')
+    expect(turn).toContain('OWED ACKNOWLEDGEMENT for frm_call_a')
+    expect(turn).toContain('OWED ACKNOWLEDGEMENT for frm_call_b')
+    expect((await t.context()).join('\n')).not.toContain('OWED ACKNOWLEDGEMENT')
   })
 
   it('returns the device answer within a few seconds even when the native executor ignores abort', async () => {

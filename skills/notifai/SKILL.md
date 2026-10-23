@@ -124,7 +124,7 @@ config from supplying Project identity. A User-disabled Project refuses
 Name the Agent Session when the current environment exposes its exact
 identifier. Pass `--session-label`: 2-6 words about the Agent Session's job,
 never the Project, branch, status, result, identifier, hash, or filesystem
-path. A `--session-label` without an exact Agent Session is a usage error;
+path. Passing it without an exact Agent Session is a usage error;
 without that identifier, omit `--session-label` and skip renaming.
 Pass the same `--session-label` on every send and ask; to rename, use
 `notifai session rename`.

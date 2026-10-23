@@ -3,10 +3,10 @@
 // the next install; change the CLI instead, which is where the logic lives.
 import { spawn } from "node:child_process"
 
-const NOTIFAI_INTEGRATION_REVISION = "245e8aa93e889e5a3f0058a3b49f64ca088fa19a98a580f9f3a5b2481394a3b7"
+const NOTIFAI_INTEGRATION_REVISION = "a30b19502d4563ac1922d88454ae709f1a35ba33086d7c4414c7d4902d247147"
 const ADAPTER = "/home/u/.notifai/bin/notifai-hook"
 const TIMEOUT_MS = 5000
-const ADAPTER_VERSION = 15
+const ADAPTER_VERSION = 16
 const MISSING_LIFECYCLE_GUIDANCE_CONTEXT = "Notifai lifecycle guidance could not be loaded, so Project Enablement is unverified. Run `notifai doctor --json` to check setup, then `notifai guidance` before deciding whether or how to notify."
 const WORKER_ACTIVATION_CONTEXT = "Notifai worker context: report Agent Events (work finished, failed, blocked, or needing the User) to your parent, which decides what reaches the User. Send no Notification Request yourself unless your assignment delegates them to you; then load the Notifai skill and run `notifai guidance` before your first one."
 const QUESTION_JSON_SCHEMA = {"type":"object","properties":{"questions":{"type":"array","items":{"type":"object","properties":{"question":{"type":"string","description":"Complete question"},"header":{"type":"string","description":"Very short label (max 30 chars)"},"options":{"type":"array","items":{"type":"object","properties":{"label":{"type":"string","description":"Display text (1-5 words, concise)"},"description":{"type":"string","description":"Explanation of choice"}},"required":["label","description"]},"description":"Available choices"},"multiple":{"type":"boolean","description":"Allow selecting multiple choices"}},"required":["question","header","options"]},"description":"Questions to ask"}},"required":["questions"]}
@@ -160,7 +160,8 @@ export const NotifAIPlugin = async ({ directory, client }) => {
   // request: one turn can make many requests, and each used to start a CLI.
   // A User prompt clears it, so enabling a Project applies from the next one.
   const activations = new Map()
-  // An acknowledgement the agent owes for a device answer, shown once.
+  // Acknowledgements the agent owes for device answers, by session then
+  // request, each shown once: parallel forms each keep their own.
   const owedAcknowledgements = new Map()
   // OpenCode question requests whose device question is open, by request id.
   const forms = new Map()
@@ -211,20 +212,25 @@ export const NotifAIPlugin = async ({ directory, client }) => {
     form.applying = frame.answers
     // OpenCode can start the next model request before the reply call
     // returns, so the acknowledgement it owes is in place first.
-    const owed = typeof frame.acknowledgement === "string" && frame.acknowledgement.length > 0
-      ? "Notifai: the answer to your question came from the user's device, for request " + frame.request_id +
-        ". Before the work it causes, run `" + frame.acknowledgement + "` saying what you will do because of it."
-      : null
-    const earlier = owedAcknowledgements.get(form.sessionID)
-    if (owed !== null) owedAcknowledgements.set(form.sessionID, owed)
+    const owed = typeof frame.acknowledgement_context === "string" && frame.acknowledgement_context.length > 0
+      ? frame.acknowledgement_context
+      : typeof frame.acknowledgement === "string" && frame.acknowledgement.length > 0
+        ? "Notifai: the answer to your question came from the user's device, for request " + frame.request_id +
+          ". Before the work it causes, run `" + frame.acknowledgement + "` exactly as shown, giving any --text the work you will do because of it."
+        : null
+    const owing = owedAcknowledgements.get(form.sessionID) ?? new Map()
+    if (owed !== null) {
+      owing.set(frame.request_id, owed)
+      owedAcknowledgements.set(form.sessionID, owing)
+    }
     if (await replyRequest(form.requestID, frame.answers)) {
       form.settled = true
       send(form, { type: "applied" })
     } else {
       form.applying = null
-      if (owed !== null && owedAcknowledgements.get(form.sessionID) === owed) {
-        if (earlier === undefined) owedAcknowledgements.delete(form.sessionID)
-        else owedAcknowledgements.set(form.sessionID, earlier)
+      if (owed !== null && owing.get(frame.request_id) === owed) {
+        owing.delete(frame.request_id)
+        if (owing.size === 0 && owedAcknowledgements.get(form.sessionID) === owing) owedAcknowledgements.delete(form.sessionID)
       }
       send(form, { type: "stale" })
     }
@@ -345,10 +351,10 @@ export const NotifAIPlugin = async ({ directory, client }) => {
       const { worker, resolved } = await pending
       // A failed lookup is retried on the next request instead of remembered.
       if (resolved === null && activations.get(sessionID) === pending) activations.delete(sessionID)
-      const owed = owedAcknowledgements.get(sessionID)
-      if (owed !== undefined) {
+      const owing = owedAcknowledgements.get(sessionID)
+      if (owing !== undefined) {
         owedAcknowledgements.delete(sessionID)
-        output.system.push(owed)
+        output.system.push(...owing.values())
       }
       // Successful empty output is the runtime's deliberate guidance-off no-op.
       if (resolved !== null && resolved.trim().length === 0) return

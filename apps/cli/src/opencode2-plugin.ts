@@ -422,9 +422,12 @@ export default {
           const unanswered = input.questions.map(() => [])
           return { output: { answers: unanswered }, content: frame.context, metadata: { answers: unanswered } }
         }
-        if (typeof frame.acknowledgement === "string" && frame.acknowledgement.length > 0) {
+        // Each form owes its own acknowledgement: parallel forms add to, never replace, what is owed.
+        if (typeof frame.acknowledgement_context === "string" && frame.acknowledgement_context.length > 0) {
+          owe(form.sessionID, frame.acknowledgement_context)
+        } else if (typeof frame.acknowledgement === "string" && frame.acknowledgement.length > 0) {
           owe(form.sessionID, "Notifai: the answer to your question came from the user's device, for request " + frame.request_id +
-            ". Before the work it causes, run \`" + frame.acknowledgement + "\` saying what you will do because of it.")
+            ". Before the work it causes, run \`" + frame.acknowledgement + "\` exactly as shown, giving any --text the work you will do because of it.")
         }
         return { output: { answers: frame.answers }, content: answeredContent(input.questions, frame.answers), metadata: { answers: frame.answers } }
       }
