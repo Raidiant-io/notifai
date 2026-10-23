@@ -9386,7 +9386,7 @@ describe('asking before the hooks have ever run', () => {
 
     it.skipIf(process.platform === 'win32').each(['ended', 'restarted'] as const)('registers nothing when the root has %s before registration', async (change) => {
       const image = path.join(scratchDir('notifai-codex-subagent-media-'), 'proof.png')
-      writeFileSync(image, 'proof')
+      writeFileSync(image, fakeImage('png', 'proof'))
       let rig: ReturnType<typeof subagentRig> | undefined
       const h = rig = subagentRig({
         createMediaUpload: async () => ({ media_id: 'med_uploaded_1', upload_url: 'https://upload.invalid/1', upload_headers: {},
