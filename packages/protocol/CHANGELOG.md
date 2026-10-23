@@ -8,6 +8,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 This project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 and [Conventional Commits](https://www.conventionalcommits.org/en/v1.0.0/).
 
+## [9.1.1](https://github.com/Raidiant-io/notifai/compare/protocol-v9.1.0...protocol-v9.1.1) (2026-10-23)
+
 ## [9.1.0](https://github.com/Raidiant-io/notifai/compare/protocol-v9.0.0...protocol-v9.1.0) (2026-10-23)
 
 
