@@ -359,3 +359,48 @@ jobs:
             node --test scripts/check-agent-guidance.test.mjs || failed=1
           done
           exit "$failed"
+
+  materials-reliability:
+    needs: scope
+    # Baseline failures are evidence, not candidate admission failures.
+    continue-on-error: ${{ matrix.revision == 'before' }}
+    if: ${{ inputs.reliability_proof }}
+    strategy:
+      fail-fast: false
+      matrix:
+        revision: [before, after]
+        os: [ubuntu-latest, macos-15-intel]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ matrix.revision == 'before' && 'e0fc74d34dcabcd9dba4461f3e871106399e407e' || github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version: '24'
+      - uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320
+        with:
+          version: 10.34.5
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm build
+      - name: Repeat material preparation and timeout regressions twenty times
+        shell: bash
+        run: |
+          failed=0
+          git rev-parse HEAD
+          for iteration in $(seq 1 20); do
+            echo "Iteration $iteration"
+            node scripts/prepare-standalone-materials.mjs --candidate --output "$RUNNER_TEMP/materials-$iteration" || failed=1
+            node --test scripts/run-external.test.mjs || failed=1
+            if [ -f scripts/ci-phase.mjs ]; then
+              node scripts/ci-phase.mjs adapter-artifact 120000 node --test scripts/npm-adapter-artifact.test.mjs || failed=1
+            else
+              node --test scripts/npm-adapter-artifact.test.mjs || failed=1
+            fi
+            if [ -f scripts/ci-phase.test.mjs ]; then
+              node --test scripts/ci-phase.test.mjs scripts/prepare-standalone-materials.test.mjs || failed=1
+            fi
+          done
+          exit "$failed"
