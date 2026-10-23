@@ -66,7 +66,10 @@ export function claimGrokActivation(envelope: HookEnvelope, cwd: string, env: No
     delete next.grok_compacted
     return next
   })
-  if (!claimed) return undefined
+  if (!claimed) {
+    if (!worker) recordGuidanceGiven(sessionId, env, rootGuidanceDigest(cwd, env))
+    return undefined
+  }
   if (worker) return plain
   const guidance = rootGuidanceDigest(cwd, env)
   const given = guidanceGiven(sessionId, env)

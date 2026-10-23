@@ -1259,11 +1259,11 @@ const ACTIVATION_MARK = ${JSON.stringify(ROOT_ACTIVATION_MARK)}
  * prepended to the first prompt of a conversation; a compaction summarizes it
  * away, and then the conversation is activated again.
  */
-function activationPresent(messages) {
+function activationPresent(messages, worker) {
   if (!Array.isArray(messages)) return true
   const textOf = (content) => typeof content === "string" ? content
     : Array.isArray(content) ? content.map((part) => typeof part === "string" ? part : part?.text ?? "").join("\\n") : ""
-  return messages.some((message) => textOf(message?.content).includes(ACTIVATION_MARK))
+  return messages.some((message) => textOf(message?.content).includes(worker ? WORKER_ACTIVATION_CONTEXT : ACTIVATION_MARK))
 }
 
 function isUserMessage(event, ctx) {
@@ -1353,7 +1353,7 @@ function register(api) {
       ...(nativeRevision === null ? {} : { openclaw_lifecycle_revision: nativeRevision }) }
     const resolved = await runHook(worker ? "subagent-start" : "session-start",
       { ...envelope, hook_event_name: worker ? "SubagentStart" : "SessionStart",
-        ...(worker || activationPresent(event?.messages) ? {} : { compacted: true }) })
+        ...(activationPresent(event?.messages, worker) ? {} : { compacted: true }) })
     // chat.send does not emit message_received on this supported Gateway path.
     // The prompt build is the exact session's authoritative turn-start seam.
     await runHook("openclaw-turn-start", envelope)

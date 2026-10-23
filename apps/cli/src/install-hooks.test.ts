@@ -387,6 +387,7 @@ describe('hook config', () => {
     // Every platform, Windows included: the picker hooks and the attendant.
     for (const platform of ['darwin', 'win32'] as const) {
       expect(requiredHookEvents('claude-code'), platform).toEqual([
+        'pre-tool-use',
         'post-tool-use',
         'permission-request',
         'session-start',

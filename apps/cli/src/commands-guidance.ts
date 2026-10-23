@@ -10,10 +10,36 @@ import {
   resolveGuidance,
 } from './guidance.js'
 import { renderGuidance } from './guidance-render.js'
+import { projectBinding, projectEnablementState } from './project-enablement.js'
+import { loadConfig } from './config.js'
+import { rootGuidanceDigest, sessionActivationOutput } from './session-activation.js'
+import { guidanceChangedNotice, shippedSkill } from './guidance-currency.js'
 
 // ---------------------------------------------------------------------------
 // guidance show / set / unset
 // ---------------------------------------------------------------------------
+
+/** A conversation-held receipt for hosts that discard hook context and expose
+ * no exact session identity to tools. Never guesses an identity from cwd. */
+export function guidanceCheckCommand(deps: CommandDeps, seen?: string): number {
+  if (seen !== undefined && !/^[a-f0-9]{64}$/.test(seen)) {
+    deps.io.err('Pass the digest from this conversation\'s previous `notifai guidance check`, or omit it.')
+    return EXIT.usage
+  }
+  const config = loadConfig({ cwd: deps.cwd, env: deps.env })
+  const enabled = projectEnablementState(projectBinding(deps.cwd, deps.env, config.project.value)) === 'enabled'
+  if (!enabled) {
+    deps.io.out(JSON.stringify({ enabled: false }))
+    return EXIT.ok
+  }
+  const digest = rootGuidanceDigest(deps.cwd, deps.env)
+  const changed = seen !== digest
+  const output = changed ? sessionActivationOutput('cursor', 'SessionStart', deps.cwd, deps.env, [], false,
+    seen === undefined ? undefined : guidanceChangedNotice()) : undefined
+  deps.io.out(JSON.stringify({ enabled, digest, skill_file: shippedSkill().file,
+    ...(output === undefined ? {} : { context: (JSON.parse(output) as { additional_context: string }).additional_context }) }))
+  return EXIT.ok
+}
 
 /**
  * The whole effective guidance, ready to be followed as read.

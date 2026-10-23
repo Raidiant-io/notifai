@@ -25,11 +25,18 @@ const rootOwnershipText = (): string => rootOwnership(shippedSkill().file)
 
 /** The digest of what a root Agent Session is given here (`guidance-currency.ts`). */
 export function rootGuidanceDigest(cwd: string, env: NodeJS.ProcessEnv): string {
-  return guidanceDigest({ cwd, env, activation: rootOwnership(null) })
+  return guidanceDigest({ cwd, env, activation: [rootOwnership(null), WORKER_ACTIVATION_CONTEXT,
+    lifecycleGuidance({ cwd, env }).content].join('\n\n') })
 }
 
 export const WORKER_ACTIVATION_CONTEXT =
-  'Notifai worker context: report Agent Events (work finished, failed, blocked, or needing the User) to your parent, which decides what reaches the User. Send no Notification Request yourself unless your assignment delegates them to you; then load the Notifai skill and run `notifai guidance` before your first one.'
+  'Notifai worker context: report Agent Events (work finished, failed, blocked, or needing the User) to your parent, which decides what reaches the User. Send no Notification Request yourself unless your assignment delegates them to you; then load the Notifai skill and run `notifai guidance` before your first one. If you ask, keep the work that acts on the answer until it is done; if the parent will act, give it the question to ask itself.'
+
+function workerActivationContext(currency?: string): string {
+  const file = shippedSkill().file
+  return [WORKER_ACTIVATION_CONTEXT, ...(file === null ? [] : [`The Notifai skill is at \`${file}\`.`]), currency]
+    .filter(Boolean).join('\n\n')
+}
 
 export const MISSING_LIFECYCLE_GUIDANCE_CONTEXT =
   'Notifai lifecycle guidance could not be loaded, so Project Enablement is unverified. Run `notifai doctor --json` to check setup, then `notifai guidance` before deciding whether or how to notify.'
@@ -119,7 +126,7 @@ export const GROK_ACTIVATION_MAX_BYTES = 9_000
 /** Grok's bounded activation, retaining unclaimed notices for a later turn. */
 export function grokActivationContext(cwd: string, env: NodeJS.ProcessEnv, worker: boolean,
   notices: readonly PendingNotice[] = [], currency?: string): string {
-  return worker ? WORKER_ACTIVATION_CONTEXT : rootActivationContext(cwd, env, notices, GROK_ACTIVATION_MAX_BYTES, currency)
+  return worker ? workerActivationContext(currency) : rootActivationContext(cwd, env, notices, GROK_ACTIVATION_MAX_BYTES, currency)
 }
 
 /** One lifecycle meaning, encoded for each harness output contract. */
@@ -136,12 +143,12 @@ export function sessionActivationOutput(
 ): string | undefined {
   if (harness === 'hermes' && hermesSections) {
     const sections: HermesActivationSections = hookEventName === 'SubagentStart'
-      ? { activation: WORKER_ACTIVATION_CONTEXT, guidance: '' }
+      ? { activation: workerActivationContext(currency), guidance: '' }
       : hermesRootSections(cwd, env, notices, currency)
     return JSON.stringify(sections)
   }
   const context = hookEventName === 'SubagentStart'
-    ? WORKER_ACTIVATION_CONTEXT
+    ? workerActivationContext(currency)
     : rootActivationContext(cwd, env, notices, harness === 'hermes' ? HERMES_SECTION_MAX_BYTES : GUIDANCE_CONTEXT_MAX_BYTES, currency)
   if (harness === 'opencode' || harness === 'openclaw' || harness === 'hermes') return context
   if (harness === 'cursor') {

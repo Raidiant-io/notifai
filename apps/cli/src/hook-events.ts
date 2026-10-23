@@ -173,7 +173,7 @@ export function requiredHookEvents(harness: HookInstallableHarness): readonly Ho
   if (harness === 'opencode' || harness === 'openclaw' || harness === 'hermes') return []
   return HOOK_EVENT_TABLE.filter((row) =>
     row.notifai === 'pre-tool-use'
-      ? harness === 'grok' || (harness === 'codex' && installsSessionAttendant(harness))
+      ? harness === 'grok' || installsSessionAttendant(harness)
       : row.notifai === 'post-compact'
       ? harness === 'grok'
       : row.notifai === 'subagent-start' && harness === 'grok'

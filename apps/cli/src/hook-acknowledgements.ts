@@ -124,8 +124,8 @@ export function askerContext(pending: PendingQuestion): string {
   if (asker === undefined) return ''
   const kind = asker.agent_type === undefined ? 'subagent' : `${quoted(asker.agent_type)} subagent`
   const described = asker.description === undefined ? '' : ` ${quoted(asker.description)}`
-  const offered = (pending.questions ?? []).filter((entry) => (entry.choices?.length ?? 0) > 0).map((entry) =>
-    `${(pending.questions?.length ?? 0) > 1 ? `${quoted(entry.text)}: ` : ''}${entry.choices!.map((choice) => quoted(choice.label)).join(' / ')}`)
+  const offered = (pending.questions ?? []).map((entry) =>
+    `${quoted(entry.text)}${(entry.choices?.length ?? 0) === 0 ? ' (typed answer)' : `: ${entry.choices!.map((choice) => quoted(choice.label)).join(' / ')}`}`)
   return ` Your ${kind}${described} (agent ${asker.agent_id}) asked it for this Agent Session` +
     `${offered.length === 0 ? '' : `, offering ${offered.join('; ')}`}, so the work it unblocks is that subagent's: ` +
     'send it this answer if it can still take messages, otherwise do that work yourself.'

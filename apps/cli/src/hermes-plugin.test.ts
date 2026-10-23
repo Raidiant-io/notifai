@@ -262,9 +262,11 @@ elif case == "worker":
     rendered = render(main) + render(child)
 else:
     rendered = render(main)
-if case == "compacted":
+if case in ("compacted", "child-compacted"):
     # Hermes keeps the system prompt through compression; the history shrinks.
-    turns = [hooks["pre_llm_call"](session_id="main", platform="cli", parent_session_id="", conversation_history=history)
+    turns = [hooks["pre_llm_call"](session_id="child" if case == "child-compacted" else "main",
+                                    platform="subagent" if case == "child-compacted" else "cli",
+                                    parent_session_id="main" if case == "child-compacted" else "", conversation_history=history)
              for history in ([1, 2, 3], [1])]
 else:
     turns = [hooks["pre_llm_call"](session_id="main", platform="cli", parent_session_id="") for _ in range(2)]
@@ -332,6 +334,7 @@ it.skipIf(process.platform === 'win32')('hands in what a session must reload wit
   // only through a turn. The CLI decides and says each once.
   const root = mkdtempSync(path.join(os.tmpdir(), 'notifai-hermes-currency-')); roots.push(root)
   expect(runSectionsCase(root, 'fits', undefined, false, true).turns).toEqual([{ context: 'N' }, { context: 'N' }])
+  expect(runSectionsCase(root, 'child-compacted').turns).toEqual([null, { context: 'C' }])
   const compacted = runSectionsCase(root, 'compacted')
   expect(compacted.turns).toEqual([null, { context: 'C' }])
   expect(compacted.calls.filter((call) => call.event === 'guidance-check'))

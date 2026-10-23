@@ -27,7 +27,7 @@ describe('answer context', () => {
     const context = answersContext([answered({ asked_by: { agent_id: 'a1b2c3', agent_type: 'general-purpose', description: 'headline worker' } })], 0)
     expect(context).toContain('question "Which headline should v2 use?"; the user answered "Offline mode is here". ' +
       'Your "general-purpose" subagent "headline worker" (agent a1b2c3) asked it for this Agent Session, ' +
-      'offering "Faster sync for everyone" / "Offline mode is here", so the work it unblocks is that subagent\'s: ' +
+      'offering "Which headline should v2 use?": "Faster sync for everyone" / "Offline mode is here", so the work it unblocks is that subagent\'s: ' +
       'send it this answer if it can still take messages, otherwise do that work yourself.')
     // The acknowledgement names only work this session starts, passing another agent's work on first.
     expect(context).toContain("naming the concrete work this Agent Session starts now because of the reply; " +

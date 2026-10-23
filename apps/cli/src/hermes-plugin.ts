@@ -92,6 +92,16 @@ def _observe_session(session_id):
 def _on_turn_start(session_id=None, platform=None, parent_session_id=None, conversation_history=None, **_):
     current = _main_session_event(session_id, platform, parent_session_id)
     if not current:
+        if platform == "subagent" and session_id:
+            # A child owns a separate guidance receipt; never changes the
+            # parent's presence/counters or spends its refresh notice.
+            key = str(session_id)
+            with _lock:
+                length = len(conversation_history) if isinstance(conversation_history, list) else None
+                previous = _history.get(key)
+                if length is not None:
+                    _history[key] = length
+            return _guidance_change(key, previous is not None and length is not None and length < previous)
         return None
     with _lock:
         if _session["id"] != current:

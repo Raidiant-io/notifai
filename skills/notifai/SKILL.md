@@ -23,6 +23,11 @@ delegation decides whether a worker notifies. A worker that asks follows what
 `ask` prints: it says where the answer arrives, which may be the root Agent
 Session rather than the worker.
 
+When you brief a worker, name the Notification Request owner. Give an owner
+the work its answers resume, through completion. If you will act on an
+answer, ask the question yourself. A worker that asks keeps that work; ending
+a turn to await the answer keeps the assignment open.
+
 Owner session context carries the `when-to-notify` and `questions` guidance.
 Before your first Notification Request or acknowledgement, or when that
 context is absent or names omitted topics, run this once:
@@ -236,7 +241,9 @@ The context it arrives with gives the exact command:
 notifai acknowledge <request_id> --text '<the concrete work this reply sets in motion>'
 ```
 
-Keep the text under 200 characters. When acknowledgement text is off,
+Name only work this Agent Session starts now. If the answer belongs to
+another agent's work, pass it to that agent first and say so. Keep the text
+under 200 characters. When acknowledgement text is off,
 Notifai gives the command without `--text`; run exactly that. Then resume the
 committed work without asking them to confirm again: it is work you are
 resuming, not approval you received.

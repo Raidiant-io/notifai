@@ -7,7 +7,9 @@ Read with [Harness setup and recovery](harness-setup.md).
 `notifai hooks install --harness grok` owns one native file under
 `GROK_HOME/hooks/notifai.json` (default `~/.grok/hooks/notifai.json`). Start a
 fresh Agent Session after installation. On an enabled Project, the first tool
-result carries session guidance and any due update or integration notice;
+gate carries session guidance and any due update or integration notice, holding
+that tool once so you can read the context before retrying it. Older loaded
+hooks deliver it with the first tool result;
 failed tools also carry it. A later integration notice arrives on a later tool
 result. A turn without
 tools gets one Stop continuation to load guidance. Resume and compaction re-arm
@@ -76,7 +78,7 @@ Grok's permission mode or rules yourself.
 ## After a Notifai update
 
 The native hooks call the updated CLI. When the guidance this Agent Session read
-has changed, its next tool result carries the guidance again and says so, as it
+has changed, its next tool gate carries the guidance again and says so, as it
 does after a compaction. Changed hooks count as loaded once a natural callback
 shows them.
 

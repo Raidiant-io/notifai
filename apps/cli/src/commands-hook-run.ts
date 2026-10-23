@@ -79,7 +79,7 @@ import { grokQuestionFormGate, unlinkedQuestionFormContext } from './unlinked-qu
 import { spawnQuestionSettlement } from './question-settlement-process.js'
 import { QUESTION_WAITER_CEILING_SECONDS } from './question-timing.js'
 import { rootGuidanceDigest, sessionActivationOutput, userPromptContextOutput } from './session-activation.js'
-import { GUIDANCE_NOT_GIVEN, claimGuidanceChange, compactedNotice, recordGuidanceGiven, startingCurrency } from './guidance-currency.js'
+import { GUIDANCE_NOT_GIVEN, claimGuidanceChange, compactedNotice, guidanceSessionKey, recordGuidanceGiven, startingCurrency } from './guidance-currency.js'
 import { currentProcessIdentity } from './process-identity.js'
 import { attendantSupport } from './session-attendant-probe.js'
 import { proveWindowsCodexHookSource } from './windows-hook-source.js'
@@ -421,17 +421,6 @@ export async function hookRunCommand(
       ['post-tool-use', 'stop', 'interrupt', 'user-prompt-submit'].includes(event)) {
     releaseCodexCardHandbacks(envelope.session_id, deps.env, envelope, event, (deps.now ?? Date.now)())
   }
-  if (event === 'pre-tool-use') {
-    start({ cwd })
-    try {
-      if (harness === 'codex') await codexPreToolUse(deps, envelope, logger)
-      if (harness === 'grok') grokQuestionFormGate(deps, envelope, cwd)
-      logger.info('hook.end', { hook: event, outcome: 'checked', decided: false })
-    } catch (err) {
-      logger.error('hook.end', { hook: event, outcome: 'ignored', ...failureData(err) })
-    }
-    return EXIT.ok
-  }
   if (event === 'permission-request') {
     logger.bind({ session: envelope.session_id ?? null })
     start({ cwd })
@@ -551,6 +540,32 @@ export async function hookRunCommand(
       logger.error('hook.end', { hook: event, outcome: 'enablement-unavailable', ...failureData(err) })
       return false
     }
+  }
+  if (event === 'pre-tool-use') {
+    start({ cwd })
+    try {
+      if (harness === 'grok' && lifecycleEnabled()) {
+        const context = claimGrokActivation(envelope, cwd, deps.env, [
+          pendingAgentUpdateNotice({ env: deps.env, now: now(), updateCommand: updateCliCommand(deps) }),
+          pendingIntegrationFaultNotice({ ...deps, cwd }, 'grok'),
+        ].filter((notice): notice is PendingNotice => notice !== undefined))
+        // Passive Grok events discard context. Its tool gate can return it
+        // before even the first Notification Request has side effects.
+        if (context !== undefined) deps.io.out(JSON.stringify({ decision: 'deny',
+          reason: `${context}\n\nFollow this context before retrying the tool.` }))
+        else grokQuestionFormGate(deps, envelope, cwd)
+      }
+      if (harness === 'grok' && !lifecycleEnabled()) grokQuestionFormGate(deps, envelope, cwd)
+      if (harness === 'codex') await codexPreToolUse(deps, envelope, logger)
+      const changed = lifecycleEnabled() ? guidanceChangeFor(deps, harness, envelope, cwd) : undefined
+      if (changed !== undefined) deps.io.out(JSON.stringify({ hookSpecificOutput: {
+        hookEventName: 'PreToolUse', additionalContext: changed,
+      } }))
+      logger.info('hook.end', { hook: event, outcome: 'checked', decided: false })
+    } catch (err) {
+      logger.error('hook.end', { hook: event, outcome: 'ignored', ...failureData(err) })
+    }
+    return EXIT.ok
   }
   // Prune and the update lookup run in one detached process at most daily; a
   // prompt-path hook only checks its stamp.
@@ -782,7 +797,8 @@ export async function hookRunCommand(
     const notices = [updateNotice, faultNotice].filter((part): part is PendingNotice => part !== undefined)
     // A root session's record of the guidance it was given decides whether
     // this start must also reload what it read before (`guidance-currency.ts`).
-    const owner = event === 'session-start' && envelope.session_id !== undefined && harness !== 'grok'
+    const owner = envelope.session_id !== undefined && harness !== 'grok'
+    const currencyKey = envelope.session_id === undefined ? '' : guidanceSessionKey(envelope.session_id, envelope.agent_id)
     let digest: string | undefined
     if (guidanceOn && owner) {
       try {
@@ -794,14 +810,14 @@ export async function hookRunCommand(
     const currencyFor = (compacted: boolean): string | undefined => {
       if (digest === undefined) return undefined
       try {
-        return startingCurrency({ sessionId: envelope.session_id!, env: deps.env, digest, source: envelope.source, compacted })
+        return startingCurrency({ sessionId: currencyKey, env: deps.env, digest, source: envelope.source, compacted })
       } catch {
         return undefined
       }
     }
     const recordGiven = (): void => {
       if (!owner) return
-      recordGuidanceGiven(envelope.session_id!, deps.env, guidanceOn ? digest ?? GUIDANCE_NOT_GIVEN : GUIDANCE_NOT_GIVEN)
+      recordGuidanceGiven(currencyKey, deps.env, guidanceOn ? digest ?? GUIDANCE_NOT_GIVEN : GUIDANCE_NOT_GIVEN)
     }
     if (harness === 'openclaw' && envelope.session_id !== undefined) {
       try {
@@ -1466,9 +1482,9 @@ function scriptedRunElsewhere(deps: CommandDeps, harness: string | undefined, se
  * Codex tool boundaries.
  */
 function guidanceChangeFor(deps: CommandDeps, harness: HookHarness | undefined, envelope: HookEnvelope, cwd: string): string | undefined {
-  if ((harness !== 'claude-code' && harness !== 'codex') || envelope.session_id === undefined || envelope.agent_id !== undefined) return undefined
+  if ((harness !== 'claude-code' && harness !== 'codex') || envelope.session_id === undefined) return undefined
   try {
-    return claimGuidanceChange(envelope.session_id, deps.env, rootGuidanceDigest(cwd, deps.env),
+    return claimGuidanceChange(guidanceSessionKey(envelope.session_id, envelope.agent_id), deps.env, rootGuidanceDigest(cwd, deps.env),
       readSessionIncarnation(envelope.session_id, deps.env) !== null)
   } catch {
     // Guidance currency never fails a hook.

@@ -17,12 +17,13 @@
  * still known to carry older guidance.
  */
 import { createHash } from 'node:crypto'
-import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, utimesSync } from 'node:fs'
 import path from 'node:path'
 import { atomicWriteFileSync } from './atomic-file.js'
 import { stateDir } from './config.js'
 import { resolveGuidance } from './guidance.js'
 import { shippedSkillSourceRoot } from './skill-integrity.js'
+import { withTargetFileLock } from './file-lock.js'
 
 /** Recorded for a session started with guidance off: it was given nothing that could change. */
 export const GUIDANCE_NOT_GIVEN = 'off'
@@ -101,8 +102,13 @@ export function guidanceGiven(sessionId: string, env: NodeJS.ProcessEnv): string
 /** Record what this session was just given. Never fails a hook. */
 export function recordGuidanceGiven(sessionId: string, env: NodeJS.ProcessEnv, digest: string): void {
   try {
-    if (guidanceGiven(sessionId, env) === digest) return
     const file = recordFile(sessionId, env)
+    if (guidanceGiven(sessionId, env) === digest) {
+      // Active, unchanged sessions must not age out as abandoned records.
+      const now = Date.now()
+      if (now - statSync(file).mtimeMs > 6 * 3600_000) utimesSync(file, new Date(now), new Date(now))
+      return
+    }
     mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 })
     atomicWriteFileSync(file, `${JSON.stringify({ digest })}\n`, { mode: 0o600 })
   } catch {
@@ -138,10 +144,29 @@ export function startingCurrency(options: {
  * alone never activates a session.
  */
 export function claimGuidanceChange(sessionId: string, env: NodeJS.ProcessEnv, digest: string, started: boolean): string | undefined {
-  const given = guidanceGiven(sessionId, env)
-  if (given === GUIDANCE_NOT_GIVEN || given === digest || (given === undefined && !started)) return undefined
-  recordGuidanceGiven(sessionId, env, digest)
-  return guidanceChangedNotice()
+  try {
+    const file = recordFile(sessionId, env)
+    mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 })
+    return withTargetFileLock(file, () => {
+      const given = guidanceGiven(sessionId, env)
+      if (given === digest) {
+        recordGuidanceGiven(sessionId, env, digest)
+        return undefined
+      }
+      if (given === GUIDANCE_NOT_GIVEN || (given === undefined && !started)) return undefined
+      recordGuidanceGiven(sessionId, env, digest)
+      return guidanceChangedNotice()
+    })
+  } catch {
+    // Keep the prior receipt: the next boundary can retry the claim.
+    return undefined
+  }
+}
+
+/** Child hooks can carry their parent's session id. Never spend the parent's
+ * guidance notice on a context only its child reads. */
+export function guidanceSessionKey(sessionId: string, agentId?: string): string {
+  return agentId === undefined ? sessionId : `${sessionId}/agent/${agentId}`
 }
 
 const RECORD_RETENTION_MS = 30 * 24 * 3600 * 1000

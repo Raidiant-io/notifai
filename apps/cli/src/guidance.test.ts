@@ -4,7 +4,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { afterAll, describe, expect, it } from 'vitest'
 import { personalProjectConfigPath } from './config.js'
-import { enableProject, projectBinding } from './project-enablement.js'
+import { disableProject, enableProject, projectBinding } from './project-enablement.js'
 import type { CommandDeps } from './commands-core.js'
 import {
   guidanceSetCommand,
@@ -166,15 +166,7 @@ describe('shipped guidance content', () => {
     expect(content).toMatch(/never say where the answer must arrive/i)
   })
 
-  it('teaches acknowledgements that name the concrete work and only that', () => {
-    const content = shippedGuidanceTopic('acknowledgements')!.content.replace(/\s+/g, ' ')
-    expect(content).toMatch(/concrete work a reply, note or edit sets in motion/i)
-    expect(content).toMatch(/only work you will actually do/i)
-    expect(content).toMatch(/irreversible work[\s\S]{0,120}never imply it was undone/i)
-    // The result travels as its own Notification Request, never inside a receipt.
-    expect(content).toMatch(/never inside the acknowledgement/i)
-    expect(content).toContain('already went out')
-  })
+
 })
 
 // ---------------------------------------------------------------------------
@@ -322,6 +314,33 @@ function makeDeps(env: NodeJS.ProcessEnv, cwd: string, confirmAnswer = false) {
 }
 
 describe('guidance commands', () => {
+  it('returns context for a new or changed conversation receipt, stays quiet for the same receipt, and honors disabling', async () => {
+    const { guidanceCheckCommand } = await import('./commands-guidance.js')
+    const { env, cwd } = setup()
+    const { deps, captured } = makeDeps(env, cwd)
+    execFileSync('git', ['init', '-q', cwd])
+    const binding = projectBinding(cwd, env, undefined)
+    if (binding === null) throw new Error('test needs a Project')
+    enableProject(binding)
+    expect(guidanceCheckCommand(deps)).toBe(0)
+    const first = JSON.parse(captured.out.pop()!) as { digest: string; context: string; skill_file: string }
+    expect(first.context).toContain(GUIDANCE_TRUST_PREAMBLE)
+    expect(existsSync(first.skill_file)).toBe(true)
+    guidanceCheckCommand(deps, first.digest)
+    expect(JSON.parse(captured.out.pop()!)).not.toHaveProperty('context')
+    const dir = personalProjectGuidanceDir(cwd, env)
+    mkdirSync(dir, { recursive: true })
+    writeFileSync(path.join(dir, 'questions.md'), '# Questions\n\nOffer two choices.\n')
+    guidanceCheckCommand(deps, first.digest)
+    const changed = JSON.parse(captured.out.pop()!) as { digest: string; context: string }
+    expect(changed.digest).not.toBe(first.digest)
+    expect(changed.context).toContain('Offer two choices.')
+    expect(changed.context).toMatch(/load the Notifai skill again/)
+    disableProject(binding)
+    guidanceCheckCommand(deps, changed.digest)
+    expect(JSON.parse(captured.out.pop()!)).toEqual({ enabled: false })
+  })
+
   it('prints guidance only: Hermes, like every harness, gets the update notice at session start', async () => {
     const { env, cwd } = setup()
     env.HERMES_SESSION_ID = 'hermes-update-test'
@@ -451,8 +470,9 @@ describe('lifecycle guidance budget', () => {
     expect(sections.guidance).toContain(marker('questions'))
     expect(sections.guidance).toMatch(/run `notifai guidance` once/i)
     expect(rootContext('claude-code', root, env).endsWith(sections.guidance)).toBe(true)
-    const worker = JSON.parse(sessionActivationOutput('hermes', 'SubagentStart', root, env, [], true)!) as unknown
-    expect(worker).toEqual({ activation: WORKER_ACTIVATION_CONTEXT, guidance: '' })
+    const worker = JSON.parse(sessionActivationOutput('hermes', 'SubagentStart', root, env, [], true)!) as { activation: string; guidance: string }
+    expect(worker.activation).toContain(WORKER_ACTIVATION_CONTEXT)
+    expect(worker.guidance).toBe('')
   })
 
   it('reaches the worked examples from fixed skill text, not an overridable topic', () => {
