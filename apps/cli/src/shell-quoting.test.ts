@@ -10,7 +10,10 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 const root = mkdtempSync(path.join(os.tmpdir(), 'notifai-shell-'))
 const driver = path.join(root, 'cli.cjs')
 const shells = ['bash', 'zsh', 'pwsh', ...(process.platform === 'win32' ? ['powershell.exe'] : [])]
-const available = (shell: string) => spawnSync(shell, ['-c', 'exit 0'], { timeout: 15_000 }).status === 0
+const probeShell = (shell: string) => spawnSync(shell,
+  /^(pwsh|powershell)/.test(shell) ? ['-NoProfile', '-NonInteractive', '-Command', 'exit 0'] : ['-c', 'exit 0'],
+  { encoding: 'utf8', timeout: 30_000 },
+)
 const posixQuote = (value: string) => `'${value.replaceAll("'", `'"'"'`)}'`
 const powershellQuote = (value: string) => `'${value.replace(/['’‘‚‛]/g, '$&$&')}'`
 
@@ -35,9 +38,12 @@ buildProgram(deps, { exit: code => process.exit(code), runners: {
 afterAll(() => rmSync(root, { recursive: true, force: true }))
 
 for (const shell of shells) {
-  const present = available(shell)
+  const probe = probeShell(shell)
+  const present = probe.status === 0
   const required = shell === 'bash' || (process.platform === 'darwin' && shell === 'zsh') || (process.platform === 'win32' && /^(pwsh|powershell)/.test(shell))
-  if (required && !present) throw new Error(`Required shell is unavailable: ${shell}`)
+  if (required && !present) {
+    throw new Error(`Required shell is unavailable: ${shell}: ${probe.error?.message ?? `exit ${probe.status}, signal ${probe.signal}`}; ${probe.stderr?.trim().slice(0, 300) ?? ''}`)
+  }
   describe.skipIf(!present)(`${shell} lossless shell transport`, () => {
     const powershell = /^(pwsh|powershell)/.test(shell)
     const quote = powershell ? powershellQuote : posixQuote
