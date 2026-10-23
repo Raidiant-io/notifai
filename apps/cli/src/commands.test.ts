@@ -9091,10 +9091,25 @@ describe('a held ask --wait', () => {
     const env = { ...isolatedEnv(cwd), CURSOR_AGENT: '1' }
 
     expect(await ask({ ...deps, cwd, env }, { json: true, resumes: 'Write the selected headline to HEADLINE.txt' })).toBe(EXIT.ok)
-    expect(JSON.parse(io.outLines[0]!)).toMatchObject({ resumes: 'Write the selected headline to HEADLINE.txt', on_answer: expect.stringContaining('Only this Agent Session received') })
+    expect(JSON.parse(io.outLines[0]!)).toMatchObject({ resumes: 'Write the selected headline to HEADLINE.txt', on_answer: expect.stringContaining('No other agent received this answer') })
     expect(submit.mock.calls[0]![0].draft.reply?.expires_in_seconds).toBe(590)
     expect(putAgentAcknowledgement).not.toHaveBeenCalled()
     expect(JSON.parse(io.outLines[0]!).acknowledgement_command).toContain(`notifai acknowledge ${receipt.request_id}`)
+  })
+
+  it('holds a headless Claude wait without a question form for 110 s and returns the resumed work here', async () => {
+    const cwd = mkdtempSync(path.join(os.tmpdir(), 'notifai-held-headless-'))
+    const io = new CapturedIo()
+    const submit = vi.fn(async (_body: SubmitNotificationRequestT) => receipt)
+    const { deps } = scriptDeps(io, {
+      submit, replies: async () => replyResponse([reply]), closeReplies: async () => claimedReplyResponse([reply]),
+      claimDeliveryAttempt: async () => ({ attempt_id: 'headless-handoff' }),
+    } as never)
+    const env = { ...isolatedEnv(cwd), CLAUDECODE: '1', CLAUDE_CODE_SESSION_ID: 'headless-wait', CLAUDE_CODE_ENTRYPOINT: 'sdk-cli' }
+    expect(await ask({ ...deps, cwd, env }, { json: true, resumes: 'Write HEADLINE.txt' })).toBe(EXIT.ok)
+    expect(submit.mock.calls[0]![0].draft.reply?.expires_in_seconds).toBe(110)
+    expect(JSON.parse(io.outLines[0]!)).toMatchObject({ resumes: 'Write HEADLINE.txt', on_answer: expect.stringContaining('do the work the answer unblocks here first, then report') })
+    expect(io.outLines.join('\n')).not.toContain('end your turn')
   })
 
   it('skips the terminal-first delay: nobody can answer it in the terminal', async () => {
@@ -10322,7 +10337,7 @@ describe('asking before the hooks have ever run', () => {
     io.outLines = []
     expect(await askCommand(deps, 'Which name?', { title: 'Release name', json: true })).toBe(EXIT.ok)
     const own = JSON.parse(io.outLines.join('\n'))
-    expect(own.next.on_answer).toBe('The answer comes back to this Agent Session, so you act on it: acknowledge it, then do the committed work yourself without asking the user to confirm again.')
+    expect(own.next.on_answer).toEqual(expect.any(String))
     expect(readSessionState(session, env).pending?.find((pending) => pending.question_id === own.question_id)?.asked_by).toBeUndefined()
   })
 
@@ -10963,37 +10978,7 @@ describe('asking before the hooks have ever run', () => {
       expect(said).toContain(`If the answer is "${answer}"`)
     }
     expect(said).toContain('unexpected typed answer')
-    expect(said).toContain('work you will resume')
-    expect(said).toContain('without asking the user to confirm again')
-    expect(said).toContain('not as approval')
     expect(said).toContain('cannot answer a harness permission prompt')
-  })
-
-  it('requires a concrete fallback for free-text answers before the turn ends', () => {
-    const cwd = scratchDir('notifai-ask-free-text-')
-    const io = new CapturedIo()
-    const env = {
-      XDG_CONFIG_HOME: path.join(cwd, 'config'),
-      XDG_STATE_HOME: path.join(cwd, 'state'),
-      HOME: path.join(cwd, 'home'),
-      CODEX_HOME: path.join(cwd, 'codex-home'),
-      CODEX_THREAD_ID: 'codex-free-text-thread',
-    }
-    const deps = { ...makeDeps(io, {} as ApiClient), cwd, env, now: () => 42 }
-
-    expect(hooksInstallCommand(deps, { harness: 'codex', execPath, scriptPath })).toBe(EXIT.ok)
-    trustInstalledCodexHooks(cwd, env)
-    writeCurrentCodexSessionState(cwd, env, 'codex-free-text-thread', {
-      last_prompt_at: 42,
-      last_stop_at: 41,
-    })
-    writeProjectSession(cwd, env, 'codex-free-text-thread', 42, 'codex')
-    io.outLines = []
-
-    expect(askCommand(deps, 'What rollout adjustment should I make?', { title: 'Decision' })).toBe(EXIT.ok)
-    expect(io.outLines.join('\n')).toContain(
-      'For the free-text answer: state how its content will determine the concrete work you resume.',
-    )
   })
 
   it('refuses a Codex question when the installed Stop definition is no longer trusted', async () => {

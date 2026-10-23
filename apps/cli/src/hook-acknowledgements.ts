@@ -4,6 +4,7 @@ import { confirmNativeAnswerTarget } from './native-answer-operation.js'
 import { gate } from './hook-gates.js'
 import {
   ACKNOWLEDGEMENT_SCOPE,
+  ANSWER_RESUMPTION_CONTEXT,
   TRANSPORT_LIMIT,
   acknowledgementCommand,
   acknowledgementDemand,
@@ -122,7 +123,7 @@ function answerContext(answered: AnsweredPending): string {
 export function askerContext(pending: PendingQuestion): string {
   const asker = pending.asked_by
   const resumes = pending.resumes === undefined ? '' : ` This answer resumes: ${quoted(pending.resumes)}.`
-  if (asker === undefined) return resumes + ' Only this Agent Session received the answer. Do the work it resumes here.'
+  if (asker === undefined) return resumes + ` ${ANSWER_RESUMPTION_CONTEXT}`
   const kind = asker.agent_type === undefined ? 'subagent' : `${quoted(asker.agent_type)} subagent`
   const described = asker.description === undefined ? '' : ` ${quoted(asker.description)}`
   const offered = (pending.questions ?? []).map((entry) =>

@@ -90,3 +90,6 @@ export function sessionMessageContext(message: AttendanceMessage): string {
     acknowledge
   )
 }
+
+/** The answer is local custody, even when the asking brief expects a report. */
+export const ANSWER_RESUMPTION_CONTEXT = 'No other agent received this answer, and a report sent after this turn may never reach the agent that briefed you: do the work the answer unblocks here first, then report.'

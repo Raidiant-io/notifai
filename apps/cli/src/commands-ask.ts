@@ -8,6 +8,7 @@ import {
   type Platform,
   type QuestionT,
 } from '@raidiant/notifai-protocol'
+import { claudePlaceOf, claudePlaceSignals } from './session-place.js'
 import { currentCommandGuidance } from './command-guidance.js'
 import { EXIT, authedClient, log, makeClient, type CommandDeps } from './commands-core.js'
 import type { ServiceIdentity } from './credentials.js'
@@ -528,11 +529,11 @@ function codexCardAsks(deps: CommandDeps, sessionId: string): boolean {
   return owner !== null && codexCardToolOffered(readSessionState(sessionId, deps.env), owner, sessionId, deps.env)
 }
 
-const KEEP_SESSION_OPEN = 'Keep this Agent Session open while the question waits: closing, clearing or switching it ends the question, so never suggest that.'
+const KEEP_SESSION_OPEN = 'Your assignment is incomplete while your question waits. Keep this Agent Session open until you do the work the answer unblocks, or the question closes or expires; report that you are waiting, never done.'
 
 const ROUTE_NEUTRAL = 'Never say where the answer must arrive; it returns by whatever route the harness supports.'
 
-const ON_ANSWER = 'The answer comes back to this Agent Session, so you act on it: acknowledge it, then do the committed work yourself without asking the user to confirm again.'
+const ON_ANSWER = 'The answer comes back to this Agent Session, so you act on it: acknowledge it, then do the unblocked work yourself before reporting; reporting the answer is not that work. Do not ask the user to confirm again.'
 
 /**
  * The end-the-turn wait: this Agent Session has a proven return path, so the
@@ -897,20 +898,20 @@ function persistRegisteredQuestion(
     if (entry.choices !== undefined) {
       for (const choice of entry.choices) {
         deps.io.out(
-          `- ${questionPrefix}If the answer is ${JSON.stringify(choice.label)}: state the concrete work you will resume.`,
+          `- ${questionPrefix}If the answer is ${JSON.stringify(choice.label)}: state the unblocked work you will do yourself before reporting; reporting the answer is not that work.`,
         )
       }
       deps.io.out(
-        `- ${questionPrefix}For an unexpected typed answer: state how it will determine the concrete work you resume.`,
+        `- ${questionPrefix}For an unexpected typed answer: state how it determines the unblocked work you do yourself before reporting.`,
       )
     } else {
       deps.io.out(
-        `- ${questionPrefix}For the free-text answer: state how its content will determine the concrete work you resume.`,
+        `- ${questionPrefix}For the free-text answer: state how its content determines the unblocked work you do yourself before reporting.`,
       )
     }
   }
   deps.io.out(
-    'The answer comes back to this Agent Session, so you do the matching work yourself when it arrives, without asking the user to confirm again. Frame this as work you will resume, not as approval you receive.',
+    'The answer comes back to this Agent Session. Do the work it unblocks here before reporting; reporting the answer is not that work. Describe that work in --resumes. Do not ask the user to confirm again.',
   )
   deps.io.out(
     'A Notifai answer cannot answer a harness permission prompt; leave those to the harness and user.',
@@ -1091,7 +1092,11 @@ export function askCommand(
       return EXIT.usage
     }
   }
-  const held = heldWaitRoute(active, contested, deps.hookPlatform ?? process.platform)
+  const held = flags.wait === true && active?.harness === 'claude-code' && contested.length <= 1 &&
+    claudePlaceOf(claudePlaceSignals(deps.env)) === 'headless'
+    ? { harnesses: ['claude-code'], active, code: 'question_routing_unavailable' as const, checkId: 'hook_contract' as const,
+      reason: 'Headless Claude Code has no native question form; this command holds the answer instead.' }
+    : heldWaitRoute(active, contested, deps.hookPlatform ?? process.platform)
   if (held !== null) {
     if (!explicitUseConfig.ask_notifications.value) return questionsOff(deps, flags)
     if (flags.wait !== true) {

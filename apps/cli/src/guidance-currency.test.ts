@@ -58,7 +58,7 @@ describe('what a session was given', () => {
   it('tells a session once per change, and never one started with guidance off', () => {
     const { env } = setup()
     expect(claimGuidanceChange('never-started', env, 'd1', false)).toBeUndefined()
-    expect(claimGuidanceChange('earlier-build', env, 'd1', true)).toMatch(/^Notifai's guidance changed/)
+    expect(claimGuidanceChange('earlier-build', env, 'd1', true, { initialContext: 'Full start context' })).toBe('Full start context')
     expect(claimGuidanceChange('earlier-build', env, 'd1', true)).toBeUndefined()
     expect(claimGuidanceChange('earlier-build', env, 'd2', true)).toMatch(/^Notifai's guidance changed/)
     recordGuidanceGiven('off', env, GUIDANCE_NOT_GIVEN)
@@ -69,7 +69,7 @@ describe('what a session was given', () => {
   it('has a starting session reload after a compaction or a change, and a resumed one Notifai never recorded', () => {
     const { env } = setup()
     expect(startingCurrency({ sessionId: 's', env, digest: 'd1', source: 'startup' })).toBeUndefined()
-    expect(startingCurrency({ sessionId: 's', env, digest: 'd1', source: 'resume' })).toMatch(/^Notifai's guidance changed/)
+    expect(startingCurrency({ sessionId: 's', env, digest: 'd1', source: 'resume', delivery: { initialContext: 'Full start context' } })).toBeUndefined()
     expect(startingCurrency({ sessionId: 's', env, digest: 'd1', source: 'compact' })).toMatch(/^This conversation was compacted\./)
     expect(startingCurrency({ sessionId: 's', env, digest: 'd1', compacted: true })).toMatch(/^This conversation was compacted\./)
     recordGuidanceGiven('s', env, 'd1')
@@ -239,4 +239,47 @@ it.each(['cursor', 'claude-code'] as const)('recovers through the public CLI par
     expect(recovered.status, recovered.stderr).toBe(4)
     expect(recovered.stdout + recovered.stderr).not.toContain('guidance_required')
   }
+})
+
+
+describe('actual changed guidance delivery', () => {
+  it('carries inserted and retired lines before the installed pointer and keeps the delta for the CLI read', async () => {
+    const { cwd, env } = setup()
+    env.CODEX_THREAD_ID = 'updated'
+    const { rootGuidanceText } = await import('./session-activation.js')
+    const previous = rootGuidanceText(cwd, env)
+    recordGuidanceGiven('updated', env, rootGuidanceDigest(cwd, env), previous)
+    const dir = personalProjectGuidanceDir(cwd, env)
+    mkdirSync(dir, { recursive: true })
+    writeFileSync(path.join(dir, 'content.md'), '# Content\n\nUse the current documentation version in summaries.\n')
+    const text = rootGuidanceText(cwd, env)
+    const skill = { digest: 'verified', file: '/opt/skills/notifai/SKILL.md' }
+    const notice = claimGuidanceChange('updated', env, rootGuidanceDigest(cwd, env), true, { text, skill })!
+    expect(notice).toContain('+ Use the current documentation version in summaries.')
+    expect(notice.indexOf('+ Use the current')).toBeLessThan(notice.indexOf('load the Notifai skill again'))
+    expect(notice).toContain(skill.file)
+    expect(notice).toContain('Skill tool')
+    expect(claimGuidanceChange('updated', env, rootGuidanceDigest(cwd, env), true, { text, skill })).toBeUndefined()
+    const output: string[] = []
+    const deps = { cwd, env, io: { out: (line: string) => output.push(line), err: () => undefined } } as unknown as CommandDeps
+    await guidanceShowCommand(deps, {})
+    expect(output[0]).toMatch(/^Changed Notifai guidance/)
+    expect(output[0]).toContain('+ Use the current documentation version in summaries.')
+    output.length = 0
+    await guidanceShowCommand(deps, {})
+    expect(output[0]).not.toContain('Changed Notifai guidance')
+  })
+
+  it('bounds multibyte changes at 800 bytes, including at compaction, without losing removal-only changes', () => {
+    const { env } = setup()
+    recordGuidanceGiven('compact', env, 'v1', 'Retire this rule.\nKeep this rule.')
+    const text = 'Keep this rule.\n' + '🌍'.repeat(500)
+    const notice = claimGuidanceChange('compact', env, 'v2', true, { text, compacted: true, skill: { digest: null, file: '/opt/current/SKILL.md' } })!
+    const delta = notice.split('\n\n')[1]!
+    expect(Buffer.byteLength(delta)).toBeLessThanOrEqual(800)
+    expect(delta).not.toContain('�')
+    expect(notice).toContain('/opt/current/SKILL.md')
+    recordGuidanceGiven('removal', env, 'v1', 'Retire this rule.\nKeep this rule.')
+    expect(claimGuidanceChange('removal', env, 'v2', true, { text: 'Keep this rule.' })).toContain('- Retire this rule.')
+  })
 })

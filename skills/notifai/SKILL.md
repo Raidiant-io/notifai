@@ -19,8 +19,9 @@ Parent owns by default. An agent that started your Agent Session with a task
 brief is your parent, even when the harness shows no parent. Ordinary workers
 report Agent Events to their parent and do not load or send. Explicit
 delegation makes a worker the owner. A delegated worker that asks keeps the
-assignment until it has acted on the answer. Follow what `ask` prints: it says where the answer arrives, which may be the root Agent
-Session rather than the worker.
+assignment while its question is pending and until it does the work the answer
+unblocks, before reporting; reporting the answer is not acting on it. Follow
+what `ask` prints: it says which Agent Session receives the answer.
 
 Owner session context carries the `when-to-notify` and `questions` guidance.
 Before your first Notification Request or acknowledgement, or when that
@@ -60,8 +61,7 @@ notifai guidance set when-to-notify 'Only when you'"'"'re blocked' --local --yes
 
 ## Send
 
-Preserve text exactly, including the User's guidance. Quote every text value
-for the tool's shell:
+Quote every text value for the tool's shell:
 
 - **bash/zsh**: single-quote; nothing expands. Replace each ASCII apostrophe
   with `'"'"'`: `'SELECT '"'"'ready'"'"';'` passes `SELECT 'ready';`.
@@ -136,8 +136,8 @@ prove the exact session.
 
 ## Ask a question
 
-Pass `--resumes '<work this Agent Session will do on the answer>'`; Notifai stores it locally and replays it with the answer. Follow what `ask` prints.
-
+Pass `--resumes '<unblocked work this Agent Session does itself>'`; reporting
+the answer is not that work. Notifai replays it with the answer.
 
 When work you own or coordinate needs a User response, use `notifai ask` in
 the same turn you ask it in the conversation, even during other work or after

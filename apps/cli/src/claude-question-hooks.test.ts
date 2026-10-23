@@ -765,7 +765,7 @@ describe('Claude Code picker hooks', () => {
     claudePostToolUse(h.deps, h.envelope(FORM, { tool_response: { answers: { 'Which environment?': 'Staging' } } }), h.logger)
     expect(h.context()).toBe(`Notifai — that answer came from the user's device, for request ${requestId}. ` +
       'The user left "Which checks should run first?" unanswered. ' +
-      'This answer resumes: \"Run the selected checks\". Only this Agent Session received the answer. Do the work it resumes here. ' +
+      'This answer resumes: \"Run the selected checks\". No other agent received this answer, and a report sent after this turn may never reach the agent that briefed you: do the work the answer unblocks here first, then report. ' +
       `Agent Acknowledgement is required for request ${requestId}. Immediately, before doing the resumed work or ending this turn, run ` +
       `\`notifai acknowledge ${requestId} --text <text>\` with non-empty text naming the concrete work this Agent Session starts now because of the reply; ` +
       'a bare acknowledgement is insufficient. Once a request reports recorded or replayed, its acknowledgement is complete; ' +

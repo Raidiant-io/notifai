@@ -79,6 +79,7 @@ function setup(options: { transport?: boolean; enabled?: boolean; disabled?: boo
 
 it.each([false, true])('returns one card hook document when old guidance needs refreshing (native transport: %s)', async transport => {
   const h = setup({ transport, guidanceCurrent: false })
+  recordGuidanceGiven(SESSION, h.env, 'earlier-guidance')
   await hookRunCommand(h.deps, 'pre-tool-use', async () => JSON.stringify(h.envelope), 'codex')
   expect(h.output).toHaveLength(1)
   const decision = JSON.parse(h.output.join('\n')).hookSpecificOutput

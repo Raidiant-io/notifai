@@ -5,6 +5,7 @@ import path from 'node:path'
 import { atomicWriteFileSync } from './atomic-file.js'
 import { stateDir } from './config.js'
 import { resolveGuidance } from './guidance.js'
+import { renderGuidance } from './guidance-render.js'
 import { skillTreeDigest, shippedSkillSourceRoot, verifySkillBundle } from './skill-integrity.js'
 import { skillDestination } from './native-skills.js'
 import { SOURCE_CONTEXT_HARNESSES } from './harnesses.js'
@@ -66,19 +67,62 @@ export function guidanceDigest(options: { cwd: string; env: NodeJS.ProcessEnv; a
     .digest('hex')
 }
 
-/** How to load the skill again: the harness's own copy, or the bundled file where there is none. */
+/** Exact trusted content, independent of installation paths. Repository skill
+ * copies affect admission but never become instructions in a change notice. */
+export function guidanceText(options: { cwd: string; env: NodeJS.ProcessEnv; activation: string }): string {
+  const bundle = verifySkillBundle(shippedSkillSourceRoot())
+  const files = bundle.ok ? bundle.bundle.manifest.files.map(file =>
+    `# Shipped skill: ${file.path}\n${readFileSync(path.join(bundle.bundle.skillRoot, file.path), 'utf8')}`) : []
+  return [options.activation, renderGuidance(resolveGuidance(options)), ...files].join('\n\n')
+}
+
+export interface GuidanceDelivery {
+  text?: string
+  skill?: ShippedSkill
+  /** Full activation if SessionStart was cancelled before it printed. */
+  initialContext?: string | undefined
+}
+
+/** Keep additions first and removals explicit. Count occurrences so repeated
+ * lines do not hide an insertion. Reflow is a change too; order alone is not. */
+function changedLines(before: string | undefined, after: string | undefined): string | undefined {
+  if (before === undefined || after === undefined || before === after) return undefined
+  const difference = (a: string, b: string): string[] => {
+    const counts = new Map<string, number>()
+    for (const line of b.split('\n')) counts.set(line, (counts.get(line) ?? 0) + 1)
+    return a.split('\n').filter(line => {
+      const count = counts.get(line) ?? 0
+      if (count > 0) { counts.set(line, count - 1); return false }
+      return line.trim() !== ''
+    })
+  }
+  const lines = [...difference(after, before).map(line => `+ ${line}`), ...difference(before, after).map(line => `- ${line}`)]
+  if (lines.length === 0) return undefined
+  const full = `Changed Notifai guidance (apply additions; retire removals):\n${lines.join('\n')}`
+  if (Buffer.byteLength(full, 'utf8') <= 800) return full
+  let bounded = ''
+  const tail = '\n… Full guidance follows the reload pointer.'
+  for (const char of full) {
+    if (Buffer.byteLength(bounded + char + tail, 'utf8') > 800) break
+    bounded += char
+  }
+  return bounded + tail
+}
+
+/** Load through native skills first, with the same verified pointer as start. */
 function reload(skill: ShippedSkill): string {
-  return `${skill.file === null ? 'repair the Notifai skill with \`notifai init --skills\`, then load its verified copy' : `read \`${skill.file}\` again`} and run \`notifai guidance\``
+  return `load the Notifai skill again${skill.file === null ? ' (repair it with `notifai init --skills` if missing)' : ` (use your Skill tool, or read \`${skill.file}\` again)`} and run \`notifai guidance\``
 }
 
-/** Told once, at the next turn, when the guidance this session read changed. */
-export function guidanceChangedNotice(skill: ShippedSkill = shippedSkill()): string {
-  return `Notifai's guidance changed after this Agent Session read it. Before your next Notification Request, ${reload(skill)}; follow them over what you read earlier.`
+/** Told once at a model-visible boundary, with changed lines before the pointer. */
+export function guidanceChangedNotice(skill: ShippedSkill = shippedSkill(), changes?: string): string {
+  return ["Notifai's guidance changed after this Agent Session read it.", changes,
+    `Before your next Notification Request, ${reload(skill)}; follow them over what you read earlier.`].filter(Boolean).join('\n\n')
 }
 
-/** Told when a compacted conversation starts again: what it read before is summarized or out of date. */
-export function compactedNotice(skill: ShippedSkill = shippedSkill()): string {
-  return `This conversation was compacted. Before your next Notification Request, ${reload(skill)}.`
+export function compactedNotice(skill: ShippedSkill = shippedSkill(), changes?: string): string {
+  return ['This conversation was compacted.', changes,
+    `Before your next Notification Request, ${reload(skill)}.`].filter(Boolean).join('\n\n')
 }
 
 function recordFile(sessionId: string, env: NodeJS.ProcessEnv): string {
@@ -98,10 +142,10 @@ export function guidanceGiven(sessionId: string, env: NodeJS.ProcessEnv): string
 }
 
 /** Record what this session was just given. Never fails a hook. */
-export function recordGuidanceGiven(sessionId: string, env: NodeJS.ProcessEnv, digest: string): boolean {
+export function recordGuidanceGiven(sessionId: string, env: NodeJS.ProcessEnv, digest: string, text?: string): boolean {
   try {
     const file = recordFile(sessionId, env)
-    if (guidanceGiven(sessionId, env) === digest) {
+    if (guidanceGiven(sessionId, env) === digest && (text === undefined || readReceipt(file).text !== undefined)) {
       // Active, unchanged sessions must not age out as abandoned records.
       const now = Date.now()
       if (now - statSync(file).mtimeMs > 6 * 3600_000) utimesSync(file, new Date(now), new Date(now))
@@ -109,7 +153,7 @@ export function recordGuidanceGiven(sessionId: string, env: NodeJS.ProcessEnv, d
     }
     mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 })
     const prior = readReceipt(file)
-    atomicWriteFileSync(file, `${JSON.stringify({ ...prior, digest })}\n`, { mode: 0o600 })
+    atomicWriteFileSync(file, `${JSON.stringify({ ...prior, digest, ...(text === undefined ? {} : { text }), changes: changedLines(prior.text, text) })}\n`, { mode: 0o600 })
     return true
   } catch {
     return false
@@ -120,7 +164,7 @@ export function recordGuidanceGiven(sessionId: string, env: NodeJS.ProcessEnv, d
  * What a starting or resuming owner session must be told about the guidance
  * it already holds, before its record is replaced: a compacted conversation
  * reloads; a conversation that read different guidance, or that Notifai
- * never recorded and is being resumed, reloads too.
+ * never recorded receives its full activation from the starting caller.
  */
 export function startingCurrency(options: {
   sessionId: string
@@ -128,9 +172,10 @@ export function startingCurrency(options: {
   digest: string
   source?: string | undefined
   compacted?: boolean
+  delivery?: GuidanceDelivery
 }): string | undefined {
   return claimGuidanceChange(options.sessionId, options.env, options.digest, options.source === 'resume', {
-    compacted: options.source === 'compact' || options.compacted === true,
+    ...options.delivery, initialContext: undefined, compacted: options.source === 'compact' || options.compacted === true,
   })
 }
 
@@ -139,27 +184,29 @@ export function startingCurrency(options: {
  * per change, and the current digest recorded as given. A session started
  * with guidance off has nothing to change. A session with no record was told
  * nothing by this build: `started` says whether its own SessionStart ran (it
- * was activated by an earlier build, so it is told once), since a prompt hook
+ * may have been cancelled before printing, so it gets full start context), since a prompt hook
  * alone never activates a session.
  */
-export function claimGuidanceChange(sessionId: string, env: NodeJS.ProcessEnv, digest: string, started: boolean, options: { compacted?: boolean } = {}): string | undefined {
+export function claimGuidanceChange(sessionId: string, env: NodeJS.ProcessEnv, digest: string, started: boolean, options: GuidanceDelivery & { compacted?: boolean } = {}): string | undefined {
   try {
     const file = recordFile(sessionId, env)
     mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 })
     return withTargetFileLock(file, () => {
+      const prior = readReceipt(file)
+      const changes = changedLines(prior.text, options.text) ?? prior.changes
       if (options.compacted) {
-        const prior = readReceipt(file)
         delete prior.read
-        atomicWriteFileSync(file, `${JSON.stringify({ ...prior, digest, generation: randomBytes(16).toString('hex') })}\n`, { mode: 0o600 })
-        return compactedNotice()
+        atomicWriteFileSync(file, `${JSON.stringify({ ...prior, digest, ...(options.text === undefined ? {} : { text: options.text }), changes, generation: randomBytes(16).toString('hex') })}\n`, { mode: 0o600 })
+        return compactedNotice(options.skill, changes)
       }
       const given = guidanceGiven(sessionId, env)
       if (given === digest) {
-        recordGuidanceGiven(sessionId, env, digest)
+        recordGuidanceGiven(sessionId, env, digest, options.text)
         return undefined
       }
       if (given === GUIDANCE_NOT_GIVEN || (given === undefined && !started)) return undefined
-      return recordGuidanceGiven(sessionId, env, digest) ? guidanceChangedNotice() : undefined
+      if (!recordGuidanceGiven(sessionId, env, digest, options.text)) return undefined
+      return given === undefined ? options.initialContext : guidanceChangedNotice(options.skill, changes)
     })
   } catch {
     // Keep the prior receipt: the next boundary can retry the claim.
@@ -167,8 +214,16 @@ export function claimGuidanceChange(sessionId: string, env: NodeJS.ProcessEnv, d
   }
 }
 
-function readReceipt(file: string): { digest?: string; read?: string; generation?: string } {
-  try { return JSON.parse(readFileSync(file, 'utf8')) as { digest?: string; read?: string; generation?: string } } catch { return {} }
+interface GuidanceReceipt { digest?: string; read?: string; generation?: string; text?: string; changes?: string }
+
+function readReceipt(file: string): GuidanceReceipt {
+  try { return JSON.parse(readFileSync(file, 'utf8')) as GuidanceReceipt } catch { return {} }
+}
+
+/** A hook has already advanced `digest`; retain its delta until the CLI read. */
+export function pendingGuidanceChanges(sessionId: string, env: NodeJS.ProcessEnv, text: string): string | undefined {
+  const prior = readReceipt(recordFile(sessionId, env))
+  return changedLines(prior.text, text) ?? prior.changes
 }
 
 export function guidanceRead(sessionId: string, env: NodeJS.ProcessEnv): string | undefined {
@@ -176,12 +231,12 @@ export function guidanceRead(sessionId: string, env: NodeJS.ProcessEnv): string 
 }
 
 /** Called only after `notifai guidance` printed the current text. */
-export function recordGuidanceRead(sessionId: string, env: NodeJS.ProcessEnv, digest: string): boolean {
+export function recordGuidanceRead(sessionId: string, env: NodeJS.ProcessEnv, digest: string, text?: string): boolean {
   try {
     const file = recordFile(sessionId, env)
     mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 })
     return withTargetFileLock(file, () => {
-      atomicWriteFileSync(file, `${JSON.stringify({ ...readReceipt(file), read: digest })}\n`, { mode: 0o600 })
+      atomicWriteFileSync(file, `${JSON.stringify({ ...readReceipt(file), read: digest, ...(text === undefined ? {} : { text }), changes: undefined })}\n`, { mode: 0o600 })
       return true
     })
   } catch { return false }

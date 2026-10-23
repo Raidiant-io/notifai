@@ -14,7 +14,7 @@ import { projectBinding, projectEnablementState } from './project-enablement.js'
 import { loadConfig } from './config.js'
 import { rootGuidanceDigest, requestGuidanceContext } from './session-activation.js'
 import { conversationToken, guidanceChangedNotice, guidanceRead, installedSkill } from './guidance-currency.js'
-import { commandGuidanceOwner, recordCommandGuidanceRead } from './command-guidance.js'
+import { commandGuidanceChanges, commandGuidanceOwner, recordCommandGuidanceRead } from './command-guidance.js'
 
 // ---------------------------------------------------------------------------
 // guidance show / set / unset
@@ -34,7 +34,7 @@ export function guidanceCheckCommand(deps: CommandDeps, seen?: string): number {
   const token = conversationToken(deps.env, seen, commandGuidanceOwner(deps)) ?? conversationToken(deps.env, undefined, commandGuidanceOwner(deps))
   if (token === null) { deps.io.err('Could not store the local guidance token.'); return EXIT.failed }
   const changed = guidanceRead(`conversation/${token}`, deps.env) !== digest
-  const output = changed ? requestGuidanceContext(deps.cwd, deps.env, seen === undefined ? undefined : guidanceChangedNotice()) : undefined
+  const output = changed ? requestGuidanceContext(deps.cwd, deps.env, seen === undefined ? undefined : guidanceChangedNotice(installedSkill(deps.cwd, deps.env), commandGuidanceChanges(deps, token))) : undefined
   deps.io.out(JSON.stringify({ enabled, token, read_command: `notifai guidance --session-token ${token}`, request_flag: `--guidance-token ${token}`, skill_file: installedSkill(deps.cwd, deps.env).file,
     ...(output === undefined ? {} : { context: output }) }))
   return EXIT.ok
@@ -50,10 +50,12 @@ export function guidanceCheckCommand(deps: CommandDeps, seen?: string): number {
  */
 export async function guidanceShowCommand(deps: CommandDeps, flags: { json?: boolean; sessionToken?: string }): Promise<number> {
   const topics = resolveGuidance({ cwd: deps.cwd, env: deps.env })
+  const changes = commandGuidanceChanges(deps, flags.sessionToken)
   if (flags.json) {
     deps.io.out(
       JSON.stringify(
         {
+          ...(changes === undefined ? {} : { changes }),
           trust: GUIDANCE_TRUST_PREAMBLE,
           topics: topics.map((topic) => ({
             name: topic.name,
@@ -69,7 +71,7 @@ export async function guidanceShowCommand(deps: CommandDeps, flags: { json?: boo
     )
     return recordCommandGuidanceRead(deps, flags.sessionToken) ? EXIT.ok : EXIT.failed
   }
-  deps.io.out(renderGuidance(topics))
+  deps.io.out([changes, renderGuidance(topics)].filter(Boolean).join('\n\n'))
   return recordCommandGuidanceRead(deps, flags.sessionToken) ? EXIT.ok : EXIT.failed
 }
 

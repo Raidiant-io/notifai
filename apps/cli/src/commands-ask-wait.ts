@@ -38,7 +38,7 @@ import { recordSessionNotified } from './hook-session-state.js'
 import { activeOpenclawGeneration, recordOpenclawForegroundReply } from './openclaw-session-access.js'
 import { selectedForClaimedDelivery } from './hook-question-retirement.js'
 import { beginSendAttempt, semanticMediaIds, sendDraftFingerprint, settleSendAttempt } from './send-attempts.js'
-import { quoted } from './injection-render.js'
+import { ANSWER_RESUMPTION_CONTEXT, quoted } from './injection-render.js'
 import { buildAskDraft, reportAskFailure, type AskFlags, type BuiltQuestions } from './commands-ask.js'
 
 /** The receipt a script's answer gets: no agent will write one. */
@@ -415,12 +415,12 @@ export async function heldAskWait(deps: CommandDeps, input: HeldWaitInput): Prom
     if (json) {
       deps.io.out(JSON.stringify({ ...replyResultJson(answered, false, receipt, 'answer_result'),
         ...(built.resumes === undefined ? {} : { resumes: built.resumes }),
-        ...(route.harnesses.length === 0 ? {} : { on_answer: 'Only this Agent Session received the answer. Do the work it resumes here.' }),
+        ...(route.harnesses.length === 0 ? {} : { on_answer: ANSWER_RESUMPTION_CONTEXT }),
       }))
     } else {
       printReplies(deps, answered.replies)
       if (built.resumes !== undefined) deps.io.out(`This answer resumes: ${quoted(built.resumes)}.`)
-      if (route.harnesses.length > 0) deps.io.out('Only this Agent Session received the answer. Do the work it resumes here.')
+      if (route.harnesses.length > 0) deps.io.out(ANSWER_RESUMPTION_CONTEXT)
       printAcknowledgementStatus(deps, answered)
     }
     if (foregroundSession !== null && foregroundSession === notifiedSession) {

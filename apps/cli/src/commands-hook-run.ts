@@ -78,7 +78,7 @@ import { codexCardPostToolUse, codexPreToolUse } from './codex-question-hooks.js
 import { grokQuestionFormGate, unlinkedQuestionFormContext } from './unlinked-question-forms.js'
 import { spawnQuestionSettlement } from './question-settlement-process.js'
 import { QUESTION_WAITER_CEILING_SECONDS } from './question-timing.js'
-import { rootGuidanceDigest, sessionActivationOutput, userPromptContextOutput } from './session-activation.js'
+import { rootGuidanceDigest, rootGuidanceDelivery, sessionActivationOutput, userPromptContextOutput } from './session-activation.js'
 import { GUIDANCE_NOT_GIVEN, claimGuidanceChange, invalidateGuidanceRead, guidanceSessionKey, recordGuidanceGiven, startingCurrency } from './guidance-currency.js'
 import { currentProcessIdentity } from './process-identity.js'
 import { attendantSupport } from './session-attendant-probe.js'
@@ -614,7 +614,7 @@ export async function hookRunCommand(
           if (envelope.compacted === true) invalidateGuidanceRead(envelope.session_id, deps.env)
         } else {
           notice = claimGuidanceChange(envelope.session_id, deps.env, rootGuidanceDigest(cwd, deps.env),
-            readSessionIncarnation(envelope.session_id, deps.env) !== null, { compacted: envelope.compacted === true })
+            readSessionIncarnation(envelope.session_id, deps.env) !== null, { ...rootGuidanceDelivery(cwd, deps.env, harness), compacted: envelope.compacted === true })
         }
       }
     } catch (err) {
@@ -812,14 +812,14 @@ export async function hookRunCommand(
     const currencyFor = (compacted: boolean): string | undefined => {
       if (digest === undefined) return undefined
       try {
-        return startingCurrency({ sessionId: currencyKey, env: deps.env, digest, source: envelope.source, compacted })
+        return startingCurrency({ sessionId: currencyKey, env: deps.env, digest, source: envelope.source, compacted, delivery: rootGuidanceDelivery(cwd, deps.env, harness) })
       } catch {
         return undefined
       }
     }
     const recordGiven = (): boolean => {
       if (!owner) return true
-      return recordGuidanceGiven(currencyKey, deps.env, guidanceOn ? digest ?? GUIDANCE_NOT_GIVEN : GUIDANCE_NOT_GIVEN)
+      return recordGuidanceGiven(currencyKey, deps.env, guidanceOn ? digest ?? GUIDANCE_NOT_GIVEN : GUIDANCE_NOT_GIVEN, guidanceOn ? rootGuidanceDelivery(cwd, deps.env, harness).text : undefined)
     }
     if ((!owner || !guidanceOn) && (envelope.source === 'compact' || envelope.compacted === true) && currencyKey !== '') {
       invalidateGuidanceRead(currencyKey, deps.env)
@@ -867,7 +867,7 @@ export async function hookRunCommand(
           // the prompt's messages): then it is activated again.
           const reactivate = generation.activationPrinted === true && envelope.compacted === true
           if (generation.activationPrinted && !reactivate) {
-            const changed = owner && digest !== undefined ? claimGuidanceChange(sessionKey, deps.env, digest, true) : undefined
+            const changed = owner && digest !== undefined ? claimGuidanceChange(sessionKey, deps.env, digest, true, rootGuidanceDelivery(cwd, deps.env, harness)) : undefined
             if (changed === undefined) return 'already-activated'
             deps.io.out(changed)
             return 'guidance-changed'
@@ -1494,7 +1494,7 @@ function guidanceChangeFor(deps: CommandDeps, harness: HookHarness | undefined, 
   if ((harness !== 'claude-code' && harness !== 'codex') || envelope.session_id === undefined || envelope.agent_id !== undefined) return undefined
   try {
     return claimGuidanceChange(guidanceSessionKey(envelope.session_id, envelope.agent_id), deps.env, rootGuidanceDigest(cwd, deps.env),
-      readSessionIncarnation(envelope.session_id, deps.env) !== null)
+      readSessionIncarnation(envelope.session_id, deps.env) !== null, rootGuidanceDelivery(cwd, deps.env, harness))
   } catch {
     // Guidance currency never fails a hook.
     return undefined

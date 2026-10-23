@@ -3,7 +3,7 @@
 import { createHash } from 'node:crypto'
 import type { ContinuationEvent, EscalationDeliveryRoute, HookEnvelope } from './hook-types.js'
 import { updateSessionState } from './hook-session-state.js'
-import { grokActivationContext, rootGuidanceDigest } from './session-activation.js'
+import { grokActivationContext, rootGuidanceDigest, rootGuidanceDelivery } from './session-activation.js'
 import { claimGuidanceChange, invalidateGuidanceRead, recordGuidanceGiven } from './guidance-currency.js'
 import type { PendingNotice } from './pending-notice.js'
 import { stopAnswerOutput } from './hook-acknowledgements.js'
@@ -63,8 +63,8 @@ export function claimGrokActivation(envelope: HookEnvelope, cwd: string, env: No
   updateSessionState(sessionId, env, current => {
     if (current.grok_activation_context === digest) return current
     if (guidance !== undefined) {
-      currency = claimGuidanceChange(sessionId, env, guidance, false, { compacted: current.grok_compacted === true })
-      if (!recordGuidanceGiven(sessionId, env, guidance)) return current
+      currency = claimGuidanceChange(sessionId, env, guidance, false, { ...rootGuidanceDelivery(cwd, env), compacted: current.grok_compacted === true })
+      if (!recordGuidanceGiven(sessionId, env, guidance, rootGuidanceDelivery(cwd, env).text)) return current
     }
     claimed = true
     const next = { ...current, grok_activation_context: digest }

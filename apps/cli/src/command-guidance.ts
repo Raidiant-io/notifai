@@ -1,10 +1,10 @@
 import { claudeSessionHasSubagents } from './claude-subagent.js'
 import type { CommandDeps } from './commands-core.js'
 import { sourceContextHarnessSession } from './commands-harness-context.js'
-import { conversationToken, guidanceRead, installedSkill, recordGuidanceRead } from './guidance-currency.js'
+import { conversationToken, guidanceRead, installedSkill, pendingGuidanceChanges, recordGuidanceRead } from './guidance-currency.js'
 import { resolveGuidance } from './guidance.js'
 import { renderGuidance } from './guidance-render.js'
-import { rootGuidanceDigest } from './session-activation.js'
+import { rootGuidanceDigest, rootGuidanceText } from './session-activation.js'
 
 export function guidanceSessionNeedsToken(deps: CommandDeps): boolean {
   const active = sourceContextHarnessSession(deps.env, deps.cwd, (deps.now ?? Date.now)())
@@ -32,7 +32,7 @@ export function recordCommandGuidanceRead(deps: CommandDeps, token?: string): bo
     deps.io.err('This shell cannot identify one conversation. Run `notifai guidance check`, then its read_command; pass the returned --guidance-token on Notification Requests.')
     return false
   }
-  return session === null || recordGuidanceRead(session, deps.env, rootGuidanceDigest(deps.cwd, deps.env))
+  return session === null || recordGuidanceRead(session, deps.env, rootGuidanceDigest(deps.cwd, deps.env), rootGuidanceText(deps.cwd, deps.env))
 }
 
 /** Before any upload, registration or send. Notices cannot satisfy this check. */
@@ -50,4 +50,10 @@ export function currentCommandGuidance(deps: CommandDeps, token?: string): { cod
       ? 'Run `notifai guidance check`, read its skill_file when present, run its read_command, then retry this command with the returned --guidance-token.'
       : `${skill.file === null ? 'Repair the Notifai skill with `notifai init --skills`, then load its verified copy' : `Read ${JSON.stringify(skill.file)}`}; run \`notifai guidance${token === undefined ? '' : ` --session-token ${token}`}\`, then retry the same command${token === undefined ? '' : ` with --guidance-token ${token}`}.`,
   }
+}
+
+/** Changes for this exact conversation; ordinary scripts have no old context. */
+export function commandGuidanceChanges(deps: CommandDeps, token?: string): string | undefined {
+  const session = commandGuidanceSession(deps, token)
+  return session === null ? undefined : pendingGuidanceChanges(session, deps.env, rootGuidanceText(deps.cwd, deps.env))
 }

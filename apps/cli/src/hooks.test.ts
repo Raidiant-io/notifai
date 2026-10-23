@@ -9259,11 +9259,12 @@ describe('guidance currency', () => {
     expect(await start('resume')).not.toMatch(/guidance changed/)
   })
 
-  it('tells a session an earlier build activated once, and never one SessionStart did not activate', async () => {
+  it('recovers a cancelled start with full activation once, and never activates an unstarted session', async () => {
     const h = harness()
     sessionStateModule.recordSessionStart('earlier-build', h.env, 'claude-code', h.deps.cwd)
     await hookRunCommand(h.deps, 'user-prompt-submit', stdin({ session_id: 'earlier-build', prompt: 'p' }), 'claude-code')
-    expect(contextOf(h.io.outLines[0])).toMatch(CHANGED)
+    expect(contextOf(h.io.outLines[0])).toContain('Notifai is enabled for this Project.')
+    expect(contextOf(h.io.outLines[0])).not.toMatch(CHANGED)
     h.io.outLines = []
     await hookRunCommand(h.deps, 'user-prompt-submit', stdin({ session_id: 'earlier-build', prompt: 'q' }), 'claude-code')
     await hookRunCommand(h.deps, 'user-prompt-submit', stdin({ session_id: 'never-started', prompt: 'p' }), 'claude-code')

@@ -38,7 +38,7 @@ describe('answer context', () => {
       .toContain('Your subagent (agent 019ff69d-b1c2) asked it for this Agent Session')
     const ordinary = answersContext([answered({ resumes: 'Write the chosen headline into HEADLINE.txt' })], 0)
     expect(ordinary).toContain('This answer resumes: \"Write the chosen headline into HEADLINE.txt\"')
-    expect(ordinary).toContain('Only this Agent Session received the answer')
+    expect(ordinary).toContain('No other agent received this answer')
     expect(ordinary).not.toMatch(/subagent|pass the reply|send it this answer/i)
   })
 
