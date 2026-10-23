@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "behavior_digest": "sha256:290d15aec1f11d5f67bbb036656748e9ea3f212886bbcb199565cc7544307f96",
+  "behavior_digest": "sha256:76e03f99996d342bbd7dfe1e95f8bf9843526de8fda6a6ec14957a408188cf33",
   "outcome": "guidance-updated",
   "surfaces_reviewed": [
     "lifecycle-hooks",
@@ -9,5 +9,5 @@
     "cli-readiness",
     "domain-terms"
   ],
-  "reason": "Reviewed lifecycle activation, the installed skill and all harness references, effective writing topics, CLI admission, question registration and answer injection. Claude Code retains its existing hook set; guidance currency is checked before send and ask effects, and only guidance reads advance the separate session receipt. Cursor uses random local conversation tokens at Notification Request boundaries. Digests include installed skill bytes and every effective topic; Grok deduplicates on the complete root digest without recording silent delivery. Worker context defers to ask output. Ordinary answers name the sole receiving session and replay locally stored resumption work; only routed subagent metadata carries handoff instructions. Compiled builds omit embedded-filesystem pointers and prefer installed disk copies. OpenCode 1 compatibility fixtures include the reviewed compaction carrier while preserving the OpenCode 2 adapter from main. Public setup, disabled Projects, trust boundaries, question routes and domain terms remain aligned."
+  "reason": "Reviewed lifecycle activation, the installed skill and all harness references, effective writing topics, CLI admission, question registration and answer injection. Claude Code retains its existing hook set; guidance currency is checked before send and ask effects, and only guidance reads advance the separate session receipt. Cursor uses random local conversation tokens at Notification Request boundaries. Digests include installed skill bytes and every effective topic; Grok deduplicates on the complete root digest without recording silent delivery. Worker context defers to ask output. Ordinary answers name the sole receiving session and replay locally stored resumption work; only routed subagent metadata carries handoff instructions. Compiled builds omit embedded-filesystem pointers and prefer installed disk copies. OpenCode 1 compatibility fixtures include the reviewed compaction carrier while preserving the OpenCode 2 adapter from main. Public setup, disabled Projects, trust boundaries, question routes and domain terms remain aligned. Rebased onto the current per-harness guidance corrections: exact-session naming, source attribution, OpenClaw live-apply boundaries and parallel OpenCode question acknowledgements remain intact; the reviewed OpenCode 1 fixtures were regenerated from that merged source."
 }
