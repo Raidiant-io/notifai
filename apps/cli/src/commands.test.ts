@@ -615,7 +615,7 @@ describe('command contracts', () => {
     expect(projectEnabled(projectBinding(cwd, env))).toBe(true)
   })
 
-  it('sends nothing from a Project the User disabled until they enable it again', async () => {
+  it.each([false, true])('sends nothing from a Project the User disabled until they enable it again (projectless: %s)', async (projectless) => {
     const cwd = mkdtempSync(path.join(os.tmpdir(), 'notifai-disabled-send-'))
     execFileSync('git', ['init', '--quiet', cwd])
     const io = new CapturedIo()
@@ -626,7 +626,7 @@ describe('command contracts', () => {
     expect(projectDisableCommand(deps)).toBe(EXIT.ok)
     expect(io.outLines.at(-1)).toMatch(/^Notifai is disabled for Project ".+": nothing from it reaches the User's devices until `notifai project enable`\.$/)
 
-    expect(await sendCommand(deps, { title: 'Ready', body: 'Ready.', kind: 'done' })).toBe(EXIT.usage)
+    expect(await sendCommand(deps, { title: 'Ready', body: 'Ready.', kind: 'done', projectless })).toBe(EXIT.usage)
     expect(io.errLines.join('\n')).toMatch(/^project_disabled: Notifai is disabled for Project ".+": nothing from it reaches the User's devices\. Nothing was sent\.$/m)
     expect(io.errLines.join('\n')).toContain('If the User asked for Notifai here, run `notifai project enable`, then run this send again; otherwise do not notify them.')
     expect(submissions).toBe(0)
@@ -655,7 +655,14 @@ describe('command contracts', () => {
     expect(() => JSON.parse(io.outLines.join('\n'))).not.toThrow()
   })
 
-  it.each([false, true])('registers no question in a Project the User disabled (json: %s)', (json) => {
+  it.each([
+    { json: false, wait: false, projectless: false },
+    { json: true, wait: false, projectless: false },
+    { json: true, wait: true, projectless: false },
+    { json: false, wait: false, projectless: true },
+    { json: true, wait: false, projectless: true },
+    { json: true, wait: true, projectless: true },
+  ])('registers no question in a Project the User disabled (%j)', async ({ json, wait, projectless }) => {
     const cwd = mkdtempSync(path.join(os.tmpdir(), 'notifai-disabled-ask-'))
     writeProjectSettings(cwd, isolatedEnv(cwd), 'project = "disabled-ask"\n')
     const io = new CapturedIo()
@@ -664,7 +671,7 @@ describe('command contracts', () => {
     const binding = projectBinding(cwd, env, 'disabled-ask')!
     disableProject(binding)
 
-    expect(askCommand(deps, 'Ship it?', { json })).toBe(EXIT.usage)
+    expect(await askCommand(deps, 'Ship it?', { json, wait, projectless })).toBe(EXIT.usage)
     const remedy = 'if the User asked for Notifai here, run `notifai project enable`, then ask again; otherwise ask in the conversation, as you would without Notifai'
     if (json) {
       expect(JSON.parse(io.outLines.at(-1)!)).toMatchObject({
@@ -691,13 +698,10 @@ describe('command contracts', () => {
     expect(submitted?.draft.project).toBeUndefined()
     expect(projectEnabled(projectBinding(cwd, env))).toBe(false)
   })
-  it('asks Projectless without enabling or inheriting the configured disabled Project', async () => {
+  it('asks Projectless outside a Project without creating Enablement state', async () => {
     const cwd = mkdtempSync(path.join(os.tmpdir(), 'notifai-projectless-ask-'))
     const io = new CapturedIo()
     const env = isolatedEnv(cwd)
-    writeProjectSettings(cwd, env, 'project = "disabled-ask"\n')
-    const binding = projectBinding(cwd, env, 'disabled-ask')!
-    disableProject(binding)
     let submitted: SubmitNotificationRequestT | undefined
     const client = {
       submit: async (body: SubmitNotificationRequestT) => ((submitted = body), receipt),
@@ -708,7 +712,7 @@ describe('command contracts', () => {
     const deps = { ...makeDeps(io, client), cwd, env }
     expect(await askCommand(deps, 'Ship it?', { title: 'Shipping', wait: true, projectless: true, json: true })).toBe(EXIT.ok)
     expect(submitted?.draft.project).toBeUndefined()
-    expect(projectEnablementState(binding)).toBe('disabled')
+    expect(projectBinding(cwd, env)).toBeNull()
     expect(await askCommand(deps, 'Ship it?', { project: 'explicit', projectless: true, json: true })).toBe(EXIT.usage)
     expect(JSON.parse(io.outLines.at(-1)!)).toMatchObject({ code: 'invalid_input', registered: false })
   })
@@ -9228,7 +9232,7 @@ describe('a held ask --wait', () => {
     return { cwd, env }
   }
 
-  it('holds a Projectless OpenCode wait even when the cwd Project is disabled', async () => {
+  it('refuses a Projectless OpenCode wait when the cwd Project is disabled', async () => {
     const { cwd, env } = opencodeSession('0')
     writeProjectSettings(cwd, env, 'project = "disabled-wait"\n')
     const binding = projectBinding(cwd, env, 'disabled-wait')!
@@ -9236,8 +9240,9 @@ describe('a held ask --wait', () => {
     const io = new CapturedIo()
     const submit = vi.fn(async () => receipt)
     const { deps } = scriptDeps(io, { submit, replies: async () => replyResponse([reply]), closeReplies: async () => claimedReplyResponse([reply]), claimDeliveryAttempt: async () => ({ status: 'recorded' }) } as never)
-    expect(await askCommand({ ...deps, cwd, env }, 'Why?', { title: 'Reason', wait: true, projectless: true, json: true })).toBe(EXIT.ok)
-    expect(submit).toHaveBeenCalledTimes(1)
+    expect(await askCommand({ ...deps, cwd, env }, 'Why?', { title: 'Reason', wait: true, projectless: true, json: true })).toBe(EXIT.usage)
+    expect(submit).not.toHaveBeenCalled()
+    expect(JSON.parse(io.outLines.at(-1)!)).toMatchObject({ code: 'project_disabled', registered: false })
     expect(io.outLines.join(' ')).not.toContain('open_form')
     expect(projectEnablementState(binding)).toBe('disabled')
   })

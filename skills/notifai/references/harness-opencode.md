@@ -28,7 +28,8 @@ ask in a way that waits; `notifai doctor` reports that as an OpenCode limit,
 not a fault to repair. To wait, run `notifai ask --wait`: it hands back the
 `question` form with your title, Body and images; open it unchanged. In a
 worker, or with a plugin that cannot prove a root session or hand back the
-form, or with `--projectless`, it waits in the command instead, for at most
+form, or with `--projectless` in a Project that is not disabled or outside a
+Project, it waits in the command instead, for at most
 110 seconds, then withdraws
 an unanswered question (exit 3). Keep the command running until it returns.
 The OpenCode 1 form carries free text and up to 10 questions. Notifai accepts

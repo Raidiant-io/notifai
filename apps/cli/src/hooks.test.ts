@@ -4360,13 +4360,17 @@ describe('Grok native lifecycle', () => {
     expect(h.io.outLines).toEqual([])
   })
 
-  it('allows an exact registered Grok question without registering it again', async () => {
+  it.each([
+    ['Ship', 'Hold'],
+    ['Ship (Recommended)', 'Hold'],
+    [{ label: 'Ship (Recommended)' }, { label: 'Hold' }],
+  ])('allows an exact registered Grok question with options %j without registering it again', async (...options) => {
     const h = harness()
     const session = 'grok-existing-card'
     registerQuestion(session, h.env, { question_id: 'q_existing', question: 'Ship it?',
       questions: [{ id: 'ship', text: 'Ship it?', choices: [{ id: 'a', label: 'Ship' }, { id: 'b', label: 'Hold' }] }] })
     await hookRunCommand(h.deps, 'pre-tool-use', stdin({ sessionId: session, cwd: h.deps.cwd,
-      toolName: 'ask_user_question', toolInput: { questions: [{ question: 'Ship it?', options: ['Ship', 'Hold'] }] } }), 'grok')
+      toolName: 'ask_user_question', toolInput: { questions: [{ question: 'Ship it?', options }] } }), 'grok')
     expect(h.io.outLines).toEqual([])
     expect(readSessionState(session, h.env).pending).toHaveLength(1)
   })

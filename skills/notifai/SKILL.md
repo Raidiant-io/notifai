@@ -99,7 +99,9 @@ the User-owned `--sound`, `--level` and `--device`:
 
 Project and Agent Session are inferred; never pass `--session-id`. Outside a
 Project, or on a Projectless request, pass `--projectless`; it stops cwd or
-config from inventing a Project.
+config from supplying Project identity. If the User disabled the Project you
+are working in, `send` and `ask` refuse even with `--projectless`; nothing
+from that Project reaches their devices until they enable it again.
 
 ### Name the Agent Session
 

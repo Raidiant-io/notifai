@@ -203,7 +203,7 @@ function fitDescription(text: string): string {
 }
 
 /** A picker label carrying Claude Code's recommended suffix, without it. */
-function withoutRecommendedSuffix(label: string): string | null {
+export function withoutRecommendedSuffix(label: string): string | null {
   const match = /^(.*\S)\s*\(recommended\)\s*$/iu.exec(label)
   return match === null ? null : match[1]!
 }

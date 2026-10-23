@@ -1015,12 +1015,14 @@ export function askCommand(
   } catch (err) {
     return askFailure(deps, flags, 'config_invalid', 'configuration', `Question routing configuration is invalid: ${String(err)}`, 'fix the reported Notifai configuration and retry')
   }
-  const explicitProject = flags.projectless === true ? null : flags.project ?? explicitUseConfig.project.value ?? inferredProjectName(deps.cwd, deps.env)
+  const explicitProject = flags.project ?? explicitUseConfig.project.value ?? inferredProjectName(deps.cwd, deps.env)
   const explicitBinding = explicitProject === null ? null : projectBinding(deps.cwd, deps.env, explicitProject)
   if (explicitBinding !== null) {
     let decision: 'enabled' | 'disabled'
     try {
-      decision = enableProjectUnlessDisabled(explicitBinding)
+      decision = flags.projectless === true
+        ? (projectDisabled(explicitBinding) ? 'disabled' : 'enabled')
+        : enableProjectUnlessDisabled(explicitBinding)
     } catch (err) {
       return askFailure(
         deps,

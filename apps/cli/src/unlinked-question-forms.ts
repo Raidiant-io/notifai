@@ -5,6 +5,7 @@ import type { CommandDeps } from './commands-core.js'
 import { buildQuestions } from './commands-ask.js'
 import { readSessionState } from './hook-session-state.js'
 import { findOpenEqualQuestion } from './question-guard.js'
+import { withoutRecommendedSuffix } from './claude-question-bindings.js'
 import { loadConfig } from './config.js'
 import type { HookEnvelope, HookHarness } from './hook-types.js'
 import { projectBinding, projectDisabled } from './project-enablement.js'
@@ -54,7 +55,10 @@ export function grokQuestionFormGate(
       const item = entry as Record<string, unknown>
       const options = item['options']
       return { text: item['question'], ...(Array.isArray(options) && options.length > 0 ? {
-        choices: options.map(option => typeof option === 'string' ? option : (option as { label?: unknown })?.label),
+        choices: options.map(option => {
+          const label = typeof option === 'string' ? option : (option as { label?: unknown })?.label
+          return typeof label === 'string' ? (withoutRecommendedSuffix(label) ?? label) : label
+        }),
       } : {}), ...(item['multiSelect'] === true || item['multiple'] === true ? { multi: true } : {}) }
     })
     const built = buildQuestions({ form: JSON.stringify({ summary: 'Grok question', questions }) }, undefined)

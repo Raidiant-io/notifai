@@ -17,7 +17,7 @@ import { inspectQuestionState, type QuestionStateView } from './hook-question-st
 import { selectedForClaimedDelivery } from './hook-question-retirement.js'
 import { readSessionState, recordSessionNotified } from './hook-session-state.js'
 import { questionsAwaitingAnswer } from './native-answer-operation.js'
-import { enableProjectUnlessDisabled, projectBinding } from './project-enablement.js'
+import { enableProjectUnlessDisabled, inferredProjectName, projectBinding, projectDisabled } from './project-enablement.js'
 import {
   buildDraft,
   contentLengthNotes,
@@ -232,9 +232,13 @@ export async function sendCommand(
     deps.io.err(semanticBuild.error)
     return EXIT.usage
   }
-  if (semanticBuild.draft.project !== undefined) {
-    const binding = projectBinding(deps.cwd, deps.env, semanticBuild.draft.project)
-    if (binding !== null && enableProjectUnlessDisabled(binding) === 'disabled') {
+  // Omitting request identity never overrides the User's decision for this Project.
+  const originProject = semanticBuild.draft.project ?? config.project.value ?? inferredProjectName(deps.cwd, deps.env)
+  if (originProject !== null) {
+    const binding = projectBinding(deps.cwd, deps.env, originProject)
+    if (binding !== null && (flags.projectless === true
+      ? projectDisabled(binding)
+      : enableProjectUnlessDisabled(binding) === 'disabled')) {
       deps.io.err(
         `project_disabled: Notifai is disabled for Project "${binding.project}": nothing from it reaches the User's devices. ` +
           'Nothing was sent.\n' +
