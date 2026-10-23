@@ -4,7 +4,7 @@ import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, uti
 import path from 'node:path'
 import { atomicWriteFileSync } from './atomic-file.js'
 import { stateDir } from './config.js'
-import { resolveGuidance } from './guidance.js'
+import { resolveGuidance, type ResolvedGuidanceTopic } from './guidance.js'
 import { markerSafe } from './guidance-render.js'
 import { skillTreeDigest, shippedSkillSourceRoot, verifySkillBundle } from './skill-integrity.js'
 import { skillDestination } from './native-skills.js'
@@ -58,12 +58,11 @@ export function installedSkill(cwd: string, env: NodeJS.ProcessEnv): ShippedSkil
  * activation text without anything that varies by installation, so moving
  * to a new version directory is not a change.
  */
-export function guidanceDigest(options: { cwd: string; env: NodeJS.ProcessEnv; activation: string; skill?: ShippedSkill }): string {
+export function guidanceDigest(options: { cwd: string; env: NodeJS.ProcessEnv; activation: string; skill?: ShippedSkill; snapshot?: GuidanceSnapshot }): string {
   const skill = options.skill ?? installedSkill(options.cwd, options.env)
-  const bundle = verifySkillBundle(shippedSkillSourceRoot())
-  const release = bundle.ok ? bundle.bundle.manifest.guidance?.current : undefined
-  const topics = resolveGuidance({ cwd: options.cwd, env: options.env })
-    .map((topic) => [topic.name, topic.authority, topic.content])
+  const snapshot = options.snapshot ?? guidanceText(options)
+  const release = snapshot.release
+  const topics = snapshot.topics.map(topic => [topic.name, topic.authority, topic.content])
   return createHash('sha256')
     .update(JSON.stringify({ v: 1, activation: options.activation, skill: skill.digest, release, topics }))
     .digest('hex')
@@ -76,11 +75,11 @@ export interface GuidanceSnapshot {
 }
 
 const hash = (text: string): string => createHash('sha256').update(text).digest('hex')
-export function guidanceText(options: { cwd: string; env: NodeJS.ProcessEnv; activation: string }): GuidanceSnapshot {
+export function guidanceText(options: { cwd: string; env: NodeJS.ProcessEnv; activation: string }, topics: readonly ResolvedGuidanceTopic[] = resolveGuidance(options)): GuidanceSnapshot {
   const bundle = verifySkillBundle(shippedSkillSourceRoot())
   return {
     release: bundle.ok ? bundle.bundle.manifest.guidance?.current : undefined,
-    topics: resolveGuidance(options).map(topic => ({ ...topic, digest: hash(JSON.stringify([topic.authority, topic.content])) })),
+    topics: topics.map(topic => ({ ...topic, digest: hash(JSON.stringify([topic.authority, topic.content])) })),
   }
 }
 

@@ -1,7 +1,7 @@
 import { claudeSessionHasSubagents } from './claude-subagent.js'
 import type { CommandDeps } from './commands-core.js'
 import { sourceContextHarnessSession } from './commands-harness-context.js'
-import { conversationToken, guidanceRead, installedSkill, pendingGuidanceChanges, recordGuidanceRead } from './guidance-currency.js'
+import { conversationToken, guidanceGeneration, guidanceRead, installedSkill, pendingGuidanceChanges, recordGuidanceRead } from './guidance-currency.js'
 import { resolveGuidance } from './guidance.js'
 import { renderGuidance } from './guidance-render.js'
 import { rootGuidanceDigest, rootGuidanceText } from './session-activation.js'
@@ -26,13 +26,22 @@ export function commandGuidanceSession(deps: CommandDeps, token?: string): strin
   return sourceContextHarnessSession(deps.env, deps.cwd, (deps.now ?? Date.now)())?.sessionId ?? null
 }
 
-export function recordCommandGuidanceRead(deps: CommandDeps, token?: string): boolean {
+/** Capture the exact print transaction before resolving or emitting content. */
+export function prepareCommandGuidanceRead(deps: CommandDeps, token?: string) {
   const session = commandGuidanceSession(deps, token)
+  const generation = session === null ? 0 : guidanceGeneration(session, deps.env)
+  const topics = resolveGuidance({ cwd: deps.cwd, env: deps.env })
+  const text = rootGuidanceText(deps.cwd, deps.env, topics)
+  return { session, generation, topics, text, digest: rootGuidanceDigest(deps.cwd, deps.env, text) }
+}
+
+export function recordCommandGuidanceRead(deps: CommandDeps, read: ReturnType<typeof prepareCommandGuidanceRead>, token?: string): boolean {
+  const { session } = read
   if (session === null && (guidanceSessionNeedsToken(deps) || token !== undefined)) {
     deps.io.err('This shell cannot identify one conversation. Run `notifai guidance check`, then its read_command; pass the returned --guidance-token on Notification Requests.')
     return false
   }
-  return session === null || recordGuidanceRead(session, deps.env, rootGuidanceDigest(deps.cwd, deps.env), rootGuidanceText(deps.cwd, deps.env))
+  return session === null || recordGuidanceRead(session, deps.env, read.digest, read.text, read.generation)
 }
 
 /** Before any upload, registration or send. Notices cannot satisfy this check. */

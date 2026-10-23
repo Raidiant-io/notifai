@@ -7,7 +7,6 @@ import {
   GUIDANCE_TOPIC_PATTERN,
   globalGuidanceDir,
   personalProjectGuidanceDir,
-  resolveGuidance,
 } from './guidance.js'
 import { renderGuidance } from './guidance-render.js'
 import { projectBinding, projectEnablementState } from './project-enablement.js'
@@ -15,8 +14,8 @@ import { loadConfig } from './config.js'
 import { rootGuidanceDigest, requestGuidanceContext } from './session-activation.js'
 import { shippedSkillSourceRoot, verifySkillBundle } from './skill-integrity.js'
 import { markerSafe } from './guidance-render.js'
-import { conversationToken, guidanceChangedNotice, guidanceRead, installedSkill } from './guidance-currency.js'
-import { commandGuidanceChanges, commandGuidanceOwner, recordCommandGuidanceRead } from './command-guidance.js'
+import { conversationToken, guidanceChangedNotice, guidanceRead, installedSkill, pendingGuidanceChanges } from './guidance-currency.js'
+import { commandGuidanceChanges, commandGuidanceOwner, prepareCommandGuidanceRead, recordCommandGuidanceRead } from './command-guidance.js'
 
 // ---------------------------------------------------------------------------
 // guidance show / set / unset
@@ -60,8 +59,9 @@ export function guidanceCheckCommand(deps: CommandDeps, seen?: string): number {
  * default without the output stopping being Markdown.
  */
 export async function guidanceShowCommand(deps: CommandDeps, flags: { json?: boolean; sessionToken?: string }): Promise<number> {
-  const topics = resolveGuidance({ cwd: deps.cwd, env: deps.env })
-  const changes = commandGuidanceChanges(deps, flags.sessionToken)
+  const read = prepareCommandGuidanceRead(deps, flags.sessionToken)
+  const topics = read.topics
+  const changes = read.session === null ? undefined : pendingGuidanceChanges(read.session, deps.env, read.text)
   if (flags.json) {
     deps.io.out(
       JSON.stringify(
@@ -80,10 +80,10 @@ export async function guidanceShowCommand(deps: CommandDeps, flags: { json?: boo
         2,
       ),
     )
-    return recordCommandGuidanceRead(deps, flags.sessionToken) ? EXIT.ok : EXIT.failed
+    return recordCommandGuidanceRead(deps, read, flags.sessionToken) ? EXIT.ok : EXIT.failed
   }
   deps.io.out([changes, renderGuidance(topics)].filter(Boolean).join('\n\n'))
-  return recordCommandGuidanceRead(deps, flags.sessionToken) ? EXIT.ok : EXIT.failed
+  return recordCommandGuidanceRead(deps, read, flags.sessionToken) ? EXIT.ok : EXIT.failed
 }
 
 type GuidanceMutationFlags = {

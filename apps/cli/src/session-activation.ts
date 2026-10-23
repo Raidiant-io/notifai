@@ -1,3 +1,5 @@
+import type { ResolvedGuidanceTopic } from './guidance.js'
+import type { GuidanceSnapshot } from './guidance-currency.js'
 import type { HookHarness } from './hook-types.js'
 import { Buffer } from 'node:buffer'
 import { guidanceDigest, guidanceText, guidanceGeneration, installedSkill } from './guidance-currency.js'
@@ -24,20 +26,21 @@ function rootOwnership(skillFile: string | null, request = false): string {
 const rootOwnershipText = (cwd: string, env: NodeJS.ProcessEnv, request = false): string => rootOwnership(installedSkill(cwd, env).file, request)
 
 /** The digest of what a root Agent Session is given here (`guidance-currency.ts`). */
-export function rootGuidanceDigest(cwd: string, env: NodeJS.ProcessEnv): string {
+export function rootGuidanceDigest(cwd: string, env: NodeJS.ProcessEnv, snapshot?: GuidanceSnapshot): string {
   return guidanceDigest({ cwd, env, activation: [rootOwnership(null), WORKER_ACTIVATION_CONTEXT,
-    lifecycleGuidance({ cwd, env }).content].join('\n\n') })
+    lifecycleGuidance({ cwd, env }).content].join('\n\n'), ...(snapshot === undefined ? {} : { snapshot }) })
 }
 
 /** Fresh effective text; never persisted in a receipt. */
-export function rootGuidanceText(cwd: string, env: NodeJS.ProcessEnv) {
-  return guidanceText({ cwd, env, activation: rootOwnership(null) + '\n\n' + WORKER_ACTIVATION_CONTEXT })
+export function rootGuidanceText(cwd: string, env: NodeJS.ProcessEnv, topics?: readonly ResolvedGuidanceTopic[]) {
+  return guidanceText({ cwd, env, activation: rootOwnership(null) + '\n\n' + WORKER_ACTIVATION_CONTEXT }, topics)
 }
 
 /** Delivery data shared by every lifecycle carrier. */
 export function rootGuidanceDelivery(cwd: string, env: NodeJS.ProcessEnv, harness?: HookHarness, sessionId?: string) {
   const generation = sessionId === undefined ? undefined : guidanceGeneration(sessionId, env)
-  return { generation, digest: rootGuidanceDigest(cwd, env), text: rootGuidanceText(cwd, env), skill: installedSkill(cwd, env),
+  const text = rootGuidanceText(cwd, env)
+  return { generation, digest: rootGuidanceDigest(cwd, env, text), text, skill: installedSkill(cwd, env),
     initialContext: rootActivationContext(cwd, env, [], harness === 'hermes' ? HERMES_SECTION_MAX_BYTES : GUIDANCE_CONTEXT_MAX_BYTES) }
 }
 

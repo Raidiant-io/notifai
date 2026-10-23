@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "behavior_digest": "sha256:3d83dc43497e066ce6a7ab6c3c724da220254a9e13b32d4fc3c9c8c258db2b2f",
+  "behavior_digest": "sha256:8aa1ac3e27c7f9edcd3dfb339d04cc94dbc33e892568c24bb257f77e1e2e9a7d",
   "outcome": "guidance-updated",
   "surfaces_reviewed": [
     "lifecycle-hooks",
@@ -9,5 +9,5 @@
     "cli-readiness",
     "domain-terms"
   ],
-  "reason": "Reviewed lifecycle, skill, setup, readiness and domain surfaces. Receipts store only validated bounded digests and generations. Change text comes from manifest-verified ordered release notes and freshly resolved escaped User topics, bounded to 800 UTF-8 bytes with full-history and topic pointers. Generation fencing rejects stale claims and reads. Release tooling requires an authored note for the exact shipped guidance digest, including reorders. Waiting question routing is restored to main; no headless exception is added. Answer custody, work-before-reporting, --resumes and the shared skill lifetime rule remain. The skill and Hermes budgets are unchanged. Release-authored catalog text participates in this review hash, so changing a note invalidates review too."
+  "reason": "Reviewed lifecycle, skill, setup, readiness and domain surfaces. Receipts store only validated bounded digests and generations. Change text comes from manifest-verified ordered release notes and freshly resolved escaped User topics, bounded to 800 UTF-8 bytes with full-history and topic pointers. Generation fencing rejects stale claims and reads. Release tooling requires an authored note for the exact shipped guidance digest, including reorders. Waiting question routing is restored to main; no headless exception is added. Answer custody, work-before-reporting, --resumes and the shared skill lifetime rule remain. The skill and Hermes budgets are unchanged. Release-authored catalog text participates in this review hash, so changing a note invalidates review too. CLI reads capture their generation and exact printed topics before output, rejecting a superseded read and never marking an unseen concurrent edit read."
 }

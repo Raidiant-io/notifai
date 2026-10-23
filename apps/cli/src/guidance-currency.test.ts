@@ -329,6 +329,39 @@ describe('trusted change delivery', () => {
     expect(changes.indexOf('Do validation')).toBeLessThan(changes.indexOf('Keep the assignment'))
   })
 
+  it('does not mark a concurrent User edit read when it was never printed', async () => {
+    const { cwd, env } = setup()
+    env.CODEX_THREAD_ID = 'updated'
+    const dir = personalProjectGuidanceDir(cwd, env)
+    mkdirSync(dir, { recursive: true })
+    writeFileSync(path.join(dir, 'titles.md'), '# Titles\n\nThe first rule.\n')
+    const output: string[] = []
+    const deps = { cwd, env, io: { out: (line: string) => {
+      output.push(line)
+      writeFileSync(path.join(dir, 'titles.md'), '# Titles\n\nThe concurrent rule.\n')
+    }, err: () => undefined } } as unknown as CommandDeps
+    await guidanceShowCommand(deps, {})
+    expect(output.join('\n')).toContain('The first rule.')
+    expect(output.join('\n')).not.toContain('The concurrent rule.')
+    expect(currentCommandGuidance(deps)?.code).toBe('guidance_required')
+  })
+
+  it('rejects an older CLI read when another read supersedes it during output', async () => {
+    const { cwd, env } = setup()
+    env.CODEX_THREAD_ID = 'updated'
+    const dir = personalProjectGuidanceDir(cwd, env)
+    mkdirSync(dir, { recursive: true })
+    writeFileSync(path.join(dir, 'titles.md'), '# Titles\n\nThe first rule.\n')
+    let newer = ''
+    const deps = { cwd, env, io: { out: () => {
+      writeFileSync(path.join(dir, 'titles.md'), '# Titles\n\nThe newer rule.\n')
+      newer = rootGuidanceDigest(cwd, env)
+      recordGuidanceRead('updated', env, newer, rootGuidanceText(cwd, env))
+    }, err: () => undefined } } as unknown as CommandDeps
+    expect(await guidanceShowCommand(deps, {})).toBe(1)
+    expect(guidanceRead('updated', env)).toBe(newer)
+  })
+
   it('rejects an out-of-order claim and read under the generation fence', () => {
     const { cwd, env } = setup()
     const old = rootGuidanceDigest(cwd, env)
