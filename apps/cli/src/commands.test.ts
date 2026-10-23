@@ -10265,7 +10265,7 @@ describe('asking before the hooks have ever run', () => {
       next: {
         end_turn: true,
         in_this_turn: expect.stringMatching(/^Ask it in the conversation, say what each answer will make you do, then end your turn\. The answer arrives as your next message\./),
-        keep_session_open: expect.stringMatching(/Keep this Agent Session open/),
+        keep_session_open: expect.stringMatching(/keep it open until you have done the work/),
       },
     })
     expect(readSessionState('claude-wait', env).pending).toHaveLength(1)

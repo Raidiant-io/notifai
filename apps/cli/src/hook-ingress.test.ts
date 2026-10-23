@@ -180,7 +180,7 @@ describe.skipIf(!supported)('hook ingress through the launcher', () => {
     const first = await runHook(at, 'session-start', 'claude-code', envelope('SessionStart', { source: 'startup' }, at))
     const compacted = await runHook(at, 'session-start', 'claude-code', envelope('SessionStart', { source: 'compact' }, at))
     expect(context(compacted)).toContain('This conversation was compacted.')
-    expect(context(compacted)).toMatch(/read `[^`]+SKILL\.md` again/)
+    expect(context(compacted)).toMatch(/load the Notifai skill again \(from `[^`]+SKILL\.md`\)/)
     expect(context(compacted)).toContain('run `notifai guidance`')
     expect(context(first)).not.toContain('This conversation was compacted.')
     const topic = SHIPPED_GUIDANCE[0]!.name
