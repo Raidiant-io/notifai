@@ -20,6 +20,7 @@ function rootOwnership(skillFile: string | null, request = false): string {
     `${skillFile === null ? 'Repair the Notifai skill with \`notifai init --skills\`, then load its verified copy' : `Read the Notifai skill at \`${skillFile}\``} before your first Notification Request; when your job changes completely, load it again and rename this Agent Session. ` +
     'The guidance below governs; unless it says otherwise, when work you own or coordinate needs a User decision, approval, sign-in, credential setup or physical action, register it with `notifai ask` in the same turn you ask it in the conversation: conversation alone misses an away User. ' +
     'When you brief an agent in its own Agent Session, name the Notification Request owner; delegating them delegates the work their answers unblock. Ask the User yourself when you will act on the answer. ' +
+    'If you ask, do the work the answer unblocks before you report back, even when a brief says to end after asking. ' +
     'Ask for readiness, never for a credential. Harness permission prompts stay in the harness.'
 }
 
