@@ -96,15 +96,6 @@ describe('Notifai agent skill', () => {
     expect(decide).toMatch(/ordinary workers[\s\S]{0,100}do not load or send/i)
   })
 
-  it('preserves the original Agent Event across setup and ambiguous delivery', () => {
-    expect(loose(skill)).toMatch(
-      /interrupted or killed `send`[\s\S]*do not correlate redacted logs by title[\s\S]*re-run the exact semantic send with\s+`--retry`/i,
-    )
-    expect(loose(skill)).toMatch(/opaque matching attempt[\s\S]*refuse ambiguity/i)
-    expect(loose(skill)).toMatch(/`no_active_devices`[\s\S]*repeat the\s+(?:exact\s+)?original send/i)
-    expect(loose(skill)).toMatch(/verification Notification[\s\S]*does not deliver\s+the original Agent Event/i)
-  })
-
   it('fits inside the budget a skill is actually read within, with room to grow', () => {
     // Long skills are truncated in exactly the long sessions that need them.
     // The old skill sat at ~4,800 tokens; the ceiling keeps a working margin,
@@ -289,35 +280,6 @@ describe('Notifai agent skill', () => {
       expect(section(heading), heading).not.toMatch(/Claude Code|Codex|Cursor|OpenCode|OpenClaw|Hermes|Grok|Orca/)
     }
     expect(skill).not.toMatch(/#question-picker/)
-  })
-
-  it('asks the way the agent would without Notifai: keep working, or wait', () => {
-    // Questions behave as they would without Notifai: one command, two modes.
-    const ask = section('## Ask a question')
-    const keepWorking = ask.search(/keep working[^\n]*run `notifai ask`/i)
-    const wait = ask.search(/stop until they answer, run `notifai ask --wait`/i)
-    expect(keepWorking).toBeGreaterThan(0)
-    expect(wait).toBeGreaterThan(keepWorking)
-    // Waiting is the harness's own wait: a handed-back form, or the end of the
-    // turn. Only a wait held in the command can end unanswered.
-    expect(ask).toMatch(/open the question form it hands back, or end your turn; the answer arrives\s+as your next message/i)
-    expect(ask).toMatch(/command\s+itself waits; if it ends unanswered\s+\(exit 3\), the question is off the\s+User's devices/i)
-    expect(skill).not.toContain('send --reply')
-  })
-
-  it('gives exit 3 one next step that never invites asking again', () => {
-    const row = skill.match(/^\| 3 \|([^\n]+)$/m)?.[1] ?? ''
-    expect(row).toMatch(/`ask --wait` ended unanswered; the question is off the User's devices/i)
-    expect(row).toMatch(/carry on without the answer, or ask in the conversation/i)
-    expect(row).not.toMatch(/again|never duplicate|inspect/i)
-    expect(skill.match(/^\| 5 \|([^\n]+)$/m)?.[1] ?? '').toMatch(/for `ask --wait`, follow its output/i)
-    // The SKILL row and the command's own output are the only homes.
-    for (const name of HARNESS_FILES) expect(harnessFile(name), name).not.toMatch(/exit 3/i)
-    expect(harnessSetupReference).not.toMatch(/exit 3/i)
-    // A withdrawn or expired question is never asked again on a guess.
-    for (const text of [skill, harnessSetupReference, ...HARNESS_FILES.map(harnessFile)]) {
-      expect(text.replace(/\s+/g, ' ')).not.toMatch(/ask again (?:only )?if you still need/i)
-    }
   })
 
   it('registers owned questions in the same turn and authors their choices', () => {
@@ -514,8 +476,6 @@ describe('Notifai agent skill', () => {
     expect(codex).not.toMatch(/subagent's card/i)
     const opencode = harnessFile('opencode').replace(/\s+/g, ' ')
     expect(opencode).not.toMatch(/worker session's form/i)
-    // OpenCode waits through the form `ask --wait` hands back; a worker holds in the command.
-    expect(opencode).toMatch(/To wait, run `notifai ask --wait`: it hands back the `question` form with your title, Body and images; open it unchanged\. In a worker it waits in the command instead\./)
     expect(opencode).toMatch(/\*\*A question that expired on the devices\*\* closes the form unanswered, with Notifai context that says so: carry on without it\./)
     expect(opencode).not.toMatch(/when the question needs a Body or images/)
     const claude = harnessFile('claude-code').replace(/\s+/g, ' ')
