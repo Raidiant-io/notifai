@@ -23,6 +23,7 @@ function fixture() {
     'apps/cli/src/readiness.ts': 'message: "Open /hooks and approve Notifai"\n',
     'packages/protocol/src/notification.ts': 'export const term = "Notification Request"\n',
     'skills/notifai/SKILL.md': '# Notifai\n',
+    'skills/guidance-changes.json': JSON.stringify({ releases: [{ note: 'Read current guidance.' }] }),
     'README.md': [
       '# Notifai',
       '',
@@ -94,4 +95,8 @@ test('still rejects semantic README text beside a generated version marker', () 
 
 test('does not hide arbitrary text placed inside a release marker', () => {
   assertMutationIsCaught('README.md', (source) => source.replace('9.2.2', 'install from anywhere'))
+})
+
+test('rejects stale review after a release-authored guidance note changes', () => {
+  assertMutationIsCaught('skills/guidance-changes.json', source => source.replace('Read current guidance.', 'Reload the full skill.'))
 })

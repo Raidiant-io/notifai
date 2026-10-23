@@ -9,6 +9,7 @@ export const DEFAULT_INPUT_ROOTS = [
   'apps/cli/src',
   'packages/protocol/src',
   'skills/notifai',
+  'skills/guidance-changes.json',
   'README.md',
   'docs/TRUST.md',
 ]

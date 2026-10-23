@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "behavior_digest": "sha256:38a220f88b3d4dee24510d98016808dd983fe442e8ed51363cf8f38f5aeb02a4",
+  "behavior_digest": "sha256:3d83dc43497e066ce6a7ab6c3c724da220254a9e13b32d4fc3c9c8c258db2b2f",
   "outcome": "guidance-updated",
   "surfaces_reviewed": [
     "lifecycle-hooks",
@@ -9,5 +9,5 @@
     "cli-readiness",
     "domain-terms"
   ],
-  "reason": "Reviewed lifecycle, skill, setup, readiness and domain surfaces. Receipts store only validated bounded digests and generations. Change text comes from manifest-verified ordered release notes and freshly resolved escaped User topics, bounded to 800 UTF-8 bytes with full-history and topic pointers. Generation fencing rejects stale claims and reads. Release tooling requires an authored note for the exact shipped guidance digest, including reorders. Waiting question routing is restored to main; no headless exception is added. Answer custody, work-before-reporting, --resumes and the shared skill lifetime rule remain. The skill and Hermes budgets are unchanged."
+  "reason": "Reviewed lifecycle, skill, setup, readiness and domain surfaces. Receipts store only validated bounded digests and generations. Change text comes from manifest-verified ordered release notes and freshly resolved escaped User topics, bounded to 800 UTF-8 bytes with full-history and topic pointers. Generation fencing rejects stale claims and reads. Release tooling requires an authored note for the exact shipped guidance digest, including reorders. Waiting question routing is restored to main; no headless exception is added. Answer custody, work-before-reporting, --resumes and the shared skill lifetime rule remain. The skill and Hermes budgets are unchanged. Release-authored catalog text participates in this review hash, so changing a note invalidates review too."
 }
