@@ -1418,7 +1418,7 @@ describe('hub end confirmation and writers', () => {
     // Back to it: its SessionStart finds the child still serving it and only hints.
     describeHost(env, terminal)
     await requestHub(env, { type: 'hint', session_id: SESSION, hook_event: 'SessionStart', harness_pid: terminal.pid }, { role: 'hint' })
-    await new Promise((resolve) => setTimeout(resolve, 900))
+    await until(() => hub.sessions.get(SESSION)?.harnessProcess.pid === restarted.pid)
     service.release()
     expect(ended(service)).toBe(false)
     expect(readSessionEndMarker(SESSION, env)).toBeNull()
@@ -2647,6 +2647,29 @@ describe('hub: conversations stopped by their app or the machine', () => {
     await stopHub(hub, service, done)
   })
 
+  it.each(['prompt_input_exit', 'logout'])('confirms a T3-hosted Claude close only for %s', async (reason) => {
+    const env = hubEnv()
+    recordSessionNotified(SESSION, env, Date.now())
+    const host = await standIn()
+    describeHost(env, host)
+    const service = fakeService({ capabilities: ['session_attendance', 'session_attendance_batch', 'session_confirmed_end'] })
+    const peers = new Map<number, PeerCredentials>()
+    const { hub, done } = startHub(env, service, peers, memoryStore(), 100, { endConfirmMs: 150 },
+      { claudeHostName: () => 'T3 Code (Nightly)', powerWatch: false, runHook: noHook })
+    await hubListening(env)
+    const child = await writerChild(env, peers, 900422, host, { entrypoint: 'sdk-ts', transcript_path: transcript(env) })
+    expect(hub.sessions.get(SESSION)?.registration.place).toBe('t3')
+    await until(() => renewals(service) >= 1)
+    question(env)
+    await requestHub(env, { type: 'session-end-candidate', session_id: SESSION, harness_pid: host.pid, close_reason: reason })
+    await until(() => ended(service))
+    expect(service.batches.flatMap(batch => batch.body.sessions).find(entry => entry.state === 'ended'))
+      .toMatchObject({ end_reason: 'closed' })
+    child.socket.destroy()
+    host.process.kill('SIGKILL')
+    await stopHub(hub, service, done)
+  })
+
   it('holds every end while the machine shuts down; the next boot keeps the conversation and delivers at its resume', async () => {
     const env = hubEnv()
     recordSessionNotified(SESSION, env, Date.now())
@@ -2929,7 +2952,6 @@ describe('hub: conversations stopped by their app or the machine', () => {
     const run = await writerChild(env, peers, 900471, scripted, { entrypoint: 'sdk-cli', source: 'resume' })
     expect(run.frames[0]).toMatchObject({ type: 'refused', reason: 'place-receives-nothing', retry: false })
     expect(await requestHub(env, { type: 'session-end-candidate', session_id: SESSION, harness_pid: scripted.pid })).toEqual({ type: 'ok', held: true })
-    await new Promise((resolve) => setTimeout(resolve, 400))
     expect(hub.sessions.get(SESSION)?.stopped?.cause).toBe('app')
     expect(hub.sessions.get(SESSION)?.endCandidate).toBeNull()
     expect(readSessionIncarnation(SESSION, env)?.harness_process?.pid).toBe(host.pid)
@@ -3001,7 +3023,7 @@ describe('hub: conversations stopped by their app or the machine', () => {
         await until(() => second.hub.sessions.get(SESSION)?.stopped?.cause === 'machine', 5_000)
         expect(ended(service)).toBe(false)
       } else {
-        await new Promise(resolve => setTimeout(resolve, 400))
+        await until(() => second.hub.sessions.get(SESSION)?.stopped != null, 5_000)
         expect(ended(service)).toBe(false)
         expect(readSessionState(SESSION, env).pending).toHaveLength(1)
       }
@@ -3237,7 +3259,6 @@ describe('hub: Codex conversations stopped by their app or the machine, Orca pan
     expect(run.frames[0]).toMatchObject({ type: 'refused', reason: 'place-receives-nothing', retry: false })
     expect(await requestHub(env, { type: 'session-end-candidate', session_id: SESSION, transcript_path: transcript, harness_pid: exec.pid }))
       .toEqual({ type: 'ok', held: true })
-    await new Promise((resolve) => setTimeout(resolve, 400))
     expect(hub.sessions.get(SESSION)?.stopped?.cause).toBe('app')
     expect(readSessionIncarnation(SESSION, env)?.harness_process?.pid).toBe(server.pid)
     expect(ended(service)).toBe(false)
@@ -3264,7 +3285,7 @@ describe('hub: Codex conversations stopped by their app or the machine, Orca pan
     await requestHub(env, { type: 'session-end-candidate', session_id: SESSION, transcript_path: transcript, harness_pid: daemon.pid })
     exit(child, daemon)
     holders = [restarted.pid]
-    await new Promise((resolve) => setTimeout(resolve, 900))
+    await until(() => hub.sessions.get(SESSION)?.harnessProcess.pid === restarted.pid)
     service.release()
     expect(ended(service)).toBe(false)
     expect(hub.sessions.get(SESSION)?.endCandidate).toBeNull()
@@ -3359,7 +3380,6 @@ describe('hub: Codex conversations stopped by their app or the machine, Orca pan
       if (variant === 'host-died') {
         await until(() => hub.sessions.get(SESSION)?.stopped?.cause === 'app', 5_000)
         expect(hub.sessions.get(SESSION)?.stopped?.watch).toBeNull()
-        await new Promise((resolve) => setTimeout(resolve, 400))
         expect(ended(service)).toBe(false)
         // Orca resumes it in the same pane when the User opens the tab.
         const resumed = await standIn()

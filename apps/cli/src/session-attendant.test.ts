@@ -82,6 +82,7 @@ class FakeService {
   exchanges: HeldExchange[] = []
   compatibilityCalls = 0
   supports = true
+  confirmedEnds = false
   /** When set, discovery waits for the test to call this. */
   holdCompatibility: { release?: () => void } | null = null
 
@@ -113,7 +114,7 @@ class FakeService {
         const hold = this.holdCompatibility
         if (hold !== null) await new Promise<void>((resolve) => (hold.release = resolve))
         return {
-          server_capabilities: this.supports ? ['agent_acknowledgement', 'session_attendance'] : ['agent_acknowledgement'],
+          server_capabilities: this.supports ? ['agent_acknowledgement', 'session_attendance', ...(this.confirmedEnds ? ['session_confirmed_end'] : [])] : ['agent_acknowledgement'],
         }
       },
     } as unknown as ApiClient
@@ -258,6 +259,21 @@ describe('Session Attendant', () => {
     const result = await h.result
     expect(result).toEqual({ reason: 'harness-gone', reported: 'withdrawn' })
     expect(h.statuses.at(-1)).toMatchObject({ phase: 'exited', reason: 'harness-gone' })
+  })
+
+  it.each([false, true])('capability-gates a positively replaced session end (%s)', async (supported) => {
+    const h = startAttendant()
+    h.service.confirmedEnds = supported
+    await h.clock.advance(1)
+    h.service.last().respond(h.service.attending(2))
+    await h.clock.advance(1)
+    h.probe = { state: 'ended', reason: 'session-replaced' }
+    await h.clock.advance(2_000)
+    await flush()
+    const final = h.service.last()
+    expect(final.body).toEqual({ incarnation: 'inc_aaaaaaaaaaaa', generation: 2, state: 'ended', ...(supported ? { end_reason: 'closed' } : {}) })
+    final.respond({ status: 'withdrawn' })
+    expect(await h.result).toEqual({ reason: 'session-replaced', reported: 'ended' })
   })
 
   it('treats a termination signal as lost observation and reports once', async () => {

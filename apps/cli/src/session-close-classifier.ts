@@ -73,6 +73,7 @@ export interface ClaudeEndEvidence {
 
 /** The verdict for one end the confirmation did not cancel. */
 export function classifyClaudeEnd(evidence: ClaudeEndEvidence): CloseVerdict {
+  if (evidence.place === 'headless') return { cause: 'user', reason: 'run-ended' }
   if (evidence.transcript === 'missing') return { cause: 'app', reason: 'unconfirmed-stop' }
   const idle = appIdleStop(evidence.place, evidence.hostApp ?? null, evidence.idleMs ?? null)
   if (idle !== null) return idle

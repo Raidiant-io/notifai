@@ -88,3 +88,9 @@ describe('a prompt in a scripted run of a conversation another process hosts', (
     expect(asked).toEqual([5151, 5151])
   })
 })
+
+it('recognizes direct T3 SDK hosting without treating a shell script as interactive', () => {
+  expect(claudePlaceOf({ entrypoint: 'sdk-ts', hostName: 'T3 Code (Nightly)' })).toBe('t3')
+  expect(claudePlaceOf({ entrypoint: 'sdk-ts', hostName: 'T3 Code' })).toBe('t3')
+  expect(claudePlaceOf({ entrypoint: 'sdk-ts', hostName: 'zsh' })).toBe('headless')
+})

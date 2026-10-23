@@ -40,7 +40,7 @@ describe('who ended a Claude Code conversation', () => {
     expect(classifyClaudeEnd({ place: 'terminal', transcript: 'present' })).toMatchObject({ cause: 'app' })
     expect(classifyClaudeEnd({ place: 'claude-ide', transcript: 'present' })).toMatchObject({ cause: 'app' })
     expect(classifyClaudeEnd({ place: 'claude-background', transcript: 'present' })).toMatchObject({ cause: 'app' })
-    expect(classifyClaudeEnd({ place: 'headless', transcript: 'present' })).toMatchObject({ cause: 'app' })
+    expect(classifyClaudeEnd({ place: 'headless', transcript: 'present' })).toMatchObject({ cause: 'user', reason: 'run-ended' })
     expect(classifyClaudeEnd({ place: 'unreported', transcript: 'present' })).toMatchObject({ cause: 'app' })
     expect(classifyClaudeEnd({ place: 'claude-desktop', transcript: 'missing', desktop })).toEqual({ cause: 'app', reason: 'unconfirmed-stop' })
     expect(classifyClaudeEnd({ place: 'claude-desktop', transcript: 'present' })).toEqual({ cause: 'app', reason: 'unconfirmed-stop' })
@@ -208,4 +208,8 @@ describe('uncertain stops preserve waiting work', () => {
     expect(classifyCodexEnd(evidence).cause).not.toBe('user')
     expect(classifyCodexEnd({ ...evidence, rollout: 'sessions' }).cause).not.toBe('user')
   })
+})
+
+it('a finished Claude scripted run has positive end evidence', () => {
+  expect(classifyClaudeEnd({ place: 'headless', transcript: 'present' })).toEqual({ cause: 'user', reason: 'run-ended' })
 })

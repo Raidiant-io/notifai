@@ -465,7 +465,7 @@ export function readSessionState(sessionId: string, env: NodeJS.ProcessEnv): Ses
   return readSessionStateForEnd(sessionId, env) ?? {}
 }
 
-/** Closing must distinguish an empty state from missing or unreadable evidence. */
+/** Closing distinguishes no saved work (ENOENT) from unreadable or corrupt evidence. */
 export function readSessionStateForEnd(sessionId: string, env: NodeJS.ProcessEnv): SessionState | null {
   try {
     const parsed: unknown = JSON.parse(readFileSync(sessionStatePath(sessionId, env), 'utf8'))
@@ -473,7 +473,8 @@ export function readSessionStateForEnd(sessionId: string, env: NodeJS.ProcessEnv
     const state = { ...(parsed as SessionState & { session_id?: unknown }) }
     delete state.session_id
     return state
-  } catch {
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return {}
     return null
   }
 }

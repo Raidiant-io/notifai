@@ -622,12 +622,15 @@ export async function runSessionAttendant(options: SessionAttendantOptions): Pro
       const bound = new AbortController()
       const timer = setTimeout(() => bound.abort(), ATTENDANT_FINAL_REPORT_MS)
       try {
+        const confirmed = final === 'ended' && (reason === 'session-replaced' || decided === 'ended') &&
+          (await abortable(client.compatibility(), bound.signal)).server_capabilities.includes('session_confirmed_end')
         await client.attend(
           options.sessionId,
           {
             incarnation,
             ...(generation === null ? {} : { generation }),
             state: final,
+            ...(confirmed ? { end_reason: 'closed' as const } : {}),
           },
           { waitSeconds: 0, signal: bound.signal },
         )

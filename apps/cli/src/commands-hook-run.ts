@@ -1007,6 +1007,7 @@ export async function hookRunCommand(
         await holdSessionEnd(deps.env, envelope.session_id, {
           harnessPid: harness === 'claude-code' ? claudeHookSourcePid(deps.env, deps.hookPlatform ?? process.platform) : declaredHookSourcePid(deps),
           transcriptPath: envelope.transcript_path,
+          closeReason: harness === 'claude-code' ? envelope.reason : undefined,
         }) === 'held') {
       // SessionEnd is not final: the shared Codex server runs it for a reload
       // on resume, the desktop app for a respawn, a handoff starts the same
@@ -1026,7 +1027,8 @@ export async function hookRunCommand(
       return EXIT.ok
     }
     if (sessionEnd && (harness === 'claude-code' || harness === 'codex') && envelope.session_id !== undefined &&
-        deps.spawnEndConfirmation !== undefined) {
+        deps.spawnEndConfirmation !== undefined &&
+        !(harness === 'claude-code' && (envelope.reason === 'prompt_input_exit' || envelope.reason === 'logout'))) {
       const spawnEndConfirmation = deps.spawnEndConfirmation
       const sessionHarness = harness
       if (awaitEndConfirmation(deps.env, {
@@ -1472,7 +1474,7 @@ function codexWakeHasInput(deps: CommandDeps, sessionId: string): boolean {
  * place the conversation is in.
  */
 export function claudeRunElsewhere(sessionId: string, env: NodeJS.ProcessEnv, sourcePid: number | undefined): boolean {
-  if (placeReceives(claudePlaceOf(claudePlaceSignals(env)))) return false
+  if (placeReceives(claudePlaceOf(claudePlaceSignals(env, sourcePid)))) return false
   const host = readSessionIncarnation(sessionId, env)?.harness_process
   return host !== undefined && host.pid !== sourcePid
 }
