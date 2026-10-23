@@ -1,5 +1,5 @@
 {
-  "current": "3901a5e6a965f197ec9f0236a09c85fe463230ca78a34551c792e0d651d595b9",
+  "current": "4c9cdc29d58045890fd424c0e51e35f4a0041248ccf8779d33f98468cd6c0ee5",
   "releases": [
     {
       "digest": "3e47b01bc6bbfb43e910c660b9964fab6459d75148c3c02dcbcd0be64cfb2963",
@@ -44,6 +44,10 @@
     {
       "digest": "3901a5e6a965f197ec9f0236a09c85fe463230ca78a34551c792e0d651d595b9",
       "note": "Use --choice-description when a choice label alone does not explain its effect, and --recommended <label> for the recommended choice. Keep recommendation markers out of labels. The CLI now converts a trailing (recommended) or [recommended] into recommendation metadata and refuses conflicting recommendations."
+    },
+    {
+      "digest": "4c9cdc29d58045890fd424c0e51e35f4a0041248ccf8779d33f98468cd6c0ee5",
+      "note": "This update adds optional installer-lock diagnostics. Notification and question instructions are unchanged."
     }
   ]
 }

@@ -46,6 +46,8 @@ export type FileLockObservation =
   | { phase: 'choosing-published'; entry: string }
   | { phase: 'stale-entry'; entry: string }
   | { phase: 'waiting'; blockers: string[] }
+  | { phase: 'acquired'; entry: string; waitMs: number }
+  | { phase: 'released'; entry: string; heldMs: number }
 
 interface FileLockOptions {
   waitMs?: number
@@ -355,6 +357,7 @@ function comesBefore(entry: TicketEntry, ticket: bigint, pid: number, token: str
 }
 
 export function withFileLock<T>(file: string, action: () => T, options: FileLockOptions = {}): T {
+  const started = performance.now()
   const waitMs = options.waitMs ?? FILE_LOCK_WAIT_MS
   const deadline = Date.now() + waitMs
   const pid = process.pid
@@ -395,7 +398,11 @@ export function withFileLock<T>(file: string, action: () => T, options: FileLock
       }
       if (blockers.length === 0) {
         assertSameDirectory(file, directoryIdentity)
-        return action()
+        const acquired = performance.now()
+        options.observe?.({ phase: 'acquired', entry: ticketName, waitMs: acquired - started })
+        try { return action() } finally {
+          options.observe?.({ phase: 'released', entry: ticketName, heldMs: performance.now() - acquired })
+        }
       }
       options.observe?.({ phase: 'waiting', blockers })
       if (Date.now() >= deadline) throw new Error(`timed out waiting for file lock ${file}`)

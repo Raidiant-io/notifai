@@ -15,7 +15,7 @@ import {
 import os from 'node:os'
 import path from 'node:path'
 import { describe, expect, it } from 'vitest'
-import { withFileLock, withTargetFileLock } from './file-lock.js'
+import { withFileLock, withTargetFileLock, type FileLockObservation } from './file-lock.js'
 
 interface LockWorker {
   child: ChildProcess
@@ -427,4 +427,21 @@ describe('target file transaction lock', () => {
     expect(() => withFileLock(lock, () => {})).toThrow(/regular file-lock entry/)
     expect(readFileSync(foreign, 'utf8')).toBe('leave me')
   })
+})
+
+
+it('reports acquisition wait and holder duration while preserving the action failure', () => {
+  const root = mkdtempSync(path.join(os.tmpdir(), 'lock-observation-'))
+  const events: FileLockObservation[] = []
+  const primary = new Error('action failed')
+  try {
+    expect(() => withFileLock(path.join(root, 'lock'), () => { throw primary }, {
+      observe: event => events.push(event),
+    })).toThrow(primary)
+    const acquired = events.find(event => event.phase === 'acquired')
+    const released = events.find(event => event.phase === 'released')
+    expect(acquired).toMatchObject({ phase: 'acquired', waitMs: expect.any(Number) })
+    expect(released).toMatchObject({ phase: 'released', heldMs: expect.any(Number) })
+    expect(existsSync(path.join(root, 'lock'))).toBe(false)
+  } finally { rmSync(root, { recursive: true, force: true }) }
 })

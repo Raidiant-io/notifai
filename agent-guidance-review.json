@@ -1,7 +1,7 @@
 {
   "version": 1,
-  "behavior_digest": "sha256:5ce5f61477be6632932677617968a78d1dd6233fc602417a3787678162787e86",
-  "outcome": "guidance-updated",
+  "behavior_digest": "sha256:fff5d45ae352ecb9d793308eb6f2671cc049064430286fdaaa5e5a27b78c759f",
+  "outcome": "reviewed-no-impact",
   "surfaces_reviewed": [
     "lifecycle-hooks",
     "notifai-skill",
@@ -9,5 +9,5 @@
     "cli-readiness",
     "domain-terms"
   ],
-  "reason": "Reviewed lifecycle guidance rendering, the shipped skill and question references, harness setup, CLI readiness, and domain terms. The shared questions topic and the top of Ask a question now name --choice-description and --recommended explicitly. All question input paths share trailing-marker normalization; descriptions stay attached by position. Setup, routing, readiness, and domain terms are unchanged. The release-authored note records the flag contract and compatibility normalization. This records implementation review, not independent approval."
+  "reason": "Reviewed lifecycle-hooks, notifai-skill, harness-setup, cli-readiness and domain-terms against the lock diagnostics change. The optional programmatic observer reports acquisition and holder durations only when explicitly supplied; normal installer calls keep the same lock budget, transaction, failure handling and output. No CLI command, flag, guidance text, readiness result or domain term changes. Test lifecycle, clocks and CI shell collection are verification-only changes. This is implementation review, not independent approval."
 }

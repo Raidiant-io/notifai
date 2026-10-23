@@ -420,9 +420,9 @@ describe('notifai hook attend', () => {
     expect(readSessionEndMarker('sess-a', env)).toBeNull()
 
     // Re-arm from the next prompt: a healthy owner already serves this incarnation.
-    const started = Date.now()
-    await hookRunCommand(deps, 'attend', stdin({ session_id: 'sess-a', cwd: root, hook_event_name: 'UserPromptSubmit' }), 'claude-code')
-    expect(Date.now() - started).toBeLessThan(2_000)
+    const sleep = vi.fn(async () => { throw new Error('A second start must not enter the attendant wait loop') })
+    await hookRunCommand({ ...deps, attendant: { ...deps.attendant, sleep } }, 'attend', stdin({ session_id: 'sess-a', cwd: root, hook_event_name: 'UserPromptSubmit' }), 'claude-code')
+    expect(sleep).not.toHaveBeenCalled()
     expect(deps.exits).toHaveLength(0)
 
     // SessionEnd for this incarnation ends it; it never notified, so nothing is reported.

@@ -382,57 +382,78 @@ describe('Windows hook adapter', () => {
     writeFileSync(scriptPath, '')
     const moduleUrl = new URL('../dist/hook-adapter.js', import.meta.url).href
     const start = new SharedArrayBuffer(Int32Array.BYTES_PER_ELEMENT)
+    const ready: Promise<void>[] = []
+    const completed: Promise<void>[] = []
+    const observations: unknown[] = []
     const workers = Array.from(
       { length: 16 },
-      () =>
-        new Worker(
+      (_, index) => {
+        const worker = new Worker(
           `
             const { parentPort, workerData } = require('node:worker_threads')
+            let started
             ;(async () => {
               const { installHookAdapter } = await import(workerData.moduleUrl)
               parentPort.postMessage('ready')
               Atomics.wait(new Int32Array(workerData.start), 0, 0)
+              started = performance.now()
               installHookAdapter(
                 { execPath: workerData.execPath, scriptPath: workerData.scriptPath },
                 workerData.homeDir,
                 'win32',
+                process.env,
+                observation => {
+                  if (observation.phase === 'acquired' || observation.phase === 'released') {
+                    parentPort.postMessage({ ...observation, worker: workerData.index })
+                  }
+                },
               )
               parentPort.postMessage('done')
             })().catch((error) => {
+              parentPort.postMessage({ phase: 'failed', worker: workerData.index, elapsedMs: started === undefined ? null : performance.now() - started })
               throw error
             })
           `,
           {
             eval: true,
-            workerData: { moduleUrl, start, execPath: process.execPath, scriptPath, homeDir },
+            workerData: { moduleUrl, start, execPath: process.execPath, scriptPath, homeDir, index },
           },
-        ),
-    )
-
-    const completed = workers.map(
-      (worker) =>
-        new Promise<void>((resolve, reject) => {
-          worker.on('message', (message) => {
+        )
+        const waiting = new Promise<void>((resolve, reject) => {
+          worker.on('message', message => { if (message === 'ready') resolve() })
+          worker.once('error', reject)
+          worker.once('exit', code => reject(new Error(`worker exited before barrier: ${code}`)))
+        })
+        const done = new Promise<void>((resolve, reject) => {
+          worker.on('message', message => {
             if (message === 'done') resolve()
+            else if (typeof message === 'object') observations.push(message)
           })
-          worker.on('error', reject)
-          worker.on('exit', (code) => {
-            if (code !== 0) reject(new Error(`adapter installer worker exited ${code}`))
-          })
-        }),
+          worker.once('error', reject)
+          worker.once('exit', code => { if (code !== 0) reject(new Error(`adapter installer worker exited ${code}`)) })
+        })
+        void waiting.catch(() => undefined)
+        void done.catch(() => undefined)
+        ready.push(waiting)
+        completed.push(done)
+        return worker
+      },
     )
-    await Promise.all(
-      workers.map(
-        (worker) =>
-          new Promise<void>((resolve) => {
-            worker.once('message', () => resolve())
-          }),
-      ),
-    )
-    Atomics.store(new Int32Array(start), 0, 1)
-    Atomics.notify(new Int32Array(start), 0)
 
-    await Promise.all(completed)
+    // Attach failures while workers are still reaching the barrier; always
+    // terminate and await every worker before the test releases its fixtures.
+    const finished = Promise.all(completed)
+    void finished.catch(() => undefined)
+    try {
+      await Promise.all(ready)
+      Atomics.store(new Int32Array(start), 0, 1)
+      Atomics.notify(new Int32Array(start), 0)
+      await finished
+    } finally {
+      await Promise.all(workers.map(worker => worker.terminate()))
+      console.info('Concurrent installer lock timings:', JSON.stringify(observations))
+    }
+
     expect(inspectHookAdapter(homeDir, 'win32').problems).toEqual([])
   })
 
