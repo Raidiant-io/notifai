@@ -10,7 +10,8 @@ import {
 } from '@raidiant/notifai-protocol'
 import { EXIT, authedClient, log, makeClient, type CommandDeps } from './commands-core.js'
 import type { ServiceIdentity } from './credentials.js'
-import { resolveActiveHarness } from './commands-harness-context.js'
+import { resolveAskingHarness } from './commands-harness-context.js'
+import { codexSubagentShell } from './codex-subagent.js'
 import {
   CODEX_FRESH_SESSION_USER_ACTION,
   CODEX_HOOK_APPROVAL_USER_ACTION,
@@ -433,11 +434,13 @@ function recordRegisteredQuestion(
   service: ServiceIdentity,
   json = false,
   wait = false,
+  rootKey?: string,
 ): number | Promise<number> {
-  const ordinary = () => persistRegisteredQuestion(deps, sessionId, built, draft, service, json, wait)
+  const ordinary = () => persistRegisteredQuestion(deps, sessionId, built, draft, service, json, wait,
+    undefined, rootKey, undefined, rootKey !== undefined)
   // A wait ends the turn, and Codex drops every open card at turn end, so a
-  // waiting ask never links one.
-  if (wait) return ordinary()
+  // waiting ask never links one. Codex offers no subagent the card at all.
+  if (wait || rootKey !== undefined) return ordinary()
   if (!codexCardAsks(deps, sessionId) || built.questions.length > 10) return ordinary()
   if (built.questions.some(question => question.multi === true)) return ordinary()
   const local = currentCodexQuestionContext(readSessionState(sessionId, deps.env), sessionId, deps.env)
@@ -526,6 +529,55 @@ const ON_ANSWER = 'Acknowledge it, then resume the committed work without asking
  */
 const END_TURN = 'Ask it in the conversation, say what each answer will make you do, then end your turn. The answer arrives as your next message.'
 
+/**
+ * A Codex subagent asks on its root's behalf (`codex-subagent.ts`): the
+ * question is the root's and its answer wakes the root, never the subagent.
+ * So the subagent never asks it in its own conversation and never waits for
+ * it; it hands the question to its parent and ends its turn. Plain `ask`,
+ * `ask --wait` and a duplicate all say the same.
+ */
+const WORKER_ASK = 'You are a subagent: this question belongs to the root Agent Session that started you, and its answer arrives there, never to you. Do not ask it in your own conversation or wait for it. Tell your parent the question id and what each answer will change, then end your turn.'
+
+const WORKER_KEEP_ROOT_OPEN = 'The root Agent Session must stay open while the question waits: closing, clearing or switching it ends the question, so never suggest that.'
+
+const WORKER_ON_ANSWER = 'The root Agent Session acknowledges the answer and resumes the work; you take no action on it.'
+
+function workerAnsweredOutside(questionId: string): string {
+  return `If the User answers in the conversation instead, the root retires the question with \`notifai close ${questionId}\`; include that in your report.`
+}
+
+/** The `next` block a subagent asking on its root's behalf gets, whatever else happened. */
+function workerNext(questionId: string, nextStep?: string) {
+  return {
+    end_turn: true,
+    in_this_turn: nextStep === undefined ? WORKER_ASK : `${WORKER_ASK} ${nextStep}`,
+    route_neutral: ROUTE_NEUTRAL,
+    keep_session_open: WORKER_KEEP_ROOT_OPEN,
+    on_answer: WORKER_ON_ANSWER,
+    answered_outside_notifai: workerAnsweredOutside(questionId),
+  }
+}
+
+/** The human form of `workerNext`. */
+function printWorkerNext(deps: CommandDeps, built: BuiltQuestions, questionId: string): void {
+  deps.io.out(WORKER_KEEP_ROOT_OPEN)
+  deps.io.out(WORKER_ASK)
+  deps.io.out(`Tell your parent the question id (${questionId}) and what each answer will change:`)
+  for (const [index, entry] of built.questions.entries()) {
+    const questionPrefix = built.questions.length > 1 ? `Question ${index + 1}, ` : ''
+    if (entry.choices !== undefined) {
+      for (const choice of entry.choices) {
+        deps.io.out(`- ${questionPrefix}If the answer is ${JSON.stringify(choice.label)}: the work it means.`)
+      }
+      deps.io.out(`- ${questionPrefix}For an unexpected typed answer: how it will decide the work.`)
+    } else {
+      deps.io.out(`- ${questionPrefix}For the free-text answer: how its content will decide the work.`)
+    }
+  }
+  deps.io.out(WORKER_ON_ANSWER)
+  deps.io.out(workerAnsweredOutside(questionId))
+}
+
 /** The human output's last line, after the commitments it asks for. */
 const END_TURN_HUMAN = 'Then end your turn: the answer arrives as your next message.'
 
@@ -578,12 +630,15 @@ function reportAlreadyOpen(
   questionId: string,
   json: boolean,
   wait = false,
+  worker = false,
 ): number {
   log(deps).info('ask.registered', { ok: true, session: sessionId, question_id: questionId, linked: true, questions: built.questions.length })
   const open = captureCandidates(readSessionState(sessionId, deps.env)).find((pending) => pending.question_id === questionId)
   const questions = open?.questions ?? built.questions
-  const message = `This question is already open in this Agent Session as ${questionId}: nothing new was registered, and a new Body or images were not applied. Its answer comes back into this Agent Session.`
-  const handBack = wait && open !== undefined ? claudeHandBack(deps, sessionId, open) : null
+  const message = worker
+    ? `This question is already open in the root Agent Session as ${questionId}: nothing new was registered, and a new Body or images were not applied. Its answer arrives in the root Agent Session, not to you.`
+    : `This question is already open in this Agent Session as ${questionId}: nothing new was registered, and a new Body or images were not applied. Its answer comes back into this Agent Session.`
+  const handBack = wait && !worker && open !== undefined ? claudeHandBack(deps, sessionId, open) : null
   const inThisTurn = handBack !== null
     ? `${OPEN_FORM} ${OPEN_FORM_UNAVAILABLE}`
     : wait
@@ -605,7 +660,7 @@ function reportAlreadyOpen(
       ...(handBack === null ? {} : { open_form: { tool: CLAUDE_QUESTION_TOOL, input: handBack } }),
       status: `notifai status ${questionId}`,
       close: `notifai close ${questionId}`,
-      next: {
+      next: worker ? workerNext(questionId) : {
         end_turn: wait && handBack === null,
         in_this_turn: inThisTurn,
         route_neutral: ROUTE_NEUTRAL,
@@ -617,6 +672,11 @@ function reportAlreadyOpen(
     return EXIT.ok
   }
   deps.io.out(message)
+  if (worker) {
+    deps.io.out(`Inspect \`notifai status ${questionId}\` for submission evidence; never register a replacement to check this question.`)
+    printWorkerNext(deps, built, questionId)
+    return EXIT.ok
+  }
   if (handBack !== null) {
     deps.io.out(`Inspect \`notifai status ${questionId}\` for submission evidence; never register a replacement to check this question.`)
     deps.io.out(KEEP_SESSION_OPEN)
@@ -642,6 +702,7 @@ function persistRegisteredQuestion(
   nativeAdmission?: NativeQuestionAdmission,
   ownerKey?: string,
   nativeUnavailable?: NativeUnavailable,
+  worker = false,
 ): number {
   let registered: RegisteredQuestion
   const credential = deps.store.load()
@@ -690,7 +751,7 @@ function persistRegisteredQuestion(
       EXIT.failed,
     )
   }
-  if (!registered.registered) return reportAlreadyOpen(deps, sessionId, built, registered.question_id, json, wait)
+  if (!registered.registered) return reportAlreadyOpen(deps, sessionId, built, registered.question_id, json, wait, worker)
   const questionId = registered.question_id
   log(deps).info('ask.registered', {
     ok: true,
@@ -716,7 +777,7 @@ function persistRegisteredQuestion(
       message: err instanceof Error ? err.message : String(err) })
   }
   const nextStep = submission === 'scheduled'
-    ? wait
+    ? wait || worker
       ? 'Background submission is scheduled; this does not confirm submission or delivery, so check status before reporting either.'
       : 'Background submission is scheduled; this does not confirm submission or delivery, so check status before reporting either. Continue independent work: the answer comes back into this Agent Session.'
     : 'Background startup failed. Keep this registration; ordinary lifecycle hooks can recover it. Inspect status before relying on submission.'
@@ -725,7 +786,7 @@ function persistRegisteredQuestion(
     binding.owner_key === readSessionIncarnation(sessionId, deps.env)?.key)
   const nativeInstruction = 'Open the handed-back card unchanged after saying what each answer will make you do. It is your question in the conversation; never also ask it in prose. Notifai records a terminal answer itself; acknowledge a device answer with the command it carries.'
   const openForm = native === undefined ? undefined : { tool: 'request_user_input_async', input: cardHandbackInput(native) }
-  const handBack = wait
+  const handBack = wait && !worker
     ? claudeHandBack(deps, sessionId, {
       question_id: questionId, title: draft.presentation.title, questions: built.questions,
       ...(built.headers !== undefined ? { headers: built.headers } : {}),
@@ -761,7 +822,7 @@ function persistRegisteredQuestion(
           ...(handBack === null ? {} : { open_form: { tool: CLAUDE_QUESTION_TOOL, input: handBack } }),
           status: `notifai status ${questionId}`,
           close: `notifai close ${questionId}`,
-          next: {
+          next: worker ? workerNext(questionId, nextStep) : {
             end_turn: wait && handBack === null,
             in_this_turn: handBack !== null
               ? `${OPEN_FORM} ${OPEN_FORM_UNAVAILABLE} ${nextStep}`
@@ -800,6 +861,10 @@ function persistRegisteredQuestion(
   deps.io.out(
     `${nextStep} Inspect \`notifai status ${questionId}\` for submission evidence; never register a replacement to check this question.`,
   )
+  if (worker) {
+    printWorkerNext(deps, built, questionId)
+    return EXIT.ok
+  }
   deps.io.out(KEEP_SESSION_OPEN)
   deps.io.out(handBack !== null
     ? 'Say what each answer will make you do:'
@@ -859,6 +924,7 @@ async function uploadAskMedia(
   flags: AskFlags,
   invocation: DraftInvocation,
   service: ServiceIdentity,
+  rootKey?: string,
 ): Promise<number> {
   const authed = authedClient(deps, config)
   if (!authed) {
@@ -902,7 +968,7 @@ async function uploadAskMedia(
   if (!ready.ok) {
     return askFailure(deps, flags, 'invalid_draft', 'draft', ready.error, 'fix the reported field and retry')
   }
-  return recordRegisteredQuestion(deps, sessionId, built, ready.draft, service, flags.json === true, flags.wait === true)
+  return recordRegisteredQuestion(deps, sessionId, built, ready.draft, service, flags.json === true, flags.wait === true, rootKey)
 }
 
 /**
@@ -980,7 +1046,7 @@ export function askCommand(
   // markers identify the active owner, while UserPromptSubmit adds the hook's
   // canonical id to the directory's concurrent-session index.
   const now = (deps.now ?? Date.now)()
-  const { active, contested } = resolveActiveHarness(deps.env, deps.cwd, now)
+  const { active, contested } = resolveAskingHarness(deps.env, deps.cwd, now, deps.hookPlatform ?? process.platform)
   // Where no later answer can come back (no harness, conflicting markers,
   // Cursor, OpenCode, OpenClaw off macOS, Hermes off its classic CLI), plain
   // `ask` is refused and `ask --wait` holds in this command; an OpenCode root
@@ -1086,6 +1152,20 @@ export function askCommand(
     }
     if (state.harness !== active!.harness ||
         (active!.harness !== 'hermes' && state.last_prompt_at === undefined)) {
+      // A Codex subagent asks for its root (`codex-subagent.ts`). Where that
+      // root is not live and activated below this shell, or the process tree
+      // cannot be read (Windows), it stays refused; it cannot send a prompt
+      // of its own, so its parent asks instead.
+      if (active!.harness === 'codex' && codexSubagentShell(deps.env)) {
+        return askFailure(
+          deps,
+          flags,
+          'session_not_activated',
+          'user_prompt_submit',
+          'This Codex subagent cannot ask the User: Notifai cannot place it inside a live, activated Agent Session that started it.',
+          'give the question to your parent agent, which can ask it',
+        )
+      }
       return askFailure(
         deps,
         flags,
@@ -1152,7 +1232,10 @@ export function askCommand(
   // The duplicate guard runs before any upload, so a repeat of an open question
   // costs no media round trip; registration repeats it under the session lock.
   const open = findOpenEqualQuestion(readSessionState(sessionId, deps.env), built.questions)
-  if (open !== undefined) return reportAlreadyOpen(deps, sessionId, built, open.question_id!, flags.json === true, flags.wait === true)
+  const rootKey = active!.harness === 'codex' ? active!.rootKey : undefined
+  if (open !== undefined) {
+    return reportAlreadyOpen(deps, sessionId, built, open.question_id!, flags.json === true, flags.wait === true, rootKey !== undefined)
+  }
   if ((flags.image?.length ?? 0) > 0) {
     return uploadAskMedia(
       deps,
@@ -1162,8 +1245,9 @@ export function askCommand(
       flags,
       source.invocation,
       { base_url: credential.baseUrl, machine_id: credential.machineId },
+      rootKey,
     )
   }
   return recordRegisteredQuestion(deps, sessionId, built, preflight.draft,
-    { base_url: credential.baseUrl, machine_id: credential.machineId }, flags.json === true, flags.wait === true)
+    { base_url: credential.baseUrl, machine_id: credential.machineId }, flags.json === true, flags.wait === true, rootKey)
 }

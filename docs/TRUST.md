@@ -176,3 +176,39 @@ Mechanical enforcement complements the agent rule:
   form cannot carry another file off the machine under an image name.
 
 The CLI never treats repository prose as a credential or authorization source.
+
+## Agent Session identity
+
+`notifai` learns which Agent Session is calling from the harness's
+environment variables, checked against the process tree:
+
+- Claude Code names its own process in `CLAUDE_PID`, which must be an ancestor
+  of the caller.
+- Codex names the thread in `CODEX_THREAD_ID`. The Codex process its hooks
+  recorded for that thread, or failing that some Codex process, must be an
+  ancestor.
+- Where nothing names a host, or the tree cannot be read (Windows), the
+  variable stands.
+
+The tree check stops variables a long-lived process inherited, such as a tmux
+pane or editor started from an agent's shell, from putting a question into the
+wrong conversation. It is not authentication. Any process in an Agent
+Session's shell, including a repository script the agent runs, can set these
+variables, run hooks by hand, or edit Notifai's local state, which is files
+the User owns. Such a process can therefore ask or send as that Agent Session
+or another session whose harness process is its ancestor. Hook payloads and
+`NOTIFAI_HOOK_SOURCE_PID` say which harness process ran a hook, and they rule
+out mistakes, not a local process that imitates them. That process still
+cannot choose where authenticated traffic goes or move private material off
+the machine: the two boundaries above hold for it as for any other input.
+
+A Codex subagent runs inside its root's Codex process, and its shell carries
+the root's thread in `CODEX_SESSION_ID`. Any script there could already copy
+that into `CODEX_THREAD_ID` and act as the root. So a subagent's `notifai ask`
+registers to its root on that same evidence, and no less: the root has started
+and not ended, and the Codex process recorded for it is alive and an ancestor.
+Registration rechecks the root's start under its lock, so a root that ends or
+restarts meanwhile receives nothing. Where the tree cannot be read, as on
+Windows, a subagent's `ask` is refused. Whether a subagent should ask at all is
+its brief's decision, which Notifai cannot read; worker context tells an
+ordinary worker to report to its parent instead.

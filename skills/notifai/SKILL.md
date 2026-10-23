@@ -18,7 +18,10 @@ For an update notice, a local integration notice or a channel change, read
 Parent owns by default. An agent that started your Agent Session with a task
 brief is your parent, even when the harness shows no parent. Ordinary workers
 report Agent Events to their parent and do not load or send. Explicit
-delegation makes a worker the owner.
+delegation makes a worker the owner. Notifai cannot read a brief, so only that
+delegation decides whether a worker notifies. A worker that asks follows what
+`ask` prints: it says where the answer arrives, which may be the root Agent
+Session rather than the worker.
 
 Owner session context carries the `when-to-notify` and `questions` guidance.
 Before your first Notification Request or acknowledgement, or when that

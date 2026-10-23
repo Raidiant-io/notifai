@@ -3,6 +3,7 @@ import {
   type HermesClassicCliLocalInstance,
   type SourceContextHarness,
 } from './harnesses.js'
+import { codexSubagentRoot } from './codex-subagent.js'
 import { readSessionIncarnation } from './hook-session-state.js'
 import { processAncestry, type AncestorProcess } from './process-ancestry.js'
 
@@ -28,10 +29,17 @@ export interface ActiveHarnessSession {
   /** The harness has only a temporary placeholder title so far. */
   sessionLabelPending?: boolean
   /**
-   * OpenCode only: whether its plugin reported this session as a delegated
-   * worker. Absent from a plugin too old to say, which hands back no form.
+   * Whether a delegated worker is asking. OpenCode: its plugin reported the
+   * session as one; absent from a plugin too old to say, which hands back no
+   * form. Codex: set only by `resolveAskingHarness`, for a subagent asking on
+   * its root's behalf.
    */
   worker?: boolean
+  /**
+   * Codex subagent asking on its root's behalf: the root's start when this
+   * shell was resolved. Registration rechecks it under the root's lock.
+   */
+  rootKey?: string
 }
 
 /**
@@ -176,6 +184,29 @@ export function resolveActiveHarness(
   _now: number,
 ): ActiveHarnessResolution {
   return resolution(verifiedCandidates(env))
+}
+
+/**
+ * The Agent Session a question from this shell belongs to. As
+ * `resolveActiveHarness`, except that a Codex subagent running inside its
+ * root's live Codex process asks on the root's behalf (`codex-subagent.ts`):
+ * its question registers there and its answer wakes the root, as a Claude Code
+ * subagent's does. Only questions take the root's identity; everything else a
+ * subagent runs keeps its own thread.
+ */
+export function resolveAskingHarness(
+  env: NodeJS.ProcessEnv,
+  cwd: string,
+  now: number,
+  platform: NodeJS.Platform = process.platform,
+): ActiveHarnessResolution {
+  const resolved = resolveActiveHarness(env, cwd, now)
+  if (resolved.active?.harness !== 'codex' || resolved.contested.length > 0) return resolved
+  const chain = platform === process.platform ? callerChain ?? null : processAncestry(process.pid, platform)
+  const root = codexSubagentRoot(env, chain)
+  return root === null
+    ? resolved
+    : { active: { ...resolved.active, sessionId: root.rootSessionId, worker: true, rootKey: root.rootKey }, contested: [] }
 }
 
 /**
