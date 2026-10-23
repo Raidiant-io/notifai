@@ -279,7 +279,8 @@ const SECTIONS_CLI = String.raw`import json, os, sys
 envelope = json.loads(sys.stdin.read())
 with open(sys.argv[1], "a") as calls:
     calls.write(json.dumps({"event": sys.argv[3], "sections": envelope.get("hermes_prompt_sections"),
-                            **({"compacted": True} if envelope.get("compacted") else {})}) + "\n")
+                            **({"compacted": True} if envelope.get("compacted") else {}),
+                            **({"worker": True} if envelope.get("hermes_worker") else {})}) + "\n")
 event = sys.argv[3]
 if event == "guidance-check":
     # Silent unless the session's guidance changed or it was compacted.
@@ -291,7 +292,7 @@ else:
     print(("O" if event == "session-start" else "W") * 2000)
 `
 
-interface SectionsRun { rendered: [string, string][]; turns: unknown[]; calls: { event: string; sections: number | null; compacted?: boolean }[] }
+interface SectionsRun { rendered: [string, string][]; turns: unknown[]; calls: { event: string; sections: number | null; compacted?: boolean; worker?: boolean }[] }
 
 const TURN_CHECKS = [{ event: 'guidance-check', sections: null }, { event: 'guidance-check', sections: null }]
 
@@ -334,7 +335,11 @@ it.skipIf(process.platform === 'win32')('hands in what a session must reload wit
   // only through a turn. The CLI decides and says each once.
   const root = mkdtempSync(path.join(os.tmpdir(), 'notifai-hermes-currency-')); roots.push(root)
   expect(runSectionsCase(root, 'fits', undefined, false, true).turns).toEqual([{ context: 'N' }, { context: 'N' }])
-  expect(runSectionsCase(root, 'child-compacted').turns).toEqual([null, { context: 'C' }])
+  const child = runSectionsCase(root, 'child-compacted')
+  expect(child.calls.filter(call => call.event === 'guidance-check')).toEqual([
+    { event: 'guidance-check', sections: null, worker: true },
+    { event: 'guidance-check', sections: null, worker: true, compacted: true },
+  ])
   const compacted = runSectionsCase(root, 'compacted')
   expect(compacted.turns).toEqual([null, { context: 'C' }])
   expect(compacted.calls.filter((call) => call.event === 'guidance-check'))

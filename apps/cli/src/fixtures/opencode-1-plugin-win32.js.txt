@@ -3,13 +3,13 @@
 // the next install; change the CLI instead, which is where the logic lives.
 import { spawn } from "node:child_process"
 
-const NOTIFAI_INTEGRATION_REVISION = "986f962d18abd8ef86e01d82eb2243a3a818ea0fe25c040dee12221a916e2653"
+const NOTIFAI_INTEGRATION_REVISION = "f0bf50f07f76eae129bb4326badff354472aa1fc45e3f01eefb35f62e5282ec3"
 const NODE = "C:\\Program Files\\nodejs\\node.exe"
 const ADAPTER = "C:\\Users\\u\\.notifai\\bin\\notifai-hook.mjs"
 const TIMEOUT_MS = 5000
 const ADAPTER_VERSION = 16
 const MISSING_LIFECYCLE_GUIDANCE_CONTEXT = "Notifai lifecycle guidance could not be loaded, so Project Enablement is unverified. Run `notifai doctor --json` to check setup, then `notifai guidance` before deciding whether or how to notify."
-const WORKER_ACTIVATION_CONTEXT = "Notifai worker context: report Agent Events (work finished, failed, blocked, or needing the User) to your parent, which decides what reaches the User. Send no Notification Request yourself unless your assignment delegates them to you; then load the Notifai skill and run `notifai guidance` before your first one. If you ask, follow what `ask` prints."
+const WORKER_ACTIVATION_CONTEXT = "Notifai worker context: report Agent Events (work finished, failed, blocked, or needing the User) to your parent, which decides what reaches the User. Send no Notification Request yourself unless your assignment delegates them to you; then load the Notifai skill and run `notifai guidance` before your first one. A delegated worker that asks keeps the assignment until it has acted on the answer. Follow what `ask` prints."
 const QUESTION_JSON_SCHEMA = {"type":"object","properties":{"questions":{"type":"array","items":{"type":"object","properties":{"question":{"type":"string","description":"Complete question"},"header":{"type":"string","description":"Very short label (max 30 chars)"},"options":{"type":"array","items":{"type":"object","properties":{"label":{"type":"string","description":"Display text (1-5 words, concise)"},"description":{"type":"string","description":"Explanation of choice"}},"required":["label","description"]},"description":"Available choices"},"multiple":{"type":"boolean","description":"Allow selecting multiple choices"}},"required":["question","header","options"]},"description":"Questions to ask"}},"required":["questions"]}
 const QUESTION_EXTRA_PROPERTIES = {"title":{"type":"string","description":"Notifai: a few words naming what this form decides; the User's devices show it as the title."},"body":{"type":"string","description":"Notifai: optional Markdown the User's devices show beneath the questions. Show an image as ![alt](media:1), numbered in \"images\" order."},"images":{"type":"array","description":"Notifai: optional local JPEG, PNG or GIF files the User's devices show with the questions.","items":{"type":"object","properties":{"path":{"type":"string"},"alt":{"type":"string"}},"required":["path","alt"]}},"source":{"type":"string","description":"Notifai: only the value `notifai ask --wait` handed back with this form."}}
 const QUESTION_EXTRAS = Object.keys(QUESTION_EXTRA_PROPERTIES)

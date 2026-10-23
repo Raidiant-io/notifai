@@ -148,6 +148,7 @@ Good:
 
 - \`Rolling out to staging now; I'll report the health checks.\`
 - \`Holding the deploy. I'll re-raise it once staging is green.\`
+- \`Writing the chosen headline to HEADLINE.txt now.\`
 - \`The email already went out with Monday; sending a correction for Friday now.\`
 
 Bad:
@@ -156,8 +157,6 @@ Bad:
 - \`You chose "Deploy now".\` — echoes the reply instead of naming the work
 - \`Deploying now, and I'll also refactor the retry logic.\` — promises work
   the reply did not cause
-- \`I'll report your choice to the coordinator for the next round.\` — names
-  work no agent has started; do it now
 `
 
 /**

@@ -1,3 +1,5 @@
+import { guidanceRead, recordGuidanceRead } from './guidance-currency.js'
+import * as atomicFileModule from './atomic-file.js'
 import { guidanceShowCommand as readCurrentGuidance } from './commands-guidance.js'
 import { inputWakeToken, sessionInputWake } from './session-inputs.js'
 import { execFileSync, spawn, type ChildProcess } from 'node:child_process'
@@ -4106,7 +4108,7 @@ describe('session-start hook', () => {
       // Root activation must reach owners before they discover or load the skill.
       expect(context).toMatch(/you own Notification Requests unless your assignment delegates them elsewhere/i)
       expect(context).toMatch(/another agent started this Agent Session with a task brief, that agent owns them unless the brief delegates them to you/i)
-      expect(context).toMatch(/load the Notifai skill \(or read `[^`]+SKILL\.md`\) before your first Notification Request/i)
+      expect(context).toMatch(/read the Notifai skill at `[^`]+SKILL\.md` before your first Notification Request/i)
       expect(context).toMatch(/`notifai ask`.*same turn/i)
       expect(context).toMatch(/ask for readiness, never for a credential/i)
       expect(first.hookSpecificOutput?.additionalContext).toContain('# How to read this guidance')
@@ -9185,8 +9187,8 @@ describe('guidance currency', () => {
     mkdirSync(dir, { recursive: true })
     writeFileSync(path.join(dir, 'when-to-notify.md'), text)
   }
-  const CHANGED = /^Notifai's guidance changed after this Agent Session read it\. Before your next Notification Request, load the Notifai skill again \(or read `[^`]+SKILL\.md`\) and run `notifai guidance`; follow them over what you read earlier\.$/
-  const COMPACTED = /This conversation was compacted\. Before your next Notification Request, load the Notifai skill again \(or read `[^`]+SKILL\.md`\) and run `notifai guidance`\./
+  const CHANGED = /^Notifai's guidance changed after this Agent Session read it\./
+  const COMPACTED = /This conversation was compacted\./
 
   it('does not deliver owner reload notices in worker context or on Claude tool calls', async () => {
     const h = harness()
@@ -9339,5 +9341,34 @@ describe('guidance currency', () => {
     await hookRunCommand(h.deps, 'post-tool-use', stdin({ ...input, promptId: 'prompt-three' }), 'grok')
     expect(contextOf(h.io.outLines[2])).toMatch(/Notifai's guidance changed after this Agent Session read it\./)
     expect(contextOf(h.io.outLines[2])).toContain('Only for deploys.')
+  })
+})
+
+
+describe('guidance compaction and write boundaries', () => {
+  it.each([false, true])('invalidates Hermes reads without owner text for a worker (worker: %s)', async worker => {
+    const h = harness()
+    const session = worker ? 'hermes-child' : 'hermes-root'
+    recordGuidanceRead(session, h.env, 'unchanged-content')
+    await hookRunCommand(h.deps, 'guidance-check', stdin({ session_id: session, compacted: true, hermes_worker: worker }), 'hermes')
+    expect(guidanceRead(session, h.env)).toBeUndefined()
+    if (worker) expect(h.io.outLines).toEqual([])
+    else expect(h.io.outLines.join(' ')).toContain('compacted')
+  })
+
+  it.each(['claude-code', 'opencode', 'openclaw', 'hermes', 'grok'] as const)('never emits a reload notice before a successful receipt write on %s', async carrier => {
+    const h = harness()
+    const input = { session_id: 'receipt-failure', cwd: h.deps.cwd, source: 'compact', compacted: true, ...(carrier === 'openclaw' ? { openclaw_session_id: 'transcript' } : {}) }
+    const original = atomicFileModule.atomicWriteFileSync
+    const write = vi.spyOn(atomicFileModule, 'atomicWriteFileSync').mockImplementation((file, ...rest) => {
+      if (String(file).includes('guidance-given')) throw new Error('receipt write failed')
+      return original(file, ...rest)
+    })
+    try {
+      for (let attempt = 0; attempt < 2; attempt++) {
+        await hookRunCommand(h.deps, carrier === 'hermes' ? 'guidance-check' : carrier === 'grok' ? 'pre-tool-use' : 'session-start', stdin(input), carrier)
+      }
+      expect(h.io.outLines.join(' ')).not.toMatch(/was compacted|guidance changed after/)
+    } finally { write.mockRestore() }
   })
 })

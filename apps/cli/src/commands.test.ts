@@ -1,6 +1,5 @@
 import { guidanceSessionNeedsToken } from './command-guidance.js'
-import { conversationToken } from './guidance-currency.js'
-import { guidanceShowCommand as readCurrentGuidance } from './commands-guidance.js'
+import { guidanceCheckCommand, guidanceShowCommand as readCurrentGuidance } from './commands-guidance.js'
 import {
   CAPABILITIES_V1,
   NOTIFICATION_CONTRACT_FINGERPRINT,
@@ -210,7 +209,10 @@ function sendCommand(
     baseUrl?: string
   },
 ) {
-  const token = flags.guidanceToken ?? (guidanceSessionNeedsToken(deps) ? conversationToken(deps.env) ?? undefined : undefined)
+  let token = flags.guidanceToken
+  if (token === undefined && guidanceSessionNeedsToken(deps)) {
+    guidanceCheckCommand({ ...deps, io: { ...deps.io, out: line => { token = (JSON.parse(line) as { token?: string }).token } } })
+  }
   void readCurrentGuidance({ ...deps, io: { ...deps.io, out: () => undefined } }, { ...(token === undefined ? {} : { sessionToken: token }) })
   return sendAuthoredCommand(deps, {
     summary: flags.summary ?? flags.body ?? flags.title,
@@ -224,7 +226,10 @@ function askCommand(
   question: string | undefined,
   flags: AskFlags,
 ) {
-  const token = flags.guidanceToken ?? (guidanceSessionNeedsToken(deps) ? conversationToken(deps.env) ?? undefined : undefined)
+  let token = flags.guidanceToken
+  if (token === undefined && guidanceSessionNeedsToken(deps)) {
+    guidanceCheckCommand({ ...deps, io: { ...deps.io, out: line => { token = (JSON.parse(line) as { token?: string }).token } } })
+  }
   void readCurrentGuidance({ ...deps, io: { ...deps.io, out: () => undefined } }, { ...(token === undefined ? {} : { sessionToken: token }) })
   return askAuthoredCommand({ spawnQuestionSettlement: () => undefined, ...deps }, question, { ...flags, ...(token === undefined ? {} : { guidanceToken: token }) })
 }
@@ -12615,4 +12620,62 @@ it.each(['send', 'ask'] as const)('refuses a stale %s before network or registra
   expect(JSON.parse(io.outLines.at(-1)!)).toMatchObject({ code: 'guidance_required', guidance: expect.stringContaining('# Acknowledgements') })
   expect(submit).not.toHaveBeenCalled()
   expect(readSessionState(env.CODEX_THREAD_ID, env).pending).toBeUndefined()
+})
+
+
+describe('public guidance recovery sequence', () => {
+  it.each(['cursor', 'claude-code'] as const)('recovers first-use and Projectless sends in %s without minting a token in the helper', async harness => {
+    for (const projectless of [false, true]) {
+      const cwd = mkdtempSync(path.join(os.tmpdir(), 'notifai-guidance-recovery-'))
+      if (!projectless) execFileSync('git', ['init', '-q', cwd])
+      const env = { ...isolatedEnv(cwd), ...(harness === 'cursor' ? { CURSOR_AGENT: '1' } : { CLAUDECODE: '1', CLAUDE_CODE_SESSION_ID: 'root-with-history' }) }
+      if (harness === 'claude-code') {
+        const children = path.join(env.CLAUDE_CONFIG_DIR!, 'projects/p/root-with-history/subagents')
+        mkdirSync(children, { recursive: true })
+        writeFileSync(path.join(children, 'agent-worker.jsonl'), '')
+      }
+      const io = new CapturedIo()
+      const submit = vi.fn(async () => receipt)
+      const deps = { ...makeDeps(io, { submit } as unknown as ApiClient), cwd, env }
+      const flags = { kind: 'done', title: 'Recovery', summary: 'Finished.', projectless, json: true }
+      expect(await sendAuthoredCommand(deps, flags)).toBe(EXIT.usage)
+      expect(JSON.parse(io.outLines.at(-1)!).code).toBe('guidance_required')
+      expect(submit).not.toHaveBeenCalled()
+      expect(guidanceCheckCommand(deps)).toBe(EXIT.ok)
+      const check = JSON.parse(io.outLines.at(-1)!) as { enabled: boolean; token: string; read_command: string; request_flag: string }
+      expect(check.enabled).toBe(false)
+      const readToken = /--session-token ([a-f0-9]{48})$/.exec(check.read_command)?.[1]
+      const sendToken = /--guidance-token ([a-f0-9]{48})$/.exec(check.request_flag)?.[1]
+      expect(readToken).toBe(check.token)
+      expect(sendToken).toBe(check.token)
+      expect(await readCurrentGuidance(deps, { sessionToken: readToken })).toBe(EXIT.ok)
+      expect(await sendAuthoredCommand(deps, { ...flags, guidanceToken: sendToken })).toBe(EXIT.ok)
+      expect(submit).toHaveBeenCalledOnce()
+      expect(projectEnablementState(projectBinding(cwd, env))).toBe(projectless ? 'unset' : 'enabled')
+      if (!projectless) {
+        expect(projectDisableCommand(deps)).toBe(EXIT.ok)
+        expect(await sendAuthoredCommand(deps, { ...flags, guidanceToken: sendToken })).toBe(EXIT.usage)
+        expect(submit).toHaveBeenCalledOnce()
+        expect(io.errLines.join(' ')).toContain('project_disabled')
+      }
+    }
+  })
+
+  it('recovers a Projectless Cursor question through check, read and ask --wait', async () => {
+    const cwd = mkdtempSync(path.join(os.tmpdir(), 'notifai-question-recovery-'))
+    const env = { ...isolatedEnv(cwd), CURSOR_AGENT: '1' }
+    const io = new CapturedIo()
+    const submit = vi.fn(async () => receipt)
+    const client = { submit, replies: async () => replyResponse([reply]), closeReplies: async () => claimedReplyResponse([reply]), putAgentAcknowledgement: async () => ({}) } as unknown as ApiClient
+    const deps = { ...makeDeps(io, client), cwd, env }
+    const flags = { title: 'Shipping', resumes: 'Ship the selected version', wait: true, projectless: true, json: true }
+    expect(await askAuthoredCommand(deps, 'Ship it?', flags)).toBe(EXIT.usage)
+    expect(JSON.parse(io.outLines.at(-1)!).code).toBe('guidance_required')
+    expect(guidanceCheckCommand(deps)).toBe(EXIT.ok)
+    const check = JSON.parse(io.outLines.at(-1)!) as { token: string }
+    expect(await readCurrentGuidance(deps, { sessionToken: check.token })).toBe(EXIT.ok)
+    expect(await askAuthoredCommand(deps, 'Ship it?', { ...flags, guidanceToken: check.token })).toBe(EXIT.ok)
+    expect(submit).toHaveBeenCalledOnce()
+    expect(projectEnablementState(projectBinding(cwd, env))).toBe('unset')
+  })
 })

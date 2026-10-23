@@ -66,8 +66,16 @@ describe('claudeAskingSubagent', () => {
   it('reads past lines it cannot parse, and refuses a session id that names a path', () => {
     const t = transcripts()
     t.agent('a1', { finished: false }, '{not json\n', t.call('toolu_ask', ASK))
-    expect(claudeAskingSubagent(SESSION, t.env, [])?.agent_id).toBe('a1')
+    expect(claudeAskingSubagent(SESSION, t.env, ['Which headline should v2 use?'])?.agent_id).toBe('a1')
+    expect(claudeAskingSubagent(SESSION, t.env, [])).toBeUndefined()
     expect(claudeAskingSubagent('../escape', t.env, [])).toBeUndefined()
     expect(claudeAskingSubagent(SESSION, { CLAUDE_CONFIG_DIR: path.join(os.tmpdir(), 'notifai-no-such-config') }, [])).toBeUndefined()
+  })
+
+  it('does not attribute a parent wrapper invocation to an unrelated unfinished child ask', () => {
+    const t = transcripts()
+    t.root(t.call('toolu_parent', './ask-headline.sh'))
+    t.agent('color-worker', { finished: false }, t.call('toolu_color', "notifai ask 'Choose a color?'; sleep 60"))
+    expect(claudeAskingSubagent(SESSION, t.env, ['Which headline should v2 use?'])).toBeUndefined()
   })
 })

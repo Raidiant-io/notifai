@@ -339,7 +339,7 @@ describe('guidance commands', () => {
     expect(JSON.parse(captured.out.pop()!).context).toContain("Notifai's guidance changed")
     disableProject(binding)
     guidanceCheckCommand(deps, first.token)
-    expect(JSON.parse(captured.out.pop()!)).toEqual({ enabled: false })
+    expect(JSON.parse(captured.out.pop()!)).toEqual({ enabled: false, disabled: true })
   })
 
   it('prints guidance only: Hermes, like every harness, gets the update notice at session start', async () => {
@@ -575,7 +575,7 @@ describe('session-start guidance', () => {
     const opening = context.slice(0, context.indexOf('# How to read this guidance'))
     expect(opening).toMatch(/^Notifai is enabled for this Project\. You own Notification Requests/)
     // The skill is named with the bundled file, which works where no harness copy is installed.
-    expect(opening).toMatch(/Load the Notifai skill \(or read `[^`]+SKILL\.md`\) before your first Notification Request/)
+    expect(opening).toMatch(/Read the Notifai skill at `[^`]+SKILL\.md` before your first Notification Request/)
     expect(opening).toMatch(/job changes completely[^.]*rename this Agent Session/)
     expect(opening).toMatch(/unless your assignment delegates them elsewhere/)
     // An orchestrator's worker can be a top-level session with no parent the
@@ -591,7 +591,6 @@ describe('session-start guidance', () => {
     expect(opening).toMatch(/conversation alone misses an away User/)
     expect(opening).toMatch(/never for a credential/)
     expect(opening).toMatch(/permission prompts stay in the harness/i)
-    expect(opening).toContain('When you brief an agent in its own Agent Session, say whether it owns Notification Requests, and ask yourself any question whose answer you will act on.')
   })
 
   it('keeps an added topic that fits inline under its own provenance', () => {

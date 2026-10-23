@@ -4,7 +4,7 @@ import { createHash } from 'node:crypto'
 import type { ContinuationEvent, EscalationDeliveryRoute, HookEnvelope } from './hook-types.js'
 import { updateSessionState } from './hook-session-state.js'
 import { grokActivationContext, rootGuidanceDigest } from './session-activation.js'
-import { compactedNotice, guidanceChangedNotice, guidanceGiven, GUIDANCE_NOT_GIVEN, recordGuidanceGiven } from './guidance-currency.js'
+import { claimGuidanceChange, invalidateGuidanceRead, recordGuidanceGiven } from './guidance-currency.js'
 import type { PendingNotice } from './pending-notice.js'
 import { stopAnswerOutput } from './hook-acknowledgements.js'
 import { GrokLeaderSession } from './grok-leader.js'
@@ -31,6 +31,7 @@ export function grokHookEnvelope(input: HookEnvelope): HookEnvelope | null {
 
 /** Re-arm activation for the next tool boundary; `compacted` when a compaction summarized it away. */
 export function resetGrokActivation(sessionId: string, env: NodeJS.ProcessEnv, compacted = false): void {
+  if (compacted) invalidateGuidanceRead(sessionId, env)
   updateSessionState(sessionId, env, current => {
     const next = { ...current }
     delete next.grok_activation_context
@@ -57,22 +58,21 @@ export function claimGrokActivation(envelope: HookEnvelope, cwd: string, env: No
   const plain = grokActivationContext(cwd, env, worker)
   const digest = createHash('sha256').update(worker ? plain : rootGuidanceDigest(cwd, env)).digest('hex')
   let claimed = false
-  let compacted = false
+  let currency: string | undefined
+  const guidance = worker ? undefined : rootGuidanceDigest(cwd, env)
   updateSessionState(sessionId, env, current => {
     if (current.grok_activation_context === digest) return current
+    if (guidance !== undefined) {
+      currency = claimGuidanceChange(sessionId, env, guidance, false, { compacted: current.grok_compacted === true })
+      if (!recordGuidanceGiven(sessionId, env, guidance)) return current
+    }
     claimed = true
-    compacted = current.grok_compacted === true
     const next = { ...current, grok_activation_context: digest }
     delete next.grok_compacted
     return next
   })
   if (!claimed) return undefined
   if (worker) return plain
-  const guidance = rootGuidanceDigest(cwd, env)
-  const given = guidanceGiven(sessionId, env)
-  recordGuidanceGiven(sessionId, env, guidance)
-  const currency = compacted ? compactedNotice()
-    : given !== undefined && given !== GUIDANCE_NOT_GIVEN && given !== guidance ? guidanceChangedNotice() : undefined
   return currency === undefined && notices.length === 0 ? plain : grokActivationContext(cwd, env, false, notices, currency)
 }
 

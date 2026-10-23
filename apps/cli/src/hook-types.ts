@@ -56,6 +56,8 @@ export interface HookEnvelope {
   openclaw_request_ids?: string[]
   /** 2 from a Notifai Hermes plugin that renders its context as two prompt sections. */
   hermes_prompt_sections?: number
+  /** Hermes reports distinct child session ids at turn start. */
+  hermes_worker?: boolean
   /**
    * From a Notifai plugin whose harness compacted this conversation since its
    * last activation (OpenCode's `session.compacted`, Hermes rebuilding its

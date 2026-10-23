@@ -117,11 +117,11 @@ export function claudeAskingSubagent(sessionId: string, env: NodeJS.ProcessEnv, 
       })
     }
   }
-  if (asking.length === 1) return asking[0]!.asker
-  // Several subagents asking at once: only the one whose call carries this question.
-  const wanted = questions.map((text) => normalized(text).slice(0, 48)).filter((text) => text !== '')
+  // Even a sole unfinished child call must carry this question. A parent may
+  // be invoking a wrapper while that child is already done asking and sleeping.
+  const wanted = questions.map((text) => normalized(text)).filter((text) => text !== '')
   const matching = asking.filter(({ commands }) =>
-    commands.some((command) => wanted.some((text) => normalized(command).includes(text))))
+    commands.some((command) => wanted.length > 0 && wanted.every((text) => normalized(command).includes(text))))
   return matching.length === 1 ? matching[0]!.asker : undefined
 }
 

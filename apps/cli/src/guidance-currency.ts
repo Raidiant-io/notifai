@@ -5,7 +5,7 @@ import path from 'node:path'
 import { atomicWriteFileSync } from './atomic-file.js'
 import { stateDir } from './config.js'
 import { resolveGuidance } from './guidance.js'
-import { skillTreeDigest, shippedSkillSourceRoot } from './skill-integrity.js'
+import { skillTreeDigest, shippedSkillSourceRoot, verifySkillBundle } from './skill-integrity.js'
 import { skillDestination } from './native-skills.js'
 import { SOURCE_CONTEXT_HARNESSES } from './harnesses.js'
 import { withTargetFileLock } from './file-lock.js'
@@ -22,19 +22,13 @@ export interface ShippedSkill {
 
 let cachedSkill: { root: string; skill: ShippedSkill } | undefined
 
-/** The skill this build ships. One small file read per process. */
+/** The verified skill this build ships, inspected once per process. */
 export function shippedSkill(root: string = shippedSkillSourceRoot()): ShippedSkill {
   if (cachedSkill?.root === root) return cachedSkill.skill
-  let digest: string | null = null
-  try {
-    const manifest: unknown = JSON.parse(readFileSync(path.join(root, 'manifest.json'), 'utf8'))
-    const value = typeof manifest === 'object' && manifest !== null ? (manifest as { digest?: unknown }).digest : undefined
-    digest = typeof value === 'string' ? value : null
-  } catch {
-    // A build without its bundle still has topics and activation to compare.
-  }
+  const verified = verifySkillBundle(root)
+  const digest = verified.ok ? verified.bundle.manifest.digest : null
   const file = path.join(root, 'notifai', 'SKILL.md')
-  const skill = { digest, file: !file.startsWith('/$bunfs/') && !/^[A-Za-z]:[\\/]~BUN[\\/]/i.test(file) && existsSync(file) ? file : null }
+  const skill = { digest, file: verified.ok && !file.startsWith('/$bunfs/') && !/^[A-Za-z]:[\\/]~BUN[\\/]/i.test(file) ? file : null }
   cachedSkill = { root, skill }
   return skill
 }
@@ -42,6 +36,7 @@ export function shippedSkill(root: string = shippedSkillSourceRoot()): ShippedSk
 /** Hash the actual harness copies. A bundled fallback never advertises a virtual FS path. */
 export function installedSkill(cwd: string, env: NodeJS.ProcessEnv): ShippedSkill {
   const copies: Array<[string, string]> = []
+  const shipped = shippedSkill()
   let file: string | null = null
   for (const harness of SOURCE_CONTEXT_HARNESSES) {
     for (const scope of ['project', 'global'] as const) {
@@ -49,11 +44,11 @@ export function installedSkill(cwd: string, env: NodeJS.ProcessEnv): ShippedSkil
       if (root === null || !existsSync(path.join(root, 'SKILL.md'))) continue
       const digest = skillTreeDigest(root)
       copies.push([`${harness}/${scope}`, digest ?? 'unreadable'])
-      file ??= path.join(root, 'SKILL.md')
+      if (scope === 'global' && digest !== null && digest === shipped.digest) file ??= path.join(root, 'SKILL.md')
     }
   }
   return copies.length === 0 ? shippedSkill() : {
-    digest: createHash('sha256').update(JSON.stringify(copies)).digest('hex'), file,
+    digest: createHash('sha256').update(JSON.stringify(copies)).digest('hex'), file: file ?? shipped.file,
   }
 }
 
@@ -73,7 +68,7 @@ export function guidanceDigest(options: { cwd: string; env: NodeJS.ProcessEnv; a
 
 /** How to load the skill again: the harness's own copy, or the bundled file where there is none. */
 function reload(skill: ShippedSkill): string {
-  return `load the Notifai skill again${skill.file === null ? '' : ` (or read \`${skill.file}\`)`} and run \`notifai guidance\``
+  return `${skill.file === null ? 'repair the Notifai skill with \`notifai init --skills\`, then load its verified copy' : `read \`${skill.file}\` again`} and run \`notifai guidance\``
 }
 
 /** Told once, at the next turn, when the guidance this session read changed. */
@@ -134,13 +129,9 @@ export function startingCurrency(options: {
   source?: string | undefined
   compacted?: boolean
 }): string | undefined {
-  if (options.source === 'compact' || options.compacted === true) {
-    invalidateGuidanceRead(options.sessionId, options.env)
-    return compactedNotice()
-  }
-  const given = guidanceGiven(options.sessionId, options.env)
-  if (given === undefined) return options.source === 'resume' ? guidanceChangedNotice() : undefined
-  return given !== GUIDANCE_NOT_GIVEN && given !== options.digest ? guidanceChangedNotice() : undefined
+  return claimGuidanceChange(options.sessionId, options.env, options.digest, options.source === 'resume', {
+    compacted: options.source === 'compact' || options.compacted === true,
+  })
 }
 
 /**
@@ -151,11 +142,17 @@ export function startingCurrency(options: {
  * was activated by an earlier build, so it is told once), since a prompt hook
  * alone never activates a session.
  */
-export function claimGuidanceChange(sessionId: string, env: NodeJS.ProcessEnv, digest: string, started: boolean): string | undefined {
+export function claimGuidanceChange(sessionId: string, env: NodeJS.ProcessEnv, digest: string, started: boolean, options: { compacted?: boolean } = {}): string | undefined {
   try {
     const file = recordFile(sessionId, env)
     mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 })
     return withTargetFileLock(file, () => {
+      if (options.compacted) {
+        const prior = readReceipt(file)
+        delete prior.read
+        atomicWriteFileSync(file, `${JSON.stringify({ ...prior, digest, generation: randomBytes(16).toString('hex') })}\n`, { mode: 0o600 })
+        return compactedNotice()
+      }
       const given = guidanceGiven(sessionId, env)
       if (given === digest) {
         recordGuidanceGiven(sessionId, env, digest)
@@ -170,8 +167,8 @@ export function claimGuidanceChange(sessionId: string, env: NodeJS.ProcessEnv, d
   }
 }
 
-function readReceipt(file: string): { digest?: string; read?: string } {
-  try { return JSON.parse(readFileSync(file, 'utf8')) as { digest?: string; read?: string } } catch { return {} }
+function readReceipt(file: string): { digest?: string; read?: string; generation?: string } {
+  try { return JSON.parse(readFileSync(file, 'utf8')) as { digest?: string; read?: string; generation?: string } } catch { return {} }
 }
 
 export function guidanceRead(sessionId: string, env: NodeJS.ProcessEnv): string | undefined {
@@ -190,29 +187,38 @@ export function recordGuidanceRead(sessionId: string, env: NodeJS.ProcessEnv, di
   } catch { return false }
 }
 
-export function invalidateGuidanceRead(sessionId: string, env: NodeJS.ProcessEnv): void {
+export function invalidateGuidanceRead(sessionId: string, env: NodeJS.ProcessEnv): boolean {
   try {
     const file = recordFile(sessionId, env)
-    if (!existsSync(file)) return
-    withTargetFileLock(file, () => {
+    mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 })
+    return withTargetFileLock(file, () => {
       const prior = readReceipt(file)
       delete prior.read
-      atomicWriteFileSync(file, `${JSON.stringify(prior)}\n`, { mode: 0o600 })
+      atomicWriteFileSync(file, `${JSON.stringify({ ...prior, generation: randomBytes(16).toString('hex') })}\n`, { mode: 0o600 })
+      return true
     })
-  } catch { /* A changed digest still blocks at point of use. */ }
+  } catch { return false }
 }
 
-/** Conversation capabilities are random local values; a repository digest cannot stand in for one. */
-export function conversationToken(env: NodeJS.ProcessEnv, token?: string): string | null {
+/** Random local capabilities bound to the shell's owning session and its
+ * compaction generation. A child sharing a root id still gets its own token;
+ * compacting that root conservatively expires every token it could own. */
+export function conversationToken(env: NodeJS.ProcessEnv, token: string | undefined, owner: string): string | null {
   const directory = path.join(stateDir(env), 'guidance-tokens')
-  if (token !== undefined) {
-    if (!/^[a-f0-9]{48}$/.test(token)) return null
-    try { return readFileSync(path.join(directory, token), 'utf8') === token ? token : null } catch { return null }
-  }
+  const receipt = recordFile(owner, env)
   try {
+    // Missing state is the initial generation; unreadable state is never one.
+    const generation = existsSync(receipt)
+      ? (JSON.parse(readFileSync(receipt, 'utf8')) as { generation?: string }).generation ?? 'initial'
+      : 'initial'
+    if (token !== undefined) {
+      if (!/^[a-f0-9]{48}$/.test(token)) return null
+      const stored = JSON.parse(readFileSync(path.join(directory, token), 'utf8')) as { token?: string; owner?: string; generation?: string }
+      return stored.token === token && stored.owner === owner && stored.generation === generation ? token : null
+    }
     const fresh = randomBytes(24).toString('hex')
     mkdirSync(directory, { recursive: true, mode: 0o700 })
-    atomicWriteFileSync(path.join(directory, fresh), fresh, { mode: 0o600 })
+    atomicWriteFileSync(path.join(directory, fresh), JSON.stringify({ token: fresh, owner, generation }), { mode: 0o600 })
     return fresh
   } catch { return null }
 }

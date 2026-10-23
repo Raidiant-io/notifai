@@ -101,7 +101,7 @@ def _on_turn_start(session_id=None, platform=None, parent_session_id=None, conve
                 previous = _history.get(key)
                 if length is not None:
                     _history[key] = length
-            return _guidance_change(key, previous is not None and length is not None and length < previous)
+            return _guidance_change(key, previous is not None and length is not None and length < previous, worker=True)
         return None
     with _lock:
         if _session["id"] != current:
@@ -114,7 +114,7 @@ def _on_turn_start(session_id=None, platform=None, parent_session_id=None, conve
             _history[current] = length
     return _guidance_change(current, previous is not None and length is not None and length < previous)
 
-def _guidance_change(session_id, compacted):
+def _guidance_change(session_id, compacted, worker=False):
     # What this session must reload, told once with this turn's message:
     # guidance that changed since its system prompt was built, which Hermes
     # keeps for the whole session, or what a compaction summarized away.
@@ -124,6 +124,8 @@ def _guidance_change(session_id, compacted):
     if not cwd:
         return None
     envelope = {"session_id": session_id, "cwd": cwd, "hook_event_name": "GuidanceCheck"}
+    if worker:
+        envelope["hermes_worker"] = True
     if compacted:
         envelope["compacted"] = True
     try:

@@ -160,7 +160,8 @@ notifai ask 'Deploy to production now?' \
   --title 'Production deploy' \
   --choice 'Deploy now' --choice-description 'Two minutes of downtime.' \
   --choice 'Wait for off-peak' --choice-description '02:00 UTC; no downtime.' \
-  --recommended 'Wait for off-peak'
+  --recommended 'Wait for off-peak' \
+  --resumes 'Deploy at the chosen time and check service health'
 ```
 
 The positional question is the Summary: the exact question, at most 240

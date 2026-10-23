@@ -79,7 +79,7 @@ import { grokQuestionFormGate, unlinkedQuestionFormContext } from './unlinked-qu
 import { spawnQuestionSettlement } from './question-settlement-process.js'
 import { QUESTION_WAITER_CEILING_SECONDS } from './question-timing.js'
 import { rootGuidanceDigest, sessionActivationOutput, userPromptContextOutput } from './session-activation.js'
-import { GUIDANCE_NOT_GIVEN, claimGuidanceChange, compactedNotice, guidanceSessionKey, recordGuidanceGiven, startingCurrency } from './guidance-currency.js'
+import { GUIDANCE_NOT_GIVEN, claimGuidanceChange, invalidateGuidanceRead, guidanceSessionKey, recordGuidanceGiven, startingCurrency } from './guidance-currency.js'
 import { currentProcessIdentity } from './process-identity.js'
 import { attendantSupport } from './session-attendant-probe.js'
 import { proveWindowsCodexHookSource } from './windows-hook-source.js'
@@ -610,12 +610,11 @@ export async function hookRunCommand(
     try {
       if (harness !== undefined && envelope.session_id !== undefined && lifecycleEnabled()) {
         const digest = rootGuidanceDigest(cwd, deps.env)
-        if (envelope.compacted === true) {
-          recordGuidanceGiven(envelope.session_id, deps.env, digest)
-          notice = compactedNotice()
+        if (envelope.hermes_worker === true) {
+          if (envelope.compacted === true) invalidateGuidanceRead(envelope.session_id, deps.env)
         } else {
           notice = claimGuidanceChange(envelope.session_id, deps.env, digest,
-            readSessionIncarnation(envelope.session_id, deps.env) !== null)
+            readSessionIncarnation(envelope.session_id, deps.env) !== null, { compacted: envelope.compacted === true })
         }
       }
     } catch (err) {
@@ -818,9 +817,15 @@ export async function hookRunCommand(
         return undefined
       }
     }
-    const recordGiven = (): void => {
-      if (!owner) return
-      recordGuidanceGiven(currencyKey, deps.env, guidanceOn ? digest ?? GUIDANCE_NOT_GIVEN : GUIDANCE_NOT_GIVEN)
+    const recordGiven = (): boolean => {
+      if (!owner) return true
+      return recordGuidanceGiven(currencyKey, deps.env, guidanceOn ? digest ?? GUIDANCE_NOT_GIVEN : GUIDANCE_NOT_GIVEN)
+    }
+    if (!owner && (envelope.source === 'compact' || envelope.compacted === true) && currencyKey !== '') {
+      invalidateGuidanceRead(currencyKey, deps.env)
+      // Claude children inherit the root's shell identity. A child compaction
+      // must also expire conversation tokens bound to that shared identity.
+      if (harness === 'claude-code' && envelope.agent_id !== undefined) invalidateGuidanceRead(envelope.session_id!, deps.env)
     }
     if (harness === 'openclaw' && envelope.session_id !== undefined) {
       try {
@@ -872,9 +877,9 @@ export async function hookRunCommand(
             cwd, deps.env, notices, false, owner ? currencyFor(reactivate) : undefined,
           )
           if (output === undefined || output.trim().length === 0) return 'activation-unavailable'
+          if (!recordGiven()) return 'receipt-unavailable'
           writeOpenclawGeneration(sessionKey, deps.env, { ...generation, activationPrinted: true })
           deps.io.out(output)
-          recordGiven()
           return 'context-added'
         })
         logger.info('hook.end', {
@@ -898,8 +903,9 @@ export async function hookRunCommand(
         owner ? currencyFor(envelope.compacted === true) : undefined,
       )
       : undefined
-    if (stdout !== undefined) deps.io.out(stdout)
-    if (stdout !== undefined || !guidanceOn) recordGiven()
+    if (stdout !== undefined) {
+      if (recordGiven()) deps.io.out(stdout)
+    } else if (!guidanceOn) recordGiven()
     let settlementRecovery: Record<string, unknown> = {}
     if (event === 'session-start' && envelope.session_id !== undefined) {
       try {

@@ -12,9 +12,14 @@ export function guidanceSessionNeedsToken(deps: CommandDeps): boolean {
     claudeSessionHasSubagents(active.sessionId, deps.env))
 }
 
+export function commandGuidanceOwner(deps: CommandDeps): string {
+  const active = sourceContextHarnessSession(deps.env, deps.cwd, (deps.now ?? Date.now)())
+  return active?.sessionId ?? active?.harness ?? 'unidentified'
+}
+
 export function commandGuidanceSession(deps: CommandDeps, token?: string): string | null {
   if (token !== undefined) {
-    const valid = conversationToken(deps.env, token)
+    const valid = conversationToken(deps.env, token, commandGuidanceOwner(deps))
     return valid === null ? null : `conversation/${valid}`
   }
   if (guidanceSessionNeedsToken(deps)) return null
@@ -43,6 +48,6 @@ export function currentCommandGuidance(deps: CommandDeps, token?: string): { cod
     guidance: renderGuidance(resolveGuidance({ cwd: deps.cwd, env: deps.env })),
     remedy: session === null
       ? 'Run `notifai guidance check`, read its skill_file when present, run its read_command, then retry this command with the returned --guidance-token.'
-      : `${skill.file === null ? 'Load the Notifai skill' : `Read ${JSON.stringify(skill.file)}`}; run \`notifai guidance${token === undefined ? '' : ` --session-token ${token}`}\`, then retry the same command${token === undefined ? '' : ` with --guidance-token ${token}`}.`,
+      : `${skill.file === null ? 'Repair the Notifai skill with `notifai init --skills`, then load its verified copy' : `Read ${JSON.stringify(skill.file)}`}; run \`notifai guidance${token === undefined ? '' : ` --session-token ${token}`}\`, then retry the same command${token === undefined ? '' : ` with --guidance-token ${token}`}.`,
   }
 }

@@ -12,9 +12,9 @@ import {
 import { renderGuidance } from './guidance-render.js'
 import { projectBinding, projectEnablementState } from './project-enablement.js'
 import { loadConfig } from './config.js'
-import { rootGuidanceDigest, sessionActivationOutput } from './session-activation.js'
+import { rootGuidanceDigest, requestGuidanceContext } from './session-activation.js'
 import { conversationToken, guidanceChangedNotice, guidanceRead, installedSkill } from './guidance-currency.js'
-import { recordCommandGuidanceRead } from './command-guidance.js'
+import { commandGuidanceOwner, recordCommandGuidanceRead } from './command-guidance.js'
 
 // ---------------------------------------------------------------------------
 // guidance show / set / unset
@@ -24,19 +24,19 @@ import { recordCommandGuidanceRead } from './command-guidance.js'
  * no exact session identity to tools. Never guesses an identity from cwd. */
 export function guidanceCheckCommand(deps: CommandDeps, seen?: string): number {
   const config = loadConfig({ cwd: deps.cwd, env: deps.env })
-  const enabled = projectEnablementState(projectBinding(deps.cwd, deps.env, config.project.value)) === 'enabled'
-  if (!enabled) {
-    deps.io.out(JSON.stringify({ enabled: false }))
+  const state = projectEnablementState(projectBinding(deps.cwd, deps.env, config.project.value))
+  const enabled = state === 'enabled'
+  if (state === 'disabled') {
+    deps.io.out(JSON.stringify({ enabled: false, disabled: true }))
     return EXIT.ok
   }
   const digest = rootGuidanceDigest(deps.cwd, deps.env)
-  const token = conversationToken(deps.env, seen) ?? conversationToken(deps.env)
+  const token = conversationToken(deps.env, seen, commandGuidanceOwner(deps)) ?? conversationToken(deps.env, undefined, commandGuidanceOwner(deps))
   if (token === null) { deps.io.err('Could not store the local guidance token.'); return EXIT.failed }
   const changed = guidanceRead(`conversation/${token}`, deps.env) !== digest
-  const output = changed ? sessionActivationOutput('cursor', 'SessionStart', deps.cwd, deps.env, [], false,
-    seen === undefined ? undefined : guidanceChangedNotice()) : undefined
+  const output = changed ? requestGuidanceContext(deps.cwd, deps.env, seen === undefined ? undefined : guidanceChangedNotice()) : undefined
   deps.io.out(JSON.stringify({ enabled, token, read_command: `notifai guidance --session-token ${token}`, request_flag: `--guidance-token ${token}`, skill_file: installedSkill(deps.cwd, deps.env).file,
-    ...(output === undefined ? {} : { context: (JSON.parse(output) as { additional_context: string }).additional_context }) }))
+    ...(output === undefined ? {} : { context: output }) }))
   return EXIT.ok
 }
 
