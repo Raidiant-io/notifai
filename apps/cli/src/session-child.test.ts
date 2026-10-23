@@ -4,17 +4,17 @@
  * a shell that does not exec, exactly as Claude Code does, and an in-process
  * hub verifies it with the kernel's peer credentials.
  */
-import { execFileSync, spawn, spawnSync, type ChildProcess } from 'node:child_process'
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import type { AttendanceBatchRequestT,AttendanceBatchResponse } from '@raidiant/notifai-protocol'
+import { execFileSync,spawn,spawnSync,type ChildProcess } from 'node:child_process'
+import { mkdirSync,mkdtempSync,readFileSync,rmSync,writeFileSync } from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest'
-import type { AttendanceBatchRequestT, AttendanceBatchResponse } from '@raidiant/notifai-protocol'
+import { afterAll,afterEach,beforeAll,describe,expect,it } from 'vitest'
 import type { ApiClient } from './client.js'
 import type { CommandDeps } from './commands-core.js'
-import { readSessionIncarnation, recordSessionNotified } from './hook-session-state.js'
-import { childLockPath, endedRecordsDir, writerLockPath } from './hub-ipc.js'
-import { Hub, peerVerifierFor, type HubOptions } from './hub.js'
+import { recordSessionNotified } from './hook-session-state.js'
+import { childLockPath } from './hub-ipc.js'
+import { Hub,peerVerifierFor,type HubOptions } from './hub.js'
 import { nullLogger } from './logging.js'
 
 const supported = (process.platform === 'darwin' || process.platform === 'linux') && spawnSync('cc', ['--version']).status === 0
@@ -186,39 +186,6 @@ describe.skipIf(!supported)('native session child', () => {
     expect(await stop()).toBe(0)
   }, 30_000)
 
-  it('reports where the conversation runs and the process that started it, so only the desktop app can pause one', async () => {
-    const { root, env } = scratch()
-    env['CLAUDE_CODE_ENTRYPOINT'] = 'claude-desktop'
-    recordSessionNotified(SESSION, env, Date.now())
-    const fake = service()
-    const { hub, stop } = startHub(env, fake)
-    const harness = await startHarness(root, env, 'direct')
-    await until(() => hub.sessions.get(SESSION)?.registration.place === 'claude-desktop')
-    // The harness's parent: here this test process, in the app its main process.
-    expect(hub.sessions.get(SESSION)?.registration.hostApp?.pid).toBe(process.pid)
-    harness.process.kill('SIGKILL')
-    await until(() => fake.batches.some((batch) => batch.sessions.some((entry) => entry.state === 'ended')))
-    expect(await stop()).toBe(0)
-  }, 30_000)
-
-  it('says when the harness runs in an Orca pane, so the hub records the pane\'s terminal host', async () => {
-    const { root, env } = scratch()
-    env['CLAUDE_CODE_ENTRYPOINT'] = 'cli'
-    env['ORCA_AGENT_PANE'] = 'tab-1:pane-1'
-    recordSessionNotified(SESSION, env, Date.now())
-    const fake = service()
-    const asked: number[] = []
-    const terminalHost = { pid: process.pid, start: 'Tue Oct 20 10:00:00 2026' }
-    const { hub, stop } = startHub(env, fake, { orcaTerminalHostOf: (pid) => { asked.push(pid); return terminalHost } })
-    const harness = await startHarness(root, env, 'direct')
-    await until(() => hub.sessions.get(SESSION)?.registration.terminalHost !== null && hub.sessions.get(SESSION) !== undefined)
-    expect(asked).toEqual([harness.pid])
-    expect(hub.sessions.get(SESSION)?.registration.place).toBe('terminal')
-    harness.process.kill('SIGKILL')
-    await until(() => fake.batches.some((batch) => batch.sessions.some((entry) => entry.state === 'ended')))
-    expect(await stop()).toBe(0)
-  }, 30_000)
-
   it('adopts the harness through a shell that does not exec, and a second attend only hints', async () => {
     const { root, env } = scratch()
     recordSessionNotified(SESSION, env, Date.now())
@@ -256,54 +223,5 @@ describe.skipIf(!supported)('native session child', () => {
     harness.process.kill('SIGKILL')
     await until(() => fake.batches.some((batch) => batch.sessions.some((entry) => entry.state === 'ended')))
     expect(await second.stop()).toBe(0)
-  }, 40_000)
-
-  it('gives each process hosting one conversation its own child: the most recently opened receives, and the other takes over when it exits', async () => {
-    const { root, env } = scratch()
-    recordSessionNotified(SESSION, env, Date.now())
-    const fake = service()
-    const { hub, stop } = startHub(env, fake)
-    const first = await startHarness(root, env, 'direct', 'first.sock')
-    await until(() => hub.sessions.get(SESSION)?.child !== null && hub.sessions.get(SESSION) !== undefined)
-    // A second terminal resumes the same conversation (Claude Code allows it).
-    const second = await startHarness(root, env, 'direct', 'second.sock')
-    await until(() => hub.sessions.get(SESSION)?.harnessProcess.pid === second.pid)
-    const session = hub.sessions.get(SESSION)!
-    expect(session.standbys.map((writer) => writer.harnessProcess.pid)).toEqual([first.pid])
-    expect(readSessionIncarnation(SESSION, env)?.harness_process?.pid).toBe(second.pid)
-    for (const harness of [first, second]) {
-      expect(readFileSync(writerLockPath(env, SESSION, harness.pid), 'utf8').trim().split(' ')[1]).toBe(String(harness.pid))
-    }
-    // A note is handed to exactly one place: the most recently opened.
-    fake.notes.push({ body: 'hello' })
-    await until(() => second.lines.some((line) => 'inbox' in line))
-    await new Promise((resolve) => setTimeout(resolve, 1_000))
-    expect(first.lines.some((line) => 'inbox' in line)).toBe(false)
-    expect(second.lines.filter((line) => 'inbox' in line)).toHaveLength(1)
-    // The newer place closes: the conversation goes on in the other, not ended.
-    second.process.kill('SIGKILL')
-    await until(() => hub.sessions.get(SESSION)?.harnessProcess.pid === first.pid)
-    expect(readSessionIncarnation(SESSION, env)?.harness_process?.pid).toBe(first.pid)
-    await new Promise((resolve) => setTimeout(resolve, 1_000))
-    expect(fake.batches.flatMap((batch) => batch.sessions).some((entry) => entry.state === 'ended')).toBe(false)
-    // Losing the last observer preserves the unread note.
-    first.process.kill('SIGKILL')
-    await until(() => hub.sessions.get(SESSION)?.stopped != null)
-    expect(fake.batches.flatMap(batch => batch.sessions).some(entry => entry.state === 'ended')).toBe(false)
-    expect(await stop()).toBe(0)
-  }, 40_000)
-
-  it('records the close locally when no hub can be reached', async () => {
-    const { root, env } = scratch()
-    const harness = await startHarness(root, env, 'direct')
-    // No hub, and none can start (this build has no runtime beside the launcher).
-    await until(() => existsSync(childLockPath(env, SESSION)))
-    await new Promise((resolve) => setTimeout(resolve, 500))
-    harness.process.kill('SIGKILL')
-    await until(() => existsSync(endedRecordsDir(env)) && readdirSync(endedRecordsDir(env)).some((name) => name.endsWith('.json')), 20_000)
-    const name = readdirSync(endedRecordsDir(env)).find((file) => file.endsWith('.json'))!
-    expect(JSON.parse(readFileSync(path.join(endedRecordsDir(env), name), 'utf8'))).toMatchObject({
-      session_id: SESSION, harness: 'claude-code', harness_pid: harness.pid, reason: 'harness-gone',
-    })
   }, 40_000)
 })

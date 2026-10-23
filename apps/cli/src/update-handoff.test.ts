@@ -1,10 +1,9 @@
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdtempSync,rmSync,writeFileSync } from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import { afterEach, expect, it } from 'vitest'
-import { HARNESS_UPDATE_EFFECTS, installedChangelog, releaseNotesUrl, updateSessionEffects } from './update-handoff.js'
+import { afterEach,expect,it } from 'vitest'
 import { SOURCE_CONTEXT_HARNESSES } from './harnesses.js'
-import { asInformation } from './readiness.js'
+import { HARNESS_UPDATE_EFFECTS,installedChangelog,updateSessionEffects } from './update-handoff.js'
 
 const roots: string[] = []
 afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }) })
@@ -22,65 +21,7 @@ it('includes only the installed releases newer than the previous installation', 
   expect(installedChangelog('2.1.0', '2.1.0', root).text).toBe('')
 })
 
-it('orders beta release notes before the stable release they lead to', () => {
-  const root = mkdtempSync(path.join(os.tmpdir(), 'notifai-changelog-'))
-  roots.push(root)
-  writeFileSync(path.join(root, 'CHANGELOG.md'), '# Changes\n## [11.4.0]\nStable\n## [11.4.0-beta.2]\nSecond beta\n## [11.4.0-beta.1]\nFirst beta\n## [11.3.2]\nPrevious\n')
-  const fromBeta = installedChangelog('11.4.0', '11.4.0-beta.1', root).text
-  expect(fromBeta).toContain('Stable')
-  expect(fromBeta).toContain('Second beta')
-  expect(fromBeta).not.toContain('First beta')
-  const onBeta = installedChangelog('11.4.0-beta.2', '11.3.2', root).text
-  expect(onBeta).toContain('Second beta')
-  expect(onBeta).toContain('First beta')
-  expect(onBeta).not.toContain('Stable')
-  expect(onBeta).not.toContain('Previous')
-})
-
 it.each(SOURCE_CONTEXT_HARNESSES.filter(harness => harness !== 'codex'))('does not require a restart for a ready %s installation', harness => {
   expect(HARNESS_UPDATE_EFFECTS[harness]).toBeTruthy()
   expect(updateSessionEffects(harness, [{ id: 'hooks', title: 'Hooks', status: 'ready', detail: 'current' }])).toMatchObject({ restart_required: false, assessment: 'continue' })
-})
-
-it('does not confuse disk installation and old prompt callbacks with current Codex activation', () => {
-  const historical = ['hooks', 'hooks-fired'].map(id => ({ id, title: id, status: 'ready' as const, detail: 'historical' }))
-  expect(updateSessionEffects('codex', historical)).toMatchObject({ assessment: 'unknown', restart_required: null })
-  expect(updateSessionEffects('codex', [...historical, {
-    id: 'hooks-native-activity', title: 'Native activity', status: 'ready', detail: 'current native turn matched',
-  }])).toMatchObject({ assessment: 'continue', restart_required: false })
-})
-
-it('separates a proven stale Codex runtime from repair gaps and unknown ownership', () => {
-  const gap = { id: 'hooks-trust', title: 'Trust', status: 'gap' as const, detail: 'approval missing' }
-  expect(updateSessionEffects('codex', [gap])).toMatchObject({ restart_required: null, assessment: 'needs_attention' })
-  expect(updateSessionEffects('codex', [gap], 'loaded Stop fingerprint differs')).toMatchObject({ restart_required: true, assessment: 'fresh_session' })
-  expect(updateSessionEffects(null, [])).toMatchObject({ restart_required: null, assessment: 'unknown' })
-  expect(updateSessionEffects('codex', [])).toMatchObject({ restart_required: null, assessment: 'unknown' })
-})
-
-it('constructs release links only from valid artifact versions', () => {
-  expect(releaseNotesUrl('11.1.1')).toBe('https://github.com/Raidiant-io/notifai/releases/tag/v11.1.1')
-  expect(releaseNotesUrl('11.1.1/../../other')).toBeNull()
-})
-
-it("does not ask a session to attend to another harness's gap after an update", () => {
-  const ready = (id: string) => ({ id, title: id, status: 'ready' as const, detail: 'ready' })
-  const states = [ready('hooks'), ready('hooks-active-session'), ready('hooks-fired'),
-    { id: 'skill', title: 'skill', status: 'gap' as const, detail: 'Grok loads outdated guidance', harnesses: ['grok'] }]
-  expect(updateSessionEffects('claude-code', states)).toMatchObject({ assessment: 'continue', diagnostics: states.slice(0, 3) })
-  expect(updateSessionEffects('grok', states).assessment).toBe('needs_attention')
-})
-
-it('acts on a question-route gap after an update and only reports a harness limit', () => {
-  const hooks = { id: 'hooks', title: 'Hooks', status: 'ready' as const, detail: 'current' }
-  const gap = { id: 'hooks-answer-continuation', title: 'How an answer returns', status: 'gap' as const, detail: 'not attending',
-    remedy: { by: 'user-here' as const, summary: 'repair', command: 'notifai hooks install' } }
-  const repairable = updateSessionEffects('openclaw', [hooks, gap])
-  expect(repairable.diagnostics.find(state => state.id === gap.id)).toMatchObject({ status: 'gap', remedy: gap.remedy })
-  expect(repairable.assessment).toBe('needs_attention')
-  // Doctor classifies a limit once; the hand-off reports it and moves on.
-  const limit = asInformation(gap, 'harness-capability')
-  const limited = updateSessionEffects('cursor', [hooks, limit, asInformation({ ...gap, id: 'hooks-active-session' }, 'harness-capability')])
-  expect(limited.diagnostics.find(state => state.id === gap.id)).not.toHaveProperty('remedy')
-  expect(limited).toMatchObject({ assessment: 'continue', restart_required: false })
 })

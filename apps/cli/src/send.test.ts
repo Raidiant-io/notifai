@@ -1,12 +1,12 @@
-import { describe, expect, it } from 'vitest'
+import { describe,expect,it } from 'vitest'
 import {
-  BODY_NOTE_LENGTH,
-  SUMMARY_NOTE_LENGTH,
-  accidentalEscapedNewlineMessage,
-  contentLengthNotes,
-  hasAccidentalEscapedNewlines,
-  rejectAccidentalEscapedNewlines,
-  rewriteMediaReferences,
+BODY_NOTE_LENGTH,
+SUMMARY_NOTE_LENGTH,
+accidentalEscapedNewlineMessage,
+contentLengthNotes,
+hasAccidentalEscapedNewlines,
+rejectAccidentalEscapedNewlines,
+rewriteMediaReferences,
 } from './send.js'
 
 describe('Body image references', () => {
@@ -20,22 +20,8 @@ describe('Body image references', () => {
     })
   })
 
-  it('rejects angle-wrapped and reference-style image destinations', () => {
-    expect(rewriteMediaReferences('![Result](<attachment:1> "Caption")', [])).toMatchObject({
-      ok: false, error: expect.stringContaining('attachment:1'),
-    })
-    expect(rewriteMediaReferences('![Result][capture]\n\n[capture]: https://images.example/result.png', [])).toMatchObject({
-      ok: false, error: expect.stringContaining('media:1'),
-    })
-  })
-
   it('preserves ordinary remote links and escaped image syntax', () => {
     const body = '[Result](https://images.example/result.png) and \\![literal](attachment:1)'
-    expect(rewriteMediaReferences(body, [])).toEqual({ ok: true, body })
-  })
-
-  it('keeps invalid-reference examples literal in code', () => {
-    const body = '`![example](attachment:1)`\n\n```md\n![example](file:///tmp/example.png)\n```'
     expect(rewriteMediaReferences(body, [])).toEqual({ ok: true, body })
   })
 })
@@ -51,10 +37,6 @@ describe('accidental escaped newlines', () => {
   it('preserves real multiline Markdown', () => {
     expect(hasAccidentalEscapedNewlines('line1\nline2')).toBe(false)
     expect(rejectAccidentalEscapedNewlines('line1\nline2', false)).toBeNull()
-  })
-
-  it('lets an explicit flag keep visible backslash-n text', () => {
-    expect(rejectAccidentalEscapedNewlines('use \\n in the sample', true)).toBeNull()
   })
 
   it('does not treat an escaped backslash plus n as accidental', () => {

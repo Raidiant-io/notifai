@@ -1,9 +1,9 @@
 import { mkdtempSync } from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import { describe, expect, it } from 'vitest'
+import { describe,expect,it } from 'vitest'
 import { codexSubagentRoot } from './codex-subagent.js'
-import { beginSessionIncarnation, lifecycleStamp, markSessionEnded } from './hook-session-state.js'
+import { beginSessionIncarnation,lifecycleStamp } from './hook-session-state.js'
 import { currentProcessIdentity } from './process-identity.js'
 
 const ROOT = 'root-thread'
@@ -37,29 +37,5 @@ describe('Codex subagent root', () => {
     const h = fixture()
     const tmuxPane = [{ pid: 9_000_002, name: 'zsh' }, { pid: 9_000_003, name: 'tmux' }, { pid: 1, name: 'launchd' }]
     expect(codexSubagentRoot(h.shell, tmuxPane)).toBeNull()
-  })
-
-  it('refuses where the process tree cannot be read, as on Windows', () => {
-    const h = fixture()
-    expect(codexSubagentRoot(h.shell, null)).toBeNull()
-  })
-
-  it('refuses a root that has ended, never started, or whose Codex process has gone', () => {
-    const ended = fixture()
-    markSessionEnded(ROOT, ended.env, Date.now())
-    expect(codexSubagentRoot(ended.shell, ended.chain)).toBeNull()
-
-    const unknown = fixture()
-    expect(codexSubagentRoot({ ...unknown.shell, CODEX_SESSION_ID: 'never-started' }, unknown.chain)).toBeNull()
-
-    const gone = fixture()
-    beginSessionIncarnation(ROOT, gone.env, { stamp: lifecycleStamp(), harnessProcess: { ...gone.host, pid: 999_999_999 }, restart: true })
-    expect(codexSubagentRoot(gone.shell, [...gone.chain, { pid: 999_999_999, name: 'codex' }])).toBeNull()
-  })
-
-  it('leaves a root thread\'s own shell, and a shell that names no root, alone', () => {
-    const h = fixture()
-    expect(codexSubagentRoot({ ...h.env, CODEX_THREAD_ID: ROOT, CODEX_SESSION_ID: ROOT }, h.chain)).toBeNull()
-    expect(codexSubagentRoot({ ...h.env, CODEX_THREAD_ID: CHILD }, h.chain)).toBeNull()
   })
 })

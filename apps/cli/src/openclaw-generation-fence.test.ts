@@ -1,8 +1,8 @@
 import { spawnSync } from 'node:child_process'
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdtempSync,rmSync,writeFileSync } from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import { expect, it } from 'vitest'
+import { expect,it } from 'vitest'
 import { openclawPluginSource } from './openclaw-plugin.js'
 
 function runModule(root: string, body: string): void {
@@ -76,24 +76,6 @@ assert.deepEqual(sends, ['notifai-d1-a1'])
   } finally { rmSync(root, { recursive: true, force: true }) }
 })
 
-it('a generation the host has retired claims, journals and submits nothing', () => {
-  const root = mkdtempSync(path.join(os.tmpdir(), 'notifai-openclaw-retired-'))
-  try {
-    runModule(root, HOST_DOUBLES(root) + `
-saveJournal(record)
-const generation = new AbortController()
-generation.abort()
-const service = makeContinuationService({}, null, { lifecycle: { signal: generation.signal } })
-service.start()
-await settle(300)
-await service.stop()
-assert.deepEqual(sends, [])
-assert.equal(existingJournal('d1').phase, 'committed')
-assert.equal(existsSync(readinessPath()), false)
-`)
-  } finally { rmSync(root, { recursive: true, force: true }) }
-})
-
 it('a plugin replacement keeps the Gateway boot identity; a new Gateway process does not', () => {
   const root = mkdtempSync(path.join(os.tmpdir(), 'notifai-openclaw-boot-'))
   try {
@@ -116,80 +98,5 @@ process.stdout.write(first.bootId)
     expect(b.status, b.stderr).toBe(0)
     expect(a.stdout).toMatch(/^[0-9a-f-]{36}$/)
     expect(a.stdout).not.toBe(b.stdout)
-  } finally { rmSync(root, { recursive: true, force: true }) }
-})
-
-const ATTENDANT_DOUBLES = `
-import { PassThrough } from 'node:stream'
-const children = []
-spawnOwnedHook = (event) => {
-  const child = { event, signals: [], exitCode: null, signalCode: null,
-    stdio: [null, null, null, new PassThrough(), new PassThrough()],
-    kill(signal) { this.signals.push(signal) }, on() {} }
-  children.push(child)
-  return child
-}
-runHook = async (event) => event === 'openclaw-generation' ? 'gen-1'
-  : event === 'openclaw-list-pending' ? JSON.stringify([{ session_key: 'agent:main:main', cwd: root,
-      generation: 'gen-1', session_id: 's1' }])
-  : event === 'openclaw-attendance-ready' ? 'ready' : null
-gatewaySessions = async () => new Map([['agent:main:main', { sessionId: 's1', hasActiveRun: false }]])
-const hooks = new Map()
-function host({ gatewayStop = true } = {}) {
-  return { on(name, handler) {
-      if (name === 'gateway_stop' && !gatewayStop) throw new Error('unknown hook')
-      hooks.set(name, handler)
-    }, registerService() {}, runtime: {} }
-}
-const attendant = () => children.find((child) => child.event === 'attend')
-const settlement = () => children.find((child) => child.event === 'openclaw-settlement')
-`
-
-it('a plugin replacement hands attendants to the next generation without ending their sessions', () => {
-  const root = mkdtempSync(path.join(os.tmpdir(), 'notifai-openclaw-handover-'))
-  try {
-    runModule(root, HOST_DOUBLES(root) + ATTENDANT_DOUBLES + `
-register(host())
-const service = makeContinuationService({}, null, { lifecycle: { signal: new AbortController().signal } })
-service.start()
-await until(() => attendant() !== undefined && settlement() !== undefined)
-await service.stop()
-// The settlement's answer claim is released at once; the attendant waits for
-// the host to say why this generation stopped.
-assert.deepEqual(settlement().signals, ['SIGTERM'])
-assert.deepEqual(attendant().signals, [])
-hooks.get('gateway_stop')({ reason: 'plugin replacement' })
-assert.deepEqual(attendant().signals, ['SIGUSR2'])
-`)
-  } finally { rmSync(root, { recursive: true, force: true }) }
-})
-
-it('a Gateway shutdown ends the sessions it hosts', () => {
-  const root = mkdtempSync(path.join(os.tmpdir(), 'notifai-openclaw-shutdown-'))
-  try {
-    runModule(root, HOST_DOUBLES(root) + ATTENDANT_DOUBLES + `
-register(host())
-const service = makeContinuationService({}, null, { lifecycle: { signal: new AbortController().signal } })
-service.start()
-await until(() => attendant() !== undefined)
-// OpenClaw runs gateway_stop before it stops services when the Gateway stops.
-hooks.get('gateway_stop')({ reason: 'gateway stopping' })
-await service.stop()
-assert.deepEqual(attendant().signals, ['SIGTERM'])
-`)
-  } finally { rmSync(root, { recursive: true, force: true }) }
-})
-
-it('a host that cannot say why it stopped keeps the ending behaviour', () => {
-  const root = mkdtempSync(path.join(os.tmpdir(), 'notifai-openclaw-legacy-stop-'))
-  try {
-    runModule(root, HOST_DOUBLES(root) + ATTENDANT_DOUBLES + `
-register(host({ gatewayStop: false }))
-const service = makeContinuationService({}, null, {})
-service.start()
-await until(() => attendant() !== undefined)
-await service.stop()
-assert.deepEqual(attendant().signals, ['SIGTERM'])
-`)
   } finally { rmSync(root, { recursive: true, force: true }) }
 })

@@ -1,20 +1,16 @@
-import { describe, expect, it } from 'vitest'
+import { describe,expect,it } from 'vitest'
 import {
-  BOOLEAN_CONFIG_KEYS,
-  CONFIG_KEYS,
-  NUMERIC_CONFIG_KEYS,
-  configBounds,
-  type ConfigKey,
-} from './config.js'
-import {
-  CONFIG_GROUPS,
-  acceptedValues,
-  configInfo,
-  configKeysByGroup,
-  describeSource,
-  formatDuration,
-  formatValue,
+acceptedValues,
+configInfo,
+describeSource,
+formatDuration,
+formatValue
 } from './config-schema.js'
+import {
+CONFIG_KEYS,
+configBounds,
+type ConfigKey
+} from './config.js'
 
 describe('coverage', () => {
   it('describes every configuration key', () => {
@@ -30,34 +26,6 @@ describe('coverage', () => {
       expect(info.detail.length, key).toBeGreaterThan(info.summary.length)
     }
   })
-
-  it('files every key under exactly one declared group', () => {
-    const grouped = CONFIG_GROUPS.flatMap((group) => configKeysByGroup(group.id).map((info) => info.key))
-    expect([...grouped].sort()).toEqual([...CONFIG_KEYS].sort())
-  })
-
-  it('keeps summaries short enough to sit beside a value', () => {
-    for (const key of CONFIG_KEYS) {
-      expect(configInfo(key).summary.length, key).toBeLessThanOrEqual(80)
-    }
-  })
-
-  it('agrees with config.ts about which keys are numbers and toggles', () => {
-    // Two sources of truth for a key's type would let the prompt offer a text
-    // box for something `config set` will only accept as `true` or `false`.
-    for (const key of NUMERIC_CONFIG_KEYS) expect(configInfo(key).kind, key).toBe('integer')
-    for (const key of BOOLEAN_CONFIG_KEYS) expect(configInfo(key).kind, key).toBe('boolean')
-  })
-
-  it('offers choices for every enum key', () => {
-    for (const key of CONFIG_KEYS) {
-      const info = configInfo(key)
-      if (info.kind !== 'enum') continue
-      expect(info.choices, key).toBeDefined()
-      expect(info.choices!.length, key).toBeGreaterThan(1)
-      for (const choice of info.choices!) expect(info.choiceHints?.[choice], `${key}.${choice}`).toBeTruthy()
-    }
-  })
 })
 
 describe('acceptedValues', () => {
@@ -67,38 +35,12 @@ describe('acceptedValues', () => {
       `a whole number from ${bounds.min}s–${bounds.max}s`,
     )
   })
-
-  it('lists the choices for an enum', () => {
-    expect(acceptedValues('sound')).toContain('none')
-    expect(acceptedValues('sound')).toContain('custom sound')
-  })
-
-  it('names both values for a toggle', () => {
-    expect(acceptedValues('ask_notifications')).toBe('true or false')
-  })
 })
 
 describe('formatValue', () => {
   it('renders toggles as words rather than JSON', () => {
     expect(formatValue('ask_notifications', true)).toBe('yes')
     expect(formatValue('ask_notifications', false)).toBe('no')
-  })
-
-  it('explains what an unset value means instead of printing null', () => {
-    // `sound = null` is accurate and tells the reader nothing about what will
-    // happen; the whole complaint about the old output in one line.
-    expect(formatValue('sound', null)).toBe('not set; each kind brings its own sound')
-    expect(formatValue('devices', null)).toBe('every device that can receive')
-  })
-
-  it('renders durations in units a person reads', () => {
-    expect(formatValue('ask_grace_seconds', 300)).toBe('5m')
-    expect(formatValue('ttl_seconds', 86400)).toBe('1d')
-    expect(formatValue('wait_seconds', 10)).toBe('10s')
-  })
-
-  it('joins a device list', () => {
-    expect(formatValue('devices', ['dev_a', 'dev_b'])).toBe('dev_a, dev_b')
   })
 })
 

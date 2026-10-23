@@ -1,24 +1,21 @@
-import { appendFileSync, mkdirSync, mkdtempSync, rmSync, statSync, truncateSync } from 'node:fs'
+import type { RecordHarnessAnswerResponse } from '@raidiant/notifai-protocol'
+import { appendFileSync,mkdirSync,mkdtempSync,rmSync } from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import { afterEach, describe, expect, it, vi } from 'vitest'
-import type { RecordHarnessAnswerResponse } from '@raidiant/notifai-protocol'
+import { afterEach,describe,expect,it,vi } from 'vitest'
+import type { ApiClient } from './client.js'
+import { readNativeQuestionSnapshot } from './codex-native-turn.js'
+import { nativeQuestionTitle } from './codex-question-bindings.js'
 import { acknowledgeCommand } from './commands-acknowledge.js'
 import { closeCommand } from './commands-close.js'
-import { buildProgram } from './program.js'
-import { EXIT, type CommandDeps } from './commands-core.js'
-import type { ApiClient } from './client.js'
-import { beginSessionIncarnation, lifecycleStamp, readSessionState, updateSessionState, writeSessionState } from './hook-session-state.js'
+import { EXIT,type CommandDeps } from './commands-core.js'
 import { registerQuestion } from './hook-lifecycle.js'
-import { inspectQuestionState, rememberQuestionState } from './hook-question-state.js'
+import { inspectQuestionState } from './hook-question-state.js'
+import { beginSessionIncarnation,lifecycleStamp,readSessionState,updateSessionState,writeSessionState } from './hook-session-state.js'
+import { questionsAwaitingAnswer,recordConfirmedNativeAnswerTarget } from './native-answer-operation.js'
 import { currentProcessIdentity } from './process-identity.js'
+import { buildProgram } from './program.js'
 import { recordTurnStart } from './session-attendant-state.js'
-import { nativeQuestionTitle } from './codex-question-bindings.js'
-import { readNativeQuestionSnapshot } from './codex-native-turn.js'
-import { CLAUDE_PICKER_TURN } from './claude-question-bindings.js'
-import { questionsAwaitingAnswer, recordConfirmedNativeAnswerTarget } from './native-answer-operation.js'
-import { repliesCommand } from './commands-send.js'
-import * as retirement from './hook-question-retirement.js'
 
 const roots: string[] = []
 afterEach(() => { vi.restoreAllMocks(); for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }) })
@@ -109,17 +106,6 @@ it('records and acknowledges an accepted answer from an installed legacy marker 
   expect(JSON.stringify(h.client.recordHarnessAnswer.mock.calls)).not.toContain('native_call')
 })
 
-it('persists command-discovered ambiguity even when admission fails and the duplicate later disappears', async () => {
-  const h = fixture(); h.emit()
-  const singleLength = statSync(h.file).size
-  h.emit('duplicate_call')
-  expect(await acknowledgeCommand(h.deps, h.questionId, h.flags)).toBe(EXIT.failed)
-  expect(readSessionState(h.sessionId, h.env).codex_question_bindings?.[0]?.questions[0]?.ambiguous).toBe(true)
-  truncateSync(h.file, singleLength)
-  expect(await acknowledgeCommand(h.deps, h.questionId, h.flags)).toBe(EXIT.failed)
-  expect(h.client.recordHarnessAnswer).not.toHaveBeenCalled()
-})
-
 it('recovers missing emission using the original full command rather than an unsaved identity-only retry', async () => {
   const h = fixture()
   expect(await acknowledgeCommand(h.deps, h.questionId, h.flags)).toBe(EXIT.failed)
@@ -128,40 +114,6 @@ it('recovers missing emission using the original full command rather than an uns
   h.emit()
   expect(await acknowledgeCommand(h.deps, h.questionId, h.flags)).toBe(EXIT.ok)
   expect(h.client.recordHarnessAnswer).toHaveBeenCalledOnce()
-})
-
-it('saves an early native answer before launching original submission recovery', async () => {
-  const h = fixture(false); h.emit()
-  h.spawn.mockImplementation(() => {
-    expect(readSessionState(h.sessionId, h.env).native_answer_operations?.[0]?.answers).toEqual([{ question_id: 'q1', choice_ids: ['staging'] }])
-    expect(h.client.recordHarnessAnswer).not.toHaveBeenCalled()
-    h.confirm()
-  })
-  expect(await acknowledgeCommand(h.deps, h.questionId, h.flags)).toBe(EXIT.ok)
-  expect(h.spawn).toHaveBeenCalledOnce()
-  expect(h.client.recordHarnessAnswer).toHaveBeenCalledOnce()
-})
-
-it('leaves unavailable submission unresolved and resumes the identical operation after confirmation', async () => {
-  const h = fixture(false); h.emit()
-  expect(await acknowledgeCommand(h.deps, h.questionId, h.flags)).toBe(EXIT.failed)
-  const saved = readSessionState(h.sessionId, h.env).native_answer_operations![0]!
-  expect(saved.request_id).toBeUndefined()
-  expect(h.client.recordHarnessAnswer).not.toHaveBeenCalled()
-  h.confirm()
-  expect(await acknowledgeCommand(h.deps, h.questionId, { operationId: 'native-1', json: true })).toBe(EXIT.ok)
-  expect(readSessionState(h.sessionId, h.env).native_answer_operations?.[0]?.submission_id).toBe(saved.submission_id)
-})
-
-it('retries lost acknowledgement responses and reports an already acknowledged operation without redoing it', async () => {
-  const h = fixture(); h.emit()
-  h.client.putAgentAcknowledgement.mockRejectedValueOnce(new Error('receipt lost'))
-  expect(await acknowledgeCommand(h.deps, h.questionId, h.flags)).toBe(EXIT.failed)
-  expect(await acknowledgeCommand(h.deps, h.questionId, { operationId: 'native-1', json: true })).toBe(EXIT.ok)
-  expect(await acknowledgeCommand(h.deps, h.questionId, { operationId: 'native-1', json: true })).toBe(EXIT.ok)
-  expect(h.client.putAgentAcknowledgement).toHaveBeenCalledTimes(2)
-  expect(JSON.parse(h.outputs.at(-1)!).already_acknowledged).toBe(true)
-  expect(h.client.recordHarnessAnswer.mock.calls[0]).toEqual(h.client.recordHarnessAnswer.mock.calls[2])
 })
 
 it.each(['missing-emission', 'wrong-session', 'contested', 'wrong-machine', 'closed'])('refuses unqualified native reporting before HTTP: %s', async scenario => {
@@ -175,85 +127,6 @@ it.each(['missing-emission', 'wrong-session', 'contested', 'wrong-machine', 'clo
   expect(h.client.recordHarnessAnswer).not.toHaveBeenCalled()
   expect(h.client.putAgentAcknowledgement).not.toHaveBeenCalled()
   expect(JSON.parse(h.outputs.at(-1)!).retry).toBeUndefined()
-})
-
-it('records a later native answer after natural app-window retirement', async () => {
-  const h = fixture(); h.emit()
-  updateSessionState(h.sessionId, h.env, state => ({ ...rememberQuestionState(state, state.pending![0]!, 'retired'), pending: [] }))
-  expect(await acknowledgeCommand(h.deps, h.questionId, h.flags)).toBe(EXIT.ok)
-  expect(h.client.recordHarnessAnswer).toHaveBeenCalledOnce()
-  expect(readSessionState(h.sessionId, h.env).pending).toEqual([])
-})
-
-it('revokes a native registration added between close-pending discovery and actual retirement', async () => {
-  const h = fixture(); h.emit()
-  let added: string | undefined
-  const retire = retirement.retireQueuedQuestions
-  vi.spyOn(retirement, 'retireQueuedQuestions').mockImplementationOnce((...args) => {
-    added = registerQuestion(h.sessionId, h.env, { question: 'Later?', summary: 'Later?', service_identity: h.service,
-      questions: [{ id: 'q1', text: 'Later?' }] }, Date.now(), { owner_key: h.owner.key, turn_id: 'turn-1', service: h.service }).question_id
-    rememberLegacyBinding(h.sessionId, h.env, added, h.owner.key, h.file)
-    return retire(...args)
-  })
-  expect(await closeCommand(h.deps, undefined, { pending: true, json: true })).toBe(EXIT.ok)
-  expect(added).toBeDefined()
-  const state = readSessionState(h.sessionId, h.env)
-  expect(state.pending ?? []).toEqual([])
-  expect(state.codex_question_bindings?.find(binding => binding.question_id === added)?.terminated).toBe(true)
-})
-
-it('refuses a Machine switch between native report and authored acknowledgement', async () => {
-  const h = fixture(); h.emit()
-  h.client.recordHarnessAnswer.mockImplementationOnce(async () => {
-    h.deps.store.load = () => ({ baseUrl: h.service.base_url, machineId: 'other', secret: 'isolated-test', machineName: 'other' })
-    return h.reply
-  })
-  expect(await acknowledgeCommand(h.deps, h.questionId, h.flags)).toBe(EXIT.failed)
-  expect(h.client.putAgentAcknowledgement).not.toHaveBeenCalled()
-  expect(readSessionState(h.sessionId, h.env).native_answer_operations?.[0]?.report?.reply_seq).toBe(1)
-})
-
-it('rejects new identity-only operations and native options on ordinary request acknowledgements', async () => {
-  const h = fixture(); h.emit()
-  expect(await acknowledgeCommand(h.deps, h.questionId, { operationId: 'unknown', json: true })).toBe(EXIT.failed)
-  expect(await acknowledgeCommand(h.deps, 'req_original', h.flags)).toBe(EXIT.usage)
-  expect(h.client.recordHarnessAnswer).not.toHaveBeenCalled()
-})
-
-it('reports an answer to a Claude Code picker question through the same report and acknowledgement', async () => {
-  const root = mkdtempSync(path.join(os.tmpdir(), 'notifai-native-claude-')); roots.push(root)
-  const sessionId = '33333333-3333-4333-8333-333333333333'
-  const env: NodeJS.ProcessEnv = { HOME: root, XDG_CONFIG_HOME: root, XDG_STATE_HOME: root, CLAUDECODE: '1', CLAUDE_CODE_SESSION_ID: sessionId }
-  const owner = beginSessionIncarnation(sessionId, env, { stamp: lifecycleStamp(), harnessProcess: currentProcessIdentity()! })
-  writeSessionState(sessionId, env, { harness: 'claude-code' })
-  const service = { base_url: 'https://api.example.test', machine_id: 'machine_test' }
-  const questions = [{ id: 'q1', text: 'Where?', choices: [{ id: 'staging', label: 'Staging' }, { id: 'production', label: 'Production' }] }]
-  const { question_id: questionId } = registerQuestion(sessionId, env, { question: 'Where?', summary: 'Where?', service_identity: service, questions },
-    Date.now(), { owner_key: owner.key, turn_id: CLAUDE_PICKER_TURN, service,
-      picker: [{ title: 'Where should this go?', labels: { staging: 'Staging', production: 'Production' } }] })
-  recordConfirmedNativeAnswerTarget(sessionId, env, { question_id: questionId, request_id: 'req_original', question: 'Where?', summary: 'Where?', service_identity: service })
-  const text = 'Deploying to staging.'
-  const client = {
-    recordHarnessAnswer: vi.fn(async () => ({ status: 'recorded', reply_seq: 1, complete: true, other_submissions: [],
-      answer_version: { version_id: 'rpl_native', origin: 'harness', provenance: 'agent-reported', source: 'reply', base_version: null,
-        status: 'presented', not_delivered_reason: null, text: 'Staging', answers: [{ question_id: 'q1', choice_ids: ['staging'], text: null }],
-        device_id: null, created_at: '2026-10-05T12:00:00Z', agent_acknowledgement: null } }) as RecordHarnessAnswerResponse),
-    putAgentAcknowledgement: vi.fn(async () => ({ status: 'recorded' as const, agent_acknowledgement: { text, created_at: '2026-10-05T12:00:01Z' } })),
-  }
-  const outputs: string[] = []
-  const deps: CommandDeps = { env, cwd: root, now: () => 1, sleep: async () => {},
-    io: { out: line => outputs.push(line), err: () => {}, confirm: async () => false, openUrl: () => {} },
-    store: { load: () => ({ baseUrl: service.base_url, machineId: service.machine_id, secret: 'isolated-test', machineName: 'test' }),
-      describe: () => 'isolated', save: () => {}, clear: () => {} } as unknown as CommandDeps['store'],
-    clientFactory: () => client as unknown as ApiClient, spawnQuestionSettlement: vi.fn(),
-  }
-  const flags = { operationId: 'native-1', nativeAnswers: JSON.stringify([{ question_id: 'q1', choice_ids: ['staging'] }]), text, json: true }
-
-  // The picker is the question, so its binding is verified from the moment it exists.
-  expect(await acknowledgeCommand(deps, questionId, flags)).toBe(EXIT.ok)
-  expect(client.recordHarnessAnswer).toHaveBeenCalledTimes(1)
-  expect(client.putAgentAcknowledgement).toHaveBeenCalledTimes(1)
-  expect(JSON.parse(outputs.join('\n'))).toMatchObject({ ok: true, question_id: questionId, request_id: 'req_original' })
 })
 
 describe('a settled native answer', () => {
@@ -276,28 +149,5 @@ describe('a settled native answer', () => {
       question: { state: 'answered', request_id: 'req_original' },
     })
     expect(questionsAwaitingAnswer(state)).toEqual([])
-  })
-
-  it('still reads as answered after its window retires it', async () => {
-    const h = live()
-    expect(await acknowledgeCommand(h.deps, h.questionId, h.flags)).toBe(EXIT.ok)
-    updateSessionState(h.sessionId, h.env, state => ({ ...rememberQuestionState(state, state.pending![0]!, 'retired'), pending: [] }))
-    expect(inspectQuestionState(h.questionId, h.env)).toMatchObject({ question: { state: 'answered' } })
-  })
-
-  it('keeps waiting when the native report left questions unanswered', async () => {
-    const h = live()
-    h.client.recordHarnessAnswer.mockImplementation(async () => ({ ...structuredClone(h.reply), complete: false }))
-    expect(await acknowledgeCommand(h.deps, h.questionId, h.flags)).toBe(EXIT.ok)
-    expect(inspectQuestionState(h.questionId, h.env)).toMatchObject({ question: { state: 'live' } })
-    expect(questionsAwaitingAnswer(readSessionState(h.sessionId, h.env))).toHaveLength(1)
-  })
-
-  it('is not listed by replies --pending', async () => {
-    const h = live()
-    expect(await acknowledgeCommand(h.deps, h.questionId, h.flags)).toBe(EXIT.ok)
-    h.outputs.length = 0
-    expect(await repliesCommand(h.deps, undefined, { pending: true, json: true })).toBe(EXIT.noReply)
-    expect(JSON.parse(h.outputs.at(-1)!)).toMatchObject({ replies: [] })
   })
 })

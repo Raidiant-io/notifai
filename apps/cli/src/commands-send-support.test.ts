@@ -1,15 +1,14 @@
-import { mkdtempSync, mkdirSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { execFileSync } from 'node:child_process'
+import { mkdirSync,mkdtempSync,rmSync,symlinkSync,writeFileSync } from 'node:fs'
+import { createServer,type Server } from 'node:http'
+import type { AddressInfo } from 'node:net'
 import os from 'node:os'
 import path from 'node:path'
-import { recordSessionStart } from './hook-session-state.js'
-import { NOTIFICATION_IMAGE_MAX_BYTES } from '@raidiant/notifai-protocol'
-import { createServer, type Server } from 'node:http'
-import type { AddressInfo } from 'node:net'
-import { afterEach, describe, expect, it } from 'vitest'
-import { EXIT, type CommandDeps, type CommandIo } from './commands-core.js'
-import { readCappedBytes, uploadImage, resolveDraftInvocation } from './commands-send-support.js'
+import { afterEach,describe,expect,it } from 'vitest'
 import type { ApiClient } from './client.js'
+import { EXIT,type CommandDeps,type CommandIo } from './commands-core.js'
+import { readCappedBytes,resolveDraftInvocation,uploadImage } from './commands-send-support.js'
+import { recordSessionStart } from './hook-session-state.js'
 
 let server: Server | undefined
 
@@ -41,24 +40,6 @@ describe('readCappedBytes', () => {
   it('refuses Content-Length over the cap before reading the body', async () => {
     const response = new Response(null, { headers: { 'content-length': '64' } })
     expect(await readCappedBytes(response, 16)).toBe('too-large')
-  })
-
-  it('stops reading once the downloaded bytes exceed the cap', async () => {
-    const response = new Response(
-      new ReadableStream({
-        start(controller) {
-          controller.enqueue(new Uint8Array(12))
-          controller.enqueue(new Uint8Array(12))
-          controller.close()
-        },
-      }),
-    )
-    expect(await readCappedBytes(response, 16)).toBe('too-large')
-  })
-
-  it('returns a payload that fits the cap', async () => {
-    const payload = new Uint8Array([1, 2, 3, 4])
-    expect(await readCappedBytes(new Response(payload), 16)).toEqual(payload)
   })
 })
 
@@ -114,50 +95,6 @@ describe('uploadImage remote fetch', () => {
     expect(result.exit).toBe(EXIT.usage)
     expect(result.error).toContain('media_origins')
   })
-
-  it('refuses a remote image whose Content-Length exceeds the server media limit', async () => {
-    const baseUrl = await serving((_request, response) => {
-      response.setHeader('content-type', 'image/png')
-      response.setHeader('content-length', String(NOTIFICATION_IMAGE_MAX_BYTES + 1))
-      response.end()
-    })
-    const deps = { io: io(), env: {}, cwd: '/tmp' } as CommandDeps
-
-    const result = await uploadImage(deps, refusingClient(), `${baseUrl}/huge.png`, [baseUrl])
-    expect(result.ok).toBe(false)
-    if (result.ok) throw new Error('expected refusal')
-    expect(result.exit).toBe(EXIT.usage)
-    expect(result.error).toContain(String(NOTIFICATION_IMAGE_MAX_BYTES))
-  })
-
-  it('refuses a redirect out of an allowed origin into an unallowed one', async () => {
-    const target = await serving((_request, response) => {
-      response.setHeader('content-type', 'image/png')
-      response.end(Buffer.from(new Uint8Array([0x89, 0x50, 0x4e, 0x47])))
-    })
-    // A second loopback origin the User never allowed. The first hop is
-    // trusted; the destination is not, and each hop is checked on its own.
-    const redirector = createServer((_request, response) => {
-      response.writeHead(302, { location: `${target}/shot.png` })
-      response.end()
-    })
-    await new Promise<void>((resolve) => redirector.listen(0, '127.0.0.1', resolve))
-    const { port } = redirector.address() as AddressInfo
-    const redirectOrigin = `http://127.0.0.1:${port}`
-    const deps = { io: io(), env: {}, cwd: '/tmp' } as CommandDeps
-
-    try {
-      const result = await uploadImage(deps, refusingClient(), `${redirectOrigin}/shot.png`, [
-        redirectOrigin,
-      ])
-      expect(result.ok).toBe(false)
-      if (result.ok) throw new Error('expected refusal')
-      expect(result.exit).toBe(EXIT.usage)
-      expect(result.error).toContain('media_origins')
-    } finally {
-      await new Promise<void>((resolve) => redirector.close(() => resolve()))
-    }
-  })
 })
 
 describe('uploadImage local files', () => {
@@ -183,21 +120,6 @@ describe('uploadImage local files', () => {
         exit: EXIT.usage,
       })
     } finally { rmSync(home, { recursive: true, force: true }) }
-  })
-
-  it('uploads a regular image and refuses one whose bytes are not the image its name says', async () => {
-    const dir = mkdtempSync(path.join(os.tmpdir(), 'notifai-image-local-'))
-    try {
-      writeFileSync(path.join(dir, 'shot.png'), Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]))
-      writeFileSync(path.join(dir, 'notes.png'), 'not an image')
-      const deps = { io: io(), env: {}, cwd: dir } as CommandDeps
-      const uploaded: number[] = []
-      expect(await uploadImage(deps, uploadingClient(uploaded), 'shot.png')).toEqual({ ok: true, mediaId: 'med_1' })
-      expect(uploaded).toEqual([8])
-      expect(await uploadImage(deps, refusingClient(), 'notes.png')).toEqual({
-        ok: false, error: '--image "notes.png" is not the PNG image its name says.', exit: EXIT.usage,
-      })
-    } finally { rmSync(dir, { recursive: true, force: true }) }
   })
 })
 

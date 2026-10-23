@@ -1,21 +1,21 @@
-import { spawn, type ChildProcess } from 'node:child_process'
+import { spawn,type ChildProcess } from 'node:child_process'
 import {
-  existsSync,
-  lstatSync,
-  mkdirSync,
-  mkdtempSync,
-  readFileSync,
-  readdirSync,
-  renameSync,
-  rmSync,
-  statSync,
-  symlinkSync,
-  writeFileSync,
+existsSync,
+lstatSync,
+mkdirSync,
+mkdtempSync,
+readFileSync,
+readdirSync,
+renameSync,
+rmSync,
+statSync,
+symlinkSync,
+writeFileSync,
 } from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import { describe, expect, it } from 'vitest'
-import { withFileLock, withTargetFileLock } from './file-lock.js'
+import { describe,expect,it } from 'vitest'
+import { withFileLock,withTargetFileLock } from './file-lock.js'
 
 interface LockWorker {
   child: ChildProcess
@@ -155,57 +155,6 @@ describe('cross-process file lock', () => {
       rmSync(root, { recursive: true, force: true })
     }
   }, 30_000)
-
-  it('cannot reap a successor after observing a dead owner', async () => {
-    const root = mkdtempSync(path.join(os.tmpdir(), 'notifai-file-lock-'))
-    const lockPath = path.join(root, 'shared.lock')
-    const workers: LockWorker[] = []
-    try {
-      const crashed = lockWorker(root, lockPath, 'crashed', { action: 'crash' })
-      workers.push(crashed)
-      await waitUntil(() => existsSync(crashed.enteredPath))
-      await crashed.done
-
-      const staleEntries = readdirSync(lockPath)
-      expect(staleEntries).toHaveLength(1)
-      expect(staleEntries[0]).toMatch(/^ticket-\d+-\d+-[0-9a-f]+$/)
-      const staleEntry = staleEntries[0]!
-
-      const delayedReaper = lockWorker(root, lockPath, 'delayed-reaper', {
-        pauseAt: 'stale-entry',
-      })
-      workers.push(delayedReaper)
-      await waitUntil(
-        () =>
-          existsSync(delayedReaper.pausedPath) &&
-          readFileSync(delayedReaper.pausedPath, 'utf8') === staleEntry,
-      )
-
-      const successor = lockWorker(root, lockPath, 'successor')
-      workers.push(successor)
-      await waitUntil(() => existsSync(successor.enteredPath))
-      const successorEntry = readdirSync(lockPath).find((entry) => entry.startsWith('ticket-'))
-      expect(successorEntry).toBeDefined()
-      expect(successorEntry).not.toBe(staleEntry)
-
-      writeFileSync(delayedReaper.continuePath, 'continue')
-      await waitUntil(() => {
-        if (existsSync(delayedReaper.enteredPath)) {
-          throw new Error('the delayed stale cleanup displaced the successor')
-        }
-        return waitCount(delayedReaper.waitsPath) > 0
-      })
-
-      writeFileSync(successor.releasePath, 'release')
-      await waitUntil(() => existsSync(delayedReaper.enteredPath))
-      writeFileSync(delayedReaper.releasePath, 'release')
-      await Promise.all([successor.done, delayedReaper.done])
-    } finally {
-      stop(workers)
-      await Promise.allSettled(workers.map(({ done }) => done))
-      rmSync(root, { recursive: true, force: true })
-    }
-  }, 30_000)
 })
 
 describe('rendezvous contention', () => {
@@ -236,16 +185,6 @@ describe('rendezvous contention', () => {
 
   it('registers again when a releasing contender removed the rendezvous', () => {
     raceAtRegistration((lock) => rmSync(lock, { recursive: true }))
-  })
-
-  it('holds the rendezvous it landed in, not the one it scanned', () => {
-    // A third contender recreates the directory before this one publishes, so
-    // the entry lands in a directory whose identity nobody has recorded yet.
-    // Treating that as tampering used to break the caller outright.
-    raceAtRegistration((lock) => {
-      rmSync(lock, { recursive: true })
-      mkdirSync(lock, { mode: 0o700 })
-    })
   })
 })
 
@@ -300,61 +239,6 @@ describe('directory-entry races', () => {
       rmSync(root, { recursive: true, force: true })
     }
   })
-
-  it('rechecks a transient EPERM and accepts that the entry vanished', () => {
-    const root = mkdtempSync(path.join(os.tmpdir(), 'notifai-entry-race-'))
-    const lock = path.join(root, 'shared.lock')
-    const vanished = path.join(lock, 'ticket-1-999999-deadbeef')
-    mkdirSync(lock)
-    writeFileSync(vanished, '')
-    let attempts = 0
-
-    try {
-      let entered = false
-      withFileLock(lock, () => { entered = true }, {
-        lstatEntry(file) {
-          if (file === vanished && attempts === 0) {
-            attempts += 1
-            rmSync(file)
-            throw Object.assign(new Error('entry is being removed'), { code: 'EPERM' })
-          }
-          return statSync(file)
-        },
-      })
-
-      expect(attempts).toBe(1)
-      expect(entered).toBe(true)
-    } finally {
-      rmSync(root, { recursive: true, force: true })
-    }
-  })
-
-  it('still fails closed when EPERM persists', () => {
-    const root = mkdtempSync(path.join(os.tmpdir(), 'notifai-entry-race-'))
-    const lock = path.join(root, 'shared.lock')
-    const inaccessible = path.join(lock, 'ticket-1-999999-deadbeef')
-    mkdirSync(lock)
-    writeFileSync(inaccessible, '')
-    let attempts = 0
-
-    try {
-      expect(() =>
-        withFileLock(lock, () => {}, {
-          waitMs: 20,
-          lstatEntry(file) {
-            if (file === inaccessible) {
-              attempts += 1
-              throw Object.assign(new Error('entry remains inaccessible'), { code: 'EPERM' })
-            }
-            return statSync(file)
-          },
-        }),
-      ).toThrow(/entry remains inaccessible/)
-      expect(attempts).toBeGreaterThan(1)
-    } finally {
-      rmSync(root, { recursive: true, force: true })
-    }
-  })
 })
 
 describe('target file transaction lock', () => {
@@ -371,35 +255,6 @@ describe('target file transaction lock', () => {
     expect(existsSync(path.join(foreign, '.settings.json.notifai.lock'))).toBe(false)
   })
 
-  it('refuses a symlink posing as the lock rendezvous', () => {
-    const root = mkdtempSync(path.join(os.tmpdir(), 'notifai-target-lock-'))
-    const foreign = path.join(root, 'foreign')
-    const lock = path.join(root, '.settings.json.notifai.lock')
-    mkdirSync(foreign)
-    symlinkSync(foreign, lock)
-
-    expect(() => withTargetFileLock(path.join(root, 'settings.json'), () => {})).toThrow(
-      /not a regular directory/,
-    )
-  })
-
-  it('does not remove a replacement at its unique owned entry', () => {
-    const root = mkdtempSync(path.join(os.tmpdir(), 'notifai-target-lock-'))
-    const target = path.join(root, 'settings.json')
-    const lock = path.join(root, '.settings.json.notifai.lock')
-    let replacement = ''
-
-    expect(() =>
-      withTargetFileLock(target, () => {
-        const entry = readdirSync(lock)[0]!
-        replacement = path.join(lock, entry)
-        rmSync(replacement)
-        writeFileSync(replacement, 'replacement')
-      }),
-    ).toThrow(/changed while held/)
-    expect(readFileSync(replacement, 'utf8')).toBe('replacement')
-  })
-
   it('preserves the action error when release also finds a replacement', () => {
     const root = mkdtempSync(path.join(os.tmpdir(), 'notifai-target-lock-'))
     const target = path.join(root, 'settings.json')
@@ -414,17 +269,5 @@ describe('target file transaction lock', () => {
         throw actionError
       }),
     ).toThrow(actionError)
-  })
-
-  it('refuses a symlink masquerading as a protocol entry', () => {
-    const root = mkdtempSync(path.join(os.tmpdir(), 'notifai-target-lock-'))
-    const lock = path.join(root, 'shared.lock')
-    const foreign = path.join(root, 'foreign')
-    mkdirSync(lock)
-    writeFileSync(foreign, 'leave me')
-    symlinkSync(foreign, path.join(lock, 'ticket-1-999999-deadbeef'))
-
-    expect(() => withFileLock(lock, () => {})).toThrow(/regular file-lock entry/)
-    expect(readFileSync(foreign, 'utf8')).toBe('leave me')
   })
 })

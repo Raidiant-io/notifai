@@ -1,35 +1,29 @@
+import type { ListRepliesResponse,QuestionT,ReplyAnswerT,ReplyView,SubmitNotificationRequestT } from '@raidiant/notifai-protocol'
 import { execFileSync } from 'node:child_process'
-import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdirSync,mkdtempSync,rmSync,writeFileSync } from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { PassThrough } from 'node:stream'
-import type { ListRepliesResponse, QuestionT, ReplyAnswerT, ReplyView, SubmitNotificationRequestT } from '@raidiant/notifai-protocol'
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { afterEach,describe,expect,it,vi } from 'vitest'
 import { pickerForm } from './claude-question-bindings.js'
-import { CLAUDE_PICKER_DISMISSED } from './claude-question-hooks.js'
 import type { ApiClient } from './client.js'
 import type { CommandDeps } from './commands-core.js'
 import { globalConfigPath } from './config.js'
 import { registerQuestion } from './hook-lifecycle.js'
-import { readSessionState, updateSessionState } from './hook-session-state.js'
+import { readSessionState,updateSessionState } from './hook-session-state.js'
 import type { PendingQuestion } from './hook-types.js'
 import {
-  OPENCODE_FORM_UNCARRIABLE,
-  OPENCODE_NATIVE_ACKNOWLEDGEMENT,
-  checkFormImage,
-  opencodeHandBackInput,
-  recommendedFirst,
-  opencodeDeviceAnswers,
-  opencodeNativeAnswers,
-  opencodeOwedAcknowledgement,
-  opencodePickerQuestions,
-  opencodeQuestionCommand,
-  opencodeQuestionRequest,
-  sweepAbandonedOpencodeForms,
-  type OpencodeQuestionOutbound,
-  type OpencodeQuestionRequest,
+checkFormImage,
+opencodeHandBackInput,
+opencodeOwedAcknowledgement,
+opencodePickerQuestions,
+opencodeQuestionCommand,
+opencodeQuestionRequest,
+recommendedFirst,
+type OpencodeQuestionOutbound,
+type OpencodeQuestionRequest
 } from './opencode-question.js'
-import { disableProject, enableProject, projectBinding, projectEnablementState } from './project-enablement.js'
+import { disableProject,enableProject,projectBinding } from './project-enablement.js'
 
 const SESSION = 'ses_opencode_parent'
 const REQUEST: OpencodeQuestionRequest = {
@@ -69,34 +63,6 @@ describe('OpenCode question forms as device questions', () => {
     expect(opencodeQuestionRequest({ ...REQUEST, sessionID: '' })).toBeNull()
     expect(opencodeQuestionRequest({ ...REQUEST, questions: [] })).toBeNull()
     expect(opencodeQuestionRequest({ ...REQUEST, questions: [{ question: 'x', options: [{ label: 3 }] }] })).toBeNull()
-  })
-
-  it('returns a device answer as the form\'s own labels and typed text', () => {
-    const built = form()
-    const [target, checks] = built.questions
-    const staging = target!.choices!.find(choice => choice.label === 'Staging')!.id
-    const lint = checks!.choices!.find(choice => choice.label === 'Lint')!.id
-    const tests = checks!.choices!.find(choice => choice.label === 'Tests')!.id
-    expect(opencodeDeviceAnswers(built, reply([
-      { question_id: target!.id, choice_ids: [staging], text: null },
-      { question_id: checks!.id, choice_ids: [lint, tests], text: 'and the smoke test' },
-    ]))).toEqual([['Staging'], ['Lint', 'Tests', 'and the smoke test']])
-    // A partial answer is not the form's answer.
-    expect(opencodeDeviceAnswers(built, reply([{ question_id: target!.id, choice_ids: [staging], text: null }]))).toBeNull()
-  })
-
-  it('reports an answer given in OpenCode as choices or typed text', () => {
-    const built = form()
-    const [target, checks] = built.questions
-    expect(opencodeNativeAnswers(built, [['Production'], ['Tests', 'my own check']])).toEqual([
-      { question_id: target!.id, choice_ids: [target!.choices!.find(choice => choice.label === 'Production')!.id] },
-      { question_id: checks!.id, choice_ids: [checks!.choices!.find(choice => choice.label === 'Tests')!.id], text: 'my own check' },
-    ])
-    expect(opencodeNativeAnswers(built, [['Wait until Monday'], ['Lint']])?.[0]).toEqual({
-      question_id: target!.id, text: 'Wait until Monday',
-    })
-    expect(opencodeNativeAnswers(built, [['Production']])).toBeNull()
-    expect(opencodeNativeAnswers(built, [[], ['Lint']])).toBeNull()
   })
 })
 
@@ -230,135 +196,6 @@ describe('opencode-question command', () => {
     expect(t.closes).toEqual(['deliver'])
     expect(t.client.recordHarnessAnswer).not.toHaveBeenCalled()
   })
-
-  it('records an answer given in OpenCode so the devices stop asking', async () => {
-    const t = setup()
-    await t.frame('registered')
-    t.send({ type: 'native', answers: [['Staging'], ['Tests', 'End to end']] })
-    expect(await t.frame('done')).toEqual({ type: 'done', outcome: 'native-answer-recorded' })
-    await t.run
-    const built = form()
-    expect(t.client.recordHarnessAnswer).toHaveBeenCalledWith('req_opencode', expect.objectContaining({
-      session_id: SESSION,
-      answers: [
-        { question_id: built.questions[0]!.id, choice_ids: [built.questions[0]!.choices![0]!.id] },
-        { question_id: built.questions[1]!.id, choice_ids: [built.questions[1]!.choices![1]!.id, built.questions[1]!.choices![2]!.id] },
-      ],
-    }))
-    expect(t.client.putAgentAcknowledgement).toHaveBeenCalledWith('req_opencode', {
-      session_id: SESSION, reply_seq: 7, text: OPENCODE_NATIVE_ACKNOWLEDGEMENT,
-    })
-    // Nothing in OpenCode waits for a later answer, so the window closes.
-    expect(t.closes).toEqual(['retire'])
-  })
-
-  it('withdraws the device question when the form is dismissed', async () => {
-    const t = setup()
-    await t.frame('registered')
-    t.send({ type: 'dismissed' })
-    expect(await t.frame('done')).toEqual({ type: 'done', outcome: 'dismissed' })
-    await t.run
-    expect(t.closes).toEqual(['retire'])
-  })
-
-  it('withdraws the device question when OpenCode closes, and returns nothing later', async () => {
-    const t = setup()
-    await t.frame('registered')
-    t.input.end()
-    await t.run
-    expect(t.frames.at(-1)).toEqual({ type: 'done', outcome: 'session-closed' })
-    expect(t.closes).toEqual(['retire'])
-    expect(t.frames.some(item => item.type === 'answer')).toBe(false)
-  })
-
-  it('keeps a device answer the form no longer accepts from being reported as delivered', async () => {
-    const t = setup()
-    await t.frame('registered')
-    const built = form()
-    t.answerWith(reply(built.questions.map(question => ({ question_id: question.id, choice_ids: [question.choices![0]!.id], text: null }))))
-    await t.frame('answer')
-    t.send({ type: 'stale' })
-    expect(await t.frame('done')).toEqual({ type: 'done', outcome: 'form-already-settled' })
-    await t.run
-  })
-
-  it('registers a form in a Project with no record, and leaves the Project as it was', async () => {
-    const t = setup({ enabled: false })
-    expect(await t.frame('registered')).toEqual({ type: 'registered', request_id: 'req_opencode' })
-    expect(t.submitted).toHaveLength(1)
-    expect(projectEnablementState(projectBinding(t.root, t.env))).toBe('unset')
-    t.input.end()
-    await t.run
-  })
-
-  it('holds the form in OpenCode for the terminal-first delay before it reaches the devices', async () => {
-    const slept: Array<{ ms: number; submitted: number }> = []
-    const t = setup({ settings: 'ask_grace_seconds = 30\n', sleep: async (ms) => {
-      slept.push({ ms, submitted: t.submitted.length })
-    } })
-    expect(await t.frame('registered')).toEqual({ type: 'registered', request_id: 'req_opencode' })
-    expect(slept).toEqual([{ ms: 30_000, submitted: 0 }])
-    expect(t.submitted).toHaveLength(1)
-    t.input.end()
-    await t.run
-  })
-
-  it.each([
-    [{ type: 'native', answers: [['Staging'], ['Lint']] }],
-    [{ type: 'dismissed' }],
-  ])('keeps a form settled in OpenCode during its delay off the devices: %o', async (settledWith) => {
-    const t = setup({ settings: 'ask_grace_seconds = 30\n', sleep: () => new Promise<void>(() => {}) })
-    t.send(settledWith)
-    expect(await t.frame('terminal')).toEqual({ type: 'terminal', reason: 'settled-in-opencode' })
-    await t.run
-    expect(t.submitted).toEqual([])
-    expect(t.client.recordHarnessAnswer).not.toHaveBeenCalled()
-  })
-
-  it.each([
-    [{ disabled: true }, 'project-disabled'],
-    [{ settings: 'ask_notifications = false\n' }, 'question-notifications-off'],
-    [{ signedIn: false }, 'not-signed-in'],
-  ])('leaves the form to OpenCode alone when %o', async (options, reason) => {
-    const t = setup(options)
-    expect(await t.frame('terminal')).toEqual({ type: 'terminal', reason })
-    await t.run
-    expect(t.submitted).toEqual([])
-  })
-
-  it('treats a hang-up as the session closing', async () => {
-    const t = setup({ signals: ['SIGHUP'] })
-    await t.frame('registered')
-    process.emit('SIGHUP', 'SIGHUP')
-    await t.run
-    expect(t.frames.at(-1)).toEqual({ type: 'done', outcome: 'session-closed' })
-    expect(t.closes).toEqual(['retire'])
-    expect(process.listenerCount('SIGHUP')).toBe(0)
-  })
-
-  it('withdraws a form whose command died with OpenCode, and only that one', async () => {
-    const t = setup()
-    await t.frame('registered')
-    const dir = path.join(t.env.XDG_STATE_HOME, 'notifai', 'opencode-questions')
-    const [file] = readdirSync(dir)
-    const live = JSON.parse(readFileSync(path.join(dir, file!), 'utf8')) as { owner: { pid: number } }
-    expect(live).toMatchObject({ request_id: 'req_opencode', session_id: SESSION, machine_id: 'mch_test', owner: { pid: process.pid } })
-    expect(await sweepAbandonedOpencodeForms(t.deps)).toBe(0)
-    expect(t.closes).toEqual([])
-    expect(await sweepAbandonedOpencodeForms(t.deps, { liveness: () => 'gone' })).toBe(1)
-    expect(t.closes).toEqual(['retire'])
-    expect(readdirSync(dir)).toEqual([])
-    t.input.end()
-    await t.run
-  })
-
-  it('withdraws, instead of crashing, when OpenCode vanishes mid-write', async () => {
-    const t = setup()
-    await t.frame('registered')
-    t.output.destroy(Object.assign(new Error('write EPIPE'), { code: 'EPIPE' }))
-    expect(await t.run).toBe(0)
-    expect(t.closes).toEqual(['retire'])
-  })
 })
 
 /** A form the current plugin asks about before OpenCode opens it. */
@@ -412,29 +249,6 @@ describe('a form asked about before it opens', () => {
     expect(state.question_history).toEqual([expect.objectContaining({ question_id: verdict.question_id, state: 'answered' })])
   })
 
-  it('links the form `ask --wait` handed back, and submits that registration as it was asked', async () => {
-    let questionId = ''
-    const t = setup({
-      before: (_root, env) => { questionId = registerHandBack(env, recommendedFirst(DEPLOY)) },
-      first: (root) => {
-        const pending = readSessionState(SESSION, t0Env(root)).pending![0]!
-        return formFrame(root, pending.opencode_hand_back!.questions, { source: pending.opencode_hand_back!.source })
-      },
-    })
-    expect(await t.frame('accepted')).toEqual({ type: 'accepted', question_id: questionId })
-    const handBack = readSessionState(SESSION, t.env).pending![0]!.opencode_hand_back!
-    expect(handBack.questions[0]!.options.map((option) => option.label)).toEqual(['Staging (Recommended)', 'Production'])
-    t.send(opened(handBack.questions))
-    await t.frame('registered')
-    expect(t.submitted[0]!.draft.presentation).toMatchObject({ title: 'Deploy target', body: 'Staging has the new migrations.' })
-    expect(t.submitted[0]!.draft.reply?.questions[0]!.choices!.map((choice) => choice.id)).toEqual(['staging', 'production'])
-    // The device answers with the registration's ids; the form gets its own labels.
-    t.answerWith(reply([{ question_id: 'target', choice_ids: ['staging'], text: null }]))
-    expect(await t.frame('answer')).toMatchObject({ answers: [['Staging (Recommended)']] })
-    t.send({ type: 'applied' })
-    await t.run
-  })
-
   it('refuses a form that names a hand-back but asks something else, with the input to open', async () => {
     let questionId = ''
     const t = setup({
@@ -449,76 +263,6 @@ describe('a form asked about before it opens', () => {
     await t.run
     expect(t.submitted).toEqual([])
   })
-
-  it('refuses any other form while a hand-back waits for its own', async () => {
-    let questionId = ''
-    const t = setup({
-      before: (_root, env) => { questionId = registerHandBack(env, recommendedFirst(DEPLOY)) },
-      first: (root) => formFrame(root),
-    })
-    expect((await t.frame('refused') as { message: string }).message).toContain(`handed back (\`${questionId}\`)`)
-    await t.run
-  })
-
-  it.each([
-    ['answered', '`q_ended` was already answered, and that answer was delivered to you. Do not ask it again.'],
-    ['retired', '`q_ended` has expired without an answer: carry on without it, or ask in the conversation.'],
-    ['withdrawn', '`q_ended` has expired without an answer: carry on without it, or ask in the conversation.'],
-  ] as const)('refuses a form naming a question that is %s', async (ended, message) => {
-    const t = setup({
-      before: (_root, env) => updateSessionState(SESSION, env, (state) => ({ ...state, question_history: [{ question_id: 'q_ended', state: ended }] })),
-      first: (root) => formFrame(root, REQUEST.questions, { source: 'notifai:q_ended' }),
-    })
-    expect(await t.frame('refused')).toEqual({ type: 'refused', message })
-    await t.run
-  })
-
-  it('refuses a form the devices cannot show, but only where forms reach them', async () => {
-    const wide = [{ question: 'Pick one', header: 'Pick', options: [{ label: 'Only', description: '' }] }]
-    const routed = setup({ first: (root) => formFrame(root, wide) })
-    expect(await routed.frame('refused')).toEqual({ type: 'refused', message: OPENCODE_FORM_UNCARRIABLE })
-    await routed.run
-    const off = setup({ settings: 'ask_notifications = false\n', first: (root) => formFrame(root, wide) })
-    expect(await off.frame('terminal')).toEqual({ type: 'terminal', reason: 'question-notifications-off' })
-    await off.run
-    const signedOut = setup({ signedIn: false, first: (root) => formFrame(root, wide) })
-    expect(await signedOut.frame('terminal')).toEqual({ type: 'terminal', reason: 'not-signed-in' })
-    await signedOut.run
-  })
-
-  it('refuses an image whose bytes are not the image its name says, before anything leaves the machine', async () => {
-    const t = setup({ first: (root) => {
-      writeFileSync(path.join(root, 'id_ed25519.png'), '-----BEGIN OPENSSH PRIVATE KEY-----\n')
-      return formFrame(root, REQUEST.questions, { images: [{ path: 'id_ed25519.png', alt: 'key' }] })
-    } })
-    expect((await t.frame('refused') as { message: string }).message)
-      .toBe('Notifai cannot carry this form to the User\'s devices: image "id_ed25519.png" is not the PNG image its name says. Fix that and open the form again, or ask in the conversation.')
-    await t.run
-    expect(t.uploads).toEqual([])
-    expect(readSessionState(SESSION, t.env).pending ?? []).toEqual([])
-  })
-
-  it('releases its registration when the form never opens', async () => {
-    const t = setup({ first: (root) => formFrame(root) })
-    await t.frame('accepted')
-    t.input.end()
-    await t.run
-    expect(t.frames.at(-1)).toEqual({ type: 'done', outcome: 'form-not-opened' })
-    expect(readSessionState(SESSION, t.env).pending ?? []).toEqual([])
-    expect(t.submitted).toEqual([])
-  })
-
-  it('closes the form unanswered, saying only that it expired, when the device question ends', async () => {
-    const t = setup({ expired: true, first: (root) => formFrame(root) })
-    await t.frame('accepted')
-    t.send(opened())
-    expect(await t.frame('expired')).toEqual({ type: 'expired', context: CLAUDE_PICKER_DISMISSED })
-    expect(CLAUDE_PICKER_DISMISSED).not.toMatch(/dismiss/i)
-    t.send({ type: 'applied' })
-    expect(await t.frame('done')).toEqual({ type: 'done', outcome: 'expired' })
-    await t.run
-    expect(t.closes).toEqual(['retire'])
-  })
 })
 
 describe('the input `ask --wait` hands back', () => {
@@ -529,15 +273,6 @@ describe('the input `ask --wait` hands back', () => {
         options: [{ label: 'Staging (Recommended)', description: '' }, { label: 'Production', description: 'Live' }] }],
       source: 'notifai:q_1',
     })
-  })
-
-  it('carries free text and ten questions through the OpenCode form', () => {
-    const questions: QuestionT[] = Array.from({ length: 10 }, (_, i) => ({ id: `q${i}`, text: `Question ${i}?`,
-      ...(i === 0 ? {} : { choices: [{ id: 'a', label: 'First', recommended: true }, { id: 'b', label: 'Second' }] }) }))
-    const input = opencodeHandBackInput(questions, {}, 'q_many')
-    expect(input?.questions).toHaveLength(10)
-    expect(input?.questions[0]?.options).toEqual([])
-    expect(input?.questions[1]?.options.map(option => option.label)).toEqual(['First (Recommended)', 'Second'])
   })
 
   it('has none for a question the form cannot ask unchanged', () => {

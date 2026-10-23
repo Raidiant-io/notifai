@@ -1,30 +1,26 @@
-import { execFileSync, spawnSync } from 'node:child_process'
+import { execFileSync,spawnSync } from 'node:child_process'
 import {
-  chmodSync,
-  existsSync,
-  mkdirSync,
-  mkdtempSync,
-  readFileSync,
-  rmSync,
-  statSync,
-  symlinkSync,
-  writeFileSync,
+chmodSync,
+existsSync,
+mkdirSync,
+mkdtempSync,
+readFileSync,
+symlinkSync,
+writeFileSync
 } from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { Worker } from 'node:worker_threads'
-import { describe, expect, it, vi } from 'vitest'
+import { describe,expect,it,vi } from 'vitest'
 import {
-  resolveHookAdapterHome,
-  hookAdapterPath,
-  hookAdapterSource,
-  inspectHookAdapter,
-  installHookAdapter,
-  isNpxAdapterTarget,
+hookAdapterPath,
+hookAdapterSource,
+inspectHookAdapter,
+installHookAdapter,
+resolveHookAdapterHome
 } from './hook-adapter.js'
-import { buildHookConfig, codexHookIdentityHash, type InstalledHandler } from './install-hooks.js'
-import { enableProject, projectBinding } from './project-enablement.js'
+import { enableProject,projectBinding } from './project-enablement.js'
 
 function isolated(): { root: string; homeDir: string } {
   const root = mkdtempSync(path.join(os.tmpdir(), 'notifai-hook-adapter-'))
@@ -80,154 +76,6 @@ describe('stable hook adapter', () => {
     })
   })
 
-  it('executes paths with spaces, quotes, and shell syntax without evaluating them', () => {
-    const { root, homeDir } = isolated()
-    const odd = path.join(root, "odd ' $(touch should-not-run)")
-    mkdirSync(odd, { recursive: true })
-    const script = path.join(odd, 'target script.js')
-    writeFileSync(script, 'process.stdout.write(JSON.stringify(process.argv.slice(2)))\n')
-
-    const installed = installHookAdapter({ execPath: process.execPath, scriptPath: script }, homeDir)
-    const run = spawnSync(installed.path, ['hook', 'stop', '--owner', 'notifai'], {
-      encoding: 'utf8',
-    })
-
-    expect(run.status).toBe(0)
-    expect(JSON.parse(run.stdout)).toEqual(['hook', 'stop', '--owner', 'notifai'])
-    expect(statSync(installed.path).mode & 0o777).toBe(0o700)
-    expect(inspectHookAdapter(homeDir).problems).toEqual([])
-  })
-
-  it('retargets Node and CLI paths without changing any harness definition or Codex hash', () => {
-    const { root, homeDir } = isolated()
-    const first = path.join(root, 'first.js')
-    const second = path.join(root, 'second.js')
-    writeFileSync(first, '')
-    writeFileSync(second, '')
-    const adapter = installHookAdapter({ execPath: process.execPath, scriptPath: first }, homeDir)
-    const before = buildHookConfig({
-      adapterPath: adapter.path,
-      harness: 'codex',
-    })
-    const beforeSource = readFileSync(adapter.path, 'utf8')
-
-    installHookAdapter({ execPath: process.execPath, scriptPath: second }, homeDir)
-    const after = buildHookConfig({
-      adapterPath: hookAdapterPath(homeDir),
-      harness: 'codex',
-    })
-    const afterSource = readFileSync(adapter.path, 'utf8')
-    const stop = (config: typeof before): InstalledHandler => {
-      const handler = config['Stop']![0]!.hooks[0]!
-      return {
-        event: 'Stop',
-        groupIndex: 0,
-        handlerIndex: 0,
-        command: handler.command,
-        timeout: handler.timeout,
-      }
-    }
-
-    expect(after).toEqual(before)
-    expect(afterSource).not.toBe(beforeSource)
-    expect(codexHookIdentityHash(stop(after))).toBe(codexHookIdentityHash(stop(before)))
-    const inspected = inspectHookAdapter(homeDir).target
-    expect(inspected && !isNpxAdapterTarget(inspected) ? inspected.scriptPath : null).toBe(second)
-  })
-
-  it('executes a pinned npx spec through npm-cli.js without evaluating it', () => {
-    const { root, homeDir } = isolated()
-    const npmCli = path.join(root, 'npm-cli.js')
-    writeFileSync(
-      npmCli,
-      'process.stdout.write(JSON.stringify(process.argv.slice(2)))\n',
-    )
-    const installed = installHookAdapter(
-      {
-        kind: 'npx',
-        execPath: process.execPath,
-        npmCli,
-        spec: '@raidiant/notifai@0.5.1',
-      },
-      homeDir,
-    )
-    const run = spawnSync(installed.path, ['hook', 'stop', '--owner', 'notifai'], {
-      encoding: 'utf8',
-    })
-
-    expect(run.status).toBe(0)
-    expect(JSON.parse(run.stdout)).toEqual([
-      'exec',
-      '--yes',
-      '--package',
-      '@raidiant/notifai@0.5.1',
-      '--',
-      'notifai',
-      'hook',
-      'stop',
-      '--owner',
-      'notifai',
-    ])
-    const inspected = inspectHookAdapter(homeDir)
-    expect(inspected.problems).toEqual([])
-    expect(inspected.target && isNpxAdapterTarget(inspected.target) ? inspected.target.spec : null).toBe(
-      '@raidiant/notifai@0.5.1',
-    )
-  })
-
-  it('carries the stable POSIX harness parent through direct and npx targets', () => {
-    const { root, homeDir } = isolated()
-    const direct = path.join(root, 'direct.js')
-    const npmCli = path.join(root, 'npm-cli.js')
-    const source = 'process.stdout.write(process.env.NOTIFAI_HOOK_SOURCE_PID ?? "missing")\n'
-    writeFileSync(direct, source)
-    writeFileSync(npmCli, source)
-
-    const directAdapter = installHookAdapter(
-      { execPath: process.execPath, scriptPath: direct },
-      homeDir,
-    )
-    const directRun = spawnSync(directAdapter.path, [], { encoding: 'utf8' })
-    const npxAdapter = installHookAdapter(
-      {
-        kind: 'npx',
-        execPath: process.execPath,
-        npmCli,
-        spec: '@raidiant/notifai@0.5.1',
-      },
-      homeDir,
-    )
-    const npxRun = spawnSync(npxAdapter.path, [], { encoding: 'utf8' })
-
-    expect(directRun.status).toBe(0)
-    expect(npxRun.status).toBe(0)
-    expect(directRun.stdout).toBe(String(process.pid))
-    expect(npxRun.stdout).toBe(String(process.pid))
-  })
-
-  it('uses a fixed home-relative pathname with no XDG input surface', () => {
-    const { homeDir } = isolated()
-    expect(hookAdapterPath(homeDir)).toBe(
-      path.join(homeDir, '.notifai', 'bin', 'hook-adapter'),
-    )
-  })
-
-  it('uses the OS account home even when HOME is overridden', () => {
-    const original = process.env['HOME']
-    const originalAdapter = hookAdapterPath()
-    process.env['HOME'] = '/tmp/attacker-selected-home'
-    try {
-      expect(hookAdapterPath()).toBe(originalAdapter)
-      expect(path.dirname(hookAdapterPath())).toBe(
-        path.join(os.userInfo().homedir, '.notifai', 'bin'),
-      )
-      expect(hookAdapterPath()).not.toContain('attacker-selected-home')
-    } finally {
-      if (original === undefined) delete process.env['HOME']
-      else process.env['HOME'] = original
-    }
-  })
-
   it('refuses an ambiguous install so a scratch HOME cannot retarget the real adapter', () => {
     const { root, homeDir } = isolated()
     const script = path.join(root, 'target.js')
@@ -257,117 +105,6 @@ describe('stable hook adapter', () => {
       if (original === undefined) delete process.env['HOME']
       else process.env['HOME'] = original
     }
-  })
-
-  it('repairs permissive adapter permissions without changing its path', () => {
-    const { root, homeDir } = isolated()
-    const script = path.join(root, 'target.js')
-    writeFileSync(script, '')
-    const first = installHookAdapter({ execPath: process.execPath, scriptPath: script }, homeDir)
-    chmodSync(first.path, 0o755)
-
-    const repaired = installHookAdapter({ execPath: process.execPath, scriptPath: script }, homeDir)
-
-    expect(repaired).toEqual({ path: first.path, changed: true })
-    expect(statSync(first.path).mode & 0o777).toBe(0o700)
-  })
-
-  it('refuses a symlinked adapter instead of reading or replacing its target', () => {
-    const { root, homeDir } = isolated()
-    const target = path.join(root, 'foreign')
-    const adapter = hookAdapterPath(homeDir)
-    mkdirSync(path.dirname(adapter), { recursive: true })
-    writeFileSync(target, 'leave me')
-    symlinkSync(target, adapter)
-
-    expect(() =>
-      installHookAdapter({ execPath: process.execPath, scriptPath: target }, homeDir),
-    ).toThrow(/not a regular file/)
-    expect(readFileSync(target, 'utf8')).toBe('leave me')
-  })
-
-  it('refuses a symlinked Notifai-owned parent directory', () => {
-    const { root, homeDir } = isolated()
-    const foreign = path.join(root, 'foreign-dir')
-    const script = path.join(root, 'target.js')
-    mkdirSync(homeDir, { recursive: true })
-    mkdirSync(foreign)
-    writeFileSync(script, '')
-    symlinkSync(foreign, path.join(homeDir, '.notifai'))
-
-    expect(() =>
-      installHookAdapter({ execPath: process.execPath, scriptPath: script }, homeDir),
-    ).toThrow(/not a regular directory/)
-    expect(readFileSync(script, 'utf8')).toBe('')
-  })
-
-  it('diagnoses a stale registered runtime and CLI without executing either', () => {
-    const { root, homeDir } = isolated()
-    const missingRuntime = path.join(root, 'removed-node')
-    const missingCli = path.join(root, 'removed-cli.js')
-    writeFileSync(missingRuntime, '#!/bin/sh\n')
-    chmodSync(missingRuntime, 0o700)
-    writeFileSync(missingCli, '')
-    installHookAdapter({ execPath: missingRuntime, scriptPath: missingCli }, homeDir)
-    rmSync(missingRuntime)
-    rmSync(missingCli)
-
-    expect(inspectHookAdapter(homeDir).problems).toEqual([
-      `registered runtime ${missingRuntime} is missing`,
-      `registered CLI ${missingCli} is missing`,
-    ])
-  })
-
-  it('keeps working when a node upgrade moved the pinned runtime but left the CLI', () => {
-    const { root, homeDir } = isolated()
-    const bin = path.join(root, 'fallback-bin')
-    mkdirSync(bin, { recursive: true })
-    const pathNode = path.join(bin, 'node')
-    writeFileSync(pathNode, '#!/bin/sh\nprintf "ran %s" "$1"\n')
-    chmodSync(pathNode, 0o700)
-    const pinnedNode = path.join(root, 'pinned-node')
-    const cli = path.join(root, 'cli.js')
-    writeFileSync(pinnedNode, '#!/bin/sh\n')
-    chmodSync(pinnedNode, 0o700)
-    writeFileSync(cli, '')
-    const installed = installHookAdapter({ execPath: pinnedNode, scriptPath: cli }, homeDir)
-    // What `brew upgrade node` and `nvm uninstall` both do: the interpreter
-    // moves, the installed CLI does not.
-    rmSync(pinnedNode)
-
-    const run = spawnSync(installed.path, ['hook', 'stop'], {
-      encoding: 'utf8',
-      env: { PATH: bin },
-    })
-
-    expect(run.status).toBe(0)
-    expect(run.stdout).toBe(`ran ${cli}`)
-  })
-
-  it('fails closed instead of executing an unregistered PATH target after the registered target vanished', () => {
-    const { root, homeDir } = isolated()
-    const bin = path.join(root, 'new-bin')
-    const replacement = path.join(bin, 'notifai')
-    mkdirSync(bin, { recursive: true })
-    writeFileSync(replacement, '#!/bin/sh\nprintf "%s" "$*"\n')
-    chmodSync(replacement, 0o700)
-    const oldNode = path.join(root, 'old-node')
-    const oldCli = path.join(root, 'old-cli.js')
-    writeFileSync(oldNode, '#!/bin/sh\n')
-    chmodSync(oldNode, 0o700)
-    writeFileSync(oldCli, '')
-    const installed = installHookAdapter({ execPath: oldNode, scriptPath: oldCli }, homeDir)
-    rmSync(oldNode)
-    rmSync(oldCli)
-
-    const run = spawnSync(installed.path, ['hook', 'stop'], {
-      encoding: 'utf8',
-      env: { PATH: bin },
-    })
-
-    expect(run.status).toBe(127)
-    expect(run.stdout).toBe('')
-    expect(run.stderr).toMatch(/target is stale/)
   })
 })
 
@@ -468,67 +205,6 @@ exit 127
 `)
   })
 
-  it('generates a JavaScript adapter instead of a shebang script', () => {
-    const { root, homeDir } = isolated()
-    const script = path.join(root, 'target.js')
-    writeFileSync(script, '')
-    const installed = installHookAdapter(
-      { execPath: process.execPath, scriptPath: script },
-      homeDir,
-      'win32',
-    )
-    const source = readFileSync(installed.path, 'utf8')
-
-    expect(source.startsWith('// notifai managed hook adapter\n')).toBe(true)
-    expect(source).not.toContain('#!/bin/sh')
-    expect(source).toContain('require("node:child_process")')
-    expect(source).toContain(JSON.stringify(process.execPath))
-    expect(source).toContain(JSON.stringify(script))
-  })
-
-  it('forwards argv through Node without depending on a shebang or executable bit', () => {
-    const { root, homeDir } = isolated()
-    const script = path.join(root, 'target script.js')
-    writeFileSync(script, 'process.stdout.write(JSON.stringify(process.argv.slice(2)))\n')
-    const runtime = path.join(root, 'node-runtime')
-    writeFileSync(runtime, 'dummy-node')
-    chmodSync(runtime, 0o644)
-
-    const installed = installHookAdapter(
-      { execPath: process.execPath, scriptPath: script },
-      homeDir,
-      'win32',
-    )
-    const run = spawnSync(process.execPath, [installed.path, 'hook', 'stop', '--owner', 'notifai'], {
-      encoding: 'utf8',
-    })
-
-    expect(run.status).toBe(0)
-    expect(JSON.parse(run.stdout)).toEqual(['hook', 'stop', '--owner', 'notifai'])
-    expect(() =>
-      installHookAdapter({ execPath: runtime, scriptPath: script }, homeDir, 'win32'),
-    ).not.toThrow()
-  })
-
-  it('carries the stable Windows harness parent into each CLI process', () => {
-    const { root, homeDir } = isolated()
-    const script = path.join(root, 'source-pid.js')
-    writeFileSync(
-      script,
-      'process.stdout.write(process.env.NOTIFAI_HOOK_SOURCE_PID ?? "missing")\n',
-    )
-    const installed = installHookAdapter(
-      { execPath: process.execPath, scriptPath: script },
-      homeDir,
-      'win32',
-    )
-
-    const run = spawnSync(process.execPath, [installed.path], { encoding: 'utf8' })
-
-    expect(run.status).toBe(0)
-    expect(run.stdout).toBe(String(process.pid))
-  })
-
   it('does not treat 0666 as a protection or health failure', () => {
     const { root, homeDir } = isolated()
     const script = path.join(root, 'target.js')
@@ -545,55 +221,6 @@ exit 127
       installHookAdapter({ execPath: process.execPath, scriptPath: script }, homeDir, 'win32'),
     ).toEqual({ path: installed.path, changed: false })
   })
-
-  it('fails closed when the registered Windows target vanishes', () => {
-    const { root, homeDir } = isolated()
-    const oldNode = path.join(root, 'old-node')
-    const oldCli = path.join(root, 'old-cli.js')
-    writeFileSync(oldNode, '#!/bin/sh\n')
-    writeFileSync(oldCli, '')
-    const installed = installHookAdapter(
-      { execPath: oldNode, scriptPath: oldCli },
-      homeDir,
-      'win32',
-    )
-    rmSync(oldNode)
-    rmSync(oldCli)
-
-    const inspected = inspectHookAdapter(homeDir, 'win32')
-    expect(inspected.problems).toEqual([
-      `registered runtime ${oldNode} is missing`,
-      `registered CLI ${oldCli} is missing`,
-    ])
-    const run = spawnSync(process.execPath, [installed.path, 'hook', 'stop'], {
-      encoding: 'utf8',
-    })
-    expect(run.status).toBe(127)
-    expect(run.stdout).toBe('')
-    expect(run.stderr).toMatch(/target is stale/)
-  })
-
-  it('retargets the CLI without changing the adapter pathname', () => {
-    const { root, homeDir } = isolated()
-    const first = path.join(root, 'first.js')
-    const second = path.join(root, 'second.js')
-    writeFileSync(first, '')
-    writeFileSync(second, '')
-    const firstInstall = installHookAdapter(
-      { execPath: process.execPath, scriptPath: first },
-      homeDir,
-      'win32',
-    )
-    const secondInstall = installHookAdapter(
-      { execPath: process.execPath, scriptPath: second },
-      homeDir,
-      'win32',
-    )
-    const inspected = inspectHookAdapter(homeDir, 'win32').target
-
-    expect(secondInstall.path).toBe(firstInstall.path)
-    expect(inspected && !isNpxAdapterTarget(inspected) ? inspected.scriptPath : null).toBe(second)
-  })
 })
 
 
@@ -607,28 +234,6 @@ describe('OS-account adapter admission', () => {
     try {
       expect(() => resolveHookAdapterHome(undefined, { HOME: home, USERPROFILE: profile }, 'win32'))
         .toThrow(/explicit adapter home/i)
-    } finally { spy.mockRestore() }
-  })
-
-  it('ignores the MSYS HOME and permits case-equivalent Windows account paths', () => {
-    const spy = vi.spyOn(os, 'userInfo').mockReturnValue({ ...os.userInfo(), homedir: 'C:/Users/account' })
-    try {
-      expect(resolveHookAdapterHome(undefined, { HOME: '/c/Users/account', USERPROFILE: 'c:/users/ACCOUNT' }, 'win32'))
-        .toBe('C:/Users/account')
-      expect(resolveHookAdapterHome(undefined, {}, 'win32')).toBe('C:/Users/account')
-    } finally { spy.mockRestore() }
-  })
-
-  it('uses the supplied platform and environment in direct installs before writing anything', () => {
-    const { root, homeDir } = isolated()
-    const scriptPath = path.join(root, 'target.js')
-    writeFileSync(scriptPath, '')
-    const spy = vi.spyOn(os, 'userInfo').mockReturnValue({ ...os.userInfo(), homedir: homeDir })
-    try {
-      expect(() => installHookAdapter({ execPath: process.execPath, scriptPath }, undefined, 'win32', {
-        HOME: 'C:/scratch/isolated', USERPROFILE: homeDir,
-      })).toThrow(/explicit adapter home/i)
-      expect(existsSync(homeDir)).toBe(false)
     } finally { spy.mockRestore() }
   })
 

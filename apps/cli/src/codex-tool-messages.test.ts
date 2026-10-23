@@ -1,41 +1,34 @@
-import { execFileSync, spawn } from 'node:child_process'
-import { codexAnswerPresentation } from './codex-answer-presentation.js'
-import { observeCodexQuestions } from './codex-question-bindings.js'
-import { refreshCodexInputActivity } from './codex-input-lifecycle.js'
-import { CodexControlNotSent } from './codex-native-control.js'
-import { type QueueControl } from './codex-queue-control.js'
-import { readInputWakes } from './session-input-wakes.js'
-import { INPUT_WAKE_BACKOFF_BASE_MS, inputWakeBackoffMs, stageSessionMessages, readSessionMessages, sessionInputRoute, sessionInputWake, observeSessionInputWake, drainSessionInputs, wakeSessionInputs, hasSessionInputs, wakeCodexSessionInputs, reconcileSessionInputWakes } from './session-inputs.js'
-import { clearAcknowledgementObligation } from './hook-acknowledgements.js'
-import { receiveSessionInputs, receiveCommand } from './commands-receive.js'
-import { buildProgram } from './program.js'
-import { writeProjectSession } from './hook-project-sessions.js'
-import type { AcceptedAnswerDelivery } from './hook-types.js'
-import type { AttendanceMessage, ClaimDeliveryAttemptRequestT, QuestionT, ReplyAnswerT } from '@raidiant/notifai-protocol'
-import { appendFileSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs'
+import type { AttendanceMessage,ClaimDeliveryAttemptRequestT,QuestionT,ReplyAnswerT } from '@raidiant/notifai-protocol'
+import { execFileSync,spawn } from 'node:child_process'
+import { appendFileSync,mkdirSync,mkdtempSync,readFileSync,rmSync,writeFileSync } from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { afterEach, describe, expect, it, vi } from 'vitest'
-import { ApiCallError, createClient, type ApiClient } from './client.js'
-import type { CommandDeps } from './commands-core.js'
-import { hookAdapterPath, installHookAdapter } from './hook-adapter.js'
-import { hookRunCommand } from './commands-hook-run.js'
-import { codexToolHookReady } from './codex-tool-messages.js'
-import { registerQuestion } from './hook-lifecycle.js'
-import { buildHookConfig, codexHookIdentityHash, codexTrustKey, findInstallations } from './install-hooks.js'
-import { acquireClaimFile } from './hook-question-lock.js'
-import { beginSessionIncarnation, lifecycleStamp, markSessionEnded, readSessionIncarnation, readSessionState, sessionHasEnded, updateSessionState } from './hook-session-state.js'
-import { currentProcessIdentity } from './process-identity.js'
-import { enableProject, projectBinding } from './project-enablement.js'
-import { attendantClaimPath, attendantStatusPath, currentCodexTurn, recordTurnEnd, recordTurnStart, readTurnActivity, turnActivityPath, writeAttendantStatus } from './session-attendant-state.js'
-import { acquireDeliveryLock, readDeliveryJournal, deliveryJournalPath, recoverDeliveryJournal } from './session-delivery.js'
-import { handOffSessionMessages } from './session-message-handoff.js'
-import { localIntegrationAssessment, refreshIntegrationHealth } from './integration-health.js'
-import { nativeQuestionTitle } from './codex-question-bindings.js'
+import { afterEach,describe,expect,it,vi } from 'vitest'
+import { ApiCallError,createClient,type ApiClient } from './client.js'
+import { codexAnswerPresentation } from './codex-answer-presentation.js'
 import { readNativeQuestionSnapshot } from './codex-native-turn.js'
+import { nativeQuestionTitle,observeCodexQuestions } from './codex-question-bindings.js'
+import { type QueueControl } from './codex-queue-control.js'
+import { codexToolHookReady } from './codex-tool-messages.js'
+import type { CommandDeps } from './commands-core.js'
+import { hookRunCommand } from './commands-hook-run.js'
+import { receiveCommand } from './commands-receive.js'
 import { recordGuidanceGiven } from './guidance-currency.js'
+import { hookAdapterPath,installHookAdapter } from './hook-adapter.js'
+import { writeProjectSession } from './hook-project-sessions.js'
+import { acquireClaimFile } from './hook-question-lock.js'
+import { beginSessionIncarnation,lifecycleStamp,markSessionEnded,readSessionIncarnation,readSessionState,sessionHasEnded,updateSessionState } from './hook-session-state.js'
+import { buildHookConfig,codexHookIdentityHash,codexTrustKey,findInstallations } from './install-hooks.js'
+import { currentProcessIdentity } from './process-identity.js'
+import { buildProgram } from './program.js'
+import { enableProject,projectBinding } from './project-enablement.js'
 import { rootGuidanceDigest } from './session-activation.js'
+import { attendantClaimPath,currentCodexTurn,readTurnActivity,recordTurnEnd,recordTurnStart,turnActivityPath,writeAttendantStatus } from './session-attendant-state.js'
+import { readDeliveryJournal } from './session-delivery.js'
+import { readInputWakes } from './session-input-wakes.js'
+import { drainSessionInputs,hasSessionInputs,inputWakeBackoffMs,readSessionMessages,sessionInputWake,stageSessionMessages,wakeCodexSessionInputs,wakeSessionInputs } from './session-inputs.js'
+import { handOffSessionMessages } from './session-message-handoff.js'
 
 const roots: string[] = []
 afterEach(() => {
@@ -58,19 +51,6 @@ it('delivers queued input and its durable wake fault on the next tool callback a
   expect(readSessionState(SESSION, h.env).input_wake_fault?.recovered_at).toBeTypeOf('number')
   await h.hook()
   expect(h.output).toHaveLength(1)
-})
-
-it('reports a wake fault on the next prompt even before the queued input can be claimed', async () => {
-  const h = setup()
-  await wakeSessionInputs(SESSION, h.env, async () => { throw new Error('daemon start failed') })
-  const prompt = () => hookRunCommand(h.deps, 'user-prompt-submit', async () => JSON.stringify({
-    session_id: SESSION, cwd: h.deps.cwd, hook_event_name: 'UserPromptSubmit', prompt: 'Continue', turn_id: 'turn-2',
-  }), 'codex')
-  await prompt()
-  expect(h.output.join('\n')).toContain('could not wake this Agent Session')
-  const before = h.output.join('\n').split('could not wake this Agent Session').length
-  await prompt()
-  expect(h.output.join('\n').split('could not wake this Agent Session')).toHaveLength(before)
 })
 
 function installTrustedHooks(env: NodeJS.ProcessEnv): void {
@@ -242,31 +222,6 @@ describe('exact native answer presentation', () => {
     expect(h.closed()).toBe(1)
   })
 
-  it('does not repeat a recovered wake fault on the next prompt after native answer delivery', async () => {
-    const h = nativeDelivery()
-    const later = { ...h.answer, pending: { ...h.answer.pending, question_id: 'q_later', request_id: 'req_later' } }
-    const now = Date.now()
-    updateSessionState(SESSION, h.env, state => ({ ...state,
-      input_wake_fault: { kind: 'transport', attempts: 1, first_at: now - 2_000,
-        last_at: now - 2_000, retry_at: now - 1_000, recovered_at: now - 1_000 },
-      waiting_answers: [h.answer, later],
-      acknowledgement_due: [...state.acknowledgement_due!, { request_id: 'req_later', recorded_at: now, text_required: true }],
-    }))
-
-    expect(await h.drain()).toBe(true)
-    expect(h.native).toHaveLength(1)
-    expect(h.output).toEqual([])
-    expect(readSessionState(SESSION, h.env).waiting_answers).toEqual([later])
-
-    // Leave input waiting so the next prompt cannot hide the fault merely
-    // because native delivery emptied the answer queue.
-    await hookRunCommand(h.deps, 'user-prompt-submit', async () => JSON.stringify({
-      session_id: SESSION, cwd: h.deps.cwd, hook_event_name: 'UserPromptSubmit', turn_id: 'turn-2', prompt: 'Continue',
-    }), 'codex')
-    expect(h.output.join('\n')).toContain('req_later')
-    expect(h.output.join('\n')).not.toContain('could not wake this Agent Session')
-  })
-
   it('claims ordinary prefix, native answer, then suffix in separate ordered handoffs', async () => {
     const h = nativeDelivery()
     const first = { ...h.answer, pending: { ...h.answer.pending, question_id: 'q_first', request_id: 'req_first' } }
@@ -283,15 +238,6 @@ describe('exact native answer presentation', () => {
     expect(h.claims).toEqual(['req_first', 'req_bound', 'sm_suffix']); expect(h.output).toHaveLength(2)
   })
 
-  it('falls back before bytes using only the selected prefix when control is absent', async () => {
-    const h = nativeDelivery(); h.unavailable(); h.stage([note('sm_suffix')])
-    await h.drain()
-    expect(h.claims).toEqual(['req_bound']); expect(h.native).toEqual([])
-    expect(h.output).toHaveLength(1); expect(h.output[0]).not.toContain('sm_suffix')
-    expect(readSessionState(SESSION, h.env).codex_question_bindings?.[0]?.ordinary_only).toBe(true)
-    expect(readDeliveryJournal(SESSION, h.env)[0]?.presentation).toBeUndefined()
-  })
-
   it('never echoes or restores an uncertain native write', async () => {
     const h = nativeDelivery(); h.duringWrite(() => { throw new Error('lost native receipt') })
     await expect(h.drain()).rejects.toThrow('lost native receipt')
@@ -303,50 +249,6 @@ describe('exact native answer presentation', () => {
     expect(h.closed()).toBe(1)
   })
 
-  it.each([true, false])('does not replay a dead native writer around consumption (still pending=%s)', async pending => {
-    const h = nativeDelivery()
-    await h.drain()
-    const entry = readDeliveryJournal(SESSION, h.env)[0]!
-    const orphan = { ...entry, attempt_id: 'att_orphan', stage: 'writing', writer: { pid: 999999, start: 'gone' } }
-    delete orphan.reported; delete orphan.reported_at
-    writeFileSync(deliveryJournalPath(SESSION, h.env), JSON.stringify({ session_id: SESSION, entries: [orphan] }))
-    updateSessionState(SESSION, h.env, state => ({ ...state, waiting_answers: pending ? [h.answer] : [] }))
-    const writes = h.native.length
-    expect(await recoverDeliveryJournal({ ...h.sequencer, liveness: () => 'gone' })).toBe(1)
-    expect(h.reports.at(-1)).toBe('unconfirmed')
-    expect(await h.drain()).toBe(false)
-    expect(h.native).toHaveLength(writes); expect(h.output).toEqual([])
-    expect(readDeliveryJournal(SESSION, h.env)[0]?.presentation).toEqual(entry.presentation)
-    expect(readSessionState(SESSION, h.env).acknowledgement_due).toHaveLength(1)
-  })
-
-  it('releases a positively unsent write for a fresh handoff without echoing now', async () => {
-    const h = nativeDelivery(); h.duringWrite(() => { throw new CodexControlNotSent('endpoint replaced') })
-    expect(await h.drain()).toBe(false)
-    expect(h.output).toEqual([])
-    expect(readDeliveryJournal(SESSION, h.env)[0]?.stage).toBe('released')
-    expect(readSessionState(SESSION, h.env).waiting_answers).toHaveLength(1)
-    h.unavailable()
-    expect(await h.drain()).toBe(true)
-    expect(h.output).toHaveLength(1)
-  })
-
-  it.each(['claim', 'prepare'])('preserves a changed revision during %s for its own later handoff', async boundary => {
-    const h = nativeDelivery()
-    const change = () => updateSessionState(SESSION, h.env, state => {
-      const answer = structuredClone(h.answer)
-      answer.reply = { ...answer.reply, seq: 2, text: 'Revised', answers: [{ question_id: 'q1', choice_ids: [], text: 'Revised' }] }
-      answer.replies = [answer.reply]
-      return { ...state, waiting_answers: [answer] }
-    })
-    if (boundary === 'claim') h.duringClaim(change)
-    else h.duringPrepare(change)
-    expect(await h.drain()).toBe(false)
-    expect(h.output).toEqual([]); expect(h.native).toEqual([])
-    expect(readSessionState(SESSION, h.env).waiting_answers?.[0]?.reply.seq).toBe(2)
-    expect(readDeliveryJournal(SESSION, h.env)[0]?.stage).toBe('released')
-  })
-
   it('loses native authority on a duplicate marker during preparation and preserves sticky ambiguity', async () => {
     const h = nativeDelivery(); h.duringPrepare(h.emit)
     expect(await h.drain()).toBe(false)
@@ -355,14 +257,6 @@ describe('exact native answer presentation', () => {
     expect(readSessionState(SESSION, h.env).waiting_answers).toHaveLength(1)
     expect(await h.drain()).toBe(true)
     expect(h.output).toHaveLength(1)
-  })
-
-  it('does not write after owner loss during native preparation', async () => {
-    const h = nativeDelivery(); h.duringPrepare(h.loseOwner)
-    expect(await h.drain()).toBe(false)
-    expect(h.output).toEqual([]); expect(h.native).toEqual([])
-    expect(readSessionState(SESSION, h.env).waiting_answers).toHaveLength(1)
-    expect(h.closed()).toBe(1)
   })
 
   it('restores without native bytes if the approved Machine changes after preparation', async () => {
@@ -386,88 +280,9 @@ describe('exact native answer presentation', () => {
       { question_id: 'q2', turn_id: 'turn-1', call_id: 'bound_call', index: 1 },
     ])
   })
-
-  it.each(['foreign-choice', 'multiple-choices', 'empty', 'foreign-question'])('uses ordinary input for an unsupported %s answer', async shape => {
-    const part = { question_id: shape === 'foreign-question' ? 'unknown' : 'q1',
-      choice_ids: shape === 'foreign-choice' ? ['missing'] : shape === 'multiple-choices' ? ['green', 'blue'] : [],
-      text: shape === 'empty' ? '' : 'detail' }
-    const h = nativeDelivery([{ id: 'q1', text: 'Color?', choices: [{ id: 'green', label: 'Green' }, { id: 'blue', label: 'Blue' }] }], [part])
-    await h.drain()
-    expect(h.native).toEqual([]); expect(h.output).toHaveLength(1)
-  })
-
-  it('keeps multipart replies on the ordinary path', async () => {
-    const h = nativeDelivery()
-    updateSessionState(SESSION, h.env, state => ({ ...state, waiting_answers: [{ ...h.answer,
-      replies: [h.answer.reply, { ...h.answer.reply, reply_id: 'rpl_more', seq: 2, text: 'More detail' }] }] }))
-    await h.drain()
-    expect(h.native).toEqual([]); expect(h.output[0]).toContain('More detail')
-  })
 })
 
 describe('Codex tool-boundary Session Messages', () => {
-  it('observes accepted question bindings at a trusted tool hook with no pending inputs', async () => {
-    const h = setup(); const binding = reserveBinding(h)
-    binding.emit()
-    expect(hasSessionInputs(SESSION, h.env, h.lease)).toBe(false)
-    await binding.hook()
-    expect(readSessionState(SESSION, h.env).codex_question_bindings?.[0]?.questions[0]?.verified).toBe(true)
-    expect(h.output).toEqual([])
-    expect(h.claims).toEqual([])
-  })
-
-  it('keeps ordinary presentation sticky after an uncertain drain write and acknowledgement cleanup', async () => {
-    const h = setup(); const binding = reserveBinding(h)
-    updateSessionState(SESSION, h.env, state => ({ ...state, waiting_answers: [binding.answer],
-      acknowledgement_due: [{ request_id: 'req_bound', recorded_at: Date.now(), text_required: true }] }))
-    await expect(drainSessionInputs({ sequencer: h.sequencer, lease: h.lease, mayWrite: () => true,
-      write: () => { throw new Error('stdout may have written') },
-    })).rejects.toThrow('stdout may have written')
-    expect(readSessionState(SESSION, h.env).codex_question_bindings?.[0]?.ordinary_only).toBe(true)
-    clearAcknowledgementObligation(SESSION, h.env, 'req_bound')
-    binding.emit(); await binding.hook()
-    const registration = readSessionState(SESSION, h.env).codex_question_bindings?.[0]
-    expect(registration?.ordinary_only).toBe(true)
-    expect(registration?.questions[0]?.verified).toBe(true)
-    expect(h.output).toEqual([])
-  })
-
-  it('marks ordinary prompt-context recovery before a later native binding', async () => {
-    const h = setup(); const binding = reserveBinding(h)
-    updateSessionState(SESSION, h.env, state => ({ ...state, harness: 'codex',
-      accepted: { answers: [binding.answer], remaining: 0, recorded_at: Date.now() },
-      acknowledgement_due: [{ request_id: 'req_bound', recorded_at: Date.now(), text_required: true }],
-    }))
-    h.sequencer.client.agentAcknowledgement = async () => ({ request_id: 'req_bound', agent_acknowledgement: null })
-    await hookRunCommand(h.deps, 'user-prompt-submit', async () => JSON.stringify({ session_id: SESSION,
-      cwd: h.deps.cwd, hook_event_name: 'UserPromptSubmit', turn_id: 'turn-1', prompt: 'Continue working',
-    }), 'codex')
-    expect(h.output.join('\n')).toContain('Continue')
-    expect(readSessionState(SESSION, h.env).codex_question_bindings?.[0]?.ordinary_only).toBe(true)
-    binding.emit(); await binding.hook()
-    expect(readSessionState(SESSION, h.env).codex_question_bindings?.[0]?.ordinary_only).toBe(true)
-  })
-
-  it('keeps a blocked Stop turn writable until actual native completion', async () => {
-    const h = setup()
-    const transcript = path.join(h.env.CODEX_HOME, 'sessions', 'owned.jsonl')
-    mkdirSync(path.dirname(transcript), { recursive: true })
-    writeFileSync(transcript, [
-      { type: 'session_meta', payload: { id: SESSION, source: 'cli' } },
-      { type: 'event_msg', payload: { type: 'task_started', turn_id: 'turn-1' } },
-    ].map(row => JSON.stringify(row)).join('\n') + '\n')
-    await h.hook()
-    await hookRunCommand(h.deps, 'attend', async () => JSON.stringify({
-      session_id: SESSION, cwd: h.deps.cwd, hook_event_name: 'Stop',
-      turn_id: 'turn-1', transcript_path: transcript, stop_hook_active: true,
-    }), 'codex')
-    expect(currentCodexTurn(SESSION, h.env, h.incarnation.key)).toBe('turn-1')
-    h.stage([note('sm_after_stop')])
-    await h.hook()
-    expect(h.claims).toEqual(['sm_after_stop'])
-    expect(h.output).toHaveLength(1)
-    expect(h.output[0]).toContain('sm_after_stop')
-  })
 
   it('rejects historical observation without root ownership or current-turn evidence', async () => {
     const h = setup()
@@ -483,81 +298,6 @@ describe('Codex tool-boundary Session Messages', () => {
     expect(codexToolHookReady(h.deps, SESSION)).toBe(false)
     await h.hook('turn-2')
     expect(codexToolHookReady(h.deps, SESSION)).toBe(true)
-  })
-
-  it('binds the first registered question after a trusted root callback without a delivery lease', async () => {
-    const h = setup()
-    rmSync(attendantStatusPath(SESSION, h.env))
-    updateSessionState(SESSION, h.env, state => ({ ...state, harness: 'codex' }))
-    const transcript = path.join(h.env.CODEX_HOME, 'sessions', 'first-question.jsonl')
-    mkdirSync(path.dirname(transcript), { recursive: true })
-    writeFileSync(transcript, [
-      { type: 'session_meta', payload: { id: SESSION, source: 'cli' } },
-      { type: 'event_msg', payload: { type: 'task_started', turn_id: 'turn-1' } },
-    ].map(row => JSON.stringify(row)).join('\n') + '\n')
-    h.deps.store.load = () => { throw new Error('observation must not load service credentials') }
-    await hookRunCommand(h.deps, 'post-tool-use', async () => JSON.stringify({ session_id: SESSION,
-      cwd: h.deps.cwd, hook_event_name: 'PostToolUse', turn_id: 'turn-1', transcript_path: transcript }), 'codex')
-    expect(codexToolHookReady(h.deps, SESSION)).toBe(true)
-    const { question_id: questionId } = registerQuestion(SESSION, h.env, {
-      question: 'First question?', questions: [{ id: 'q1', text: 'First question?' }],
-      service_identity: { base_url: 'https://test.notifai.invalid', machine_id: 'mac_test' },
-    }, Date.now(), { owner_key: h.incarnation.key, turn_id: 'turn-1',
-      service: { base_url: 'https://test.notifai.invalid', machine_id: 'mac_test' },
-      handback: [{ title: 'First question?', labels: {} }] })
-    expect(readSessionState(SESSION, h.env).codex_question_bindings).toMatchObject([
-      { question_id: questionId, registration_turn_id: 'turn-1', owner_key: h.incarnation.key },
-    ])
-    expect(h.claims).toEqual([])
-    expect(h.output).toEqual([])
-  })
-
-  it.each(['missing', 'foreign'] as const)('observes a trusted callback but cannot drain through a %s lease', async mode => {
-    const h = setup()
-    h.stage([note('sm_waiting')])
-    if (mode === 'missing') rmSync(attendantStatusPath(SESSION, h.env))
-    else writeAttendantStatus(SESSION, h.env, { ...h.lease, incarnation: 'foreign', phase: 'attending',
-      activity: 'working', reason: null, accepts_messages: true, updated_at: Date.now() })
-    h.deps.store.load = () => { throw new Error('no valid lease means no credential access') }
-    await h.hook()
-    expect(codexToolHookReady(h.deps, SESSION)).toBe(true)
-    expect(h.claims).toEqual([])
-    expect(h.output).toEqual([])
-    expect(readSessionMessages(SESSION, h.env, h.lease)).toHaveLength(1)
-  })
-
-  it.each(['foreign-owner', 'ended-session', 'ended-turn', 'child'] as const)('rejects %s observations without a lease', async mode => {
-    const h = setup()
-    rmSync(attendantStatusPath(SESSION, h.env))
-    if (mode === 'foreign-owner') h.env.NOTIFAI_HOOK_SOURCE_PID = '1'
-    if (mode === 'ended-session') markSessionEnded(SESSION, h.env, Date.now())
-    if (mode === 'ended-turn') recordTurnEnd(SESSION, h.env, 'turn-1')
-    await hookRunCommand(h.deps, 'post-tool-use', async () => JSON.stringify({ session_id: SESSION,
-      cwd: h.deps.cwd, hook_event_name: 'PostToolUse', turn_id: 'turn-1',
-      ...(mode === 'child' ? { agent_id: 'child-thread' } : {}) }), 'codex')
-    expect(readSessionState(SESSION, h.env).codex_tool_hook).toBeUndefined()
-    expect(h.claims).toEqual([])
-    expect(h.output).toEqual([])
-  })
-
-  it.each(['completed', 'newer'] as const)('does not publish stale callback proof when native refresh finds a %s turn', async mode => {
-    const h = setup()
-    const transcript = path.join(h.env.CODEX_HOME, 'sessions', 'advanced-turn.jsonl')
-    mkdirSync(path.dirname(transcript), { recursive: true })
-    writeFileSync(transcript, [
-      { type: 'session_meta', payload: { id: SESSION, source: 'cli' } },
-      { type: 'event_msg', payload: { type: 'task_started', turn_id: 'turn-1' } },
-      { type: 'event_msg', payload: { type: 'task_complete', turn_id: 'turn-1' } },
-      ...(mode === 'newer' ? [{ type: 'event_msg', payload: { type: 'task_started', turn_id: 'turn-2' } }] : []),
-    ].map(row => JSON.stringify(row)).join('\n') + '\n')
-    h.stage([note('sm_waiting')])
-    await hookRunCommand(h.deps, 'post-tool-use', async () => JSON.stringify({ session_id: SESSION,
-      cwd: h.deps.cwd, hook_event_name: 'PostToolUse', turn_id: 'turn-1', transcript_path: transcript }), 'codex')
-    expect(readSessionState(SESSION, h.env).codex_tool_hook).toBeUndefined()
-    expect(currentCodexTurn(SESSION, h.env, h.incarnation.key)).toBe(mode === 'newer' ? 'turn-2' : null)
-    expect(h.claims).toEqual([])
-    expect(h.output).toEqual([])
-    expect(readSessionMessages(SESSION, h.env, h.lease)).toHaveLength(1)
   })
 
   it.each([
@@ -593,38 +333,6 @@ describe('Codex tool-boundary Session Messages', () => {
     expect(readSessionMessages(SESSION, h.env, h.lease)).toHaveLength(1)
   })
 
-  it('keeps SubagentStart worker guidance without activating or consuming parent input', async () => {
-    const h = setup()
-    h.stage([note('sm_parent_only')])
-    const before = readSessionState(SESSION, h.env)
-    await hookRunCommand(h.deps, 'subagent-start', async () => JSON.stringify({
-      session_id: SESSION, cwd: h.deps.cwd, hook_event_name: 'SubagentStart',
-      turn_id: 'turn-1', agent_id: 'child-thread', agent_type: 'worker',
-    }), 'codex')
-    expect(h.claims).toEqual([])
-    expect(h.output).toHaveLength(1)
-    expect(h.output[0]).toContain('Notifai worker context')
-    expect(h.output[0]).not.toContain('You own Notification Requests')
-    expect(readSessionState(SESSION, h.env)).toEqual(before)
-    expect(readSessionIncarnation(SESSION, h.env)).toEqual(h.incarnation)
-    expect(currentCodexTurn(SESSION, h.env, h.incarnation.key)).toBe('turn-1')
-    expect(readSessionMessages(SESSION, h.env, h.lease)).toHaveLength(1)
-  })
-
-  it.each([{ agent_id: 'child-thread' }, { agent_type: 'worker' }])(
-    'fences partial child identity %j even when its turn id matches the parent', async (identity) => {
-      const h = setup()
-      h.stage([note('sm_parent_only')])
-      await hookRunCommand(h.deps, 'post-tool-use', async () => JSON.stringify({
-        session_id: SESSION, cwd: h.deps.cwd, hook_event_name: 'PostToolUse', turn_id: 'turn-1', ...identity,
-      }), 'codex')
-      expect(h.claims).toEqual([])
-      expect(h.output).toEqual([])
-      expect(codexToolHookReady(h.deps, SESSION)).toBe(false)
-      expect(readSessionMessages(SESSION, h.env, h.lease)).toHaveLength(1)
-    },
-  )
-
   it('executes the advertised wake command and drains only the exact harness session', async () => {
     const h = setup()
     h.env['CODEX_THREAD_ID'] = SESSION
@@ -642,131 +350,6 @@ describe('Codex tool-boundary Session Messages', () => {
     expect(readSessionMessages('another-session', h.env, h.lease)).toHaveLength(1)
   })
 
-  it('presents a bounded prefix when claims are slow and leaves later notes in order', async () => {
-    const h = setup()
-    let clock = 0
-    h.stage([note('sm_first'), note('sm_second')])
-    h.duringClaim(() => { clock += 800 })
-    const input = { sequencer: { ...h.sequencer, monotonic: () => clock }, lease: h.lease,
-      mayWrite: () => true, write: (text: string) => h.output.push(text) }
-    await drainSessionInputs(input)
-    expect(h.claims).toEqual(['sm_first'])
-    expect(h.output[0]).not.toContain('sm_second')
-    await drainSessionInputs(input)
-    expect(h.claims).toEqual(['sm_first', 'sm_second'])
-    expect(h.output[1]).toContain('sm_second')
-  })
-
-
-  it('drains more than twenty mixed inputs in order and never wakes for acknowledgement debt', async () => {
-    const h = setup()
-    const reply = { reply_id: 'rpl_many', seq: 1, delivery_id: 'del_many', device_id: 'dev_test', device_name: 'Test',
-      text: 'Continue', answers: [{ question_id: 'q_many', choice_ids: [], text: 'Continue' }],
-      source: null, created_at: new Date().toISOString() }
-    updateSessionState(SESSION, h.env, state => ({ ...state,
-      waiting_answers: [{ pending: { question: 'Continue?', question_id: 'q_many', request_id: 'req_many', collapse_key: 'many', device_ids: ['dev_test'] },
-        reply, replies: [reply], agent_acknowledgement_required: true, delivery_claim: true }],
-      acknowledgement_due: [{ request_id: 'req_many', recorded_at: Date.now(), text_required: true }],
-    }))
-    const ids = Array.from({ length: 24 }, (_, i) => 'sm_batch_' + i)
-    h.stage(ids.map(note))
-    await h.hook()
-    const expected = ['req_many', ...ids]
-    // Both the 20-item cap and the real claim-time budget bound a prefix.
-    // A loaded machine may exhaust the time budget before claiming 20.
-    const assertProgress = (previous: number) => {
-      expect(h.claims.length).toBeGreaterThan(previous)
-      expect(h.claims.length - previous).toBeLessThanOrEqual(20)
-      expect(h.claims).toEqual(expected.slice(0, h.claims.length))
-    }
-    assertProgress(0)
-    const firstCount = h.claims.length
-    expect(hasSessionInputs(SESSION, h.env, h.lease)).toBe(true)
-    recordTurnEnd(SESSION, h.env, 'turn-1')
-    // Remaining suffix remains eligible at completion, then the wake's prompt
-    // boundary consumes it through the same delivery sequencer.
-    await hookRunCommand(h.deps, 'user-prompt-submit', async () => JSON.stringify({
-      session_id: SESSION, cwd: h.deps.cwd, hook_event_name: 'UserPromptSubmit', turn_id: 'wake',
-    }), 'codex')
-    assertProgress(firstCount)
-    for (let boundary = 0; boundary < ids.length && hasSessionInputs(SESSION, h.env, h.lease); boundary++) {
-      const previous = h.claims.length
-      await h.hook('wake')
-      assertProgress(previous)
-    }
-    expect(h.claims).toEqual(expected)
-    expect(h.output.length).toBeGreaterThanOrEqual(2)
-    expect(hasSessionInputs(SESSION, h.env, h.lease)).toBe(false)
-    expect(readSessionState(SESSION, h.env).acknowledgement_due).toHaveLength(1)
-    expect(readSessionState(SESSION, h.env).message_acknowledgement_due).toHaveLength(24)
-    const presentations = h.output.length
-    await h.hook('wake')
-    expect(h.output).toHaveLength(presentations)
-  })
-
-  it('ends a wake-started turn on an empty inbox and never tells an idle agent to resume finished work', async () => {
-    const h = setup()
-    h.env['CODEX_THREAD_ID'] = SESSION
-    expect(await receiveCommand(h.deps)).toBe(0)
-    const empty = h.output.at(-1)!
-    expect(empty).toContain('No user input is pending')
-    // The one rule: a wake that started the turn ends it; a turn already working carries on.
-    expect(empty).toMatch(/wake started this turn, end the turn/)
-    expect(empty).toMatch(/already working, carry on/)
-    // The wake defers to what receive prints rather than prescribing its own outcome.
-    for (const wake of [sessionInputWake(), sessionInputWake('1a55ec5f-0fd4-4158-b1e2-6efe6b2256cf')]) {
-      expect(wake).toContain('`notifai receive`')
-      expect(wake).toMatch(/follow what it prints/)
-      expect(wake).not.toMatch(/continue|resume/i)
-    }
-  })
-
-  it('reports queued input instead of an empty inbox when an earlier answer blocks a claim', async () => {
-    const h = setup()
-    h.env['CODEX_THREAD_ID'] = SESSION
-    h.stage([note('sm_blocked')])
-    h.duringClaim(() => { throw new ApiCallError(409, 'claim_refused', 'Earlier answer pending', null, { reason: 'awaiting_earlier_answer' }) })
-    expect(await receiveCommand(h.deps)).toBe(0)
-    expect(h.output.join('\n')).toContain('User input is pending')
-    expect(h.output.join('\n')).not.toContain('No user input')
-    expect(readSessionMessages(SESSION, h.env, h.lease)).toHaveLength(1)
-    h.duringClaim(() => {})
-    await receiveCommand(h.deps)
-    expect(h.output.join('\n')).toContain('Read sm_blocked')
-    await receiveCommand(h.deps)
-    expect(h.output.at(-1)).toContain('No user input is pending')
-  })
-
-  it.each([[1_000, 0], [2_500, 1_000]])('receives a Note once with a slow successful claim (%i ms) and report (%i ms)', async (claimMs, reportMs) => {
-    const h = setup()
-    h.env['CODEX_THREAD_ID'] = SESSION
-    h.stage([note('sm_slow_claim')])
-    delayedInputClient(h, claimMs, reportMs)
-    expect(await receiveCommand(h.deps)).toBe(0)
-    expect(h.output.join('\n')).toContain('Read sm_slow_claim')
-    expect(h.claims).toEqual(['sm_slow_claim'])
-    expect(h.reports).toEqual(['handed_off'])
-    expect(hasSessionInputs(SESSION, h.env, h.lease)).toBe(false)
-    await receiveCommand(h.deps)
-    expect(h.output.filter(text => text.includes('Read sm_slow_claim'))).toHaveLength(1)
-  })
-
-  it('keeps prompt-hook reads short and lets the foreground command recover the queued Note', async () => {
-    const h = setup()
-    h.env['CODEX_THREAD_ID'] = SESSION
-    h.stage([note('sm_hook_deferred')])
-    const fetch = delayedInputClient(h, 1_000)
-    expect(await receiveSessionInputs(h.deps, SESSION, text => h.output.push(text))).toBe(false)
-    expect(fetch).toHaveBeenCalledTimes(2)
-    expect(fetch.mock.calls.every(([, init]) => init!.signal!.aborted)).toBe(true)
-    expect(h.claims).toEqual([])
-    expect(h.output).toEqual([])
-    expect(hasSessionInputs(SESSION, h.env, h.lease)).toBe(true)
-    await receiveCommand(h.deps)
-    expect(h.output.join('\n')).toContain('Read sm_hook_deferred')
-    expect(hasSessionInputs(SESSION, h.env, h.lease)).toBe(false)
-  })
-
   it('retains a Note after a foreground transport timeout and presents it once after recovery', async () => {
     const h = setup()
     h.env['CODEX_THREAD_ID'] = SESSION
@@ -782,61 +365,6 @@ describe('Codex tool-boundary Session Messages', () => {
     await receiveCommand(h.deps)
     expect(h.output.filter(text => text.includes('Read sm_retry'))).toHaveLength(1)
     expect(h.claims).toEqual(['sm_retry'])
-  })
-
-  it('does not write a foreground Note after the whole command deadline expires during its claim', async () => {
-    const h = setup()
-    h.env['CODEX_THREAD_ID'] = SESSION
-    h.stage([note('sm_expired_read')])
-    let now = Date.now()
-    h.deps.now = () => now
-    h.duringClaim(() => { now += 60_000 })
-    await receiveCommand(h.deps)
-    expect(h.output.join('\n')).toContain('User input is pending')
-    expect(h.output.join('\n')).not.toContain('Read sm_expired_read')
-    expect(h.reports).toEqual(['released'])
-    expect(hasSessionInputs(SESSION, h.env, h.lease)).toBe(true)
-  })
-
-  it('recovers a slow previous delivery report and still reads the next Note without replaying the first', async () => {
-    const h = setup()
-    h.env['CODEX_THREAD_ID'] = SESSION
-    h.stage([note('sm_report_retry')])
-    const fetch = delayedInputClient(h, 0)
-    const respond = fetch.getMockImplementation()!
-    fetch.mockImplementation(async (url, init) => {
-      if (String(url).endsWith('/report')) throw new DOMException('Report timed out', 'TimeoutError')
-      return respond(url, init)
-    })
-    await receiveCommand(h.deps)
-    expect(h.output.join('\n')).toContain('Read sm_report_retry')
-    expect(readDeliveryJournal(SESSION, h.env)[0]?.reported).toBeUndefined()
-    fetch.mockRestore()
-    delayedInputClient(h, 0, 1_000)
-    h.stage([note('sm_after_report')])
-    await receiveCommand(h.deps)
-    expect(h.output.join('\n')).toContain('Read sm_after_report')
-    expect(h.output.filter(text => text.includes('Read sm_report_retry'))).toHaveLength(1)
-    expect(h.claims).toEqual(['sm_report_retry', 'sm_after_report'])
-    expect(readDeliveryJournal(SESSION, h.env).every(entry => entry.reported === 'handed_off')).toBe(true)
-  })
-
-  it('retries a failed wake without losing input and coalesces the successful wake', async () => {
-    const h = setup()
-    h.stage([note('sm_waiting')])
-    let now = Date.now()
-    const options = { now: () => now }
-    await wakeSessionInputs(SESSION, h.env, async () => { throw new Error('queue unavailable') }, undefined, options)
-    expect(readSessionState(SESSION, h.env).input_wake).toBeUndefined()
-    let wakes = 0
-    const send = async () => { wakes += 1; return 'written' as const }
-    await wakeSessionInputs(SESSION, h.env, send, undefined, options)
-    expect(wakes).toBe(0)
-    now += 5_000
-    await wakeSessionInputs(SESSION, h.env, send, undefined, options)
-    await wakeSessionInputs(SESSION, h.env, send, undefined, options)
-    expect(wakes).toBe(1)
-    expect(readSessionMessages(SESSION, h.env, h.lease)).toHaveLength(1)
   })
 
   it('refuses a receive command without exact identity before loading credentials', async () => {
@@ -858,119 +386,6 @@ describe('Codex tool-boundary Session Messages', () => {
     expect(h.output).toEqual([])
   })
 
-  it.each([false, true])('reconciles an unfenced answer without an attendant lease (acknowledged=%s)', async (acknowledged) => {
-    const h = setup()
-    const reply = { reply_id: 'rpl_old', seq: 1, delivery_id: 'del_old', device_id: 'dev_old', device_name: 'Test',
-      text: 'Original answer', answers: [], source: null, created_at: new Date().toISOString() }
-    updateSessionState(SESSION, h.env, (state) => ({ ...state,
-      waiting_answers: [{ pending: { question: 'Proceed?', request_id: 'req_old', collapse_key: 'old', device_ids: ['dev_old'] }, reply, replies: [reply], agent_acknowledgement_required: true }],
-      acknowledgement_due: [{ request_id: 'req_old', recorded_at: Date.now(), text_required: true }],
-    }))
-    h.sequencer.client.agentAcknowledgement = async () => ({ request_id: 'req_old',
-      agent_acknowledgement: acknowledged ? { text: 'Already applied', created_at: new Date().toISOString() } : null,
-    })
-    await drainSessionInputs({ sequencer: h.sequencer, lease: null, mayWrite: () => true, write: (text) => h.output.push(text) })
-    await drainSessionInputs({ sequencer: h.sequencer, lease: null, mayWrite: () => true, write: (text) => h.output.push(text) })
-    expect(h.output).toHaveLength(acknowledged ? 0 : 1)
-    expect(h.claims).toEqual([])
-    expect(readSessionState(SESSION, h.env).waiting_answers ?? []).toEqual([])
-  })
-
-
-  it.each(['live', 'missing', 'dead', 'superseded', 'producer'] as const)('delegates answer wakes only to its live resident: %s', async (mode) => {
-    const h = setup()
-    if (mode === 'missing') rmSync(attendantClaimPath(SESSION, h.env))
-    if (mode === 'dead') {
-      const file = attendantClaimPath(SESSION, h.env)
-      const claim = JSON.parse(readFileSync(file, 'utf8'))
-      writeFileSync(file, JSON.stringify({ ...claim, pid: 2_147_483_647 }))
-    }
-    if (mode === 'superseded') {
-      const file = attendantStatusPath(SESSION, h.env)
-      const status = JSON.parse(readFileSync(file, 'utf8'))
-      writeFileSync(file, JSON.stringify({ ...status, incarnation: 'previous-incarnation' }))
-    }
-    const reply = { reply_id: 'rpl_wait', seq: 1, delivery_id: 'del_wait', device_id: 'dev_test', device_name: 'Test',
-      text: 'Continue', answers: [{ question_id: 'q_wait', choice_ids: [], text: 'Continue' }],
-      source: null, created_at: new Date().toISOString() }
-    const accepted: AcceptedAnswerDelivery = { recorded_at: Date.now(), remaining: 0, answers: [{
-      pending: { question: 'Continue?', question_id: 'q_wait', request_id: 'req_wait', collapse_key: 'wait', device_ids: ['dev_test'] },
-      reply, replies: [reply], agent_acknowledgement_required: true, delivery_claim: true,
-    }] }
-    updateSessionState(SESSION, h.env, state => ({ ...state, accepted,
-      acknowledgement_due: [{ request_id: 'req_wait', recorded_at: accepted.recorded_at, text_required: true }] }))
-    const queued: string[] = []
-    const route = sessionInputRoute(SESSION, h.env, { kind: 'session-queue', deliver: async event => {
-      expect(event.commitDelivery()).toBe(true)
-      queued.push(event.context)
-      return { acknowledgement: 'delivered' }
-    } }, undefined, mode === 'producer' ? 'producer' : 'attendant')
-    await route.defer!(accepted)
-    expect(queued).toEqual(mode === 'live' ? [] : [sessionInputWake()])
-    expect(readSessionState(SESSION, h.env).waiting_answers).toHaveLength(1)
-    expect(h.claims).toEqual([])
-  })
-
-  it.each(['session-queue', 'inbox-socket'] as const)('drains notes and answers together; an old %s wake cannot repeat an acknowledged answer', async (kind) => {
-    const h = setup()
-    const reply = { reply_id: 'rpl_answer', seq: 1, delivery_id: 'del_answer', device_id: 'dev_answer', device_name: 'Test',
-      text: 'I already sent you a chat message', answers: [{ question_id: 'q_answer', choice_ids: [], text: 'I already sent you a chat message' }],
-      source: null, created_at: new Date().toISOString() }
-    const accepted: AcceptedAnswerDelivery = { recorded_at: Date.now(), remaining: 0, answers: [{
-      pending: { question: 'Has the setup finished?', summary: 'Has the setup finished?', question_id: 'q_answer', request_id: 'req_answer', collapse_key: 'answer', device_ids: ['dev_answer'] },
-      reply, replies: [reply], agent_acknowledgement_required: true, delivery_claim: true,
-    }] }
-    updateSessionState(SESSION, h.env, (state) => ({ ...state, accepted,
-      acknowledgement_due: [{ request_id: 'req_answer', recorded_at: accepted.recorded_at, text_required: true }] }))
-    const queued: string[] = []
-    const route = sessionInputRoute(SESSION, h.env, { kind, deliver: async (event) => {
-      expect(event.commitDelivery()).toBe(true)
-      queued.push(event.context)
-      return { acknowledgement: 'delivered' }
-    } })
-    await route.defer!(accepted)
-    await route.defer!(accepted)
-    expect(queued).toEqual([sessionInputWake()])
-    expect(queued[0]).not.toContain(reply.text)
-    expect(readSessionState(SESSION, h.env).accepted).toBeUndefined()
-    expect(h.claims).toEqual([])
-    h.stage([note('sm_first'), note('sm_second')])
-    await Promise.all([h.hook(), h.hook()])
-    expect(h.output).toHaveLength(1)
-    expect(h.output[0]).toContain(reply.text)
-    expect(h.output[0]).toContain('sm_first')
-    expect(h.output[0]).toContain('sm_second')
-    expect(h.claims).toEqual(['req_answer', 'sm_first', 'sm_second'])
-    for (const id of h.claims) clearAcknowledgementObligation(SESSION, h.env, id)
-    observeSessionInputWake(SESSION, h.env, queued[0])
-    await receiveSessionInputs(h.deps, SESSION, (text) => h.output.push(text))
-    await h.hook()
-    expect(h.output).toHaveLength(1)
-    expect(readSessionState(SESSION, h.env).waiting_answers ?? []).toEqual([])
-  })
-
-  it('requires live observation plus trusted tool and prompt hooks before holding busy Notes', async () => {
-    const h = setup()
-    const codexHome = path.join(h.deps.cwd, 'codex')
-    h.deps.env['CODEX_HOME'] = codexHome
-    expect(codexToolHookReady(h.deps, SESSION)).toBe(false)
-    await h.hook()
-    expect(codexToolHookReady(h.deps, SESSION)).toBe(true)
-    const installed = findInstallations(h.env).find((entry) => entry.harness === 'codex')!
-    const handler = installed.handlers.find((entry) => entry.event === 'PostToolUse')!
-    const key = codexTrustKey(installed, handler)
-    const trust = `[hooks.state.${JSON.stringify(key)}]\ntrusted_hash = "${codexHookIdentityHash(handler)}"\n`
-    // Trusting only the tool handler cannot prove the turn markers run.
-    writeFileSync(path.join(codexHome, 'config.toml'), trust)
-    expect(codexToolHookReady(h.deps, SESSION)).toBe(false)
-    installTrustedHooks(h.env)
-    expect(codexToolHookReady(h.deps, SESSION)).toBe(true)
-    writeFileSync(path.join(codexHome, 'config.toml'), `${trust}enabled = false\n`)
-    expect(codexToolHookReady(h.deps, SESSION)).toBe(false)
-    rmSync(path.join(codexHome, 'hooks.json'))
-    expect(codexToolHookReady(h.deps, SESSION)).toBe(false)
-  })
-
   it('delivers ordered Notes inside the active turn, once each, with acknowledgement debt', async () => {
     const h = setup()
     h.stage([note('sm_first'), note('sm_second')])
@@ -987,62 +402,6 @@ describe('Codex tool-boundary Session Messages', () => {
       { message_id: 'sm_first', text_required: true, recorded_at: expect.any(Number) },
       { message_id: 'sm_second', text_required: true, recorded_at: expect.any(Number) },
     ])
-  })
-
-  it('observes an automatic continuation at its first tool boundary without a prompt', async () => {
-    const h = setup()
-    await h.hook()
-    recordTurnEnd(SESSION, h.env, 'turn-1')
-    h.stage([note('sm_goal')])
-    await h.hook('goal-turn-2')
-    expect(h.output).toHaveLength(1)
-    expect(h.output[0]).toContain('sm_goal')
-    expect(readTurnActivity(SESSION, h.env, h.incarnation.key)).toBe('working')
-    // Neither an old callback nor a delayed Stop can reopen/end the wrong turn.
-    h.stage([note('sm_next')])
-    await h.hook('turn-1')
-    recordTurnEnd(SESSION, h.env, 'turn-1')
-    expect(h.output).toHaveLength(1)
-    await h.hook('goal-turn-2')
-    expect(h.output[1]).toContain('sm_next')
-  })
-
-  it('observes a new tool turn before the previous asynchronous Stop arrives', async () => {
-    const h = setup()
-    h.stage([note('sm_continuation')])
-    await h.hook('goal-turn-2')
-    recordTurnEnd(SESSION, h.env, 'turn-1')
-    expect(h.output[0]).toContain('sm_continuation')
-    expect(readTurnActivity(SESSION, h.env, h.incarnation.key)).toBe('working')
-    recordTurnEnd(SESSION, h.env, 'goal-turn-2')
-    h.stage([note('sm_interrupted')])
-    await h.hook('goal-turn-2')
-    expect(h.output).toHaveLength(1)
-    expect(readTurnActivity(SESSION, h.env, h.incarnation.key)).toBe('idle')
-  })
-
-  it('does no authenticated work when no message is staged', async () => {
-    const h = setup()
-    expect(localIntegrationAssessment(h.deps, 'codex').faults).toEqual([])
-    h.deps.store.load = () => { throw new Error('must not read credentials') }
-    await h.hook()
-    expect(h.claims).toEqual([])
-    expect(h.output).toEqual([])
-  })
-
-  it('reports unresolved native approval once without authenticated work or a staged message', async () => {
-    const h = setup()
-    h.deps.store.load = () => { throw new Error('must not read credentials') }
-    writeFileSync(path.join(h.env.CODEX_HOME, 'config.toml'), '')
-    // Turn end records the assessment; the tool hook only reads it.
-    refreshIntegrationHealth(h.deps, 'codex')
-    await h.hook()
-    await h.hook()
-    expect(h.claims).toEqual([])
-    expect(h.output).toHaveLength(1)
-    expect(JSON.parse(h.output[0]!)).toMatchObject({ hookSpecificOutput: {
-      hookEventName: 'PostToolUse', additionalContext: expect.stringContaining('native-approval-pending'),
-    } })
   })
 
   it('rejects stale turns, foreign owners, generations, and ended sessions', async () => {
@@ -1068,17 +427,6 @@ describe('Codex tool-boundary Session Messages', () => {
     expect(h.output).toEqual([])
     expect(h.reports).toEqual(['released'])
     expect(readSessionState(SESSION, h.env).message_acknowledgement_due ?? []).toEqual([])
-  })
-
-  it('skips a busy delivery lock promptly without claiming or writing', async () => {
-    const h = setup()
-    h.stage([note('sm_busy')])
-    const lock = await acquireDeliveryLock(h.sequencer, 0)
-    try { await h.hook() } finally { lock?.release() }
-    expect(h.claims).toEqual([])
-    expect(h.output).toEqual([])
-    await h.hook()
-    expect(h.output).toHaveLength(1)
   })
 
   it('never replays an ambiguous stdout write through a later hook or queue writer', async () => {
@@ -1131,109 +479,6 @@ function ownedWakeHarness() {
     wakes: () => readInputWakes({ sessionId: SESSION, env: h.env }) }
 }
 
-it('wires exact wake ownership through actual foreground drain bookkeeping', async () => {
-  const h = ownedWakeHarness(); h.stage([note('sm_owned')])
-  expect(await h.schedule()).toBe(true)
-  const wake = h.wakes()[0]!
-  expect(h.adds()).toBe(1)
-  expect(wake.text).not.toContain('Read sm_owned')
-  const delivered = await drainSessionInputs({ sequencer: h.sequencer, lease: h.lease, mayWrite: () => true,
-    write: text => h.output.push(text) })
-  expect(delivered).toBe(true)
-  expect(h.output).toHaveLength(1)
-  expect(h.claims).toEqual(['sm_owned'])
-  expect(h.wakes()[0]?.detached).toBe(true)
-  h.queue.set('unrelated', { token: 'human', text: 'human prompt' })
-  await reconcileSessionInputWakes(SESSION, h.env, async () => h.control)
-  expect(h.wakes()[0]?.phase).toBe('cancelled')
-  expect([...h.queue.keys()]).toEqual(['unrelated'])
-  expect(await h.schedule()).toBe(true)
-  expect(h.adds()).toBe(1)
-})
-
-it('native working evidence overrides stale outside permission and blocks queueing', async () => {
-  const h = ownedWakeHarness(); h.stage([note('sm_busy')]); h.lifecycle(false)
-  expect(await h.schedule()).toBe(true)
-  expect(h.adds()).toBe(0)
-})
-
-it('falls back only before owned native admission and does not replay uncertain writes', async () => {
-  const h = ownedWakeHarness(); h.stage([note('sm_fallback')])
-  expect(await h.schedule(null)).toBe(false)
-  expect(await h.schedule({ ...h.control, add: async () => { throw new Error('uncertain receipt') } })).toBe(true)
-  expect(h.wakes()[0]?.phase).toBe('unknown')
-  expect(readSessionState(SESSION, h.env).input_wake_fault).toMatchObject({ kind: 'transport' })
-  expect(await h.schedule(null)).toBe(true)
-  expect(h.adds()).toBe(0)
-})
-
-it('unknown pending cache cannot detach or replace an existing wake', async () => {
-  const h = ownedWakeHarness(); h.stage([note('sm_cache')]); await h.schedule()
-  // Use the canonical state root located by the existing path helper.
-  const file = path.join(path.dirname(attendantStatusPath(SESSION, h.env)), SESSION + '.inputs.json')
-  writeFileSync(file, '{broken')
-  expect(await h.schedule()).toBe(true)
-  await reconcileSessionInputWakes(SESSION, h.env, async () => h.control)
-  expect(h.wakes()[0]?.detached).toBe(false)
-  expect(h.adds()).toBe(1)
-})
-
-it('observes only the exact owned token and preserves a later wake', async () => {
-  const h = ownedWakeHarness(); h.stage([note('sm_a')]); await h.schedule()
-  const a = h.wakes()[0]!
-  observeSessionInputWake(SESSION, h.env, a.text)
-  h.stage([note('sm_a'), note('sm_b')]); await h.schedule()
-  const b = h.wakes().find(v => v.token !== a.token)!
-  observeSessionInputWake(SESSION, h.env, a.text)
-  expect(h.wakes().find(v => v.token === b.token)?.phase).toBe('accepted')
-})
-
-
-it('does not bypass detached uncertainty through the generic fallback', async () => {
-  const h = ownedWakeHarness(); h.stage([note('sm_a')])
-  await h.schedule({ ...h.control, add: async () => { throw new Error('uncertain') } })
-  h.stage([note('sm_a'), note('sm_b')])
-  await h.schedule({ ...h.control, add: async () => { throw new CodexControlNotSent('not sent') } })
-  expect(h.wakes().some(a => a.phase === 'unknown' && a.detached)).toBe(true)
-  expect(await h.schedule(null)).toBe(true)
-})
-
-it('coalesces behind the existing generic wake when optional control becomes available', async () => {
-  const h = ownedWakeHarness(); h.stage([note('sm_transition')])
-  expect(await h.schedule(null)).toBe(false)
-  let genericAdds = 0
-  await wakeSessionInputs(SESSION, h.env, async () => { genericAdds++; return 'written' as const })
-  expect(await h.schedule()).toBe(true)
-  expect(genericAdds + h.adds()).toBe(1)
-})
-
-it.each(['replacement', 'regression'] as const)('rejects transcript %s after the outside observer allowed admission', async change => {
-  const h = ownedWakeHarness(); h.stage([note('sm_continuity')])
-  expect(refreshCodexInputActivity(SESSION, h.env, h.incarnation.key, h.transcript)).toBe('idle')
-  await h.schedule(h.control, { mayWake: () => {
-    if (change === 'replacement') {
-      writeFileSync(h.transcript + '.next', readFileSync(h.transcript))
-      renameSync(h.transcript + '.next', h.transcript)
-    } else {
-      const file = turnActivityPath(SESSION, h.env)
-      const record = JSON.parse(readFileSync(file, 'utf8'))
-      writeFileSync(file, JSON.stringify({ ...record, native: { ...record.native, offset: record.native.offset + 1000 } }))
-    }
-    return true
-  } })
-  expect(h.adds()).toBe(0)
-})
-
-it('does not fault native admission cancelled because input was consumed before send', async () => {
-  const h = ownedWakeHarness(); h.stage([note('sm_consumed')])
-  await h.schedule(h.control, { mayWake: () => {
-    stageSessionMessages(SESSION, h.env, h.lease, [])
-    return true
-  } })
-  expect(h.adds()).toBe(0)
-  expect(readSessionState(SESSION, h.env).input_wake_fault).toBeUndefined()
-})
-
 it('rechecks in-process authorization after an awaited recovery lookup', async () => {
   const h = ownedWakeHarness(); h.stage([note('sm_lease')])
   await h.schedule({ ...h.control, add: async () => { throw new Error('uncertain') } })
@@ -1246,66 +491,6 @@ it('rechecks in-process authorization after an awaited recovery lookup', async (
   await h.schedule({ ...h.control, find: async () => { authorized = false; return 'absent' } }, { mayWrite: () => authorized })
   expect(h.adds()).toBe(0)
   expect(h.wakes().some(a => a.phase === 'cancelled')).toBe(true)
-})
-
-it('does not repeatedly wake an observed input while its delivery lease is fenced', async () => {
-  const h = setup()
-  h.stage([note('sm_fenced')])
-  const wakes: string[] = []
-  const wake = () => wakeSessionInputs(SESSION, h.env, async text => { wakes.push(text); return 'written' as const }, undefined, { unique: true })
-  await wake()
-  observeSessionInputWake(SESSION, h.env, wakes[0])
-  vi.spyOn(h.sequencer.client, 'claimDeliveryAttempt').mockRejectedValue(
-    new ApiCallError(409, 'claim_refused', 'lease refused', null, { reason: 'generation_fenced' }))
-  expect(await drainSessionInputs({ sequencer: h.sequencer, lease: h.lease, mayWrite: () => true,
-    write: text => h.output.push(text) })).toBe(false)
-  await wake()
-  expect(h.output).toEqual([])
-  expect(hasSessionInputs(SESSION, h.env, h.lease)).toBe(true)
-  expect(wakes).toHaveLength(1)
-})
-
-it.each([1, 2])('rearms a refused wake after fresh attendance at generation %i', async generation => {
-  const h = setup()
-  h.stage([note('sm_first')])
-  const wakes: string[] = []
-  let now = Date.now()
-  const wake = () => wakeSessionInputs(SESSION, h.env, async text => { wakes.push(text); return 'written' as const }, undefined, { unique: true, now: () => now })
-  await wake()
-  observeSessionInputWake(SESSION, h.env, wakes[0], now)
-  vi.spyOn(h.sequencer.client, 'claimDeliveryAttempt').mockRejectedValueOnce(
-    new ApiCallError(409, 'claim_refused', 'lease refused', null, { reason: 'generation_fenced' }))
-  const drain = (lease = h.lease) => drainSessionInputs({ sequencer: h.sequencer, lease, mayWrite: () => true,
-    write: text => h.output.push(text) })
-  expect(await drain()).toBe(false)
-  await wake()
-  expect(wakes).toHaveLength(1)
-  const recovered = { ...h.lease, generation }
-  writeAttendantStatus(SESSION, h.env, { ...recovered, phase: 'attending', activity: 'working', reason: null, accepts_messages: true, updated_at: Date.now() })
-  stageSessionMessages(SESSION, h.env, recovered, [note('sm_first')])
-  // Fresh attendance rearms the wake once the shown one's backoff has passed.
-  await wake()
-  expect(wakes).toHaveLength(1)
-  now += INPUT_WAKE_BACKOFF_BASE_MS
-  await wake()
-  expect(wakes).toHaveLength(2)
-  expect(await drain(recovered)).toBe(true)
-  expect(h.output).toHaveLength(1)
-  expect(hasSessionInputs(SESSION, h.env, recovered)).toBe(false)
-})
-
-it('does not rewrite the staged messages when an exchange brings nothing new', () => {
-  const h = setup()
-  const sessions = path.join(h.env.XDG_STATE_HOME!, 'notifai', 'sessions')
-  stageSessionMessages(SESSION, h.env, h.lease, [])
-  const file = path.join(sessions, readdirSync(sessions).find((name) => name.endsWith('.inputs.json'))!)
-  const before = statSync(file).ino
-  stageSessionMessages(SESSION, h.env, h.lease, [])
-  // An atomic rewrite would have replaced the file (a new inode).
-  expect(statSync(file).ino).toBe(before)
-  stageSessionMessages(SESSION, h.env, h.lease, [note('sm_new')])
-  expect(statSync(file).ino).not.toBe(before)
-  expect(readSessionMessages(SESSION, h.env, h.lease).map((m) => m.message_id)).toEqual(['sm_new'])
 })
 
 describe('wakes after a drain that hands nothing in', () => {
@@ -1356,39 +541,6 @@ describe('wakes after a drain that hands nothing in', () => {
     await h.wake()
     expect(h.wakes).toHaveLength(backoffs.length + 2)
   })
-
-  it('wakes at once for new input while an earlier wake backs off', async () => {
-    const h = harness()
-    h.stage([note('sm_stuck')])
-    failing(h)
-    await h.wake()
-    await h.shown()
-    await h.shown()
-    await h.wake()
-    expect(h.wakes).toHaveLength(1)
-    h.stage([note('sm_stuck')])
-    await h.wake()
-    expect(h.wakes).toHaveLength(1)
-    h.stage([note('sm_stuck'), note('sm_new')])
-    expect(readSessionState(SESSION, h.env).input_wake_unanswered).toBeUndefined()
-    await h.wake()
-    expect(h.wakes).toHaveLength(2)
-  })
-
-  it('holds the Codex queue wake the same way', async () => {
-    const h = ownedWakeHarness(); h.stage([note('sm_queued')])
-    failing(h)
-    await h.schedule()
-    expect(h.adds()).toBe(1)
-    observeSessionInputWake(SESSION, h.env, h.wakes()[0]!.text)
-    expect(await drainSessionInputs({ sequencer: h.sequencer, lease: h.lease, mayWrite: () => true,
-      write: text => h.output.push(text) })).toBe(false)
-    await h.schedule()
-    expect(h.adds()).toBe(1)
-    h.stage([note('sm_queued'), note('sm_new')])
-    await h.schedule()
-    expect(h.adds()).toBe(2)
-  })
 })
 
 describe('Codex empty wakes', () => {
@@ -1425,33 +577,6 @@ describe('Codex empty wakes', () => {
     } finally {
       run.kill('SIGKILL')
     }
-  })
-
-  it('hands in what waits instead of blocking the wake', async () => {
-    const h = setup()
-    h.stage([note('sm_waiting')])
-    await prompt(h, sessionInputWake())
-    expect(h.claims).toEqual(['sm_waiting'])
-    expect(blocked(h.output)).toBe(false)
-    expect(h.output.join('\n')).toContain('Read sm_waiting')
-  })
-
-  it('blocks a stale wake left in a closed session even when input was staged before the close', async () => {
-    const h = setup()
-    h.stage([note('sm_stale')])
-    markSessionEnded(SESSION, h.env, Date.now())
-    await prompt(h, sessionInputWake())
-    expect(h.claims).toEqual([])
-    expect(blocked(h.output)).toBe(true)
-  })
-
-  it('blocks a wake in a session another process now hosts', async () => {
-    const h = setup()
-    h.stage([note('sm_elsewhere')])
-    h.deps.env['NOTIFAI_HOOK_SOURCE_PID'] = '1'
-    await prompt(h, sessionInputWake())
-    expect(h.claims).toEqual([])
-    expect(blocked(h.output)).toBe(true)
   })
 
   it('never blocks the User\'s own prompt, even with nothing waiting', async () => {

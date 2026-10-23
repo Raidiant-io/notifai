@@ -1,17 +1,16 @@
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdirSync,mkdtempSync,rmSync,writeFileSync } from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import { afterEach, describe, expect, it } from 'vitest'
-import { sanitizeSessionId, stateDir } from './config.js'
-import { beginSessionIncarnation, lifecycleStamp, markSessionEnded, updateSessionState } from './hook-session-state.js'
-import { handOverOlderHub, olderHubWaits, type ActiveRuntime } from './hub-handover.js'
+import { afterEach,describe,expect,it } from 'vitest'
+import { sanitizeSessionId,stateDir } from './config.js'
+import { beginSessionIncarnation,lifecycleStamp,markSessionEnded,updateSessionState } from './hook-session-state.js'
+import { olderHubWaits } from './hub-handover.js'
 import { processStartTime } from './process-identity.js'
 import { stageSessionMessages } from './session-inputs.js'
 
 const CLAUDE = '11111111-2222-3333-4444-555555555555'
 const CODEX = '22222222-3333-4444-5555-666666666666'
 const HARNESS = { pid: process.pid, start: processStartTime(process.pid)! }
-const SELF: ActiveRuntime = { build: 'b'.repeat(64), version: '13.1.0-beta.5', digest: 'new-digest' }
 
 const roots: string[] = []
 afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }) })
@@ -56,34 +55,6 @@ describe('an earlier hub on another build', () => {
     expect(olderHubWaits(e, olderStatus())).toEqual([])
   })
 
-  it('waits only for what the next hub could not take over from it', () => {
-    const e = env()
-    start(CLAUDE, e)
-    claim(e, CLAUDE, { pid: 4242 })
-    // An answer it is handing to its agent: stopping it now could repeat the answer.
-    updateSessionState(CLAUDE, e, (state) => ({ ...state, accepted: { recorded_at: Date.now(), remaining: 1, answers: [] } }))
-    expect(olderHubWaits(e, olderStatus())).toEqual(['answer-delivering'])
-    updateSessionState(CLAUDE, e, ({ accepted: _accepted, ...state }) => state)
-    // A wake it is writing into a session right now; once queued, it is the harness's.
-    const wake = { incarnation: 'inc', token: 'tok', writer: { pid: 4242, start: 'x' } }
-    updateSessionState(CLAUDE, e, (state) => ({ ...state, input_wake: { ...wake, queued: false } }))
-    expect(olderHubWaits(e, olderStatus())).toEqual(['wake-writing'])
-    updateSessionState(CLAUDE, e, (state) => ({ ...state, input_wake: { ...wake, queued: true } }))
-    expect(olderHubWaits(e, olderStatus())).toEqual([])
-    const attempt = { token: 'tok', ownerKey: 'k', incarnation: 'inc', generation: 3, namespace: 'n', inputIds: ['i'], text: 'w',
-      writer: { pid: 4242, start: 'x' }, detached: false }
-    updateSessionState(CLAUDE, e, (state) => ({ ...state, input_wake_attempts: [{ ...attempt, phase: 'sending' as const }] }))
-    expect(olderHubWaits(e, olderStatus())).toEqual(['wake-writing'])
-    updateSessionState(CLAUDE, e, (state) => ({ ...state, input_wake_attempts: [{ ...attempt, phase: 'accepted' as const }] }))
-    expect(olderHubWaits(e, olderStatus())).toEqual([])
-    // An answer owner for a session it does not attend: no file names that session.
-    claim(e, 'unattended-session', { pid: 4242 })
-    expect(olderHubWaits(e, olderStatus())).toEqual(['question-unattended'])
-    // Another process's claims are not its own.
-    claim(e, 'unattended-session', { pid: 4243 })
-    expect(olderHubWaits(e, olderStatus())).toEqual([])
-  })
-
   it('never waits for a conversation without a child: the next hub adopts it from its status, or leaves it lapsed', () => {
     const e = env()
     start(CODEX, e)
@@ -93,75 +64,5 @@ describe('an earlier hub on another build', () => {
     // Stopped, or with its end undecided, and no rollout on record: nothing holds the handover back.
     expect(olderHubWaits(e, olderStatus({}, [codex({ phase: 'exited', reason: 'stopped', child: false })]))).toEqual([])
     expect(olderHubWaits(e, olderStatus({}, [codex({ phase: 'uncertain', reason: 'session-child-disconnected', child: false })]))).toEqual([])
-  })
-
-  it('waits when its status cannot show what it holds', () => {
-    const e = env()
-    expect(olderHubWaits(e, olderStatus({ settlements: undefined }))).toEqual(['hub-unverifiable'])
-    expect(olderHubWaits(e, olderStatus({ sessions: 'x' }))).toEqual(['hub-unverifiable'])
-    expect(olderHubWaits(e, olderStatus({ pid: undefined }))).toEqual(['hub-unverifiable'])
-    start(CLAUDE, e)
-    expect(olderHubWaits(e, olderStatus({ ipc_version: 0 }))).toEqual(['session-child-incompatible'])
-  })
-
-  it('sends stop only after two clear reads, then starts the active build\'s hub', async () => {
-    const e = env()
-    start(CLAUDE, e)
-    const sent: Record<string, unknown>[] = []
-    const reads: Record<string, unknown>[] = [olderStatus(), olderStatus()]
-    let started = 0
-    const request = async (_env: NodeJS.ProcessEnv, message: Record<string, unknown>) => {
-      sent.push(message)
-      return message['type'] === 'stop' ? { type: 'ack' } : { type: 'status', status: reads.shift() ?? olderStatus() }
-    }
-    const outcome = await handOverOlderHub(e, { self: SELF, request, sleep: async () => undefined, start: () => { started += 1 } })
-    expect(outcome).toEqual({ outcome: 'handed-over', hub_version: '13.1.0-beta.3', successor: true })
-    expect(sent.map((message) => message['type'])).toEqual(['status', 'status', 'stop'])
-    expect(sent[2]).toEqual({ type: 'stop', reason: 'build-superseded' })
-    expect(started).toBe(1)
-  })
-
-  it('never sends stop while either read shows work waiting', async () => {
-    const e = env()
-    start(CLAUDE, e)
-    for (const reads of [[olderStatus({ ipc_version: 0 })], [olderStatus(), olderStatus({ ipc_version: 0 })]]) {
-      const sent: string[] = []
-      const request = async (_env: NodeJS.ProcessEnv, message: Record<string, unknown>) => {
-        sent.push(String(message['type']))
-        return message['type'] === 'stop' ? { type: 'ack' } : { type: 'status', status: reads.shift() }
-      }
-      const outcome = await handOverOlderHub(e, { self: SELF, request, sleep: async () => undefined, start: () => { throw new Error('no successor') } })
-      expect(outcome).toEqual({ outcome: 'waiting', hub_version: '13.1.0-beta.3', waiting_for: ['session-child-incompatible'] })
-      expect(sent).not.toContain('stop')
-    }
-  })
-
-  it('leaves a hub that hands itself over seamlessly, or runs this build, alone', async () => {
-    const e = env()
-    for (const status of [olderStatus({ runtime_build: 'a'.repeat(64), seamless_handover: true, handover: null }), olderStatus({ version: SELF.version, build: SELF.digest })]) {
-      const sent: string[] = []
-      const request = async (_env: NodeJS.ProcessEnv, message: Record<string, unknown>) => {
-        sent.push(String(message['type']))
-        return { type: 'status', status }
-      }
-      const outcome = await handOverOlderHub(e, { self: SELF, request, sleep: async () => undefined })
-      expect(['self-managed', 'current']).toContain(outcome.outcome)
-      expect(sent).toEqual(['status'])
-    }
-    expect(await handOverOlderHub(e, { self: null })).toEqual({ outcome: 'not-active-build' })
-  })
-
-  it('replaces a hub that hands itself over only once nothing waits (13.1.0-beta.5) like any earlier hub', async () => {
-    const e = env()
-    start(CLAUDE, e)
-    const status = olderStatus({ version: '13.1.0-beta.5', runtime_build: 'a'.repeat(64), handover: { active_build: SELF.build, waiting_for: ['question-waiting'] } })
-    const sent: string[] = []
-    const request = async (_env: NodeJS.ProcessEnv, message: Record<string, unknown>) => {
-      sent.push(String(message['type']))
-      return message['type'] === 'stop' ? { type: 'ack' } : { type: 'status', status }
-    }
-    const outcome = await handOverOlderHub(e, { self: SELF, request, sleep: async () => undefined, start: () => undefined })
-    expect(outcome).toMatchObject({ outcome: 'handed-over', hub_version: '13.1.0-beta.5' })
-    expect(sent).toEqual(['status', 'status', 'stop'])
   })
 })

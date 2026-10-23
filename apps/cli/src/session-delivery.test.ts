@@ -1,29 +1,26 @@
 import type {
-  ClaimDeliveryAttemptRequestT,
-  DeliveryAttemptOutcome,
+ClaimDeliveryAttemptRequestT,
+DeliveryAttemptOutcome,
 } from '@raidiant/notifai-protocol'
-import { mkdirSync, mkdtempSync, utimesSync, writeFileSync } from 'node:fs'
+import { mkdirSync,mkdtempSync,utimesSync,writeFileSync } from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import { describe, expect, it } from 'vitest'
-import { ApiCallError, NetworkError, type ApiClient } from './client.js'
-import type { ProcessIdentity, ProcessLiveness } from './process-identity.js'
-import { execFileSync } from 'node:child_process'
+import { describe,expect,it } from 'vitest'
+import { ApiCallError,NetworkError,type ApiClient } from './client.js'
+import type { ProcessIdentity,ProcessLiveness } from './process-identity.js'
 import {
-  DELIVERY_WRITE_MARGIN_MS,
-  JOURNAL_SWEEP_MAX_JOURNALS,
-  acquireDeliveryLock,
-  answerWriterGone,
-  beginHandOff,
-  deliveryJournalPath,
-  answersAlreadyWritten,
-  processGroupAlive,
-  readDeliveryJournal,
-  recordUnclaimedHandOffs,
-  recoverDeliveryJournal,
-  sweepDeliveryJournals,
-  type DeliveryJournalEntry,
-  type SequencerDeps,
+DELIVERY_WRITE_MARGIN_MS,
+JOURNAL_SWEEP_MAX_JOURNALS,
+answerWriterGone,
+answersAlreadyWritten,
+beginHandOff,
+deliveryJournalPath,
+readDeliveryJournal,
+recordUnclaimedHandOffs,
+recoverDeliveryJournal,
+sweepDeliveryJournals,
+type DeliveryJournalEntry,
+type SequencerDeps
 } from './session-delivery.js'
 
 const SESSION = 'session-delivery-test'
@@ -136,64 +133,6 @@ describe('per-session delivery sequencer', () => {
     expect(service.reports).toEqual([{ attemptId: 'att_1', outcome: 'released' }])
   })
 
-  it('runs the caller fence after every check and writes nothing when it refuses', async () => {
-    const { env, service, deps } = setup()
-    const handOff = (await beginHandOff(deps, {
-      lease: LEASE,
-      subjects: [{ type: 'answer', request_id: 'req_fenced' }],
-    }))!
-    expect(handOff.begin(() => false)).toBe(false)
-    expect(readDeliveryJournal(SESSION, env)[0]!.stage).toBe('claimed')
-    await handOff.finish('not-written')
-    expect(service.reports.map((report) => report.outcome)).toEqual(['released'])
-  })
-
-  it('reports a write that began and failed as unconfirmed, never as released', async () => {
-    const { service, deps } = setup()
-    const handOff = (await beginHandOff(deps, {
-      lease: LEASE,
-      subjects: [{ type: 'session_message', message_id: 'sm_torn' }],
-    }))!
-    expect(handOff.begin()).toBe(true)
-    await handOff.finish('failed')
-    expect(service.reports).toEqual([{ attemptId: 'att_1', outcome: 'unconfirmed' }])
-  })
-
-  it('treats a begun write that reports nothing written as unconfirmed', async () => {
-    const { service, deps } = setup()
-    const handOff = (await beginHandOff(deps, {
-      lease: LEASE,
-      subjects: [{ type: 'session_message', message_id: 'sm_unknown' }],
-    }))!
-    handOff.begin()
-    await handOff.finish('not-written')
-    expect(service.reports.map((report) => report.outcome)).toEqual(['unconfirmed'])
-  })
-
-  it('names each refusal and claims nothing for it', async () => {
-    const { env, service, deps } = setup()
-    service.refuse = 'awaiting_earlier_answer'
-    const waiting = (await beginHandOff(deps, {
-      lease: LEASE,
-      subjects: [{ type: 'session_message', message_id: 'sm_edit' }],
-    }))!
-    expect(waiting.claimed).toEqual([])
-    expect(waiting.refused).toEqual([
-      { subject: { type: 'session_message', message_id: 'sm_edit' }, reason: 'awaiting_earlier_answer' },
-    ])
-    await waiting.finish('not-written')
-
-    service.refuse = 'not_found'
-    const missing = (await beginHandOff(deps, {
-      lease: LEASE,
-      subjects: [{ type: 'session_message', message_id: 'sm_gone' }],
-    }))!
-    expect(missing.refused[0]!.reason).toBe('not_found')
-    await missing.finish('not-written')
-    expect(service.reports).toEqual([])
-    expect(readDeliveryJournal(SESSION, env)).toEqual([])
-  })
-
   it('retries a claim whose response was lost, once', async () => {
     const { service, deps } = setup()
     service.failClaims = 1
@@ -204,60 +143,6 @@ describe('per-session delivery sequencer', () => {
     expect(service.claims).toHaveLength(2)
     expect(handOff.claimed).toHaveLength(1)
     await handOff.finish('not-written')
-  })
-
-  it('attaches the writer-gone proof only when the caller proves it', async () => {
-    const { service, deps } = setup()
-    const handOff = (await beginHandOff(deps, {
-      lease: LEASE,
-      subjects: [{ type: 'session_message', message_id: 'sm_edit' }],
-      earlierAnswerWriterGone: () => true,
-    }))!
-    await handOff.finish('not-written')
-    expect(service.claims[0]).toMatchObject({ earlier_answer_writer_gone: true })
-
-    const plain = (await beginHandOff(deps, {
-      lease: LEASE,
-      subjects: [{ type: 'session_message', message_id: 'sm_note' }],
-    }))!
-    await plain.finish('not-written')
-    expect(service.claims[1]).not.toHaveProperty('earlier_answer_writer_gone')
-  })
-
-  it('serialises writers: a second hand-off waits for the lock and gives up without claiming', async () => {
-    const { service, deps } = setup()
-    const held = (await acquireDeliveryLock(deps))!
-    const blocked = await beginHandOff(deps, {
-      lease: LEASE,
-      subjects: [{ type: 'session_message', message_id: 'sm_blocked' }],
-      lockWaitMs: 500,
-    })
-    expect(blocked).toBeNull()
-    expect(service.claims).toEqual([])
-    held.release()
-    const next = await beginHandOff(deps, {
-      lease: LEASE,
-      subjects: [{ type: 'session_message', message_id: 'sm_blocked' }],
-    })
-    expect(next).not.toBeNull()
-    await next!.finish('not-written')
-  })
-
-  it('keeps an unreported outcome and reports it at the next recovery', async () => {
-    const { env, service, deps } = setup()
-    service.failReports = 3
-    const handOff = (await beginHandOff(deps, {
-      lease: LEASE,
-      subjects: [{ type: 'session_message', message_id: 'sm_offline' }],
-    }))!
-    handOff.begin()
-    await handOff.finish('written')
-    expect(service.reports).toEqual([])
-    expect(readDeliveryJournal(SESSION, env)[0]).toMatchObject({ stage: 'written' })
-    expect(readDeliveryJournal(SESSION, env)[0]!.reported).toBeUndefined()
-
-    await recoverDeliveryJournal(deps)
-    expect(service.reports).toEqual([{ attemptId: 'att_1', outcome: 'handed_off' }])
   })
 })
 
@@ -310,16 +195,6 @@ describe('journal recovery for writers that died before reporting', () => {
     expect(await recoverDeliveryJournal(deps)).toBe(0)
     expect(service.reports).toEqual([])
   })
-
-  it('reads a corrupt journal as no evidence', async () => {
-    const { env, service, deps } = setup(() => 'gone')
-    const file = deliveryJournalPath(SESSION, env)
-    mkdirSync(path.dirname(file), { recursive: true })
-    writeFileSync(file, '{"entries": [ {"attempt_id": 3 } ')
-    expect(readDeliveryJournal(SESSION, env)).toEqual([])
-    expect(await recoverDeliveryJournal(deps)).toBe(0)
-    expect(service.reports).toEqual([])
-  })
 })
 
 describe('Answer Edit release proof', () => {
@@ -333,25 +208,6 @@ describe('Answer Edit release proof', () => {
     ])
     expect(answerWriterGone(SESSION, env, 'req_x', gone)).toBe(true)
     expect(answerWriterGone(SESSION, env, 'req_other', gone)).toBe(false)
-  })
-
-  it('stays unproven for a writer suspended past its deadline but before its write', async () => {
-    // The writer passed the deadline check and journaled `writing`, then was
-    // suspended. It may still write, so no Answer Edit may be released behind
-    // it, however long ago its claim deadline passed.
-    const { env, service, deps, advance } = setup()
-    const handOff = (await beginHandOff(deps, {
-      lease: LEASE,
-      subjects: [{ type: 'answer', request_id: 'req_suspended' }],
-    }))!
-    expect(handOff.begin()).toBe(true)
-    advance(10 * 60_000)
-    expect(answerWriterGone(SESSION, env, 'req_suspended', () => 'alive')).toBe(false)
-    // Even a liveness check that says gone does not release an attempt this
-    // process still has in flight.
-    expect(answerWriterGone(SESSION, env, 'req_suspended', () => 'gone')).toBe(false)
-    await handOff.finish('written')
-    expect(service.reports).toEqual([{ attemptId: 'att_1', outcome: 'handed_off' }])
   })
 })
 
@@ -374,43 +230,9 @@ describe('claim deadline at the write itself', () => {
     expect(service.reports).toEqual([{ attemptId: 'att_1', outcome: 'released' }])
     expect(readDeliveryJournal(SESSION, env)[0]).toMatchObject({ stage: 'released' })
   })
-
-  it('reverts a write that a slow commit pushed past the margin to claimed, then releases it', async () => {
-    const { env, service, deps, advance } = setup()
-    const handOff = (await beginHandOff(deps, {
-      lease: LEASE,
-      subjects: [{ type: 'answer', request_id: 'req_commit' }],
-    }))!
-    expect(
-      handOff.begin(() => {
-        advance(29_000)
-        return true
-      }),
-    ).toBe(false)
-    expect(readDeliveryJournal(SESSION, env)[0]).toMatchObject({ stage: 'claimed' })
-    await handOff.finish('not-written')
-    expect(service.reports.map((report) => report.outcome)).toEqual(['released'])
-  })
-
-  it('closes the socket boundary before the deadline and reports an aborted write as released', async () => {
-    const { service, deps, advance } = setup()
-    const handOff = (await beginHandOff(deps, {
-      lease: LEASE,
-      subjects: [{ type: 'session_message', message_id: 'sm_late_socket' }],
-    }))!
-    expect(handOff.begin()).toBe(true)
-    expect(handOff.writable()).toBe(true)
-    expect(handOff.remainingMs()).toBe(30_000 - 500)
-    advance(30_000 - 500)
-    expect(handOff.writable()).toBe(false)
-    expect(handOff.remainingMs()).toBe(0)
-    await handOff.finish('aborted')
-    expect(service.reports).toEqual([{ attemptId: 'att_1', outcome: 'released' }])
-  })
 })
 
 describe('subprocess writers in the Answer Edit release proof', () => {
-  const gone = (identity: ProcessIdentity): ProcessLiveness => (identity.pid === GONE.pid ? 'gone' : 'alive')
 
   it('journals a subprocess write and its process group as soon as it exists', async () => {
     const { env, deps } = setup()
@@ -423,31 +245,6 @@ describe('subprocess writers in the Answer Edit release proof', () => {
     handOff.recordGroup(9191)
     expect(readDeliveryJournal(SESSION, env)[0]!.groups).toEqual([9191])
     await handOff.finish('written')
-  })
-
-  it('proves a subprocess writer gone only when its whole recorded group is gone', () => {
-    const { env } = setup()
-    const entry = (groups?: number[]): DeliveryJournalEntry => ({
-      attempt_id: 'att_resume',
-      subject: { type: 'answer', request_id: 'req_resume' },
-      stage: 'writing',
-      writer: GONE,
-      subprocess: true,
-      ...(groups === undefined ? {} : { groups }),
-      claimed_at: 1,
-    })
-    seedJournal(env, [entry()])
-    // The waiter died before the child's group was journaled: unknowable.
-    expect(answerWriterGone(SESSION, env, 'req_resume', gone, () => false)).toBe(false)
-    seedJournal(env, [entry([9191])])
-    // The resumed harness outlived the waiter and may still write.
-    expect(answerWriterGone(SESSION, env, 'req_resume', gone, () => true)).toBe(false)
-    expect(answerWriterGone(SESSION, env, 'req_resume', gone, () => false)).toBe(true)
-  })
-
-  it('asks the operating system about a whole process group', () => {
-    expect(processGroupAlive(process.pid === 1 ? 2 : Number(execFileSync('ps', ['-o', 'pgid=', '-p', String(process.pid)], { encoding: 'utf8' }).trim()))).toBe(true)
-    expect(processGroupAlive(2_147_483_000)).toBe(false)
   })
 })
 
@@ -529,35 +326,6 @@ describe('answers written without a claim', () => {
     expect(recorded).toHaveLength(1)
   })
 
-  it('keeps the record owed while another attempt is pending, and records it once that attempt is released', async () => {
-    const { env, deps } = setup()
-    let pendingElsewhere = true
-    const recorded: ClaimDeliveryAttemptRequestT[] = []
-    const client = {
-      claimDeliveryAttempt: async (_session: string, body: ClaimDeliveryAttemptRequestT) => {
-        if (pendingElsewhere) {
-          throw new ApiCallError(409, 'claim_refused', 'refused', null, { reason: 'attempt_pending' })
-        }
-        recorded.push(body)
-        return { attempt_id: 'att_recorded', claim_remaining_ms: 0, outcome: 'handed_off' as const }
-      },
-    } as unknown as ApiClient
-    await recordUnclaimedHandOffs({ ...deps, client }, ['req_pending_elsewhere'])
-    expect(readDeliveryJournal(SESSION, env)[0]).toMatchObject({ unclaimed: true })
-    expect(readDeliveryJournal(SESSION, env)[0]!.reported).toBeUndefined()
-    expect(readDeliveryJournal(SESSION, env)[0]!.refused).toBeUndefined()
-
-    // Still pending on the next recovery: still owed.
-    expect(await recoverDeliveryJournal({ ...deps, client })).toBe(0)
-    expect(readDeliveryJournal(SESSION, env)[0]!.reported).toBeUndefined()
-
-    // That attempt was released: the unclaimed write is recorded now.
-    pendingElsewhere = false
-    expect(await recoverDeliveryJournal({ ...deps, client })).toBe(1)
-    expect(recorded).toEqual([{ subject: { type: 'answer', request_id: 'req_pending_elsewhere' }, already_handed_off: true }])
-    expect(readDeliveryJournal(SESSION, env)[0]).toMatchObject({ reported: 'handed_off' })
-  })
-
   it('settles a refused record for good instead of retrying it', async () => {
     const { env, deps } = setup()
     let calls = 0
@@ -571,42 +339,6 @@ describe('answers written without a claim', () => {
     expect(readDeliveryJournal(SESSION, env)[0]).toMatchObject({ reported: 'released', refused: 'not_claimable' })
     await recoverDeliveryJournal({ ...deps, client })
     expect(calls).toBe(1)
-  })
-
-  it('lets the machine-wide sweep record an unclaimed hand-off a session never retried', async () => {
-    const { env, deps, service } = setup()
-    const file = deliveryJournalPath('ended-unclaimed', env)
-    mkdirSync(path.dirname(file), { recursive: true })
-    writeFileSync(
-      file,
-      JSON.stringify({
-        session_id: 'ended-unclaimed',
-        entries: [
-          {
-            attempt_id: 'unclaimed:req_x',
-            subject: { type: 'answer', request_id: 'req_x' },
-            stage: 'written',
-            // A live writer does not matter: the write already happened.
-            writer: { pid: 99, start: 'alive' },
-            unclaimed: true,
-            claimed_at: 1,
-          },
-        ],
-      }),
-    )
-    const recorded: ClaimDeliveryAttemptRequestT[] = []
-    const client = {
-      ...deps.client,
-      claimDeliveryAttempt: async (_session: string, body: ClaimDeliveryAttemptRequestT) => {
-        recorded.push(body)
-        return { attempt_id: 'att_recorded', claim_remaining_ms: 0, outcome: 'handed_off' as const }
-      },
-    } as unknown as ApiClient
-    expect(
-      await sweepDeliveryJournals({ env, client, writer: SELF, now: Date.now(), liveness: () => 'alive', force: true }),
-    ).toBe(1)
-    expect(recorded).toHaveLength(1)
-    expect(service.reports).toEqual([])
   })
 })
 

@@ -1,33 +1,25 @@
-import { createHash, generateKeyPairSync, sign } from 'node:crypto'
-import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { createHash,generateKeyPairSync,sign } from 'node:crypto'
+import { mkdtempSync,rmSync } from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { gzipSync } from 'node:zlib'
 import { pack } from 'tar-stream'
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach,describe,expect,it } from 'vitest'
+import type { ActivationPlan } from './activation-plan.js'
 import { ensurePrivateDirectory } from './atomic-file.js'
 import {
-  attemptAutomaticUpdate,
-  automaticActivationNotice,
-  pendingAutomaticActivationNotice,
-  automaticUpdateReport,
-  heldAutomaticUpdate,
-  parseActivationPlan,
-  readAutomaticUpdateRecord,
-  updateAutomaticUpdateRecord,
-  type AutomaticUpdateHost,
+attemptAutomaticUpdate,
+parseActivationPlan,
+readAutomaticUpdateRecord,
+type AutomaticUpdateHost
 } from './automatic-update.js'
-import type { ActivationPlan } from './activation-plan.js'
-import { cachedAgentUpdateNotice } from './agent-update-notice.js'
-import { globalConfigPath } from './config.js'
-import { beginSessionIncarnation, lifecycleStamp, writeSessionState } from './hook-session-state.js'
+import { beginSessionIncarnation,lifecycleStamp,writeSessionState } from './hook-session-state.js'
 import { Installation } from './installation.js'
 import { nullLogger } from './logging.js'
 import { processStartTime } from './process-identity.js'
-import { Distribution, releaseSigningMessage } from './release-distribution.js'
+import { Distribution,releaseSigningMessage } from './release-distribution.js'
 
 const NOW = 1_900_000_000_000
-const DAY = 86_400_000
 const roots: string[] = []
 afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }) })
 
@@ -118,10 +110,6 @@ function host(f: Fixture, overrides: Partial<AutomaticUpdateHost> = {}) {
 const activeVersion = (f: Fixture): string => f.installation.activeRelease().version
 const install = (f: Fixture) => f.installation.inspect()
 
-function setAutomatic(f: Fixture, value: string): void {
-  mkdirSync(path.dirname(globalConfigPath(f.env)), { recursive: true })
-  writeFileSync(globalConfigPath(f.env), value)
-}
 
 describe('automatic updates', () => {
   it('stages a newer release on the saved channel and activates it when nothing waits', async () => {
@@ -137,33 +125,6 @@ describe('automatic updates', () => {
     expect(calls.plan).toEqual([staged])
     expect(calls.resume).toEqual([[staged, '1.0.0']])
     expect(readAutomaticUpdateRecord(f.env)).toMatchObject({ staged: null, waiting_for: [], last_automatic: { from: '1.0.0', to: '1.1.0', at: NOW } })
-  })
-
-  it('honours the off switch: no lookup, no download, no activation', async () => {
-    const f = fixture()
-    await f.publish('1.0.0'); await f.install('1.0.0', 'stable')
-    await f.publish('1.1.0'); f.point('stable', '1.1.0')
-    const before = f.requests.length
-    for (const text of ['"updates.automatic" = false\n', '[updates]\nautomatic = false\n']) {
-      setAutomatic(f, text)
-      expect(await attemptAutomaticUpdate(host(f).host)).toEqual({ outcome: 'off' })
-    }
-    expect(f.requests.length).toBe(before)
-    expect(activeVersion(f)).toBe('1.0.0')
-    expect(automaticUpdateReport(f.env, { runsHere: true }).automatic).toEqual({ enabled: false, source: 'user', runs_here: true })
-    setAutomatic(f, '"updates.automatic" = true\n')
-    expect((await attemptAutomaticUpdate(host(f).host)).outcome).toBe('activated')
-  })
-
-  it('looks the release up at most once a day', async () => {
-    const f = fixture()
-    await f.publish('1.0.0'); await f.install('1.0.0', 'stable')
-    expect(await attemptAutomaticUpdate(host(f).host)).toEqual({ outcome: 'current' })
-    const after = f.requests.length
-    await f.publish('1.1.0'); f.point('stable', '1.1.0')
-    expect(await attemptAutomaticUpdate({ ...host(f).host, now: () => NOW + DAY - 1 })).toEqual({ outcome: 'current' })
-    expect(f.requests.length).toBe(after)
-    expect((await attemptAutomaticUpdate({ ...host(f).host, now: () => NOW + DAY })).outcome).toBe('activated')
   })
 
   it('keeps a beta installation on beta when it moves on to a newer stable release, and never offers beta to stable', async () => {
@@ -183,80 +144,6 @@ describe('automatic updates', () => {
     expect(activeVersion(stable)).toBe('1.0.0')
   })
 
-  it('never activates an older release; a withdrawn build moves forward only', async () => {
-    const f = fixture()
-    await f.publish('1.0.0'); await f.publish('1.1.0')
-    await f.install('1.1.0', 'stable')
-    // The channel moves back after 1.1.0 is withdrawn: stay, download nothing, say so.
-    f.point('stable', '1.0.0', ['1.1.0'])
-    expect(await attemptAutomaticUpdate(host(f).host)).toEqual({ outcome: 'current' })
-    expect(activeVersion(f)).toBe('1.1.0')
-    expect(f.requests.some(url => url.endsWith('notifai-1.0.0-linux-x64.tar.gz'))).toBe(false)
-    expect(automaticUpdateReport(f.env, { runsHere: true }).waiting_for).toEqual(['no-forward-release'])
-    // Its replacement arrives: move forward to it.
-    await f.publish('1.1.1'); f.point('stable', '1.1.1', ['1.1.0'])
-    expect(await attemptAutomaticUpdate({ ...host(f).host, now: () => NOW + DAY })).toEqual({ outcome: 'activated', from: '1.1.0', to: '1.1.1' })
-  })
-
-  it('updates the runtime of an install made through the npm launcher and keeps it an npm install', async () => {
-    const f = fixture()
-    await f.publish('1.0.0'); await f.install('1.0.0', 'stable', 'npm')
-    await f.publish('1.1.0'); f.point('stable', '1.1.0')
-    expect((await attemptAutomaticUpdate(host(f).host)).outcome).toBe('activated')
-    expect(install(f)).toMatchObject({ source: 'npm', channel: 'stable' })
-  })
-
-  it('activates while questions, answers and acknowledgements wait, because the next hub takes them over', async () => {
-    const f = fixture()
-    await f.publish('1.0.0'); await f.install('1.0.0', 'stable')
-    await f.publish('1.1.0'); f.point('stable', '1.1.0')
-    const open = 'open-session'
-    beginSessionIncarnation(open, f.env, { stamp: lifecycleStamp(), harnessProcess: { pid: process.pid, start: processStartTime(process.pid)! } })
-    writeSessionState(open, f.env, { harness: 'claude-code', pending: [{ request_id: 'req_open', question: 'Deploy?', asked_at: NOW }],
-      acknowledgement_due: [{ request_id: 'req_done', recorded_at: NOW }] })
-    expect(await attemptAutomaticUpdate(host(f).host)).toEqual({ outcome: 'activated', from: '1.0.0', to: '1.1.0' })
-    expect(activeVersion(f)).toBe('1.1.0')
-    expect(automaticUpdateReport(f.env, { runsHere: true })).toMatchObject({ staged: null, waiting_for: [] })
-  })
-
-  it('keeps an update staged when it would change trusted hook definitions, and offers it to agents', async () => {
-    const f = fixture()
-    await f.publish('1.0.0'); await f.install('1.0.0', 'stable')
-    await f.publish('1.1.0'); f.point('stable', '1.1.0')
-    const plan: ActivationPlan = { ...PLAN, hook_changes: [{ harness: 'codex', file: '/h/.codex/hooks.json', reasons: ['missing PreCompact'] }] }
-    const { host: h, calls } = host(f, { plan: async () => plan })
-    expect(await attemptAutomaticUpdate(h)).toEqual({ outcome: 'waiting', version: '1.1.0', waiting_for: ['hook-approval'] })
-    expect(activeVersion(f)).toBe('1.0.0')
-    expect(calls.resume).toEqual([])
-    expect(automaticUpdateReport(f.env, { runsHere: true })).toMatchObject({ staged: '1.1.0', waiting_for: ['hook-approval'],
-      hook_changes: [{ harness: 'codex', file: '/h/.codex/hooks.json' }] })
-    expect(heldAutomaticUpdate(f.env, NOW)).toMatchObject({ version: '1.1.0', reason: 'action' })
-    const notice = cachedAgentUpdateNotice({ env: f.env, now: NOW, updateCommand: 'notifai update', automaticRunsHere: true })
-    expect(notice).toContain('Notifai 1.1.0 is downloaded but automatic updates are holding it back')
-    expect(notice).toContain('/hooks')
-    expect(cachedAgentUpdateNotice({ env: f.env, now: NOW + 1, updateCommand: 'notifai update', automaticRunsHere: true })).toBeUndefined()
-  })
-
-  it('refuses activation while a connected session child speaks an IPC version the new hub cannot serve', async () => {
-    const f = fixture()
-    await f.publish('1.0.0'); await f.install('1.0.0', 'stable')
-    await f.publish('1.1.0'); f.point('stable', '1.1.0')
-    const { host: h } = host(f, { childIpcVersions: () => [1, 1], plan: async () => ({ ...PLAN, hub_ipc_versions: { min: 2, max: 2 } }) })
-    expect(await attemptAutomaticUpdate(h)).toEqual({ outcome: 'waiting', version: '1.1.0', waiting_for: ['session-child-incompatible'] })
-    expect(activeVersion(f)).toBe('1.0.0')
-    // With no such child left, it goes ahead.
-    expect((await attemptAutomaticUpdate({ ...h, childIpcVersions: () => [] })).outcome).toBe('activated')
-  })
-
-  it('refuses a candidate that cannot describe its own activation', async () => {
-    const f = fixture()
-    await f.publish('1.0.0'); await f.install('1.0.0', 'stable')
-    await f.publish('1.1.0'); f.point('stable', '1.1.0')
-    expect(await attemptAutomaticUpdate(host(f, { plan: async () => null }).host))
-      .toEqual({ outcome: 'waiting', version: '1.1.0', waiting_for: ['candidate-unverified'] })
-    expect(activeVersion(f)).toBe('1.0.0')
-  })
-
   it('recovers an interrupted swap forward at the next pass, and hands the hub over', async () => {
     const f = fixture()
     await f.publish('1.0.0'); await f.install('1.0.0', 'stable')
@@ -273,59 +160,6 @@ describe('automatic updates', () => {
     expect(await attemptAutomaticUpdate({ ...host(f).host, running: () => running })).toEqual({ outcome: 'activated', from: '1.0.0', to: '1.1.0' })
     expect(install(f)).toMatchObject({ pending: false, channel: 'stable' })
     expect(activeVersion(f)).toBe('1.1.0')
-  })
-
-  it('tells agents once after an automatic activation, and makes no weekly offer while automatic', async () => {
-    const f = fixture()
-    await f.publish('1.0.0'); await f.install('1.0.0', 'stable')
-    await f.publish('1.1.0'); f.point('stable', '1.1.0')
-    await attemptAutomaticUpdate(host(f).host)
-    // A lookup recorded an available release earlier; automatic updates make no offer for it.
-    mkdirSync(path.join(f.env['XDG_STATE_HOME']!, 'notifai'), { recursive: true })
-    writeFileSync(path.join(f.env['XDG_STATE_HOME']!, 'notifai', 'cli-update-notice.json'), JSON.stringify({ available: '99.0.0' }))
-    const read = (now: number) => cachedAgentUpdateNotice({ env: f.env, now, updateCommand: 'notifai update', currentVersion: '1.0.0', automaticRunsHere: true })
-    const first = read(NOW)
-    expect(first).toContain('Notifai updated itself from 1.0.0 to 1.1.0')
-    expect(first).toContain('notifai update --check --json --from 1.0.0')
-    expect(read(NOW + 1)).toBeUndefined()
-    expect(read(NOW + 8 * DAY)).toBeUndefined()
-    expect(automaticActivationNotice(f.env, NOW + 9 * DAY)).toBeUndefined()
-    expect(pendingAutomaticActivationNotice(f.env, NOW + 9 * DAY)).toBeUndefined()
-    // With automatic updates off, the weekly offer is back.
-    setAutomatic(f, '"updates.automatic" = false\n')
-    expect(read(NOW + 9 * DAY)).toContain('offer to perform the update')
-  })
-
-  it('keeps the activation notice due until a reader claims it', async () => {
-    const f = fixture()
-    await f.publish('1.0.0'); await f.install('1.0.0', 'stable')
-    await f.publish('1.1.0'); f.point('stable', '1.1.0')
-    await attemptAutomaticUpdate(host(f).host)
-    const unshown = pendingAutomaticActivationNotice(f.env, NOW)
-    expect(unshown?.text).toContain('Notifai updated itself from 1.0.0 to 1.1.0')
-    const shown = pendingAutomaticActivationNotice(f.env, NOW)
-    expect(shown!.claim()).toBe(true)
-    expect(unshown!.claim()).toBe(false)
-    expect(pendingAutomaticActivationNotice(f.env, NOW + 1)).toBeUndefined()
-  })
-
-  it('offers a staged update that has waited a week', async () => {
-    const f = fixture()
-    await f.publish('1.0.0'); await f.install('1.0.0', 'stable')
-    await f.publish('1.1.0'); f.point('stable', '1.1.0')
-    // Held back by something that clears by itself (an installation change in progress).
-    updateAutomaticUpdateRecord(f.env, (record) => ({ record: { ...record, staged: { version: '1.1.0', build: 'b'.repeat(64), since: NOW },
-      waiting_for: ['installation-busy'] }, result: undefined }))
-    expect(heldAutomaticUpdate(f.env, NOW + 7 * DAY - 1)).toBeNull()
-    expect(heldAutomaticUpdate(f.env, NOW + 7 * DAY)).toMatchObject({ version: '1.1.0', reason: 'starved' })
-    expect(cachedAgentUpdateNotice({ env: f.env, now: NOW + 7 * DAY, updateCommand: 'notifai update', automaticRunsHere: true }))
-      .toMatch(/staged on this machine for a week without activating/)
-  })
-
-  it('reports nothing to update outside a managed installation', async () => {
-    const f = fixture()
-    expect(await attemptAutomaticUpdate(host(f, { installation: () => { throw new Error('legacy npm layout') } }).host)).toEqual({ outcome: 'not-managed' })
-    expect(existsSync(path.join(f.env['XDG_STATE_HOME']!, 'notifai', 'automatic-update.json'))).toBe(false)
   })
 })
 

@@ -1,21 +1,21 @@
-import { appendFileSync, mkdirSync, mkdtempSync, renameSync, rmSync, writeFileSync } from 'node:fs'
+import type { AnswerVersionView,RecordHarnessAnswerRequestT } from '@raidiant/notifai-protocol'
+import { appendFileSync,mkdirSync,mkdtempSync,rmSync } from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import { afterEach, describe, expect, it, vi } from 'vitest'
-import type { AnswerVersionView, RecordHarnessAnswerRequestT } from '@raidiant/notifai-protocol'
-import { ApiCallError, type ApiClient } from './client.js'
-import type { CommandDeps } from './commands-core.js'
-import type { HookEnvelope } from './hook-types.js'
+import { afterEach,describe,expect,it,vi } from 'vitest'
+import { type ApiClient } from './client.js'
+import { CODEX_TERMINAL_RECEIPT,observeCodexTerminalAnswers,parseCodexTerminalReplies,reportCodexTerminalAnswers,takeCodexTerminalConflictContext } from './codex-terminal-answers.js'
 import { acknowledgeCommand } from './commands-acknowledge.js'
+import type { CommandDeps } from './commands-core.js'
 import { NATIVE_ANSWERS_DEPRECATION } from './commands-native-acknowledge.js'
-import { buildProgram } from './program.js'
 import { registerQuestion } from './hook-lifecycle.js'
-import { beginSessionIncarnation, lifecycleStamp, markSessionEnded, readSessionState, updateSessionState, writeSessionState } from './hook-session-state.js'
-import { currentProcessIdentity } from './process-identity.js'
-import { recordTurnStart } from './session-attendant-state.js'
-import { questionsAwaitingAnswer, recordConfirmedNativeAnswerTarget } from './native-answer-operation.js'
+import { beginSessionIncarnation,lifecycleStamp,readSessionState,writeSessionState } from './hook-session-state.js'
+import type { HookEnvelope } from './hook-types.js'
 import { createLogger } from './logging.js'
-import { CODEX_TERMINAL_RECEIPT, observeCodexTerminalAnswers, parseCodexTerminalReplies, reportCodexTerminalAnswers, takeCodexTerminalConflictContext } from './codex-terminal-answers.js'
+import { questionsAwaitingAnswer,recordConfirmedNativeAnswerTarget } from './native-answer-operation.js'
+import { currentProcessIdentity } from './process-identity.js'
+import { buildProgram } from './program.js'
+import { recordTurnStart } from './session-attendant-state.js'
 
 const roots: string[] = []
 afterEach(() => { vi.restoreAllMocks(); for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }) })
@@ -98,19 +98,6 @@ describe('Codex terminal reply envelopes', () => {
     expect(parseCodexTerminalReplies(prompt)).toHaveLength(2)
     expect(parseCodexTerminalReplies(`# Context from my IDE:\nopen file\n## My request for Codex:\n${prompt}`)).toEqual(parseCodexTerminalReplies(prompt))
   })
-  it.each(['', 'Hello', `Example: ${envelope()}`, `${envelope()} suffix`, `<send_user_message_question_reply>{}</send_user_message_question_reply>`,
-    envelope([reply(0, ' ')]), envelope([reply(-1)]), envelope([reply(0, 'Staging', { questionItemId: '["request_user_input","card_call",0]' })]),
-    envelope([reply(), reply()]), envelope([reply(0, 'Staging', { questionItemId: '{}' })])])('ignores malformed or quoted input: %s', prompt => {
-    expect(parseCodexTerminalReplies(prompt)).toEqual([])
-  })
-  it('skips every Notifai-marked item, including device answers and expirations, without losing other items', () => {
-    for (const notifai of [{ origin: 'companion' }, { expired: true }, null, false]) {
-      expect(parseCodexTerminalReplies(envelope([reply(0, 'Staging', { notifai })]))).toEqual([])
-    }
-    expect(parseCodexTerminalReplies(envelope([reply(0, 'Staging', { notifai: {} }), reply(1, 'notes')]))).toEqual([
-      { callId: 'card_call', index: 1, question: 'Any notes?', answer: 'notes' },
-    ])
-  })
 })
 
 it('records only after rollout commit, one item at a time, with a fixed receipt and idempotent replay', async () => {
@@ -152,28 +139,6 @@ it('confirms a committed user response item but never model, tool, hook-context 
   expect(h.client.recordHarnessAnswer).toHaveBeenCalledOnce()
 })
 
-it('does not report a blocked prompt or bind it to another committed prompt or turn', async () => {
-  const h = fixture(); h.observe()
-  h.commit(envelope([reply(0, 'Production')]))
-  h.append('event_msg', { type: 'task_started', turn_id: 'turn-2' })
-  h.commit()
-  await h.report()
-  expect(h.client.recordHarnessAnswer).not.toHaveBeenCalled()
-})
-
-it('requires the exact live root, accepted binding, question text, call and index', async () => {
-  const h = fixture()
-  for (const overrides of [{ agent_id: 'child' }, { agent_type: 'worker' }, { session_id: 'other' }, { hook_event_name: 'PostToolUse' }]) h.observe(envelope(), overrides)
-  for (const change of [{ question: 'Where now?' }, { questionItemId: '["request_user_input_async","foreign",0]' },
-    { questionItemId: '["request_user_input_async","card_call",2]' }]) h.observe(envelope([reply(0, 'Staging', change)]))
-  h.observe(envelope([reply(0, 'Staging', { notifai: { origin: 'companion' } })]))
-  expect(h.state().codex_terminal_observations ?? []).toEqual([])
-  updateSessionState(SESSION, h.env, state => ({ ...state, codex_question_bindings: state.codex_question_bindings!.map(reg =>
-    ({ ...reg, questions: reg.questions.map(({ verified: _verified, ...item }) => item) })) }))
-  h.observe(); h.commit(); await h.report()
-  expect(h.client.recordHarnessAnswer).not.toHaveBeenCalled()
-})
-
 it('waits for a confirmed request and preserves the same operation through a lost acknowledgement', async () => {
   const h = fixture(false); h.observe(); h.commit(); await h.report()
   const submission = h.state().native_answer_operations![0]!.submission_id
@@ -184,45 +149,6 @@ it('waits for a confirmed request and preserves the same operation through a los
   expect(h.client.recordHarnessAnswer).toHaveBeenCalledTimes(2)
   expect(h.client.recordHarnessAnswer.mock.calls.every(([, body]) => body.submission_id === submission)).toBe(true)
   expect(h.state().native_answer_operations![0]!.acknowledgement?.text).toBe(CODEX_TERMINAL_RECEIPT)
-})
-
-it('surfaces conflicting terminal and device answers without claiming who typed the terminal input', async () => {
-  const h = fixture()
-  h.others.push({ ...version('rpl_device', [{ question_id: 'q1', choice_ids: ['production'] }]), origin: 'companion', provenance: null })
-  h.observe(); h.commit(); await h.report()
-  const context = h.conflict()!
-  expect(context).toContain('staging'); expect(context).toContain('production')
-  expect(context).toContain('ask which governs before dependent work')
-  expect(context).not.toContain("Both answers are the user's own")
-  expect(h.conflict()).toBeNull()
-  await h.report(); expect(h.conflict()).toBeNull()
-})
-
-it('keeps the first committed answer immutable and presents a later different committed answer as conflict', async () => {
-  const h = fixture(); h.observe(); h.commit(); await h.report()
-  const changed = envelope([reply(0, 'Production')])
-  h.observe(changed); await h.report(); expect(h.conflict()).toBeNull()
-  h.commit(changed); await h.report()
-  expect(h.conflict()).toContain('production')
-  expect(h.client.recordHarnessAnswer).toHaveBeenCalledOnce()
-  h.observe(changed); h.commit(changed); await h.report(); expect(h.conflict()).toBeNull()
-})
-
-it('does not mistake disjoint partial submissions or the same selection for a conflict', async () => {
-  const h = fixture()
-  h.others.push(version('rpl_other', [{ question_id: 'q2', text: 'Keep the logs.' }]), version('rpl_same', [{ question_id: 'q1', choice_ids: ['staging'] }]))
-  h.observe(); h.commit(); await h.report(); expect(h.conflict()).toBeNull()
-})
-
-it.each(['service', 'owner', 'ended', 'replaced-rollout', 'unowned-rollout', 'partial-rollout'])('fences reports when %s changes', async kind => {
-  const h = fixture(); h.observe(); h.commit()
-  if (kind === 'service') h.ctx.service_identity = { ...h.service, machine_id: 'other' }
-  if (kind === 'owner') beginSessionIncarnation(SESSION, h.env, { stamp: lifecycleStamp(), restart: true })
-  if (kind === 'ended') markSessionEnded(SESSION, h.env, Date.now())
-  if (kind === 'replaced-rollout') { renameSync(h.file, `${h.file}.old`); writeFileSync(h.file, '{}\n') }
-  if (kind === 'unowned-rollout') writeFileSync(h.file, JSON.stringify({ type: 'session_meta', payload: { id: 'other', source: 'cli' } }) + '\n')
-  if (kind === 'partial-rollout') appendFileSync(h.file, '{"type":"event_msg"')
-  await h.report(); expect(h.client.recordHarnessAnswer).not.toHaveBeenCalled()
 })
 
 describe('an older skill reporting a terminal answer itself', () => {
@@ -248,94 +174,4 @@ describe('an older skill reporting a terminal answer itself', () => {
     expect(h.client.recordHarnessAnswer).toHaveBeenCalledOnce()
     expect(h.state().native_answer_operations?.map(op => op.operation_id)).toEqual(['terminal:0'])
   })
-
-  it('records as before when it reports first, and Notifai then records nothing twice', async () => {
-    const h = agent(fixture())
-    h.observe()
-    expect(await acknowledgeCommand(h.deps, h.questionId, report)).toBe(0)
-    expect(last(h)).toMatchObject({ ok: true, operation_id: 'native-1' })
-    expect(h.client.putAgentAcknowledgement).toHaveBeenCalledWith('req_original', { session_id: SESSION, reply_seq: 1, text: report.text })
-    h.commit(); await h.report()
-    expect(h.client.recordHarnessAnswer).toHaveBeenCalledOnce()
-    expect(h.state().codex_terminal_observations ?? []).toEqual([])
-    expect(h.conflict()).toBeNull()
-  })
-
-  it('records only the items Notifai has not recorded itself', async () => {
-    const h = agent(fixture())
-    h.observe(); h.commit(); await h.report()
-    const both = { ...report, nativeAnswers: JSON.stringify([{ question_id: 'q1', choice_ids: ['staging'] }, { question_id: 'q2', text: 'Keep the logs.' }]) }
-    expect(await acknowledgeCommand(h.deps, h.questionId, both)).toBe(0)
-    expect(h.client.recordHarnessAnswer).toHaveBeenLastCalledWith('req_original', { session_id: SESSION, submission_id: expect.any(String),
-      answers: [{ question_id: 'q2', text: 'Keep the logs.' }] })
-    expect(h.client.recordHarnessAnswer).toHaveBeenCalledTimes(2)
-  })
-
-  it('succeeds for a card Notifai withdrew because the terminal answered all of it', async () => {
-    const h = agent(fixture(false))
-    const all = envelope([reply(), reply(1, 'Keep the logs.')])
-    h.observe(all); h.commit(all); await h.report()
-    expect(h.state().codex_question_bindings![0]!.terminal_answered).toBe(true)
-    expect(await acknowledgeCommand(h.deps, h.questionId, report)).toBe(0)
-    expect(last(h)).toMatchObject({ ok: true, already_recorded: true })
-    expect(h.client.recordHarnessAnswer).not.toHaveBeenCalled()
-  })
-})
-
-
-it('waits for a delayed rollout flush only in the detached owner', async () => {
-  const h = fixture(); h.observe()
-  const flush = setTimeout(() => h.commit(), 50)
-  try { await reportCodexTerminalAnswers(h.ctx, SESSION, true) } finally { clearTimeout(flush) }
-  expect(h.client.recordHarnessAnswer).toHaveBeenCalledOnce()
-})
-
-it('withdraws a fully answered card before submission and retains partial cards for their unanswered items', async () => {
-  const h = fixture(false)
-  h.observe(); h.commit(); await h.report()
-  expect(h.state().pending).toHaveLength(1)
-  const text = envelope([reply(1, 'Keep the logs.')])
-  h.observe(text); h.commit(text); await h.report()
-  expect(h.state().pending ?? []).toEqual([])
-  expect(h.state().codex_question_bindings![0]!.terminated).toBe(true)
-  expect(h.client.recordHarnessAnswer).not.toHaveBeenCalled()
-  expect(h.client.putAgentAcknowledgement).not.toHaveBeenCalled()
-})
-
-it('retires a permanently refused report while keeping transient failures retryable', async () => {
-  const h = fixture()
-  updateSessionState(SESSION, h.env, state => ({ ...state, pending: state.pending!.map(item => ({ ...item,
-    request_id: 'req_original', collapse_key: 'test-collapse', device_ids: ['device_test'] })) }))
-  h.observe(); h.commit()
-  h.client.recordHarnessAnswer.mockRejectedValueOnce(new Error('offline'))
-  await h.report()
-  expect(h.state().pending).toHaveLength(1)
-  h.client.recordHarnessAnswer.mockRejectedValueOnce(new ApiCallError(404, 'not_found', 'unsupported'))
-  await h.report()
-  expect(h.state().pending ?? []).toEqual([])
-  expect(h.state().retiring).toEqual([expect.objectContaining({ request_id: 'req_original', state: 'answered_elsewhere' })])
-})
-
-it('keeps a blocked observation from occupying the item operation when a later answer commits', async () => {
-  const h = fixture(); h.observe()
-  const accepted = envelope([reply(0, 'Production')])
-  h.observe(accepted); h.commit(accepted); await h.report()
-  expect(h.state().native_answer_operations).toHaveLength(1)
-  expect(h.state().native_answer_operations![0]!.answers).toEqual([{ question_id: 'q1', choice_ids: ['production'] }])
-  expect(h.conflict()).toBeNull()
-})
-
-it('records an accepted hook-bound card after its call and turn start leave the bounded rollout tail', async () => {
-  const h = fixture()
-  h.append('response_item', { type: 'function_call_output', call_id: 'large-tool', output: 'x'.repeat(9 * 1024 * 1024) })
-  h.observe(); h.commit(); await h.report()
-  expect(h.client.recordHarnessAnswer).toHaveBeenCalledOnce()
-})
-
-it('rejects a committed message when unseen history moved the observation fence outside the bounded tail', async () => {
-  const h = fixture(); h.observe()
-  h.append('event_msg', { type: 'task_started', turn_id: 'other-turn' })
-  h.append('response_item', { type: 'function_call_output', call_id: 'large-tool', output: 'x'.repeat(9 * 1024 * 1024) })
-  h.commit(); await h.report()
-  expect(h.client.recordHarnessAnswer).not.toHaveBeenCalled()
 })

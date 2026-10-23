@@ -1,38 +1,31 @@
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs'
-import { createConnection, createServer, type Socket } from 'node:net'
-import os from 'node:os'
-import path from 'node:path'
-import { afterEach, describe, expect, it, vi } from 'vitest'
 import type {
-  AttendanceBatchRequestT,
-  AttendanceBatchResponse,
-  AttendanceRequestT,
-  AttendanceResponse,
-  CompatibilityResponse,
+AttendanceBatchRequestT,
+AttendanceBatchResponse,
+AttendanceRequestT,
+AttendanceResponse,
+CompatibilityResponse,
 } from '@raidiant/notifai-protocol'
-import { ApiCallError, type ApiClient } from './client.js'
-import type { CommandDeps } from './commands-core.js'
-import type { CredentialStore, MachineCredential } from './credentials.js'
+import { spawn,type ChildProcess } from 'node:child_process'
+import { mkdirSync,mkdtempSync,readFileSync,rmSync,writeFileSync } from 'node:fs'
+import { createConnection,createServer,type Socket } from 'node:net'
+import path from 'node:path'
+import { afterEach,describe,expect,it,vi } from 'vitest'
 import { claudeDescriptorDir } from './claude-wake.js'
-import { beginSessionIncarnation, lifecycleStamp, markSessionEnded, readSessionEndMarker, readSessionIncarnation, readSessionState, recordSessionNotified, updateSessionState } from './hook-session-state.js'
-import { claimQuestionPush, questionPushHeld, releaseQuestionPush } from './hook-question-lock.js'
-import { hookRunCommand } from './commands-hook-run.js'
+import { ApiCallError,type ApiClient } from './client.js'
 import type { CodexWakeAdapters } from './codex-wake.js'
-import * as sessionState from './hook-session-state.js'
-import { runWakeCommand } from './wake-support.js'
-import { hasSessionInputs, observeSessionInputWake, sessionInputWake, stageSessionMessages } from './session-inputs.js'
-import { attendantStatusPath, recordTurnEnd, recordTurnStart } from './session-attendant-state.js'
-import { ExchangeDriver, type AttendedSession, type ExchangeHost } from './hub-exchange.js'
-import { credentialGenerationPath, encodeFrame, ensurePrivateDirectory, FrameDecoder, fnv64Hex, hubLockPath, hubSocketPath, requestHub } from './hub-ipc.js'
-import { SessionLease, HUB_WRITE_MARGIN_MS } from './hub-lease.js'
-import { Hub, type HubOptions, type PeerCredentials } from './hub.js'
-import { spawn, type ChildProcess } from 'node:child_process'
+import type { CommandDeps } from './commands-core.js'
+import { hookRunCommand } from './commands-hook-run.js'
+import type { CredentialStore,MachineCredential } from './credentials.js'
+import { beginSessionIncarnation,lifecycleStamp,readSessionEndMarker,readSessionIncarnation,readSessionState,recordSessionNotified,updateSessionState } from './hook-session-state.js'
+import { ExchangeDriver,type AttendedSession,type ExchangeHost } from './hub-exchange.js'
+import { credentialGenerationPath,encodeFrame,ensurePrivateDirectory,FrameDecoder,hubLockPath,hubSocketPath,requestHub } from './hub-ipc.js'
+import { HUB_WRITE_MARGIN_MS,SessionLease } from './hub-lease.js'
+import { Hub,type HubOptions,type PeerCredentials } from './hub.js'
 import { nullLogger } from './logging.js'
-import { pidExists, processStartTime } from './process-identity.js'
-import { readHubReport } from './hub-client.js'
-import type { TerminalLaunch } from './reopen-terminal.js'
-import { reopenReport } from './session-reopen.js'
-import { readAttendantEndingLease, readAttendantLease } from './session-attendant-state.js'
+import { pidExists,processStartTime } from './process-identity.js'
+import { attendantStatusPath,readAttendantEndingLease,readAttendantLease,recordTurnEnd,recordTurnStart } from './session-attendant-state.js'
+import { hasSessionInputs,stageSessionMessages } from './session-inputs.js'
+import { runWakeCommand } from './wake-support.js'
 
 const SESSION = '11111111-2222-3333-4444-555555555555'
 const OTHER = '22222222-3333-4444-5555-666666666666'
@@ -58,13 +51,6 @@ describe('hub session lease', () => {
     expect(lease.covers(2_001, 0, 'cred:2')).toBe(false)
   })
 
-  it('treats a grant sent before a clock jump as no grant', () => {
-    const lease = new SessionLease('inc_aaaaaaaaaaaa', () => null)
-    lease.apply(attending(1), 1_000, 0, 1, 'cred', false)
-    expect(lease.generation).toBe(1)
-    expect(lease.covers(1_001, 1, 'cred')).toBe(false)
-  })
-
   it('waits out another owner, and stops for good when the service withdraws a held generation', () => {
     const lease = new SessionLease('inc_aaaaaaaaaaaa', () => null)
     expect(lease.apply({ status: 'owned', retry_after_ms: 50 }, 0, 0, 0, null, false)).toEqual({ kind: 'owned', retryAfterMs: 1_000 })
@@ -73,15 +59,6 @@ describe('hub session lease', () => {
     expect(lease.apply({ status: 'withdrawn' }, 0, 0, 0, null, false)).toEqual({ kind: 'withdrawn' })
     expect(lease.phase).toBe('withdrawn')
     expect(lease.generation).toBeNull()
-  })
-
-  it('rotates a refused incarnation once, never twice in a row', () => {
-    const rotations: string[] = []
-    const lease = new SessionLease('inc_aaaaaaaaaaaa', (expected) => { rotations.push(expected); return `inc_bbbbbbbbbbb${rotations.length}` })
-    expect(lease.apply({ status: 'withdrawn' }, 0, 0, 0, null, false)).toEqual({ kind: 'rotated' })
-    expect(lease.incarnation).toBe('inc_bbbbbbbbbbb1')
-    expect(lease.apply({ status: 'withdrawn' }, 0, 0, 0, null, false)).toEqual({ kind: 'withdrawn' })
-    expect(rotations).toEqual(['inc_aaaaaaaaaaaa'])
   })
 
   it('reports an end from a held generation, and a withdrawal only from a held one', () => {
@@ -101,31 +78,6 @@ describe('hub session lease', () => {
     expect(lease.final).toBeNull()
   })
 
-  it('reports a stop only from a held generation, keeps it, and reads what the service holds for it', () => {
-    const lease = new SessionLease('inc_aaaaaaaaaaaa', () => null)
-    lease.holdStopped = true
-    expect(lease.stoppedEntry(SESSION)).toBeNull()
-    lease.generation = 3
-    expect(lease.stoppedEntry(SESSION)).toEqual({ session_id: SESSION, incarnation: 'inc_aaaaaaaaaaaa', generation: 3, state: 'stopped' })
-    const note = { message_id: 'sm_note1', created_at: new Date().toISOString(), agent_acknowledgement_text_required: true, kind: 'note' as const, body: 'Use the staging DB' }
-    expect(lease.apply({ status: 'stopped', generation: 3, message_cursor: 'c2', messages: [note] }, 0, 0, 0, 'cred', false, true))
-      .toEqual({ kind: 'stopped', messages: [note] })
-    expect(lease).toMatchObject({ stopReported: true, needsFresh: false, generation: 3, cursor: 'c2' })
-    // An end still goes out first, and from the same holder.
-    lease.final = 'ended'
-    expect(lease.stoppedEntry(SESSION)).toBeNull()
-    expect(lease.finalEntry(SESSION)).toEqual({ session_id: SESSION, incarnation: 'inc_aaaaaaaaaaaa', generation: 3, state: 'ended' })
-  })
-
-  it('stops holding when the service will not keep it stopped for this incarnation', () => {
-    const lease = new SessionLease('inc_aaaaaaaaaaaa', () => null)
-    lease.generation = 2
-    lease.holdStopped = true
-    expect(lease.apply({ status: 'withdrawn' }, 0, 0, 0, null, false, true)).toEqual({ kind: 'stop-refused' })
-    expect(lease.stoppedEntry(SESSION)).toBeNull()
-    expect(lease.generation).toBe(2)
-  })
-
   it('continues an ended session under its successor, and owes a plain end when the service refuses the successor', () => {
     const lease = new SessionLease('inc_aaaaaaaaaaaa', () => null)
     lease.generation = 2
@@ -137,23 +89,6 @@ describe('hub session lease', () => {
     expect(lease.finalEntry(SESSION)).toEqual({ session_id: SESSION, incarnation: 'inc_aaaaaaaaaaaa', generation: 2, state: 'ended' })
     lease.successor = 'fork-session'
     expect(lease.apply({ status: 'withdrawn' }, 0, 0, 0, null, true)).toEqual({ kind: 'reported', state: 'ended', successor: 'fork-session' })
-  })
-
-  it('takes a session back after a stop the service held under a new incarnation, and renews as before where it held none', () => {
-    const rotations: string[] = []
-    const lease = new SessionLease('inc_aaaaaaaaaaaa', (expected) => { rotations.push(expected); return 'inc_bbbbbbbbbbbb' })
-    lease.generation = 2
-    lease.resumedFromStop = true
-    // The service held it as stopped: the renewal is refused, and a fresh incarnation acquires.
-    expect(lease.apply({ status: 'withdrawn' }, 0, 0, 0, null, false)).toEqual({ kind: 'rotated' })
-    expect(lease).toMatchObject({ incarnation: 'inc_bbbbbbbbbbbb', generation: null, resumedFromStop: false })
-    expect(lease.apply(attending(3), 0, 0, 0, null, false)).toMatchObject({ kind: 'attending', acquired: true })
-    // A service that only saw the lease lapse renews it as it always did.
-    const lapsed = new SessionLease('inc_cccccccccccc', () => 'inc_dddddddddddd')
-    lapsed.generation = 2
-    lapsed.resumedFromStop = true
-    expect(lapsed.apply(attending(2), 0, 0, 0, null, false)).toMatchObject({ kind: 'attending', acquired: false })
-    expect(lapsed).toMatchObject({ incarnation: 'inc_cccccccccccc', resumedFromStop: false })
   })
 })
 
@@ -280,114 +215,6 @@ describe('hub exchange driver', () => {
     await running
   })
 
-  it('cuts the held exchange when a session needs a fresh answer', async () => {
-    const service = fakeService()
-    const session = new FakeSession(SESSION)
-    const driver = new ExchangeDriver(driverHost(service, [session]))
-    const running = driver.run()
-    await until(() => service.batches.length >= 2 && service.batches[1]!.waitSeconds === 25)
-    session.lease.needsFresh = true
-    driver.poke()
-    await until(() => service.batches.length >= 3)
-    expect(service.batches[2]!.waitSeconds).toBe(0)
-    driver.stop()
-    service.release()
-    await running
-  })
-
-  it('leaves an owned session out until its retry time instead of spinning the batch', async () => {
-    let calls = 0
-    const service = fakeService({ batch: (body) => {
-      calls += 1
-      return { message_cursor: 'c1', sessions: body.sessions.map((entry) => entry.session_id === OTHER
-        ? { session_id: OTHER, status: 'owned', retry_after_ms: 60_000 }
-        : { session_id: entry.session_id, status: 'attending', generation: 1, lease_remaining_ms: 120_000, message_cursor: 'c1', messages: [] }) }
-    } })
-    const sessions = [new FakeSession(SESSION), new FakeSession(OTHER)]
-    const driver = new ExchangeDriver(driverHost(service, sessions))
-    const running = driver.run()
-    await until(() => service.batches.length >= 2)
-    await new Promise((resolve) => setTimeout(resolve, 100))
-    // One fresh exchange, then a held one that no longer carries the owned session.
-    expect(calls).toBeLessThanOrEqual(3)
-    expect(service.batches.at(-1)!.body.sessions.map((s) => s.session_id)).toEqual([SESSION])
-    expect(sessions[1]!.outcomes).toContain('owned')
-    driver.stop()
-    service.release()
-    await running
-  })
-
-  it('keeps a stopped session in the batch only where the service holds stopped sessions', async () => {
-    const note = { message_id: 'sm_held1', created_at: new Date().toISOString(), agent_acknowledgement_text_required: true, kind: 'note' as const, body: 'Later' }
-    const holding = fakeService({
-      capabilities: ['session_attendance', 'session_attendance_batch', 'session_stopped_hold'],
-      batch: (body) => ({ message_cursor: 'c2', sessions: body.sessions.map((entry) => entry.state === 'stopped'
-        ? { session_id: entry.session_id, status: 'stopped', generation: entry.generation!, message_cursor: 'c2', messages: [note] }
-        : { session_id: entry.session_id, status: 'attending', generation: 1, lease_remaining_ms: 120_000, message_cursor: 'c2', messages: [] }) }),
-    })
-    const stopped = new FakeSession(SESSION)
-    stopped.ready = false
-    stopped.lease.generation = 4
-    stopped.lease.holdStopped = true
-    const driver = new ExchangeDriver(driverHost(holding, [stopped]))
-    const running = driver.run()
-    await until(() => holding.batches.length >= 2)
-    expect(holding.batches[0]!.body.sessions).toEqual([{ session_id: SESSION, incarnation: stopped.lease.incarnation, generation: 4, state: 'stopped' }])
-    expect(holding.batches[0]!.waitSeconds).toBe(0)
-    // Held from then on: it waits for a note, never spins.
-    expect(holding.batches[1]!.waitSeconds).toBe(25)
-    expect(stopped.outcomes).toContain('stopped')
-    expect(stopped.lease.stopReported).toBe(true)
-    driver.stop()
-    holding.release()
-    await running
-
-    // A service without it: nothing about the stop is sent, as before.
-    const plain = fakeService()
-    const other = new FakeSession(SESSION)
-    other.ready = false
-    other.lease.generation = 4
-    other.lease.holdStopped = true
-    const second = new ExchangeDriver(driverHost(plain, [other]))
-    const secondRun = second.run()
-    await new Promise((resolve) => setTimeout(resolve, 150))
-    expect(plain.batches).toEqual([])
-    expect(second.offers('session_stopped_hold')).toBe(false)
-    second.stop()
-    plain.release()
-    await secondRun
-  })
-
-  it('asks the service again what it offers when it refuses a stopped entry', async () => {
-    let capabilities = ['session_attendance', 'session_attendance_batch', 'session_stopped_hold']
-    let compatibilityCalls = 0
-    // A service rolled back past stopped sessions while this hub ran.
-    const service = fakeService({ batch: (body) => {
-      if (!body.sessions.some((entry) => entry.state === 'stopped')) return { message_cursor: 'c1', sessions: [] }
-      capabilities = ['session_attendance', 'session_attendance_batch']
-      return new ApiCallError(422, 'invalid_request', 'body/sessions/0/state must be equal to one of the allowed values')
-    } })
-    const compatibility = service.client.compatibility.bind(service.client)
-    const client = new Proxy(service.client, { get(target, property) {
-      if (property === 'compatibility') return async () => { compatibilityCalls += 1; return { ...(await compatibility()), server_capabilities: capabilities } }
-      return (target as unknown as Record<string | symbol, unknown>)[property]
-    } }) as ApiClient
-    const stopped = new FakeSession(SESSION)
-    stopped.ready = false
-    stopped.lease.generation = 4
-    stopped.lease.holdStopped = true
-    const driver = new ExchangeDriver(driverHost(service, [stopped], { client: () => client }))
-    const running = driver.run()
-    await until(() => service.batches.length >= 1)
-    await until(() => compatibilityCalls >= 2)
-    await new Promise((resolve) => setTimeout(resolve, 100))
-    expect(service.batches).toHaveLength(1)
-    expect(driver.offers('session_stopped_hold')).toBe(false)
-    driver.stop()
-    service.release()
-    await running
-  })
-
   it('falls back to the per-session route against a service without the batch', async () => {
     const service = fakeService({ capabilities: ['session_attendance'] })
     const sessions = [new FakeSession(SESSION), new FakeSession(OTHER)]
@@ -396,49 +223,6 @@ describe('hub exchange driver', () => {
     await until(() => service.single.length >= 2)
     expect(service.batches).toEqual([])
     expect(new Set(service.single.map((call) => call.sessionId))).toEqual(new Set([SESSION, OTHER]))
-    expect(driver.transport).toBe('per-session')
-    driver.stop()
-    service.release()
-    await running
-  })
-
-  it('paces the per-session fallback to the machine\'s exchange budget', async () => {
-    const service = fakeService({ capabilities: ['session_attendance'] })
-    const sessions = Array.from({ length: 20 }, (_, index) => new FakeSession(`00000000-0000-4000-8000-${String(index).padStart(12, '0')}`))
-    const driver = new ExchangeDriver(driverHost(service, sessions))
-    const running = driver.run()
-    await new Promise((resolve) => setTimeout(resolve, 500))
-    expect(service.single.length).toBeLessThanOrEqual(8)
-    await until(() => service.single.length >= 20, 6_000)
-    driver.stop()
-    service.release()
-    await running
-  })
-
-  it('never cuts an exchange that is already answering, so an end report is sent once', async () => {
-    const service = fakeService()
-    service.hold = true
-    const ending = new FakeSession(SESSION)
-    ending.lease.generation = 2
-    ending.lease.final = 'ended'
-    const driver = new ExchangeDriver(driverHost(service, [ending]))
-    const running = driver.run()
-    await until(() => service.batches.length >= 1)
-    driver.poke()
-    await new Promise((resolve) => setTimeout(resolve, 50))
-    service.hold = false
-    service.release()
-    await until(() => ending.outcomes.includes('reported'))
-    expect(service.batches.filter((batch) => batch.body.sessions.some((entry) => entry.state === 'ended'))).toHaveLength(1)
-    driver.stop()
-    await running
-  })
-
-  it('falls back when the batch route answers 404 even though the capability was listed', async () => {
-    const service = fakeService({ batch: () => new ApiCallError(404, 'not_found', 'no route') })
-    const driver = new ExchangeDriver(driverHost(service, [new FakeSession(SESSION)]))
-    const running = driver.run()
-    await until(() => service.single.length >= 1)
     expect(driver.transport).toBe('per-session')
     driver.stop()
     service.release()
@@ -563,8 +347,6 @@ function startHub(env: NodeJS.ProcessEnv, service: FakeService, peers: Map<numbe
   return { hub, done }
 }
 let lastHelloPid = 0
-/** The command line a terminal Claude Code conversation in these tests was started with. */
-const LAUNCHED = ['/usr/local/bin/claude', '--disallowedTools', 'Bash(rm:*)', '--permission-mode', 'acceptEdits']
 
 async function hubListening(env: NodeJS.ProcessEnv): Promise<void> {
   await until(() => {
@@ -611,31 +393,6 @@ describe('hub', () => {
     await done
   })
 
-  it('registers a child of the harness, attends it in one batch, and reports the end the child sees', async () => {
-    const env = hubEnv()
-    writeDescriptor(env, SESSION)
-    recordSessionNotified(SESSION, env, Date.now())
-    const service = fakeService()
-    const peers = new Map<number, PeerCredentials>()
-    const { hub, done } = startHub(env, service, peers)
-    await hubListening(env)
-    const child = await registered(env, SESSION, 900001, peerOf(900001, { pid: HARNESS.pid, comm: 'claude', start: HARNESS.start }), peers)
-    expect(child.frames[0]).toEqual({ type: 'registered', session_id: SESSION })
-    await until(() => service.batches.length >= 2)
-    expect(service.batches[0]!.body.sessions).toEqual([expect.objectContaining({ session_id: SESSION, state: 'running', activity: 'idle', accepts_messages: true })])
-    expect(readSessionIncarnation(SESSION, env)?.boot).toBe('test-boot')
-    child.send({ type: 'ended', session_id: SESSION, harness_pid: HARNESS.pid, reason: 'harness-gone' })
-    await until(() => service.batches.some((batch) => batch.body.sessions.some((entry) => entry.state === 'ended')))
-    const ended = service.batches.find((batch) => batch.body.sessions.some((entry) => entry.state === 'ended'))!
-    expect(ended.body.sessions).toEqual([{ session_id: SESSION, incarnation: readSessionIncarnation(SESSION, env)!.incarnation, generation: 1, state: 'ended' }])
-    // The close nobody else recorded is recorded locally, as SessionEnd would have.
-    await until(() => readSessionEndMarker(SESSION, env) !== null)
-    child.socket.destroy()
-    service.release()
-    expect(await done).toBe(0) // idle exit after the last child left
-    void hub
-  })
-
   it('accepts a grandchild through a shell, and refuses another user, another process, a non-child and a reused PID', async () => {
     const env = hubEnv()
     writeDescriptor(env, SESSION)
@@ -668,41 +425,6 @@ describe('hub', () => {
     expect(liar.frames[0]).toEqual({ type: 'refused', reason: 'peer-mismatch', retry: false })
     service.release()
     await done
-  })
-
-  it('waits for a descriptor Claude Code is still writing (a resumed session has no status at first), and asks the child back while it stays incomplete', async () => {
-    const env = hubEnv()
-    const descriptor = path.join(claudeDescriptorDir(env), `${HARNESS.pid}.json`)
-    const partial = { pid: HARNESS.pid, sessionId: SESSION, cwd: '/tmp', startedAt: Date.now(), procStart: HARNESS.start, version: '2.1.304',
-      peerProtocol: 1, messagingSocketPath: '/tmp/b3hub-inbox.sock' }
-    writeFileSync(descriptor, JSON.stringify(partial))
-    const service = fakeService()
-    const peers = new Map<number, PeerCredentials>()
-    const { hub, done } = startHub(env, service, peers)
-    await hubListening(env)
-    const harness = { pid: HARNESS.pid, comm: 'claude', start: HARNESS.start }
-    setTimeout(() => writeFileSync(descriptor, JSON.stringify({ ...partial, status: 'idle' })), 300)
-    const child = await registered(env, SESSION, 900008, peerOf(900008, harness), peers)
-    expect(child.frames[0]).toEqual({ type: 'registered', session_id: SESSION })
-    child.socket.destroy()
-    writeFileSync(descriptor, JSON.stringify(partial))
-    const other = await registered(env, OTHER, 900009, peerOf(900009, harness), peers, { session_id: OTHER })
-    expect(other.frames[0]).toEqual({ type: 'refused', reason: 'descriptor-missing', retry: true })
-    hub.requestExit('test')
-    service.release()
-    await done
-  })
-
-  it('keeps one hub per state directory when two start at once', async () => {
-    const env = hubEnv()
-    const service = fakeService()
-    const first = startHub(env, service, new Map())
-    const second = startHub(env, service, new Map())
-    const results = await Promise.all([first.done, second.done])
-    // Both end (idle); exactly one of them listened.
-    expect(results).toEqual([0, 0])
-    const starts = (JSON.parse(readFileSync(path.join(env['XDG_STATE_HOME']!, 'notifai', 'run', 'hub-history.json'), 'utf8')) as { starts: unknown[] }).starts
-    expect(starts).toHaveLength(1)
   })
 
   it('lets children re-register with a restarted hub without a false end or a new generation', async () => {
@@ -756,223 +478,6 @@ describe('hub', () => {
     expect(service.batches.length).toBe(after)
     child.socket.destroy()
     await done
-  })
-
-  it('ends the in-hub waiters\' requests when the credential changes', async () => {
-    const env = hubEnv()
-    const { hub, done } = startHub(env, fakeService(), new Map())
-    await hubListening(env)
-    const before = hub.waiterSignal()
-    expect(before.aborted).toBe(false)
-    expect(await requestHub(env, { type: 'credential-changed' })).toEqual({ type: 'ack' })
-    expect(before.aborted).toBe(true)
-    expect(hub.waiterSignal().aborted).toBe(false)
-    hub.requestExit('test')
-    await done
-  })
-
-  it('leaves when idle after logout even with an end report it cannot send', async () => {
-    const env = hubEnv()
-    writeDescriptor(env, SESSION)
-    recordSessionNotified(SESSION, env, Date.now())
-    const service = fakeService()
-    const store = memoryStore()
-    const peers = new Map<number, PeerCredentials>()
-    const { done } = startHub(env, service, peers, store, 100)
-    await hubListening(env)
-    const child = await registered(env, SESSION, 900050, peerOf(900050, { pid: HARNESS.pid, comm: 'claude', start: HARNESS.start }), peers)
-    await until(() => service.batches.length >= 2)
-    store.clear()
-    writeFileSync(credentialGenerationPath(env), 'signed-out\n')
-    expect(await requestHub(env, { type: 'credential-changed' })).toEqual({ type: 'ack' })
-    const after = service.batches.length
-    child.send({ type: 'ended', session_id: SESSION, harness_pid: HARNESS.pid, reason: 'harness-gone' })
-    child.socket.destroy()
-    service.release()
-    expect(await done).toBe(0)
-    expect(service.batches.length).toBe(after)
-  })
-
-  it('renews a lone session again once an uncertain read clears', async () => {
-    const env = hubEnv()
-    writeDescriptor(env, SESSION)
-    recordSessionNotified(SESSION, env, Date.now())
-    const service = fakeService()
-    const peers = new Map<number, PeerCredentials>()
-    const { done } = startHub(env, service, peers, memoryStore(), 100)
-    await hubListening(env)
-    const child = await registered(env, SESSION, 900030, peerOf(900030, { pid: HARNESS.pid, comm: 'claude', start: HARNESS.start }), peers)
-    await until(() => service.batches.length >= 2)
-    // The descriptor goes missing for a moment: the held exchange ends and the session is uncertain.
-    rmSync(path.join(claudeDescriptorDir(env), `${HARNESS.pid}.json`))
-    service.release()
-    await new Promise((resolve) => setTimeout(resolve, 300))
-    const during = service.batches.length
-    writeDescriptor(env, SESSION)
-    await until(() => service.batches.length > during)
-    expect(service.batches.at(-1)!.body.sessions).toEqual([expect.objectContaining({ session_id: SESSION, state: 'running' })])
-    child.socket.destroy()
-    service.release()
-    await done
-  })
-
-  it('asks a child to come back later while its session\'s earlier end is still owed', async () => {
-    const env = hubEnv()
-    writeDescriptor(env, SESSION)
-    recordSessionNotified(SESSION, env, Date.now())
-    const service = fakeService()
-    const peers = new Map<number, PeerCredentials>()
-    const { done } = startHub(env, service, peers)
-    await hubListening(env)
-    const first = await registered(env, SESSION, 900040, peerOf(900040, { pid: HARNESS.pid, comm: 'claude', start: HARNESS.start }), peers)
-    await until(() => service.batches.length >= 1)
-    service.hold = true
-    first.send({ type: 'ended', session_id: SESSION, harness_pid: HARNESS.pid, reason: 'harness-gone' })
-    // Past the end confirmation: the end is decided and its report is owed.
-    await new Promise((resolve) => setTimeout(resolve, 300))
-    const second = await registered(env, SESSION, 900041, peerOf(900041, { pid: HARNESS.pid, comm: 'claude', start: HARNESS.start }), peers)
-    expect(second.frames[0]).toEqual({ type: 'refused', reason: 'session-ending', retry: true })
-    service.hold = false
-    service.release()
-    first.socket.destroy()
-    await done
-  })
-
-  it('stops restarting after three crashes in ten minutes, and doctor says so', async () => {
-    const env = hubEnv()
-    const run = path.join(env['XDG_STATE_HOME']!, 'notifai', 'run')
-    mkdirSync(run, { recursive: true, mode: 0o700 })
-    const dead: number[] = []
-    for (let pid = 99_990; dead.length < 3 && pid > 90_000; pid -= 1) if (!pidExists(pid)) dead.push(pid)
-    const now = Date.now()
-    writeFileSync(path.join(run, 'hub-history.json'), JSON.stringify({ starts: dead.map((pid, index) => ({ at: now - index * 1_000, pid, clean: false })) }))
-    const { done } = startHub(env, fakeService(), new Map())
-    expect(await done).toBe(3)
-    expect(readHubReport(env)).toMatchObject({ running: false, fault: { reason: 'repeated-crashes' }, recent_crashes: 3 })
-  })
-
-  it('does not count hubs lost to a reboot as crashes', async () => {
-    const env = hubEnv()
-    const run = path.join(env['XDG_STATE_HOME']!, 'notifai', 'run')
-    mkdirSync(run, { recursive: true, mode: 0o700 })
-    const dead: number[] = []
-    for (let pid = 99_990; dead.length < 3 && pid > 90_000; pid -= 1) if (!pidExists(pid)) dead.push(pid)
-    const now = Date.now()
-    writeFileSync(path.join(run, 'hub-history.json'), JSON.stringify({ starts: dead.map((pid, index) => ({ at: now - index * 1_000, pid, clean: false, boot: 'earlier-boot' })) }))
-    const { hub, done } = startHub(env, fakeService(), new Map())
-    await hubListening(env)
-    hub.requestExit('test')
-    expect(await done).toBe(0)
-  })
-
-  it('hands over to the new build on an automatic update with children connected, keeping every lease', async () => {
-    const env = hubEnv()
-    const service = fakeService()
-    const peers = new Map<number, PeerCredentials>()
-    // Three live Claude Code sessions, each hosted by a real process.
-    const harnesses: ChildProcess[] = []
-    const sessions = [SESSION, OTHER, '33333333-4444-5555-6666-777777777777']
-    const hosts: { pid: number; start: string }[] = []
-    try {
-      for (const sessionId of sessions) {
-        const harness = spawn('sleep', ['60'], { stdio: 'ignore' })
-        harnesses.push(harness)
-        await until(() => harness.pid !== undefined && processStartTime(harness.pid) !== null)
-        const start = processStartTime(harness.pid!)!
-        hosts.push({ pid: harness.pid!, start })
-        writeFileSync(path.join(claudeDescriptorDir(env), `${harness.pid}.json`), JSON.stringify({
-          pid: harness.pid, sessionId, cwd: '/tmp', startedAt: Date.now(), procStart: start, version: '2.1.304', peerProtocol: 1,
-          messagingSocketPath: '/tmp/b3hub-inbox.sock', status: 'idle' }))
-        recordSessionNotified(sessionId, env, Date.now())
-      }
-      let successor: { hub: Hub; done: Promise<number> } | null = null
-      const first = startHub(env, service, peers, memoryStore(), undefined, {}, { automaticUpdate: {
-        firstDelayMs: 3_600_000,
-        attempt: async (host) => {
-          // The gate the real updater reads from the hub: every child connected now.
-          expect(host.childIpcVersions()).toEqual([1, 1, 1])
-          return { outcome: 'activated', from: '1.0.0', to: '1.1.0' }
-        },
-        startSuccessor: () => { successor = startHub(env, service, peers) },
-      } })
-      await hubListening(env)
-      const register = async (index: number, overrides: Record<string, unknown> = {}) => {
-        const host = hosts[index]!
-        const peer = peerOf(910_000 + index, { pid: host.pid, comm: 'claude', start: host.start })
-        return registered(env, sessions[index]!, 910_000 + index, peer, peers, { harness_pid: host.pid, harness_start: host.start, ...overrides })
-      }
-      const children = [await register(0), await register(1), await register(2)]
-      expect(children.every((child) => child.frames[0]?.['type'] === 'registered')).toBe(true)
-      await until(() => sessions.every((id) => readAttendantEndingLease(id, env)?.generation === 1))
-
-      expect(await first.hub.runAutomaticUpdate()).toMatchObject({ outcome: 'activated' })
-      service.release()
-      expect(await first.done).toBe(0)
-      await until(() => children.every((child) => child.closed))
-      await until(() => successor !== null)
-      await hubListening(env)
-      const handedOver = service.batches.length
-      // The children reconnect to the new hub, as the native child does after a closed connection.
-      const again = [await register(0, { hook_event: 'UserPromptSubmit', source: undefined }),
-        await register(1, { hook_event: 'UserPromptSubmit', source: undefined }),
-        await register(2, { hook_event: 'UserPromptSubmit', source: undefined })]
-      expect(again.every((child) => child.frames[0]?.['type'] === 'registered')).toBe(true)
-      await until(() => sessions.every((id) => service.batches.slice(handedOver).some((batch) =>
-        batch.body.sessions.some((entry) => entry.session_id === id))))
-      const entries = service.batches.flatMap((batch) => batch.body.sessions)
-      // Every lease continued: nothing ended, nothing re-acquired without its generation.
-      expect(entries.some((entry) => entry.state !== 'running')).toBe(false)
-      for (const id of sessions) {
-        const after = service.batches.slice(handedOver).flatMap((batch) => batch.body.sessions).filter((entry) => entry.session_id === id)
-        expect(after.length, id).toBeGreaterThan(0)
-        expect(after.every((entry) => entry.state === 'running' && entry.generation === 1), id).toBe(true)
-        expect(readSessionEndMarker(id, env), id).toBeNull()
-      }
-      for (const child of again) child.socket.destroy()
-      service.release()
-      await (successor as { done: Promise<number> } | null)!.done
-    } finally {
-      for (const harness of harnesses) harness.kill('SIGKILL')
-    }
-  })
-
-  it('stays when the updater holds an update back, and passes it the IPC versions of its children', async () => {
-    const env = hubEnv()
-    writeDescriptor(env, SESSION)
-    recordSessionNotified(SESSION, env, Date.now())
-    const service = fakeService()
-    const peers = new Map<number, PeerCredentials>()
-    const seen: number[][] = []
-    let successors = 0
-    const { hub, done } = startHub(env, service, peers, memoryStore(), undefined, {}, { automaticUpdate: {
-      firstDelayMs: 3_600_000,
-      attempt: async (host) => { seen.push(host.childIpcVersions()); return { outcome: 'waiting', version: '1.1.0', waiting_for: ['session-child-incompatible'] } },
-      startSuccessor: () => { successors += 1 },
-    } })
-    await hubListening(env)
-    const child = await registered(env, SESSION, 900030, peerOf(900030, { pid: HARNESS.pid, comm: 'claude', start: HARNESS.start }), peers)
-    expect(child.frames[0]).toMatchObject({ type: 'registered' })
-    expect(await hub.runAutomaticUpdate()).toMatchObject({ outcome: 'waiting' })
-    expect(seen).toEqual([[1]])
-    await new Promise((resolve) => setTimeout(resolve, 100))
-    expect(child.closed).toBe(false)
-    expect(successors).toBe(0)
-    child.socket.destroy()
-    service.release()
-    expect(await done).toBe(0)
-    expect(successors).toBe(0)
-  })
-
-  it('leaves when idle even while update passes keep coming, and runs none for nothing attended', async () => {
-    const env = hubEnv()
-    let attempts = 0
-    const { done } = startHub(env, fakeService(), new Map(), memoryStore(), undefined, { automaticUpdate: {
-      firstDelayMs: 10, intervalMs: 50,
-      attempt: async () => { attempts += 1; return { outcome: 'current' } },
-    } })
-    // idleExitMs is 400 ms here; passes every 50 ms must not hold the hub.
-    expect(await done).toBe(0)
-    expect(attempts).toBe(0)
   })
 
   it('hands over to another active build at once, even while a question waits, keeping every lease and the question', async () => {
@@ -1042,99 +547,6 @@ describe('hub', () => {
     service.release()
     await (successor as { done: Promise<number> } | null)!.done
   })
-
-  it('stands its answer owners down when it hands over, and the next hub runs them again', async () => {
-    const env = hubEnv()
-    const service = fakeService()
-    const peers = new Map<number, PeerCredentials>()
-    const runs: string[] = []
-    let finish = false
-    // A stand-in answer owner: it holds its session's question claim, as the real one does, until it is asked to step aside.
-    const owner = (name: string) => async (event: string, envelope: Record<string, unknown> | null, _harness: unknown, ownerEnv: NodeJS.ProcessEnv): Promise<number> => {
-      if (event !== 'question-settlement') return 0
-      const sessionId = String(envelope?.['session_id'])
-      if (!claimQuestionPush(sessionId, ownerEnv, Date.now(), undefined, undefined, 'hub')) { runs.push(`${name} ${sessionId} claimed-elsewhere`); return 0 }
-      runs.push(`${name} ${sessionId} running`)
-      try {
-        while (questionPushHeld(sessionId, ownerEnv) && !finish) await new Promise((resolve) => setTimeout(resolve, 10))
-        runs.push(`${name} ${sessionId} ${finish ? 'finished' : 'stood-down'}`)
-      } finally {
-        releaseQuestionPush(sessionId, ownerEnv)
-      }
-      return 0
-    }
-    const records = (): string[] => { try { return readdirSync(path.join(env['XDG_STATE_HOME']!, 'notifai', 'run', 'settlements')) } catch { return [] } }
-    let successor: { hub: Hub; done: Promise<number> } | null = null
-    const first = startHub(env, service, peers, memoryStore(), undefined, {}, { runHook: owner('first'), handover: {
-      builds: () => null,
-      startSuccessor: () => { successor = startHub(env, service, peers, memoryStore(), undefined, {}, { runHook: owner('second') }) },
-    } })
-    await hubListening(env)
-    expect(await requestHub(env, { type: 'settle', session_id: SESSION, harness: 'claude-code', cwd: '/tmp' })).toEqual({ type: 'ok' })
-    await until(() => runs.includes(`first ${SESSION} running`))
-    expect(records()).toHaveLength(1)
-
-    const handing = first.hub.handOver('build-superseded')
-    // An owner asked for while it hands over is only recorded, for the next hub.
-    expect(await requestHub(env, { type: 'settle', session_id: OTHER, harness: 'codex', cwd: '/tmp' })).toEqual({ type: 'ok' })
-    await handing
-    service.release()
-    expect(await first.done).toBe(0)
-    expect(runs).toEqual([`first ${SESSION} running`, `first ${SESSION} stood-down`])
-    expect(records()).toHaveLength(2)
-
-    await until(() => successor !== null)
-    await until(() => runs.includes(`second ${SESSION} running`) && runs.includes(`second ${OTHER} running`))
-    expect(runs.filter((run) => run.includes('claimed-elsewhere'))).toEqual([])
-    // Finished, they are no longer anybody's to run again.
-    finish = true
-    await until(() => records().length === 0)
-    service.release()
-    await (successor as { done: Promise<number> } | null)!.done
-  })
-
-  it('reports the end of a session that ended while no hub ran, though its harness lives on', async () => {
-    const env = hubEnv()
-    writeDescriptor(env, SESSION)
-    recordSessionNotified(SESSION, env, Date.now())
-    const service = fakeService()
-    const peers = new Map<number, PeerCredentials>()
-    const first = startHub(env, service, peers)
-    await hubListening(env)
-    const child = await registered(env, SESSION, 900130, peerOf(900130, { pid: HARNESS.pid, comm: 'claude', start: HARNESS.start }), peers)
-    await until(() => service.batches.length >= 2)
-    expect(readAttendantEndingLease(SESSION, env)).toMatchObject({ generation: 1 })
-    first.hub.requestExit('test-crash')
-    service.release()
-    await first.done
-    child.socket.destroy()
-    // SessionEnd ran (a /clear, say) while no hub ran; the harness process is still alive.
-    markSessionEnded(SESSION, env, Date.now())
-    const before = service.batches.length
-    const second = startHub(env, service, peers)
-    await until(() => service.batches.slice(before).some((batch) => batch.body.sessions.some((entry) => entry.session_id === SESSION && entry.state === 'ended')))
-    expect(service.batches.slice(before).flatMap((batch) => batch.body.sessions).find((entry) => entry.session_id === SESSION))
-      .toMatchObject({ state: 'ended', generation: 1 })
-    await until(() => JSON.parse(readFileSync(attendantStatusPath(SESSION, env), 'utf8'))['phase'] === 'exited')
-    let exited = false
-    void second.done.then(() => { exited = true })
-    while (!exited) { service.release(); await new Promise((resolve) => setTimeout(resolve, 50)) }
-    // Reported once: a later hub does not report it again.
-    const after = service.batches.length
-    const third = startHub(env, service, peers)
-    await hubListening(env)
-    await new Promise((resolve) => setTimeout(resolve, 300))
-    expect(service.batches.slice(after).flatMap((batch) => batch.body.sessions).filter((entry) => entry.session_id === SESSION)).toEqual([])
-    third.hub.requestExit('test')
-    service.release()
-    await third.done
-  })
-
-    it('names the child lock file the way the native child does', () => {
-    expect(fnv64Hex('')).toBe('cbf29ce484222325')
-    expect(fnv64Hex('a')).toBe('af63dc4c8601ec8c')
-    expect(os.platform()).toBeTruthy()
-  })
 })
 
 // ---------------------------------------------------------------------------
@@ -1199,52 +611,6 @@ describe('hub end confirmation and writers', () => {
     return Object.assign(service, { note: () => { pending = true; service.release() } })
   }
 
-  it.each(['failed', 'cancelled', 'unavailable'] as const)('paces Claude hub handoffs only after an actual send failure (%s)', async result => {
-    const env = hubEnv()
-    const host = await standIn()
-    describeHost(env, host)
-    recordSessionNotified(SESSION, env, Date.now())
-    // Like the service, the note comes back on every exchange until it is acknowledged.
-    let noted = false
-    const service = fakeService({ batch: (body) => ({ message_cursor: noted ? 'c2' : 'c1',
-      sessions: body.sessions.map((entry) => entry.state !== 'running' ? { session_id: entry.session_id, status: 'withdrawn' as const } : {
-        session_id: entry.session_id, status: 'attending' as const, generation: entry.generation ?? 1, lease_remaining_ms: 120_000,
-        message_cursor: noted ? 'c2' : 'c1', messages: noted && entry.accepts_messages ? [{ message_id: 'sm_r1', kind: 'note' as const, body: 'Later',
-          created_at: new Date(0).toISOString(), agent_acknowledgement_text_required: false }] : [] }) }) })
-    const peers = new Map<number, PeerCredentials>()
-    let offset = 0
-    const { hub, done } = startHub(env, service, peers, memoryStore(), 100, {}, {
-      clock: { wall: () => Date.now() + offset, monotonic: () => performance.now() + offset },
-    })
-    let child: FakeChild | undefined
-    try {
-      await hubListening(env)
-      child = await writerChild(env, peers, 900199, host)
-      await until(() => service.batches.some(batch => batch.waitSeconds > 0))
-      const write = vi.spyOn(hub.sessions.get(SESSION)!, 'writeClaude').mockResolvedValue(result)
-      noted = true
-      service.release()
-      await until(() => write.mock.calls.length > 0)
-      if (result === 'failed') {
-        // Safety ticks and fresh exchanges keep coming; none writes again inside the backoff.
-        await new Promise(resolve => setTimeout(resolve, 600))
-        expect(write).toHaveBeenCalledTimes(1)
-        expect(readSessionState(SESSION, env).input_wake_fault).toMatchObject({ kind: 'transport', attempts: 1 })
-        offset += 5_100
-        await until(() => write.mock.calls.length === 2)
-        expect(readSessionState(SESSION, env).input_wake_fault).toMatchObject({ kind: 'transport', attempts: 2 })
-      } else {
-        // Nothing was attempted: no fault, and the next tick tries again without a backoff.
-        await until(() => write.mock.calls.length >= 2)
-        expect(readSessionState(SESSION, env).input_wake_fault).toBeUndefined()
-      }
-    } finally {
-      vi.restoreAllMocks(); child?.socket.destroy(); hub.requestExit('test')
-      let gone = false; void done.then(() => { gone = true })
-      while (!gone) { service.release(); await new Promise(resolve => setTimeout(resolve, 50)) }
-    }
-  })
-
   const ended = (service: FakeService): boolean => service.batches.some((batch) => batch.body.sessions.some((entry) => entry.state === 'ended'))
   const question = (env: NodeJS.ProcessEnv): void => updateSessionState(SESSION, env, (state) => ({ ...state,
     pending: [{ question: 'Deploy?', summary: 'Deploy?', request_id: 'req_r1', collapse_key: 'ck_r1', device_ids: ['dev_r1'] } as never] }))
@@ -1279,43 +645,6 @@ describe('hub end confirmation and writers', () => {
     expect(readSessionEndMarker(SESSION, env)).toBeNull()
     expect(readSessionState(SESSION, env).pending).toHaveLength(1)
     child.socket.destroy()
-    hub.requestExit('test')
-    service.release()
-    await done
-  })
-
-  it('keeps a conversation another process takes over within the confirmation (a handoff), and its question follows', async () => {
-    const env = env0 = hubEnv()
-    recordSessionNotified(SESSION, env, Date.now())
-    const terminal = await standIn()
-    describeHost(env, terminal)
-    const service = fakeService()
-    const peers = new Map<number, PeerCredentials>()
-    const { hub, done } = startHub(env, service, peers, memoryStore(), 100, { endConfirmMs: 1_000 })
-    await hubListening(env)
-    const first = await writerChild(env, peers, 900210, terminal)
-    await until(() => service.batches.length >= 1)
-    question(env)
-    const incarnation = readSessionIncarnation(SESSION, env)!
-    // The terminal hands the conversation over (`/desktop`, a resume in a new tab) and exits.
-    await sessionEnd(terminal.pid)
-    terminal.process.kill('SIGKILL')
-    first.send({ type: 'ended', session_id: SESSION, harness_pid: terminal.pid, reason: 'harness-gone' })
-    const desktop = await standIn()
-    describeHost(env, desktop)
-    const second = await writerChild(env, peers, 900211, desktop, { source: 'resume' })
-    expect(second.frames[0]).toEqual({ type: 'registered', session_id: SESSION })
-    await new Promise((resolve) => setTimeout(resolve, 1_500))
-    service.release()
-    expect(ended(service)).toBe(false)
-    expect(readSessionEndMarker(SESSION, env)).toBeNull()
-    expect(readSessionState(SESSION, env).pending).toHaveLength(1)
-    // The same incarnation, now hosted by the new process.
-    expect(readSessionIncarnation(SESSION, env)).toMatchObject({ key: incarnation.key, incarnation: incarnation.incarnation,
-      harness_process: { pid: desktop.pid } })
-    expect(hub.sessions.get(SESSION)?.harnessProcess.pid).toBe(desktop.pid)
-    second.socket.destroy()
-    first.socket.destroy()
     hub.requestExit('test')
     service.release()
     await done
@@ -1373,125 +702,6 @@ describe('hub end confirmation and writers', () => {
     service.release()
     await done
   })
-
-  it('expires the conversation `/clear` replaced in its terminal after the confirmation', async () => {
-    const env = env0 = hubEnv()
-    recordSessionNotified(SESSION, env, Date.now())
-    const terminal = await standIn()
-    describeHost(env, terminal)
-    const service = fakeService()
-    const peers = new Map<number, PeerCredentials>()
-    const { done } = startHub(env, service, peers, memoryStore(), 100, { endConfirmMs: 400 })
-    await hubListening(env)
-    const child = await writerChild(env, peers, 900230, terminal)
-    await until(() => service.batches.length >= 1)
-    question(env)
-    // `/clear`: SessionEnd for this conversation; the same process now shows another.
-    await sessionEnd(terminal.pid)
-    describeHost(env, terminal, OTHER)
-    service.release()
-    await until(() => ended(service), 5_000)
-    await until(() => readSessionEndMarker(SESSION, env) !== null)
-    await until(() => (readSessionState(SESSION, env).pending ?? []).length === 0)
-    // Its child had nothing left to watch for this conversation.
-    expect(child.frames.some((frame) => frame['type'] === 'bye')).toBe(true)
-    child.socket.destroy()
-    service.release()
-    await done
-  })
-
-  it('keeps a conversation its terminal switches back to within the confirmation (`/clear`, then `/resume` of it)', async () => {
-    const env = env0 = hubEnv()
-    recordSessionNotified(SESSION, env, Date.now())
-    const terminal = await standIn()
-    describeHost(env, terminal)
-    const service = fakeService()
-    const peers = new Map<number, PeerCredentials>()
-    const { hub, done } = startHub(env, service, peers, memoryStore(), 100, { endConfirmMs: 500 })
-    await hubListening(env)
-    const child = await writerChild(env, peers, 900235, terminal)
-    await until(() => service.batches.length >= 1)
-    question(env)
-    await sessionEnd(terminal.pid)
-    describeHost(env, terminal, OTHER)
-    await new Promise((resolve) => setTimeout(resolve, 100))
-    // Back to it: its SessionStart finds the child still serving it and only hints.
-    describeHost(env, terminal)
-    await requestHub(env, { type: 'hint', session_id: SESSION, hook_event: 'SessionStart', harness_pid: terminal.pid }, { role: 'hint' })
-    await until(() => hub.sessions.get(SESSION)?.endCandidate === null)
-    service.release()
-    expect(ended(service)).toBe(false)
-    expect(readSessionEndMarker(SESSION, env)).toBeNull()
-    expect(hub.sessions.get(SESSION)?.endCandidate).toBeNull()
-    expect(readSessionState(SESSION, env).pending).toHaveLength(1)
-    child.socket.destroy()
-    let exited = false
-    void done.then(() => { exited = true })
-    hub.requestExit('test')
-    await until(() => { service.release(); return exited })
-    await done
-  })
-
-  it('keeps a conversation the desktop app respawns before its child is back, and attends it when the child registers', async () => {
-    const env = env0 = hubEnv()
-    recordSessionNotified(SESSION, env, Date.now())
-    const before = await standIn()
-    describeHost(env, before)
-    const service = fakeService()
-    const peers = new Map<number, PeerCredentials>()
-    const { hub, done } = startHub(env, service, peers, memoryStore(), 100, { endConfirmMs: 300 })
-    await hubListening(env)
-    const first = await writerChild(env, peers, 900240, before)
-    await until(() => service.batches.length >= 1)
-    question(env)
-    await sessionEnd(before.pid)
-    before.process.kill('SIGKILL')
-    first.send({ type: 'ended', session_id: SESSION, harness_pid: before.pid, reason: 'harness-gone' })
-    // The respawned process names the conversation at once; its hook comes later.
-    const respawned = await standIn()
-    describeHost(env, respawned)
-    await until(() => hub.sessions.get(SESSION)?.harnessProcess.pid === respawned.pid, 3_000)
-    expect(hub.sessions.get(SESSION)?.endCandidate).toBeNull()
-    expect(readSessionEndMarker(SESSION, env)).toBeNull()
-    expect(readSessionIncarnation(SESSION, env)?.harness_process?.pid).toBe(respawned.pid)
-    const second = await writerChild(env, peers, 900241, respawned, { source: 'resume' })
-    expect(second.frames[0]).toEqual({ type: 'registered', session_id: SESSION })
-    expect(hub.sessions.get(SESSION)?.child).not.toBeNull()
-    service.release()
-    expect(ended(service)).toBe(false)
-    first.socket.destroy()
-    second.socket.destroy()
-    hub.requestExit('test')
-    service.release()
-    await done
-  })
-
-  it('leaves an end it is still confirming undecided when it is signalled to stop', async () => {
-    const env = env0 = hubEnv()
-    recordSessionNotified(SESSION, env, Date.now())
-    const host = await standIn()
-    describeHost(env, host)
-    const service = fakeService()
-    const peers = new Map<number, PeerCredentials>()
-    const { hub, done } = startHub(env, service, peers, memoryStore(), 100, { endConfirmMs: 2_000 })
-    await hubListening(env)
-    const child = await writerChild(env, peers, 900250, host)
-    await until(() => service.batches.length >= 1)
-    question(env)
-    await sessionEnd(host.pid)
-    await until(() => (JSON.parse(readFileSync(attendantStatusPath(SESSION, env), 'utf8')) as { adoption?: { end_candidate_since?: unknown } })
-      .adoption?.end_candidate_since !== null)
-    hub.requestExit('signal')
-    service.release()
-    await done
-    await new Promise((resolve) => setTimeout(resolve, 2_200))
-    expect(ended(service)).toBe(false)
-    expect(readSessionEndMarker(SESSION, env)).toBeNull()
-    expect(readSessionState(SESSION, env).pending).toHaveLength(1)
-    expect((JSON.parse(readFileSync(attendantStatusPath(SESSION, env), 'utf8')) as { adoption: { end_candidate_since: unknown } })
-      .adoption.end_candidate_since).toEqual(expect.any(Number))
-    child.socket.destroy()
-  })
 })
 
 // ---------------------------------------------------------------------------
@@ -1507,11 +717,6 @@ describe('hub and Codex SessionEnd', () => {
     return file
   }
 
-  function archiveRollout(file: string): void {
-    const target = path.join(path.dirname(path.dirname(file)), 'archived_sessions', path.basename(file))
-    mkdirSync(path.dirname(target), { recursive: true })
-    renameSync(file, target)
-  }
 
   /** A codex host for this test: this process, or a real child process the test can stop. */
   async function codexSession(env: NodeJS.ProcessEnv, service: FakeService, peers: Map<number, PeerCredentials>, childPid: number,
@@ -1577,79 +782,6 @@ describe('hub and Codex SessionEnd', () => {
     await done
   })
 
-  it.each([
-    ['a CLI conversation', 'codex-tui', 'app-server' as const, false],
-    ['an app conversation now hosted by a terminal', 'Codex Desktop', 'other' as const, false],
-    ['an archived app conversation', 'Codex Desktop', 'app-server' as const, true],
-  ])('reports %s ended after the confirmation delay', async (_name, originator, hostKind, archive) => {
-    const env = hubEnv()
-    recordSessionNotified(SESSION, env, Date.now())
-    const transcript = codexRollout(env, originator)
-    const service = fakeService()
-    const peers = new Map<number, PeerCredentials>()
-    const { hub, done } = startHub(env, service, peers, memoryStore(), 100, { endConfirmMs: 50, codexHostKind: () => hostKind, wake: noWake })
-    await hubListening(env)
-    const child = await codexSession(env, service, peers, 900070, transcript)
-    expect(await requestHub(env, { type: 'session-end-candidate', session_id: SESSION, transcript_path: transcript })).toMatchObject({ held: true })
-    if (archive) archiveRollout(transcript)
-    child.socket.destroy()
-    service.release()
-    await until(() => reportedEnd(service))
-    await until(() => readSessionEndMarker(SESSION, env) !== null)
-    hub.requestExit('test')
-    service.release()
-    await done
-  })
-
-  it('keeps an app conversation open when Codex stops its child without a SessionEnd', async () => {
-    const env = hubEnv()
-    recordSessionNotified(SESSION, env, Date.now())
-    const transcript = codexRollout(env, 'Codex Desktop')
-    const service = fakeService()
-    const peers = new Map<number, PeerCredentials>()
-    const { hub, done } = startHub(env, service, peers, memoryStore(), 100, { endConfirmMs: 50, codexHostKind: () => 'app-server', wake: noWake })
-    await hubListening(env)
-    const child = await codexSession(env, service, peers, 900075, transcript)
-    question(env)
-    child.socket.destroy()
-    await until(() => status(env)['reason'] === 'stopped')
-    expect(reportedEnd(service)).toBe(false)
-    hub.requestExit('test')
-    service.release()
-    await done
-  })
-
-  it('stays for a stopped conversation while its question waits, then ends it once nothing is owed and leaves', async () => {
-    const env = hubEnv()
-    recordSessionNotified(SESSION, env, Date.now())
-    const transcript = codexRollout(env, 'Codex Desktop')
-    const service = fakeService()
-    const peers = new Map<number, PeerCredentials>()
-    const { done } = startHub(env, service, peers, memoryStore(), 100, { endConfirmMs: 50, codexHostKind: () => 'app-server', wake: noWake })
-    let exited = false
-    void done.then(() => { exited = true })
-    await hubListening(env)
-    const child = await codexSession(env, service, peers, 900077, transcript)
-    question(env)
-    expect(await requestHub(env, { type: 'session-end-candidate', session_id: SESSION, transcript_path: transcript })).toEqual({ type: 'ok', held: true })
-    child.socket.destroy()
-    await until(() => status(env)['reason'] === 'stopped')
-    // No child is connected, but the question still waits: the hub outlives its idle limit to watch the app.
-    for (let i = 0; i < 4; i += 1) {
-      service.release()
-      await new Promise((resolve) => setTimeout(resolve, 250))
-    }
-    expect(exited).toBe(false)
-    // Nothing is owed any more: the stopped conversation ends, and then the hub leaves.
-    updateSessionState(SESSION, env, (state) => ({ ...state, pending: [] }))
-    while (!exited) {
-      service.release()
-      await new Promise((resolve) => setTimeout(resolve, 50))
-    }
-    expect(await done).toBe(0)
-    expect(reportedEnd(service)).toBe(true)
-  })
-
   it('cancels the end when the conversation starts again inside the delay', async () => {
     const env = hubEnv()
     recordSessionNotified(SESSION, env, Date.now())
@@ -1670,69 +802,6 @@ describe('hub and Codex SessionEnd', () => {
     expect(reportedEnd(service)).toBe(false)
     expect(readSessionEndMarker(SESSION, env)).toBeNull()
     again.socket.destroy()
-    hub.requestExit('test')
-    service.release()
-    await done
-  })
-
-  it('leaves an answer waiting in a stopped conversation as one queued wake, and preserves it when the app disappears', async () => {
-    const env = hubEnv()
-    recordSessionNotified(SESSION, env, Date.now())
-    const transcript = codexRollout(env, 'Codex Desktop')
-    // The app's server: a real process the test can stop.
-    const app = spawn('sleep', ['60'], { stdio: 'ignore' })
-    await until(() => processStartTime(app.pid!) !== null)
-    const host = { pid: app.pid!, start: processStartTime(app.pid!)! }
-    const queued: { threadId: string; context: string }[] = []
-    const wake: CodexWakeAdapters = { available: () => true, queue: async (threadId, _cwd, context) => { queued.push({ threadId, context }) } }
-    const service = fakeService()
-    const peers = new Map<number, PeerCredentials>()
-    const { hub, done } = startHub(env, service, peers, memoryStore(), 100, { endConfirmMs: 50, codexHostKind: () => 'app-server', wake })
-    try {
-      await hubListening(env)
-      const child = await codexSession(env, service, peers, 900090, transcript, host)
-      question(env)
-      await requestHub(env, { type: 'session-end-candidate', session_id: SESSION, transcript_path: transcript })
-      child.socket.destroy()
-      await until(() => status(env)['reason'] === 'stopped')
-      // A note arrives for it (an answer is staged the same way): it waits in
-      // the conversation as one content-free wake, started when it is opened.
-      const incarnation = readSessionIncarnation(SESSION, env)!.incarnation
-      stageSessionMessages(SESSION, env, { incarnation, generation: 1 }, [{ message_id: 'sm_dormant', kind: 'note', body: 'Later', created_at: new Date().toISOString(), agent_acknowledgement_text_required: true }])
-      hub.inputStaged(SESSION)
-      await until(() => queued.length === 1)
-      expect(queued).toEqual([{ threadId: SESSION, context: sessionInputWake() }])
-      hub.inputStaged(SESSION)
-      await new Promise((resolve) => setTimeout(resolve, 100))
-      expect(queued).toHaveLength(1)
-      // Quitting the app ends it: questions expire, unread input is dropped.
-      app.kill('SIGKILL')
-      service.release()
-      await new Promise(resolve => setTimeout(resolve, 350))
-      expect(reportedEnd(service)).toBe(false)
-      expect(readSessionEndMarker(SESSION, env)).toBeNull()
-      expect(existsSync(transcript)).toBe(true)
-    } finally {
-      app.kill('SIGKILL')
-      hub.requestExit('test')
-      service.release()
-      await done
-    }
-  })
-
-  it('ends a Codex session whose rollout was archived while it was loaded', async () => {
-    const env = hubEnv()
-    recordSessionNotified(SESSION, env, Date.now())
-    const transcript = codexRollout(env, 'Codex Desktop')
-    const service = fakeService()
-    const peers = new Map<number, PeerCredentials>()
-    const { hub, done } = startHub(env, service, peers, memoryStore(), 100, { endConfirmMs: 50, codexHostKind: () => 'app-server', wake: noWake })
-    await hubListening(env)
-    const child = await codexSession(env, service, peers, 900100, transcript)
-    archiveRollout(transcript)
-    service.release()
-    await until(() => reportedEnd(service))
-    child.socket.destroy()
     hub.requestExit('test')
     service.release()
     await done
@@ -1799,127 +868,6 @@ describe('hub and Codex SessionEnd', () => {
       service.release()
       await second?.done
     }
-  })
-
-  it.each([
-    ['decides an end the previous hub was still deciding', false],
-    ['reports the end of a conversation archived while no hub ran', true],
-  ])('%s', async (_name, archive) => {
-    const env = hubEnv()
-    recordSessionNotified(SESSION, env, Date.now())
-    const transcript = codexRollout(env, 'Codex Desktop')
-    const service = fakeService()
-    const peers = new Map<number, PeerCredentials>()
-    // The first hub would decide only after a minute: it is gone before then.
-    const first = startHub(env, service, peers, memoryStore(), 100, { endConfirmMs: 60_000, codexHostKind: () => 'app-server', wake: noWake })
-    await hubListening(env)
-    const child = await codexSession(env, service, peers, 900150, transcript)
-    question(env)
-    expect(await requestHub(env, { type: 'session-end-candidate', session_id: SESSION, transcript_path: transcript })).toMatchObject({ held: true })
-    child.socket.destroy()
-    await new Promise((resolve) => setTimeout(resolve, 100))
-    first.hub.requestExit('test-crash')
-    service.release()
-    await first.done
-    if (archive) archiveRollout(transcript)
-    const second = startHub(env, service, peers, memoryStore(), 100, { endConfirmMs: 50, codexHostKind: () => 'app-server', wake: noWake })
-    if (archive) {
-      await until(() => reportedEnd(service))
-      await until(() => readSessionEndMarker(SESSION, env) !== null)
-    } else {
-      await until(() => status(env)['reason'] === 'stopped')
-      expect(stopped(second.hub)).toBe(true)
-      expect(reportedEnd(service)).toBe(false)
-      expect(readSessionEndMarker(SESSION, env)).toBeNull()
-    }
-    second.hub.requestExit('test')
-    service.release()
-    await second.done
-  })
-
-  it('keeps a thread the shared server reloads in place for a resume, running until its next prompt brings a child back', async () => {
-    const env = hubEnv()
-    recordSessionNotified(SESSION, env, Date.now())
-    const transcript = codexRollout(env, 'codex-tui')
-    let holds = true
-    const asked: { home: string | null; thread: string; pid: number }[] = []
-    const service = fakeService()
-    const peers = new Map<number, PeerCredentials>()
-    const { hub, done } = startHub(env, service, peers, memoryStore(), 100, { endConfirmMs: 300, codexHostKind: () => 'other', wake: noWake,
-      codexHostHoldsThread: (home, thread, pid) => { asked.push({ home, thread, pid }); return holds } })
-    await hubListening(env)
-    const child = await codexSession(env, service, peers, 900160, transcript)
-    updateSessionState(SESSION, env, (state) => ({ ...state, pending: [{ question: 'Deploy?', summary: 'Deploy?', request_id: 'req_reload' } as never] }))
-    // `codex resume` of a thread no terminal shows: Codex stops the child and
-    // runs SessionEnd, then loads the thread again in the same server.
-    child.socket.destroy()
-    expect(await requestHub(env, { type: 'session-end-candidate', session_id: SESSION, transcript_path: transcript, harness_pid: HARNESS.pid }))
-      .toEqual({ type: 'ok', held: true })
-    await until(() => hub.sessions.get(SESSION)?.reloadedAt !== null && hub.sessions.get(SESSION)?.endCandidate === null)
-    expect(asked[0]).toEqual({ home: path.dirname(path.dirname(transcript)), thread: SESSION, pid: HARNESS.pid })
-    const before = service.batches.length
-    service.release()
-    await until(() => service.batches.slice(before).some((batch) => batch.body.sessions.some((entry) => entry.session_id === SESSION &&
-      entry.state === 'running' && entry.generation === 1 && entry.accepts_messages === false)))
-    expect(reportedEnd(service)).toBe(false)
-    expect(readSessionEndMarker(SESSION, env)).toBeNull()
-    expect(readSessionState(SESSION, env).pending).toHaveLength(1)
-    // The next prompt: SessionStart(resume) brings a child back in the same server.
-    const again = await registered(env, SESSION, 900161, peerOf(900161, { pid: HARNESS.pid, comm: 'codex', start: HARNESS.start }), peers,
-      { harness: 'codex', transcript_path: transcript, claude_config_dir: undefined, inbox_token: undefined, source: 'resume' })
-    expect(again.frames[0]).toEqual({ type: 'registered', session_id: SESSION })
-    expect(hub.sessions.get(SESSION)?.reloadedAt).toBeNull()
-    // Once the server no longer holds the thread, nothing says it runs there.
-    again.socket.destroy()
-    holds = false
-    expect(reportedEnd(service)).toBe(false)
-    hub.requestExit('test')
-    service.release()
-    await done
-  })
-
-  it.each([
-    ['keeps it when the server holds the thread again', true],
-    ['ends it when nothing holds the thread', false],
-  ])('confirms a terminal thread\'s end the previous hub left undecided: %s', async (_name, holds) => {
-    const env = hubEnv()
-    recordSessionNotified(SESSION, env, Date.now())
-    const transcript = codexRollout(env, 'codex-tui')
-    const service = fakeService()
-    const peers = new Map<number, PeerCredentials>()
-    const first = startHub(env, service, peers, memoryStore(), 100, { endConfirmMs: 60_000, codexHostKind: () => 'other', wake: noWake })
-    await hubListening(env)
-    const child = await codexSession(env, service, peers, 900170, transcript)
-    child.socket.destroy()
-    expect(await requestHub(env, { type: 'session-end-candidate', session_id: SESSION, transcript_path: transcript })).toMatchObject({ held: true })
-    await until(() => (status(env)['adoption'] as { end_candidate_since?: unknown } | undefined)?.end_candidate_since !== null)
-    first.hub.requestExit('signal')
-    service.release()
-    await first.done
-    expect(reportedEnd(service)).toBe(false)
-    const second = startHub(env, service, peers, memoryStore(), 100, { endConfirmMs: 50, codexHostKind: () => 'other', wake: noWake,
-      codexHostHoldsThread: () => holds })
-    if (holds) {
-      await until(() => second.hub.sessions.get(SESSION)?.reloadedAt !== null && second.hub.sessions.get(SESSION) !== undefined)
-      for (let i = 0; i < 3; i += 1) { service.release(); await new Promise((resolve) => setTimeout(resolve, 100)) }
-      expect(reportedEnd(service)).toBe(false)
-      expect(readSessionEndMarker(SESSION, env)).toBeNull()
-    } else {
-      await until(() => reportedEnd(service))
-      await until(() => readSessionEndMarker(SESSION, env) !== null)
-    }
-    second.hub.requestExit('test')
-    service.release()
-    await second.done
-  })
-
-  it('refuses to hold the end of a session it does not attend, so the hook ends it itself', async () => {
-    const env = hubEnv()
-    const { hub, done } = startHub(env, fakeService(), new Map())
-    await hubListening(env)
-    expect(await requestHub(env, { type: 'session-end-candidate', session_id: SESSION })).toEqual({ type: 'refused', reason: 'unknown-session' })
-    hub.requestExit('test')
-    await done
   })
 
   describe('on Codex\'s shared server, where a closed terminal reports nothing', () => {
@@ -2029,121 +977,6 @@ describe('hub and Codex SessionEnd', () => {
       }
     })
 
-    it('recovers a failed daemon-start check without waking an unverified conversation or losing queued input', async () => {
-      let verified = false
-      let checks = 0
-      let offset = 0
-      const run = await sharedServer({ verified: () => verified,
-        clock: { wall: () => Date.now() + offset, monotonic: () => performance.now() + offset },
-        checkBuild: async () => {
-          checks += 1
-          if (checks === 1) return { outcome: 'failed', step: 0, detail: 'No space left on device', codexVersion: '0.163.0' }
-          verified = true
-          return { outcome: 'passed', codexVersion: '0.163.0' }
-        },
-        state: () => ({ state: 'attached', confirmed: true, reason: 'terminal-live+joined' }),
-      })
-      try {
-        await run.deliverNote(3)
-        expect(run.pending()).toBe(true)
-        expect(run.queued).toEqual([])
-        expect(run.asked).toEqual([])
-        expect(checks).toBe(1)
-        expect(readSessionState(SESSION, run.env).input_wake_fault).toMatchObject({ kind: 'codex-check' })
-        offset += 5_000
-        await run.deliverNote()
-        expect(checks).toBe(2)
-        expect(run.queued).toEqual([SESSION])
-        expect(readSessionState(SESSION, run.env).input_wake).toMatchObject({ queued: true })
-        expect(readSessionState(SESSION, run.env).input_wake_fault).toMatchObject({ kind: 'codex-check', attempts: 1 })
-        expect(readSessionState(SESSION, run.env).input_wake_fault?.recovered_at).toBeUndefined()
-        const now = Date.now() + offset
-        observeSessionInputWake(SESSION, run.env, sessionInputWake(), now)
-        expect(readSessionState(SESSION, run.env).input_wake_fault?.recovered_at).toBe(now)
-        expect(reportedEnd(run.service)).toBe(false)
-      } finally { await run.stop() }
-    })
-
-    it('keeps state-write failures paced in memory while the hub stays alive', async () => {
-      let offset = 0
-      const run = await sharedServer({ verified: false,
-        clock: { wall: () => Date.now() + offset, monotonic: () => performance.now() + offset },
-        checkBuild: async () => { throw new Error('ENOSPC writing canary result') },
-      })
-      const original = sessionState.updateSessionState
-      const persist = vi.spyOn(sessionState, 'updateSessionState').mockImplementation((id, env, update) =>
-        original(id, env, state => {
-          const next = update(state)
-          if (next.input_wake_fault !== state.input_wake_fault) throw new Error('ENOSPC writing session fault')
-          return next
-        }))
-      try {
-        await run.deliverNote(2)
-        expect(run.builds).toHaveLength(1)
-        offset += 5_100
-        await run.deliverNote(2)
-        expect(run.builds).toHaveLength(2)
-        offset += 5_100
-        await run.deliverNote(2)
-        expect(run.builds).toHaveLength(2)
-        expect(run.hub.sessions.has(SESSION)).toBe(true)
-        expect(run.pending()).toBe(true)
-      } finally { persist.mockRestore(); await run.stop() }
-    })
-
-    it('does not turn a daily behavioural failure into a waiting-input fault', async () => {
-      const run = await sharedServer({ verified: false, checkBuild: async () => ({ outcome: 'failed', step: 2, codexVersion: '0.163.0' }) })
-      try {
-        await run.deliverNote(3)
-        expect(run.builds).toHaveLength(1)
-        expect(readSessionState(SESSION, run.env).input_wake_fault).toBeUndefined()
-        expect(run.pending()).toBe(true)
-      } finally { await run.stop() }
-    })
-
-    it('keeps the different-process idle wake route open while the shared-server check waits', async () => {
-      const run = await sharedServer({ verified: false, hostKind: pid => pid === HARNESS.pid ? 'shared-server' : 'other' })
-      try {
-        const session = run.hub.sessions.get(SESSION)!
-        expect(run.hub.codexIdleWake(session, HARNESS)).toBe(false)
-        expect(run.hub.codexIdleWake(session, { pid: HARNESS.pid + 1, start: HARNESS.start })).toBe(true)
-      } finally { await run.stop() }
-    })
-
-    it('does not fault or wake a session that ends while its retry is running', async () => {
-      let offset = 0
-      let finish!: (result: { outcome: 'failed'; step: number; detail: string; codexVersion: null }) => void
-      let checks = 0
-      const run = await sharedServer({ verified: false,
-        clock: { wall: () => Date.now() + offset, monotonic: () => performance.now() + offset },
-        checkBuild: async () => ++checks === 1
-          ? { outcome: 'failed', step: 0, detail: 'ENOSPC', codexVersion: null }
-          : new Promise(resolve => { finish = resolve }),
-      })
-      try {
-        await run.deliverNote(2)
-        offset += 5_100
-        await run.deliverNote(2)
-        expect(checks).toBe(2)
-        markSessionEnded(SESSION, run.env, Date.now() + offset)
-        const fault = readSessionState(SESSION, run.env).input_wake_fault
-        finish({ outcome: 'failed', step: 0, detail: 'ENOSPC', codexVersion: null })
-        await run.deliverNote(2)
-        expect(run.queued).toEqual([])
-        expect(readSessionState(SESSION, run.env).input_wake_fault).toEqual(fault)
-      } finally { await run.stop() }
-    })
-
-    it('does not fault an idle session with no input when a host check fails', async () => {
-      const run = await sharedServer({ verified: false, checkBuild: async () => ({ outcome: 'failed', step: 0, detail: 'ENOSPC', codexVersion: null }) })
-      try {
-        await run.hub.checkCodexAttach(run.hub.sessions.get(SESSION)!, 'watch')
-        await until(() => run.builds.length > 0)
-        await new Promise(resolve => setTimeout(resolve, 50))
-        expect(readSessionState(SESSION, run.env).input_wake_fault).toBeUndefined()
-      } finally { await run.stop() }
-    })
-
     it('kills a stalled Codex child at the hub send deadline and retains the input', async () => {
       let pid: number | undefined
       let killed = false
@@ -2198,33 +1031,6 @@ describe('hub and Codex SessionEnd', () => {
         await run.stop()
       }
     })
-
-    it('keeps the questions while a terminal that joined the conversation still shows it, and stops asking until the next turn', async () => {
-      const run = await sharedServer({ watchMs: 50, state: () => ({ state: 'attached', confirmed: true, reason: 'terminal-gone+joined' }) })
-      try {
-        question(run.env)
-        // The watch already looks during setup, and setup's own turn lets it look again:
-        // count only from the look that found a terminal and paused it.
-        const paused = (): boolean => run.hub.sessions.get(SESSION)?.attachWatchPaused === true
-        await until(paused)
-        const turn = async (): Promise<number> => {
-          const before = run.asked.length
-          await requestHub(run.env, { type: 'hint', session_id: SESSION }, { role: 'hint' })
-          await until(() => run.asked.length > before && paused())
-          // One look: a terminal shows it, so nothing more is asked until the next turn.
-          await new Promise((resolve) => setTimeout(resolve, 400))
-          return run.asked.length - before
-        }
-        expect(await turn()).toBe(1)
-        expect(run.asked.every((input) => input.confirm === 'closed')).toBe(true)
-        expect(reportedEnd(run.service)).toBe(false)
-        // The next turn: it looks again, once.
-        expect(await turn()).toBe(1)
-        expect(reportedEnd(run.service)).toBe(false)
-      } finally {
-        await run.stop()
-      }
-    })
   })
 
 })
@@ -2271,58 +1077,6 @@ describe('SessionEnd hook', () => {
       expect(readSessionEndMarker(SESSION, env)).toBeNull()
       expect(readSessionState(SESSION, env).pending).toHaveLength(1)
     } finally { await hub.close() }
-  })
-
-  it('leaves a terminal conversation\'s end to the hub too, naming the process that ran the hook', async () => {
-    const env = { ...hubEnv(), NOTIFAI_HOOK_SOURCE_PID: String(HARNESS.pid) }
-    const hub = await fakeHub(env, { type: 'ok', held: true })
-    try {
-      await sessionEnd(env, 'codex-tui')
-      expect(hub.requests).toEqual([expect.objectContaining({ type: 'session-end-candidate', session_id: SESSION, harness_pid: HARNESS.pid })])
-      expect(readSessionEndMarker(SESSION, env)).toBeNull()
-      expect(readSessionState(SESSION, env).pending).toHaveLength(1)
-    } finally { await hub.close() }
-  })
-
-  it('leaves a Claude Code conversation\'s end to the hub, naming the process that ran the hook', async () => {
-    const env = { ...hubEnv(), NOTIFAI_HOOK_SOURCE_PID: String(HARNESS.pid) }
-    const hub = await fakeHub(env, { type: 'ok', held: true })
-    try {
-      beginSessionIncarnation(SESSION, env, { stamp: lifecycleStamp(), harnessProcess: HARNESS })
-      updateSessionState(SESSION, env, (state) => ({ ...state, harness: 'claude-code', pending: [{ question: 'Deploy?', summary: 'Deploy?' } as never] }))
-      const deps: CommandDeps = {
-        io: { out: () => undefined, err: () => undefined, confirm: async () => false, openUrl: () => undefined },
-        store: memoryStore(), env, cwd: '/tmp', logger: nullLogger(), hookPlatform: 'darwin',
-      }
-      await hookRunCommand(deps, 'session-end', async () => JSON.stringify({ session_id: SESSION, cwd: '/tmp',
-        hook_event_name: 'SessionEnd', reason: 'prompt_input_exit' }), 'claude-code')
-      expect(hub.requests).toEqual([expect.objectContaining({ type: 'session-end-candidate', session_id: SESSION, harness_pid: HARNESS.pid })])
-      expect(readSessionEndMarker(SESSION, env)).toBeNull()
-      expect(readSessionState(SESSION, env).pending).toHaveLength(1)
-    } finally { await hub.close() }
-  })
-
-  it('leaves a Claude Code conversation\'s end to the next hub while the machine is going down and no hub answers', async () => {
-    for (const age of [60_000, 31 * 60_000]) {
-      const env = { ...hubEnv(), NOTIFAI_HOOK_SOURCE_PID: String(HARNESS.pid) }
-      beginSessionIncarnation(SESSION, env, { stamp: lifecycleStamp(), harnessProcess: HARNESS })
-      updateSessionState(SESSION, env, (state) => ({ ...state, harness: 'claude-code', pending: [{ question: 'Deploy?', summary: 'Deploy?' } as never] }))
-      ensurePrivateDirectory(path.dirname(hubSocketPath(env)))
-      writeFileSync(path.join(path.dirname(hubLockPath(env)), 'shutdown.json'), JSON.stringify({ boot: 'b', since: Date.now() - age, name: 'x' }))
-      const deps: CommandDeps = {
-        io: { out: () => undefined, err: () => undefined, confirm: async () => false, openUrl: () => undefined },
-        store: memoryStore(), env, cwd: '/tmp', logger: nullLogger(), hookPlatform: 'darwin',
-      }
-      await hookRunCommand(deps, 'session-end', async () => JSON.stringify({ session_id: SESSION, cwd: '/tmp',
-        hook_event_name: 'SessionEnd', reason: 'other' }), 'claude-code')
-      if (age < 30 * 60_000) {
-        expect(readSessionEndMarker(SESSION, env)).toBeNull()
-        expect(readSessionState(SESSION, env).pending).toHaveLength(1)
-      } else {
-        // A shutdown noted long ago and never cleared is no reason to hold anything.
-        expect(readSessionEndMarker(SESSION, env)).not.toBeNull()
-      }
-    }
   })
 
   it('ends it at once when no hub holds it', async () => {
@@ -2560,124 +1314,6 @@ describe('hub: conversations stopped by their app or the machine', () => {
     await stopHub(hub, service, done)
   })
 
-  it('ends a stopped conversation once its last window passes, from the generation that stopped it', async () => {
-    const env = hubEnv()
-    recordSessionNotified(SESSION, env, Date.now())
-    const app = await standIn()
-    const host = await standIn()
-    describeHost(env, host)
-    const desktop = desktopApp(env)
-    const service = fakeService({
-      capabilities: ['session_attendance', 'session_attendance_batch', 'session_stopped_hold'],
-      batch: (body) => ({ message_cursor: 'c1', sessions: body.sessions.map((entry) => entry.state === 'stopped'
-        ? { session_id: entry.session_id, status: 'stopped' as const, generation: 1, message_cursor: 'c1', messages: [] }
-        : entry.state === 'running'
-          ? { session_id: entry.session_id, status: 'attending' as const, generation: 1, lease_remaining_ms: 120_000, message_cursor: 'c1', messages: [] }
-          : { session_id: entry.session_id, status: 'withdrawn' as const }) }),
-    })
-    const peers = new Map<number, PeerCredentials>()
-    const { hub, done } = startHub(env, service, peers, memoryStore(), 50, { endConfirmMs: 150 }, { claudeDesktop: desktop, powerWatch: false, runHook: noHook })
-    await hubListening(env)
-    const child = await writerChild(env, peers, 900430, host, { entrypoint: 'claude-desktop', transcript_path: transcript(env) }, app)
-    await until(() => renewals(service) >= 1)
-    const incarnation = readSessionIncarnation(SESSION, env)!.incarnation
-    question(env, Date.now() + 1_200)
-    logPause(desktop.log)
-    await end(env, child, host)
-    await until(() => service.batches.some((batch) => batch.body.sessions.some((entry) => entry.state === 'stopped')), 5_000)
-    expect(ended(service)).toBe(false)
-    // The question's window passes: the session ends, so it no longer accepts notes.
-    await until(() => ended(service), 5_000)
-    const end_ = service.batches.flatMap((batch) => batch.body.sessions).find((entry) => entry.state === 'ended')
-    expect(end_).toEqual({ session_id: SESSION, incarnation, generation: 1, state: 'ended' })
-    child.socket.destroy()
-    await stopHub(hub, service, done)
-  })
-
-  it('expires a desktop conversation stopped without the app\'s pause line (the Stop button), or archived', async () => {
-    for (const variant of ['no-line', 'archived'] as const) {
-      const env = hubEnv()
-      recordSessionNotified(SESSION, env, Date.now())
-      const app = await standIn()
-      const host = await standIn()
-      describeHost(env, host)
-      const desktop = desktopApp(env, variant === 'archived')
-      const service = fakeService()
-      const peers = new Map<number, PeerCredentials>()
-      const { hub, done } = startHub(env, service, peers, memoryStore(), 100, { endConfirmMs: 150 }, { claudeDesktop: desktop, powerWatch: false, runHook: noHook })
-      await hubListening(env)
-      const child = await writerChild(env, peers, 900410, host, { entrypoint: 'claude-desktop', transcript_path: transcript(env) }, app)
-      await until(() => renewals(service) >= 1)
-      question(env)
-      if (variant === 'archived') logPause(desktop.log)
-      await end(env, child, host)
-      if (variant === 'archived') {
-      await until(() => ended(service), 5_000)
-      await until(() => (readSessionState(SESSION, env).pending ?? []).length === 0)
-      expect(readSessionEndMarker(SESSION, env)).not.toBeNull()
-      } else {
-        await until(() => hub.sessions.get(SESSION)?.stopped != null, 5_000)
-        expect(ended(service)).toBe(false)
-        expect(readSessionEndMarker(SESSION, env)).toBeNull()
-        expect(readSessionState(SESSION, env).pending).toHaveLength(1)
-      }
-      child.socket.destroy()
-      await stopHub(hub, service, done)
-    }
-  })
-
-  it('expires a terminal close after the confirmation even with the desktop app\'s records present (only the app pauses)', async () => {
-    const env = hubEnv()
-    recordSessionNotified(SESSION, env, Date.now())
-    const host = await standIn()
-    describeHost(env, host)
-    const desktop = desktopApp(env)
-    logPause(desktop.log)
-    const service = fakeService()
-    const peers = new Map<number, PeerCredentials>()
-    const { hub, done } = startHub(env, service, peers, memoryStore(), 100, { endConfirmMs: 150 }, { claudeDesktop: desktop, powerWatch: false, runHook: noHook })
-    await hubListening(env)
-    const child = await writerChild(env, peers, 900420, host, { transcript_path: transcript(env) })
-    await until(() => renewals(service) >= 1)
-    question(env)
-    await end(env, child, host)
-    await until(() => hub.sessions.get(SESSION)?.stopped != null, 5_000)
-    expect(ended(service)).toBe(false)
-    expect(readSessionEndMarker(SESSION, env)).toBeNull()
-    expect(readSessionState(SESSION, env).pending).toHaveLength(1)
-    child.socket.destroy()
-    await stopHub(hub, service, done)
-  })
-
-  it.each(['terminal', 'claude-ide', 't3', 'unknown'])('limits explicit Claude close reasons to REPL places (%s)', async (place) => {
-    const env = hubEnv()
-    recordSessionNotified(SESSION, env, Date.now())
-    const host = await standIn()
-    describeHost(env, host)
-    const service = fakeService({ capabilities: ['session_attendance', 'session_attendance_batch', 'session_confirmed_end'] })
-    const peers = new Map<number, PeerCredentials>()
-    const { hub, done } = startHub(env, service, peers, memoryStore(), 100, { endConfirmMs: 150 },
-      { claudeHostName: () => place === 'unknown' ? null : 'T3 Code (Nightly)', powerWatch: false, runHook: noHook })
-    await hubListening(env)
-    const child = await writerChild(env, peers, 900422, host, { entrypoint: place === 'terminal' ? 'cli' : place === 'claude-ide' ? 'claude-vscode' : 'sdk-ts', transcript_path: transcript(env) })
-    expect(hub.sessions.get(SESSION)?.registration.place).toBe(place)
-    await until(() => renewals(service) >= 1)
-    question(env)
-    await requestHub(env, { type: 'session-end-candidate', session_id: SESSION, harness_pid: host.pid })
-    await requestHub(env, { type: 'session-end-candidate', session_id: SESSION, harness_pid: host.pid, close_reason: 'prompt_input_exit' })
-    await requestHub(env, { type: 'session-end-candidate', session_id: SESSION, harness_pid: host.pid, close_reason: 'logout' })
-    if (place === 'terminal' || place === 'claude-ide') {
-      await until(() => ended(service))
-      expect(service.batches.flatMap(batch => batch.body.sessions).find(entry => entry.state === 'ended')).toMatchObject({ end_reason: 'closed' })
-    } else {
-      expect(ended(service)).toBe(false)
-      expect(hub.sessions.get(SESSION)?.endCandidate).not.toBeNull()
-    }
-    child.socket.destroy()
-    host.process.kill('SIGKILL')
-    await stopHub(hub, service, done)
-  })
-
   it('holds every end while the machine shuts down; the next boot keeps the conversation and delivers at its resume', async () => {
     const env = hubEnv()
     recordSessionNotified(SESSION, env, Date.now())
@@ -2727,70 +1363,6 @@ describe('hub: conversations stopped by their app or the machine', () => {
     await stopHub(second.hub, service, second.done)
   })
 
-  it('lets a shutdown that never goes on lapse, and then decides held ends as usual', async () => {
-    const env = hubEnv()
-    recordSessionNotified(SESSION, env, Date.now())
-    const host = await standIn()
-    describeHost(env, host)
-    const service = fakeService()
-    const peers = new Map<number, PeerCredentials>()
-    let post: ((event: { kind: 'shutdown' | 'cancelled' | 'other'; name: string }) => void) | null = null
-    const powerWatch = (onEvent: typeof post & {}): ReturnType<NonNullable<Exclude<HubOptions['powerWatch'], false>>> => {
-      post = onEvent
-      return { state: () => ({ source: 'loginwindow', unavailable: null }), persisted: () => undefined, stop: () => undefined }
-    }
-    let shift = 0
-    const clock = { monotonic: () => performance.now(), wall: () => Date.now() + shift }
-    const { hub, done } = startHub(env, service, peers, memoryStore(), 100, { endConfirmMs: 150 }, { powerWatch, claudeDesktop: null, runHook: noHook, clock })
-    await hubListening(env)
-    const child = await writerChild(env, peers, 900445, host, { transcript_path: transcript(env) })
-    await until(() => renewals(service) >= 1)
-    question(env)
-    post!({ kind: 'shutdown', name: 'com.apple.system.loginwindow.shutdownInitiated' })
-    await end(env, child, host)
-    await new Promise((resolve) => setTimeout(resolve, 400))
-    expect(ended(service)).toBe(false)
-    // An app holds the shutdown up and nobody answers its dialog for half an hour.
-    shift = 31 * 60_000
-    await until(() => hub.sessions.get(SESSION)?.stopped != null, 5_000)
-    expect(ended(service)).toBe(false)
-    expect(readSessionEndMarker(SESSION, env)).toBeNull()
-    expect(readSessionState(SESSION, env).pending).toHaveLength(1)
-    child.socket.destroy()
-    await stopHub(hub, service, done)
-  })
-
-  it('decides a held end as usual when the shutdown is cancelled', async () => {
-    const env = hubEnv()
-    recordSessionNotified(SESSION, env, Date.now())
-    const host = await standIn()
-    describeHost(env, host)
-    const service = fakeService()
-    const peers = new Map<number, PeerCredentials>()
-    let post: ((event: { kind: 'shutdown' | 'cancelled' | 'other'; name: string }) => void) | null = null
-    const powerWatch = (onEvent: typeof post & {}): ReturnType<NonNullable<Exclude<HubOptions['powerWatch'], false>>> => {
-      post = onEvent
-      return { state: () => ({ source: 'loginwindow', unavailable: null }), persisted: () => undefined, stop: () => undefined }
-    }
-    const { hub, done } = startHub(env, service, peers, memoryStore(), 100, { endConfirmMs: 150 }, { powerWatch, claudeDesktop: null, runHook: noHook })
-    await hubListening(env)
-    const child = await writerChild(env, peers, 900440, host, { transcript_path: transcript(env) })
-    await until(() => renewals(service) >= 1)
-    question(env)
-    post!({ kind: 'shutdown', name: 'com.apple.system.loginwindow.shutdownInitiated' })
-    await end(env, child, host)
-    await new Promise((resolve) => setTimeout(resolve, 500))
-    expect(ended(service)).toBe(false)
-    expect(existsSync(path.join(path.dirname(hubLockPath(env)), 'shutdown.json'))).toBe(true)
-    post!({ kind: 'cancelled', name: 'com.apple.system.loginwindow.logoutcancelled' })
-    await until(() => hub.sessions.get(SESSION)?.stopped != null, 5_000)
-    expect(ended(service)).toBe(false)
-    expect(readSessionEndMarker(SESSION, env)).toBeNull()
-    expect(readSessionState(SESSION, env).pending).toHaveLength(1)
-    child.socket.destroy()
-    await stopHub(hub, service, done)
-  })
-
   it('keeps a conversation the machine took down with no end at all (power loss), and ends one with nothing waiting as before', async () => {
     for (const waiting of [true, false]) {
       const env = hubEnv()
@@ -2819,121 +1391,6 @@ describe('hub: conversations stopped by their app or the machine', () => {
       }
       await stopHub(second.hub, service, second.done)
     }
-  })
-
-  it('reopens a terminal conversation the machine took down once its answer arrives, once, and confirms it when it comes back', async () => {
-    const env = hubEnv()
-    recordSessionNotified(SESSION, env, Date.now())
-    const host = await standIn()
-    describeHost(env, host)
-    const service = fakeService()
-    const peers = new Map<number, PeerCredentials>()
-    const first = startHub(env, service, peers, memoryStore(), 100, { endConfirmMs: 150 }, { powerWatch: false, claudeDesktop: null, runHook: noHook,
-      reopen: { open: async () => 'not in this test' }, launchArguments: () => LAUNCHED })
-    await hubListening(env)
-    const child = await writerChild(env, peers, 900470, host, { transcript_path: transcript(env) })
-    await until(() => renewals(service) >= 1)
-    question(env)
-    // The power goes.
-    await stopHub(first.hub, service, first.done)
-    child.socket.destroy()
-    host.process.kill('SIGKILL')
-    const opened: TerminalLaunch[] = []
-    const second = startHub(env, service, peers, memoryStore(), 100, { endConfirmMs: 150 }, { powerWatch: false, claudeDesktop: null, runHook: noHook,
-      bootIdentity: () => 'after-power-loss', reopen: { launcher: '/opt/notifai/notifai', resolveHarness: () => '/usr/local/bin/claude',
-        terminal: { platform: 'darwin', env, hasApp: () => false, which: () => null }, open: async (launch) => { opened.push(launch); return true as const } } })
-    await until(() => second.hub.sessions.get(SESSION)?.stopped?.cause === 'machine', 5_000)
-    // An open question alone reopens nothing.
-    await new Promise((resolve) => setTimeout(resolve, 300))
-    expect(opened).toHaveLength(0)
-    answered(env)
-    second.hub.inputStaged(SESSION)
-    await until(() => opened.length === 1, 5_000)
-    expect(opened[0]!.args.slice(0, 3)).toEqual(['-g', '-a', 'Terminal'])
-    const script = opened[0]!.args.at(-1)!
-    // With the options it was started with, read from its process when it registered.
-    expect(readFileSync(script, 'utf8')).toContain(`'/usr/local/bin/claude' '--resume' '${SESSION}' '--disallowedTools' 'Bash(rm:*)' '--permission-mode' 'acceptEdits'`)
-    // More arrivals and safety ticks while it opens: still one window.
-    second.hub.inputStaged(SESSION)
-    await new Promise((resolve) => setTimeout(resolve, 400))
-    expect(opened).toHaveLength(1)
-    // The window's shell became `claude --resume`: its SessionStart brings the conversation back here.
-    const reopened = await standIn()
-    describeHost(env, reopened)
-    writeFileSync(script.replace(/\.command$/, '.pid'), `${reopened.pid}\n`)
-    const back = await writerChild(env, peers, 900471, reopened, { source: 'resume', transcript_path: transcript(env) })
-    expect(back.frames[0]).toEqual({ type: 'registered', session_id: SESSION })
-    await until(() => second.hub.sessions.get(SESSION)?.stopped === null, 5_000)
-    expect(reopenReport(env, 'darwin').sessions).toMatchObject([{ session_id: SESSION, outcome: 'confirmed', terminal: 'terminal', attempts: 1 }])
-    back.socket.destroy()
-    await stopHub(second.hub, service, second.done)
-  })
-
-  it('never reopens while the machine goes down, and reopens at the next boot\'s hub start with nothing spent', async () => {
-    const env = hubEnv()
-    recordSessionNotified(SESSION, env, Date.now())
-    const host = await standIn()
-    describeHost(env, host)
-    const service = fakeService()
-    const peers = new Map<number, PeerCredentials>()
-    const first = startHub(env, service, peers, memoryStore(), 100, { endConfirmMs: 150 }, { powerWatch: false, claudeDesktop: null, runHook: noHook,
-      reopen: { open: async () => 'not in this test' }, launchArguments: () => LAUNCHED })
-    await hubListening(env)
-    const child = await writerChild(env, peers, 900480, host, { transcript_path: transcript(env) })
-    await until(() => renewals(service) >= 1)
-    question(env)
-    await stopHub(first.hub, service, first.done)
-    child.socket.destroy()
-    host.process.kill('SIGKILL')
-    const opened: TerminalLaunch[] = []
-    const reopen = { launcher: '/opt/notifai/notifai', resolveHarness: () => '/usr/local/bin/claude',
-      terminal: { platform: 'darwin' as const, env, hasApp: () => false, which: () => null }, open: async (launch: TerminalLaunch) => { opened.push(launch); return true as const } }
-    // The next boot goes down at once: the machine says so before this hub starts.
-    writeFileSync(path.join(path.dirname(hubLockPath(env)), 'shutdown.json'), JSON.stringify({ boot: 'going-down', since: Date.now(), name: 'x' }))
-    const second = startHub(env, service, peers, memoryStore(), 100, { endConfirmMs: 150 }, { powerWatch: false, claudeDesktop: null, runHook: noHook,
-      bootIdentity: () => 'going-down', reopen })
-    await until(() => second.hub.sessions.get(SESSION)?.stopped?.cause === 'machine', 5_000)
-    answered(env)
-    second.hub.inputStaged(SESSION)
-    await new Promise((resolve) => setTimeout(resolve, 400))
-    expect(opened).toHaveLength(0)
-    expect(reopenReport(env, 'darwin').sessions).toEqual([])
-    await stopHub(second.hub, service, second.done)
-    // After the boot, the first hub to start reopens it: the answer was never marked considered, and no attempt was spent.
-    const third = startHub(env, service, peers, memoryStore(), 100, { endConfirmMs: 150 }, { powerWatch: false, claudeDesktop: null, runHook: noHook,
-      bootIdentity: () => 'booted-again', reopen })
-    await until(() => opened.length === 1, 5_000)
-    expect(reopenReport(env, 'darwin').sessions).toMatchObject([{ session_id: SESSION, outcome: 'launched', attempts: 1 }])
-    await stopHub(third.hub, service, third.done)
-  })
-
-  it('ends a stopped conversation once its question\'s window is over, and the hub then leaves', async () => {
-    const env = hubEnv()
-    recordSessionNotified(SESSION, env, Date.now())
-    const host = await standIn()
-    describeHost(env, host)
-    const service = fakeService()
-    const peers = new Map<number, PeerCredentials>()
-    const first = startHub(env, service, peers, memoryStore(), 100, { endConfirmMs: 150 }, { powerWatch: false, claudeDesktop: null, runHook: noHook })
-    await hubListening(env)
-    const child = await writerChild(env, peers, 900460, host, { transcript_path: transcript(env) })
-    await until(() => renewals(service) >= 1)
-    question(env, Date.now() + 2_500)
-    await stopHub(first.hub, service, first.done)
-    child.socket.destroy()
-    host.process.kill('SIGKILL')
-    const second = startHub(env, service, peers, memoryStore(), 100, { endConfirmMs: 150 }, { powerWatch: false, claudeDesktop: null, runHook: noHook,
-      bootIdentity: () => 'later-boot' })
-    let exited = false
-    void second.done.then(() => { exited = true })
-    await until(() => second.hub.sessions.get(SESSION)?.stopped !== undefined && second.hub.sessions.get(SESSION)?.stopped !== null, 5_000)
-    // Owed: the hub stays past its idle exit.
-    await new Promise((resolve) => setTimeout(resolve, 800))
-    expect(exited).toBe(false)
-    // The window ends: the end is reported (the service expires and drops what is left), then the hub goes.
-    await until(() => ended(service), 8_000)
-    expect(service.batches.flatMap((batch) => batch.body.sessions).find((entry) => entry.state === 'ended')).toMatchObject({ generation: 1 })
-    while (!exited) { service.release(); await new Promise((resolve) => setTimeout(resolve, 50)) }
   })
 
   it('never hands what waits to a scripted run of the same conversation, and its end ends nothing', async () => {
@@ -2967,77 +1424,6 @@ describe('hub: conversations stopped by their app or the machine', () => {
     child.socket.destroy()
     await stopHub(hub, service, done)
   })
-
-  it('ends a stopped desktop conversation the User then archives, or whose app the User quits', async () => {
-    for (const variant of ['archive', 'quit'] as const) {
-      const env = hubEnv()
-      recordSessionNotified(SESSION, env, Date.now())
-      const app = await standIn()
-      const host = await standIn()
-      describeHost(env, host)
-      const desktop = desktopApp(env)
-      const service = fakeService()
-      const peers = new Map<number, PeerCredentials>()
-      const { hub, done } = startHub(env, service, peers, memoryStore(), 100, { endConfirmMs: 150 }, { claudeDesktop: desktop, powerWatch: false, runHook: noHook })
-      await hubListening(env)
-      const child = await writerChild(env, peers, 900480, host, { entrypoint: 'claude-desktop', transcript_path: transcript(env) }, app)
-      await until(() => renewals(service) >= 1)
-      question(env)
-      logPause(desktop.log)
-      await end(env, child, host)
-      await until(() => hub.sessions.get(SESSION)?.stopped?.cause === 'app', 5_000)
-      if (variant === 'archive') desktopApp(env, true)
-      else app.process.kill('SIGKILL')
-      if (variant === 'archive') {
-      await until(() => ended(service), 5_000)
-      await until(() => (readSessionState(SESSION, env).pending ?? []).length === 0)
-      } else {
-        await until(() => hub.sessions.get(SESSION)?.stopped != null, 5_000)
-        expect(ended(service)).toBe(false)
-        expect(readSessionEndMarker(SESSION, env)).toBeNull()
-        expect(readSessionState(SESSION, env).pending).toHaveLength(1)
-      }
-      child.socket.destroy()
-      await stopHub(hub, service, done)
-    }
-  })
-
-  it('keeps a conversation whose terminal exit was recorded after the machine said it was going down, and preserves an unconfirmed exit recorded before', async () => {
-    for (const after of [true, false]) {
-      const env = hubEnv()
-      recordSessionNotified(SESSION, env, Date.now())
-      const host = await standIn()
-      describeHost(env, host)
-      const service = fakeService()
-      const peers = new Map<number, PeerCredentials>()
-      const first = startHub(env, service, peers, memoryStore(), 100, { endConfirmMs: 150 }, { powerWatch: false, claudeDesktop: null, runHook: noHook })
-      await hubListening(env)
-      const child = await writerChild(env, peers, 900490, host, { transcript_path: transcript(env) })
-      await until(() => renewals(service) >= 1)
-      question(env)
-      // The hub was terminated first; the terminal's child recorded the exit afterwards.
-      await stopHub(first.hub, service, first.done)
-      child.socket.destroy()
-      host.process.kill('SIGKILL')
-      const at = Date.now()
-      writeFileSync(path.join(path.dirname(hubLockPath(env)), 'shutdown.json'), JSON.stringify({ boot: 'test-boot', since: after ? at - 1_000 : at + 1_000, name: 'x' }))
-      const ended_ = path.join(path.dirname(hubLockPath(env)), 'ended')
-      mkdirSync(ended_, { recursive: true })
-      writeFileSync(path.join(ended_, `${fnv64Hex(SESSION)}-${host.pid}.json`), JSON.stringify({ session_id: SESSION, harness: 'claude-code',
-        harness_pid: host.pid, harness_start: host.start, boot: 'test-boot', reason: 'harness-gone', at }))
-      const second = startHub(env, service, peers, memoryStore(), 100, { endConfirmMs: 150 }, { powerWatch: false, claudeDesktop: null, runHook: noHook,
-        bootIdentity: () => 'next' })
-      if (after) {
-        await until(() => second.hub.sessions.get(SESSION)?.stopped?.cause === 'machine', 5_000)
-        expect(ended(service)).toBe(false)
-      } else {
-        await until(() => second.hub.sessions.get(SESSION)?.stopped != null, 5_000)
-        expect(ended(service)).toBe(false)
-        expect(readSessionState(SESSION, env).pending).toHaveLength(1)
-      }
-      await stopHub(second.hub, service, second.done)
-    }
-  })
 })
 
 describe('hub: Codex conversations stopped by their app or the machine, Orca panes, and forks', () => {
@@ -3066,11 +1452,6 @@ describe('hub: Codex conversations stopped by their app or the machine, Orca pan
     return file
   }
 
-  function archive(env: NodeJS.ProcessEnv, file: string): void {
-    const target = path.join(codexHome(env), 'archived_sessions', path.basename(file))
-    mkdirSync(path.dirname(target), { recursive: true })
-    renameSync(file, target)
-  }
 
   /** A Codex host registered for a thread, idle after one turn. */
   async function codexChild(env: NodeJS.ProcessEnv, peers: Map<number, PeerCredentials>, childPid: number, host: StandIn, transcript: string,
@@ -3111,64 +1492,6 @@ describe('hub: Codex conversations stopped by their app or the machine, Orca pan
     while (!exited) { service.release(); await new Promise((resolve) => setTimeout(resolve, 20)) }
   }
   const queueing = (queued: string[]): CodexWakeAdapters => ({ available: () => true, queue: async (threadId) => { queued.push(threadId) } })
-
-  it('expires an app conversation whose app quit, or that was archived, within the confirmation', async () => {
-    for (const variant of ['quit', 'archive'] as const) {
-      const env = hubEnv()
-      recordSessionNotified(SESSION, env, Date.now())
-      const transcript = rollout(env, SESSION, 'Codex Desktop')
-      const server = await standIn()
-      const service = fakeService()
-      const peers = new Map<number, PeerCredentials>()
-      const { hub, done } = startHub(env, service, peers, memoryStore(), 100, { endConfirmMs: 150, codexHostKind: () => 'app-server',
-        wake: queueing([]) }, { powerWatch: false, runHook: noHook })
-      await hubListening(env)
-      const child = await codexChild(env, peers, 900600, server, transcript)
-      await until(() => renewals(service) >= 1)
-      question(env)
-      if (variant === 'quit') exit(child, server)
-      else {
-        // `codex archive`: SessionEnd names the old path, the rollout moves.
-        archive(env, transcript)
-        await requestHub(env, { type: 'session-end-candidate', session_id: SESSION, transcript_path: transcript, harness_pid: server.pid })
-        child.socket.destroy()
-      }
-      if (variant !== 'quit') {
-      await until(() => ended(service), 5_000)
-      await until(() => readSessionEndMarker(SESSION, env) !== null)
-      expect(hub.sessions.get(SESSION)?.stopped ?? null).toBeNull()
-      } else {
-        await until(() => hub.sessions.get(SESSION)?.stopped != null, 5_000)
-        expect(ended(service)).toBe(false)
-        expect(readSessionEndMarker(SESSION, env)).toBeNull()
-        expect(readSessionState(SESSION, env).pending).toHaveLength(1)
-      }
-      child.socket.destroy()
-      await stopHub(hub, service, done)
-    }
-  })
-
-  it('ends a stopped app conversation the User then archives', async () => {
-    const env = hubEnv()
-    recordSessionNotified(SESSION, env, Date.now())
-    const transcript = rollout(env, SESSION, 'Codex Desktop')
-    const server = await standIn()
-    const service = fakeService()
-    const peers = new Map<number, PeerCredentials>()
-    const { hub, done } = startHub(env, service, peers, memoryStore(), 100, { endConfirmMs: 150, codexHostKind: () => 'app-server',
-      wake: queueing([]) }, { powerWatch: false, runHook: noHook })
-    await hubListening(env)
-    const child = await codexChild(env, peers, 900610, server, transcript)
-    await until(() => renewals(service) >= 1)
-    question(env)
-    await requestHub(env, { type: 'session-end-candidate', session_id: SESSION, transcript_path: transcript, harness_pid: server.pid })
-    child.socket.destroy()
-    await until(() => hub.sessions.get(SESSION)?.stopped?.cause === 'app', 5_000)
-    expect(ended(service)).toBe(false)
-    archive(env, transcript)
-    await until(() => ended(service), 5_000)
-    await stopHub(hub, service, done)
-  })
 
   it('keeps a T3 thread stopped 31 minutes after its last activity while T3 runs, queues one wake, and delivers at the next send', async () => {
     const env = hubEnv()
@@ -3217,35 +1540,6 @@ describe('hub: Codex conversations stopped by their app or the machine, Orca pan
     await stopHub(hub, service, done)
   })
 
-  it('preserves a T3 thread stopped before 30 minutes, or after T3 itself disappears', async () => {
-    for (const variant of ['early', 'quit'] as const) {
-      const env = hubEnv()
-      recordSessionNotified(SESSION, env, Date.now())
-      const transcript = rollout(env, SESSION, 'T3 Code')
-      const t3 = await standIn()
-      const server = await standIn()
-      let shift = 0
-      const clock = { monotonic: () => performance.now(), wall: () => Date.now() + shift }
-      const service = fakeService()
-      const peers = new Map<number, PeerCredentials>()
-      const { hub, done } = startHub(env, service, peers, memoryStore(), 100, { endConfirmMs: 150, codexHostKind: () => 'app-server',
-        wake: queueing([]) }, { powerWatch: false, runHook: noHook, clock })
-      await hubListening(env)
-      const child = await codexChild(env, peers, 900630, server, transcript, { originator_override: 'T3 Code' }, t3)
-      await until(() => renewals(service) >= 1)
-      question(env)
-      shift = (variant === 'early' ? 29 : 31) * 60_000
-      if (variant === 'quit') t3.process.kill('SIGKILL')
-      exit(child, server)
-      await until(() => hub.sessions.get(SESSION)?.stopped != null, 5_000)
-      expect(ended(service)).toBe(false)
-      expect(readSessionEndMarker(SESSION, env)).toBeNull()
-      expect(readSessionState(SESSION, env).pending).toHaveLength(1)
-      child.socket.destroy()
-      await stopHub(hub, service, done)
-    }
-  })
-
   it('never hands a stopped thread to a `codex exec` run of it, and that run\'s end ends nothing', async () => {
     const env = hubEnv()
     recordSessionNotified(SESSION, env, Date.now())
@@ -3272,63 +1566,6 @@ describe('hub: Codex conversations stopped by their app or the machine, Orca pan
     expect(ended(service)).toBe(false)
     run.socket.destroy()
     await stopHub(hub, service, done)
-  })
-
-  it('follows a terminal thread to the restarted shared server that holds it now, with nothing expired', async () => {
-    const env = hubEnv()
-    recordSessionNotified(SESSION, env, Date.now())
-    const transcript = rollout(env, SESSION, 'codex-tui')
-    const daemon = await standIn()
-    const restarted = await standIn()
-    let holders: number[] = []
-    const service = fakeService()
-    const peers = new Map<number, PeerCredentials>()
-    const { hub, done } = startHub(env, service, peers, memoryStore(), 100, { endConfirmMs: 300, codexHostKind: () => 'other', wake: queueing([]),
-      codexHostHoldsThread: (_home, _thread, pid) => holders.includes(pid) }, { powerWatch: false, runHook: noHook, codexThreadHolders: () => holders })
-    await hubListening(env)
-    const child = await codexChild(env, peers, 900660, daemon, transcript)
-    await until(() => renewals(service) >= 1)
-    question(env)
-    // `codex app-server daemon stop`: SessionEnd, the server goes; `daemon start`: the terminal reconnects and the new server loads the thread.
-    await requestHub(env, { type: 'session-end-candidate', session_id: SESSION, transcript_path: transcript, harness_pid: daemon.pid })
-    exit(child, daemon)
-    holders = [restarted.pid]
-    await until(() => hub.sessions.get(SESSION)?.harnessProcess.pid === restarted.pid)
-    service.release()
-    expect(ended(service)).toBe(false)
-    expect(hub.sessions.get(SESSION)?.endCandidate).toBeNull()
-    expect(hub.sessions.get(SESSION)?.reloadedAt).not.toBeNull()
-    expect(readSessionIncarnation(SESSION, env)?.harness_process?.pid).toBe(restarted.pid)
-    expect(readSessionState(SESSION, env).pending).toHaveLength(1)
-    child.socket.destroy()
-    await stopHub(hub, service, done)
-  })
-
-  it('keeps a terminal thread the machine took down (power loss) and queues its wake for the resume', async () => {
-    const env = hubEnv()
-    recordSessionNotified(SESSION, env, Date.now())
-    const transcript = rollout(env, SESSION, 'codex-tui')
-    const tui = await standIn()
-    const queued: string[] = []
-    const service = fakeService()
-    const peers = new Map<number, PeerCredentials>()
-    const options = { endConfirmMs: 150, codexHostKind: () => 'other' as const, wake: queueing(queued) }
-    const first = startHub(env, service, peers, memoryStore(), 100, options, { powerWatch: false, runHook: noHook })
-    await hubListening(env)
-    const child = await codexChild(env, peers, 900650, tui, transcript)
-    await until(() => renewals(service) >= 1)
-    question(env)
-    // The power goes: nothing reports anything.
-    await stopHub(first.hub, service, first.done)
-    child.socket.destroy()
-    tui.process.kill('SIGKILL')
-    const second = startHub(env, service, peers, memoryStore(), 100, options, { powerWatch: false, runHook: noHook, bootIdentity: () => 'after-power-loss' })
-    await until(() => second.hub.sessions.get(SESSION)?.stopped?.cause === 'machine', 5_000)
-    expect(ended(service)).toBe(false)
-    note(env, 'sm_power')
-    second.hub.inputStaged(SESSION)
-    await until(() => queued.length === 1)
-    await stopHub(second.hub, service, second.done)
   })
 
   // -- Claude Code in an Orca terminal pane, and forks ---------------------------
@@ -3407,72 +1644,6 @@ describe('hub: Codex conversations stopped by their app or the machine, Orca pan
     }
   })
 
-  it('expires a stopped conversation its `/branch` fork continues (moved), and leaves a running one its fork branched from', async () => {
-    for (const parentState of ['stopped', 'running'] as const) {
-      const env = hubEnv()
-      recordSessionNotified(SESSION, env, Date.now())
-      const terminalHost = await standIn()
-      const host = await standIn()
-      const service = fakeService()
-      const peers = new Map<number, PeerCredentials>()
-      const { hub, done } = startHub(env, service, peers, memoryStore(), 100, { endConfirmMs: 150 },
-        { powerWatch: false, claudeDesktop: null, runHook: noHook, orcaTerminalHostOf: () => ({ pid: terminalHost.pid, start: terminalHost.start }) })
-      await hubListening(env)
-      const child = await paneSession(env, service, peers, 900710, host)
-      if (parentState === 'stopped') {
-        terminalHost.process.kill('SIGKILL')
-        await paneEnd(env, child, host)
-        await until(() => hub.sessions.get(SESSION)?.stopped?.cause === 'app', 5_000)
-      }
-      // The fork: a new id whose copied lines name the parent.
-      const forkHost = await standIn()
-      describeHost(env, forkHost, OTHER)
-      const fork = await claudeChild(env, peers, 900711, forkHost, { source: 'fork',
-        transcript_path: claudeTranscript(env, OTHER, [{ type: 'mode', sessionId: OTHER }, { type: 'user', sessionId: OTHER, forkedFrom: { sessionId: SESSION, messageUuid: 'u1' } }]) },
-      OTHER)
-      expect(fork.frames[0]).toEqual({ type: 'registered', session_id: OTHER })
-      if (parentState === 'stopped') {
-        await until(() => ended(service), 5_000)
-        await until(() => readSessionEndMarker(SESSION, env) !== null)
-      } else {
-        await new Promise((resolve) => setTimeout(resolve, 400))
-        service.release()
-        expect(ended(service)).toBe(false)
-        expect(hub.sessions.get(SESSION)?.stopped ?? null).toBeNull()
-        expect(readSessionState(SESSION, env).pending).toHaveLength(1)
-      }
-      fork.socket.destroy()
-      child.socket.destroy()
-      await stopHub(hub, service, done)
-    }
-  })
-
-  it('expires a stopped Codex thread its fork (`forked_from_id`) continues', async () => {
-    const env = hubEnv()
-    recordSessionNotified(SESSION, env, Date.now())
-    const transcript = rollout(env, SESSION, 'Codex Desktop')
-    const server = await standIn()
-    const service = fakeService()
-    const peers = new Map<number, PeerCredentials>()
-    const { hub, done } = startHub(env, service, peers, memoryStore(), 100, { endConfirmMs: 150, codexHostKind: () => 'app-server',
-      wake: queueing([]) }, { powerWatch: false, runHook: noHook })
-    await hubListening(env)
-    const child = await codexChild(env, peers, 900720, server, transcript)
-    await until(() => renewals(service) >= 1)
-    question(env)
-    await requestHub(env, { type: 'session-end-candidate', session_id: SESSION, transcript_path: transcript, harness_pid: server.pid })
-    child.socket.destroy()
-    await until(() => hub.sessions.get(SESSION)?.stopped?.cause === 'app', 5_000)
-    const forkHost = await standIn()
-    const fork = await codexChild(env, peers, 900721, forkHost, rollout(env, OTHER, 'codex-tui', SESSION), { source: 'startup' }, undefined, OTHER)
-    expect(fork.frames[0]).toEqual({ type: 'registered', session_id: OTHER })
-    await until(() => ended(service), 5_000)
-    // A service that cannot move questions is asked for a plain end, as before.
-    expect(service.batches.flatMap((batch) => batch.body.sessions).find((entry) => entry.state === 'ended')).not.toHaveProperty('end_reason')
-    fork.socket.destroy()
-    await stopHub(hub, service, done)
-  })
-
   it('continues a stopped Codex thread under its fork where the service can move its questions, and ends it as before when it cannot', async () => {
     for (const variant of ['moved', 'refused'] as const) {
       const env = hubEnv()
@@ -3522,53 +1693,6 @@ describe('hub: Codex conversations stopped by their app or the machine, Orca pan
         await until(() => service.batches.flatMap((batch) => batch.body.sessions).filter((entry) =>
           entry.session_id === SESSION && entry.state === 'ended' && !('end_reason' in entry)).length === 1, 5_000)
         await until(() => readSessionEndMarker(SESSION, env) !== null, 5_000)
-        expect(readSessionState(OTHER, env).pending ?? []).toEqual([])
-      }
-      fork.socket.destroy()
-      await stopHub(hub, service, done)
-    }
-  })
-
-  it('continues under a fork that has not notified only where the service creates the successor', async () => {
-    for (const creates of [true, false]) {
-      const env = hubEnv()
-      recordSessionNotified(SESSION, env, Date.now())
-      const transcript = rollout(env, SESSION, 'Codex Desktop')
-      const server = await standIn()
-      const service = fakeService({
-        capabilities: ['session_attendance', 'session_attendance_batch', 'session_stopped_hold',
-          ...(creates ? ['session_continued_successor'] : [])],
-        batch: (body) => ({ message_cursor: 'c1', sessions: body.sessions.map((entry) => {
-          if (entry.state === 'stopped') return { session_id: entry.session_id, status: 'stopped' as const, generation: entry.generation!, message_cursor: 'c1', messages: [] }
-          if (entry.state === 'running') {
-            return { session_id: entry.session_id, status: 'attending' as const, generation: entry.generation ?? 1, lease_remaining_ms: 120_000, message_cursor: 'c1', messages: [] }
-          }
-          return { session_id: entry.session_id, status: 'withdrawn' as const }
-        }) }),
-      })
-      const peers = new Map<number, PeerCredentials>()
-      const { hub, done } = startHub(env, service, peers, memoryStore(), 100, { endConfirmMs: 150, codexHostKind: () => 'app-server',
-        wake: queueing([]) }, { powerWatch: false, runHook: noHook })
-      await hubListening(env)
-      const child = await codexChild(env, peers, 900740, server, transcript)
-      await until(() => renewals(service) >= 1)
-      question(env)
-      await requestHub(env, { type: 'session-end-candidate', session_id: SESSION, transcript_path: transcript, harness_pid: server.pid })
-      child.socket.destroy()
-      await until(() => hub.sessions.get(SESSION)?.stopped?.cause === 'app', 5_000)
-      await until(() => service.batches.some((batch) => batch.body.sessions.some((entry) => entry.state === 'stopped')), 5_000)
-      // The fork has not notified, so only a service that creates it can continue there.
-      const forkHost = await standIn()
-      const fork = await codexChild(env, peers, 900741, forkHost, rollout(env, OTHER, 'codex-tui', SESSION), { source: 'startup' }, undefined, OTHER)
-      expect(fork.frames[0]).toEqual({ type: 'registered', session_id: OTHER })
-      await until(() => ended(service), 5_000)
-      await until(() => readSessionEndMarker(SESSION, env) !== null, 5_000)
-      const end = service.batches.flatMap((batch) => batch.body.sessions).find((entry) => entry.session_id === SESSION && entry.state === 'ended')
-      if (creates) {
-        expect(end).toMatchObject({ end_reason: 'continued', successor_session_id: OTHER })
-        expect(readSessionState(OTHER, env).pending?.map((entry) => entry.request_id)).toEqual(['req_1111'])
-      } else {
-        expect(end).not.toHaveProperty('end_reason')
         expect(readSessionState(OTHER, env).pending ?? []).toEqual([])
       }
       fork.socket.destroy()

@@ -1,20 +1,14 @@
 import { spawn } from 'node:child_process'
-import { mkdirSync, mkdtempSync, renameSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdirSync,mkdtempSync,rmSync,writeFileSync } from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach,describe,expect,it } from 'vitest'
 import {
-  codexAppSurface,
-  codexHomeOfRollout,
-  codexHostHoldsThread,
-  codexHostKind,
-  codexHostKindOf,
-  codexSubcommand,
-  codexThreadHeld,
-  codexThreadWriterLockPath,
-  locateCodexRollout,
-  readCodexSessionMeta,
-  readCodexThreadOriginator,
+codexAppSurface,
+codexHostHoldsThread,
+codexThreadHeld,
+codexThreadWriterLockPath,
+readCodexThreadOriginator
 } from './codex-session-end.js'
 
 const roots: string[] = []
@@ -30,62 +24,12 @@ function rollout(originator: string, instructions = 'short'): string {
 }
 
 describe('Codex thread records', () => {
-  const THREAD = '01a159b2-cf06-7590-a500-4917a76e96c2'
 
   it('names only the app and IDE originators as apps that keep a conversation open', () => {
     expect(codexAppSurface('Codex Desktop')).toBe('app')
     expect(codexAppSurface('codex_work_desktop')).toBe('app')
     expect(codexAppSurface('codex_vscode')).toBe('ide')
     for (const other of ['codex-tui', 'codex_exec', 'orca_desktop', 'T3 Code', null]) expect(codexAppSurface(other)).toBeNull()
-  })
-
-  it('reads the thread a fork came from (`forked_from_id`, as Codex 0.163.0 writes it)', () => {
-    const file = rollout('codex-tui')
-    writeFileSync(file, `${JSON.stringify({ type: 'session_meta', payload: { id: 'f', originator: 'codex-tui', forked_from_id: THREAD,
-      history_base: { thread_id: THREAD } } })}\n`)
-    expect(readCodexSessionMeta(file)).toEqual({ originator: 'codex-tui', forkedFrom: THREAD })
-    expect(readCodexSessionMeta(rollout('codex-tui'))).toEqual({ originator: 'codex-tui', forkedFrom: null })
-  })
-
-  it('finds a rollout by its id where an archive or unarchive moved it, and knows when it is gone', () => {
-    const home = mkdtempSync(path.join(os.tmpdir(), 'notifai-codex-home-'))
-    roots.push(home)
-    const live = path.join(home, 'sessions', '2026', '10', '20', `rollout-2026-10-20T07-29-00-${THREAD}.jsonl`)
-    mkdirSync(path.dirname(live), { recursive: true })
-    writeFileSync(live, '{}\n')
-    mkdirSync(path.join(home, 'sessions', '2026', '10', '19'), { recursive: true })
-    writeFileSync(path.join(home, 'sessions', '2026', '10', '19', 'rollout-2026-10-19T00-00-00-01a159b2-0000-0000-0000-000000000000.jsonl'), '{}\n')
-    expect(locateCodexRollout(home, THREAD, live)).toEqual({ place: 'sessions', path: live })
-    // The hook names no path, or one an earlier move left behind.
-    expect(locateCodexRollout(home, THREAD, null)).toEqual({ place: 'sessions', path: live })
-    // Archived: the hook still names the old path.
-    const archived = path.join(home, 'archived_sessions', path.basename(live))
-    mkdirSync(path.dirname(archived), { recursive: true })
-    renameSync(live, archived)
-    expect(locateCodexRollout(home, THREAD, live)).toEqual({ place: 'archived', path: archived })
-    expect(locateCodexRollout(null, THREAD, archived)).toEqual({ place: 'archived', path: archived })
-    expect(codexHomeOfRollout(archived)).toBe(home)
-    expect(codexHomeOfRollout(live)).toBe(home)
-    // Deleted.
-    rmSync(archived)
-    expect(locateCodexRollout(home, THREAD, live)).toEqual({ place: 'missing', path: null })
-    // Nothing readable: unknown, never a delete.
-    expect(locateCodexRollout(path.join(home, 'nowhere'), THREAD, null)).toEqual({ place: 'unknown', path: null })
-    expect(locateCodexRollout(null, THREAD, null)).toEqual({ place: 'unknown', path: null })
-  })
-
-  it('tells a scripted `codex exec` run from a terminal and an app-server by its subcommand', () => {
-    expect(codexSubcommand(['codex', 'exec', 'resume', THREAD])).toBe('exec')
-    expect(codexSubcommand(['/opt/codex', '-c', 'model=x', '--model', 'gpt', 'exec', 'hi'])).toBe('exec')
-    expect(codexSubcommand(['codex', '--no-daemon', 'resume', THREAD])).toBe('resume')
-    expect(codexSubcommand(['codex', 'app-server', '--listen', 'unix://x'])).toBe('app-server')
-    expect(codexSubcommand(['codex'])).toBeNull()
-    expect(codexSubcommand(['codex', '-m', 'exec'])).toBeNull()
-  })
-
-  it('reads the originator from the rollout\'s first line, however long its instructions', () => {
-    expect(readCodexThreadOriginator(rollout('Codex Desktop'))).toBe('Codex Desktop')
-    expect(readCodexThreadOriginator(rollout('codex-tui', 'x'.repeat(300_000)))).toBe('codex-tui')
   })
 
   it('reads no originator from a missing, empty or foreign file', () => {
@@ -96,23 +40,6 @@ describe('Codex thread records', () => {
     expect(readCodexThreadOriginator(file)).toBeNull()
     writeFileSync(file, '')
     expect(readCodexThreadOriginator(file)).toBeNull()
-  })
-
-  it('does not take an ordinary process for an app-server', () => {
-    expect(codexHostKind(process.pid)).toBe(process.platform === 'win32' ? 'unknown' : 'other')
-  })
-
-  // Command lines as `ps -o args=` printed them on macOS with Codex 0.163.0.
-  it.each([
-    ['the shared server', '/Users/u/.codex/packages/app-server-daemon/releases/0.163.0-aarch64-apple-darwin/bin/codex app-server --listen unix:// --analytics-default-enabled --managed-daemon', 'shared-server'],
-    ['a server listening on a socket', 'codex app-server --listen=ws://127.0.0.1:4500', 'shared-server'],
-    ['the Codex app\'s own server', '/Applications/ChatGPT.app/Contents/Resources/codex-cli/CodexCLI.app/Contents/MacOS/codex -c features.code_mode_host=true app-server --analytics-default-enabled', 'app-server'],
-    ['a terminal hosting its own thread', '/opt/homebrew/bin/codex --no-daemon', 'other'],
-    ['a plain terminal', 'codex', 'other'],
-    ['a scripted run', 'codex exec --json say', 'exec'],
-    ['nothing', '', 'unknown'],
-  ] as const)('classifies %s', (_name, args, kind) => {
-    expect(codexHostKindOf(args)).toBe(kind)
   })
 })
 

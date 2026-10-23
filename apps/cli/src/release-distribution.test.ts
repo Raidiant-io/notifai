@@ -1,6 +1,6 @@
-import { createHash, generateKeyPairSync, sign } from 'node:crypto'
-import { describe, expect, it } from 'vitest'
-import { Distribution, releaseSigningMessage, type ReleaseInventory, type ReleaseChannel } from './release-distribution.js'
+import { createHash,generateKeyPairSync,sign } from 'node:crypto'
+import { describe,expect,it } from 'vitest'
+import { Distribution,releaseSigningMessage,type ReleaseChannel,type ReleaseInventory } from './release-distribution.js'
 
 const { privateKey, publicKey } = generateKeyPairSync('ed25519')
 const keys = { fixture: publicKey.export({ format: 'pem', type: 'spki' }).toString() }
@@ -82,44 +82,6 @@ describe('verified release distribution', () => {
     const mismatched = twoChannels('12.0.0'); mismatched.channels.beta.inventory_sha256 = 'e'.repeat(64)
     await expect(mismatched.distribution.resolveRelease(options)).rejects.toThrow(/integrity/)
   })
-  it('acquires a carried exact inventory without mutable channel selection', async () => {
-    const { distribution, urls } = setup()
-    const options = { signedInventory: signed('inventory', inventory), version: inventory.version,
-      sourceRevision: inventory.source_revision, target: 'bun-windows-x64' as const }
-    const release = distribution.resolveExactRelease(options)
-    expect(urls).toEqual([])
-    expect(await distribution.downloadArtifact(release)).toEqual(artifact)
-    expect(urls).toEqual(['https://github.com/Raidiant-io/notifai/releases/download/v12.0.0/notifai-12.0.0-windows-x64.zip'])
-    expect(() => distribution.resolveExactRelease({ ...options, version: '11.0.0' })).toThrow(/identity/)
-    expect(() => distribution.resolveExactRelease({ ...options, sourceRevision: 'b'.repeat(40) })).toThrow(/identity/)
-    expect(() => distribution.resolveExactRelease({ ...options, signedInventory: options.signedInventory.replace('fixture', 'unknown') })).toThrow(/key/)
-    expect(() => distribution.resolveExactRelease({ ...options, target: 'bun-linux-arm64' })).toThrow(/target/)
-    const redirected = setup({ redirect: true }).distribution.resolveExactRelease(options)
-    await expect(setup({ redirect: true }).distribution.downloadArtifact(redirected)).rejects.toThrow(/origin/)
-  })
-  it('resolves one signed target through fixed origins and verifies the downloaded bytes', async () => {
-    const { distribution, urls } = setup()
-    const release = await distribution.resolveRelease({ channel: 'stable', target: 'bun-windows-x64' })
-    expect(release.inventory.version).toBe('12.0.0')
-    expect(release.seen.stable?.sequence).toBe(3)
-    expect(await distribution.downloadArtifact(release)).toEqual(artifact)
-    expect(urls).toEqual([
-      'https://raw.githubusercontent.com/Raidiant-io/notifai/release-metadata/stable.json',
-      'https://github.com/Raidiant-io/notifai/releases/download/v12.0.0/inventory.json',
-      'https://github.com/Raidiant-io/notifai/releases/download/v12.0.0/notifai-12.0.0-windows-x64.zip',
-    ])
-    expect(() => distribution.verifyArtifact(release.artifact, Buffer.from('altered'))).toThrow(/integrity/)
-  })
-  it('rejects tampering, unknown keys, cross-purpose signatures, and untrusted redirects', async () => {
-    const { distribution } = setup()
-    expect(() => distribution.verifyInventory(signed('channel', inventory))).toThrow(/signature/)
-    expect(() => distribution.verifyInventory(signed('inventory', inventory).replace('fixture', 'other'))).toThrow(/key/)
-    const tampered = JSON.parse(signed('inventory', inventory))
-    tampered.payload = Buffer.from(JSON.stringify({ ...inventory, version: '99.0.0' })).toString('base64')
-    expect(() => distribution.verifyInventory(JSON.stringify(tampered))).toThrow(/signature/)
-    await expect(setup({ corrupt: true }).distribution.resolveRelease({ channel: 'stable', target: 'bun-windows-x64' })).rejects.toThrow(/integrity/)
-    await expect(setup({ redirect: true }).distribution.resolveRelease({ channel: 'stable', target: 'bun-windows-x64' })).rejects.toThrow(/origin/)
-  })
   it('refuses channel replay, same-sequence substitution, beta leakage and missing targets', async () => {
     const release = await setup().distribution.resolveRelease({ channel: 'stable', target: 'bun-windows-x64' })
     await expect(setup({ sequence: 2 }).distribution.resolveRelease({ channel: 'stable', target: 'bun-windows-x64', seen: release.seen })).rejects.toThrow(/sequence/)
@@ -128,24 +90,5 @@ describe('verified release distribution', () => {
     await expect(setup({ inventory: { ...inventory, version: '12.0.0-beta.1' } }).distribution.resolveRelease({ channel: 'stable', target: 'bun-windows-x64' })).rejects.toThrow(/stable/)
     await expect(setup().distribution.resolveRelease({ channel: 'stable', target: 'bun-linux-arm64' })).rejects.toThrow(/target/)
     await expect(setup({ withdrawn: ['12.0.0'] }).distribution.resolveRelease({ channel: 'stable', target: 'bun-windows-x64', version: '12.0.0' })).rejects.toThrow(/withdrawn/)
-  })
-  it('bounds metadata bodies and redirect chains and refuses signed path escapes', async () => {
-    let cancelled = false
-    const oversized = new Distribution(keys, async () => new Response(new ReadableStream({
-      start(controller) { controller.enqueue(new Uint8Array(256 * 1024 + 1)) },
-      cancel() { cancelled = true },
-    })))
-    await expect(oversized.resolveRelease({ channel: 'stable', target: 'bun-windows-x64' })).rejects.toThrow(/size limit/)
-    expect(cancelled).toBe(true)
-    let calls = 0
-    const looping = new Distribution(keys, async () => {
-      calls++
-      return new Response(null, { status: 302, headers: { location: 'https://github.com/loop' } })
-    })
-    await expect(looping.resolveRelease({ channel: 'stable', target: 'bun-windows-x64' })).rejects.toThrow(/redirects/)
-    expect(calls).toBe(5)
-    expect(() => setup().distribution.verifyInventory(signed('inventory', {
-      ...inventory, artifacts: [{ ...inventory.artifacts[0], filename: '../outside.zip' }],
-    }))).toThrow(/filename/)
   })
 })

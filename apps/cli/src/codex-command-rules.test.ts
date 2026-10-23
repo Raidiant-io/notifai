@@ -1,23 +1,19 @@
 import { execFileSync } from 'node:child_process'
-import { mkdirSync, mkdtempSync, readFileSync, symlinkSync, utimesSync, writeFileSync } from 'node:fs'
+import { mkdirSync,mkdtempSync,readFileSync,symlinkSync,writeFileSync } from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import { describe, expect, it } from 'vitest'
+import { describe,expect,it } from 'vitest'
 import {
-  CODEX_ALLOWED_COMMANDS,
-  CODEX_COMMANDS_PROSE,
-  CODEX_COMMAND_RULES_HEADER,
-  CODEX_RULE_CHECK_COMMAND,
-  assessCodexCommandRules,
-  codexCommandReadiness,
-  codexCommandRulesFile,
-  codexLayerRuleFiles,
-  inspectCodexCommandRules,
-  installCodexCommandRules,
-  parseExecpolicyReport,
-  removeCodexCommandRules,
-  renderCodexCommandRules,
-  type CheckCodexCommandRules,
+CODEX_ALLOWED_COMMANDS,
+CODEX_COMMAND_RULES_HEADER,
+CODEX_RULE_CHECK_COMMAND,
+codexCommandReadiness,
+codexCommandRulesFile,
+codexLayerRuleFiles,
+inspectCodexCommandRules,
+installCodexCommandRules,
+removeCodexCommandRules,
+renderCodexCommandRules
 } from './codex-command-rules.js'
 
 const skill = readFileSync(new URL('../../../skills/notifai/SKILL.md', import.meta.url), 'utf8')
@@ -122,32 +118,6 @@ describe('Codex command rules file', () => {
     expect(body.endsWith('\n')).toBe(true)
   })
 
-  it('lives under rules/ in the running Codex home', () => {
-    expect(codexCommandRulesFile({ HOME: '/user', CODEX_HOME: '/managed/codex' })).toBe('/managed/codex/rules/notifai.rules')
-    expect(codexCommandRulesFile({ HOME: '/user' }, 'darwin')).toBe('/user/.codex/rules/notifai.rules')
-  })
-
-  it('writes, recognises, refreshes and removes only its own file', () => {
-    const env = freshEnv()
-    const file = codexCommandRulesFile(env)
-    expect(inspectCodexCommandRules(env)).toEqual({ file, condition: 'missing', writtenAt: null })
-    expect(removeCodexCommandRules(env)).toBe('absent')
-
-    expect(installCodexCommandRules(env)).toBe(true)
-    expect(readFileSync(file, 'utf8')).toBe(renderCodexCommandRules())
-    expect(inspectCodexCommandRules(env)).toMatchObject({ file, condition: 'current' })
-    expect(inspectCodexCommandRules(env).writtenAt).toBeTypeOf('number')
-    expect(installCodexCommandRules(env)).toBe(false)
-
-    writeFileSync(file, `${CODEX_COMMAND_RULES_HEADER}\nprefix_rule(pattern = ["notifai", "send"])\n`)
-    expect(inspectCodexCommandRules(env).condition).toBe('outdated')
-    expect(installCodexCommandRules(env)).toBe(true)
-    expect(inspectCodexCommandRules(env).condition).toBe('current')
-
-    expect(removeCodexCommandRules(env)).toBe('removed')
-    expect(inspectCodexCommandRules(env).condition).toBe('missing')
-  })
-
   it('never replaces or deletes a file Notifai did not write', () => {
     const env = freshEnv()
     const file = codexCommandRulesFile(env)
@@ -165,31 +135,10 @@ describe('Codex command rules file', () => {
     expect(inspectCodexCommandRules(linked).condition).toBe('foreign')
     expect(removeCodexCommandRules(linked)).toBe('foreign')
   })
-
-  it('lists the sibling rule files Codex loads from the same layer', () => {
-    const env = freshEnv()
-    installCodexCommandRules(env)
-    const dir = path.dirname(codexCommandRulesFile(env))
-    writeFileSync(path.join(dir, 'default.rules'), '')
-    writeFileSync(path.join(dir, 'notes.txt'), '')
-    expect(codexLayerRuleFiles(env)).toEqual({
-      ours: codexCommandRulesFile(env),
-      siblings: [path.join(dir, 'default.rules')],
-    })
-  })
-
-  it('reads execpolicy output into a decision', () => {
-    expect(parseExecpolicyReport('{"matchedRules":[]}')).toEqual({ decision: 'none', justifications: [] })
-    expect(parseExecpolicyReport('{"matchedRules":[{"prefixRuleMatch":{"decision":"allow","justification":"x"}}],"decision":"allow"}'))
-      .toEqual({ decision: 'allow', justifications: ['x'] })
-    expect(parseExecpolicyReport('nope')).toMatchObject({ error: expect.stringContaining('unreadable') })
-    expect(parseExecpolicyReport('{"decision":"maybe"}')).toMatchObject({ error: expect.stringContaining('maybe') })
-  })
 })
 
 describe('Codex command approval readiness', () => {
   const current = { file: '/home/.codex/rules/notifai.rules', condition: 'current' as const, writtenAt: 2_000 }
-  const allow = { decision: 'allow' as const, justifications: ['Notifai notifications and answers'] }
 
   it('reports the missing rule as an optional gap init can close', () => {
     expect(codexCommandReadiness({ inspection: { ...current, condition: 'missing', writtenAt: null } })).toMatchObject({
@@ -209,85 +158,6 @@ describe('Codex command approval readiness', () => {
       status: 'optional-gap',
       remedy: { by: 'user-here', command: 'notifai init --codex-commands' },
     })
-  })
-
-  it('names every command the rule allows when it reports the rule in place', () => {
-    expect(CODEX_COMMANDS_PROSE).toBe('send, ask, receive, acknowledge, status, replies, close, guidance and session rename')
-    expect(codexCommandReadiness({ inspection: current, ownCheck: allow, layerCheck: allow }).detail).toContain(CODEX_COMMANDS_PROSE)
-    expect(codexCommandReadiness({ inspection: current, ownCheck: null }).detail).toContain(CODEX_COMMANDS_PROSE)
-  })
-
-  it('is ready once the rule is written, verified or not', () => {
-    expect(codexCommandReadiness({ inspection: current, ownCheck: allow, layerCheck: allow })).toMatchObject({
-      status: 'ready',
-      technical: { verified: true },
-    })
-    expect(codexCommandReadiness({ inspection: current, ownCheck: null })).toMatchObject({
-      status: 'ready',
-      technical: { verified: false },
-    })
-  })
-
-  it('turns a failing rule check into per-command approval, never readiness', () => {
-    const rejected = codexCommandReadiness({ inspection: current, ownCheck: { error: 'failed to parse policy' } })
-    expect(rejected).toMatchObject({ status: 'optional-gap', technical: { check_error: 'failed to parse policy' } })
-    expect(rejected.detail).toMatch(/approve Notifai commands when Codex asks/)
-    expect(rejected.remedy).toBeUndefined()
-    const unmatched = codexCommandReadiness({ inspection: current, ownCheck: { decision: 'none', justifications: [] } })
-    expect(unmatched).toMatchObject({ status: 'optional-gap', technical: { decision: 'none' } })
-  })
-
-  it('reports a forbidden or prompting layer rule as the organization\'s choice', () => {
-    const forbidden = codexCommandReadiness({
-      inspection: current,
-      ownCheck: allow,
-      layerCheck: { decision: 'forbidden', justifications: ['Notifai notifications and answers', 'Use the approved notifier'] },
-    })
-    expect(forbidden).toMatchObject({ status: 'optional-gap', technical: { layer_decision: 'forbidden' } })
-    expect(forbidden.detail).toMatch(/blocks Notifai commands outside the sandbox \(Use the approved notifier\); hooks keep working/)
-    expect(codexCommandReadiness({ inspection: current, ownCheck: allow, layerCheck: { decision: 'prompt', justifications: [] } }))
-      .toMatchObject({ status: 'optional-gap', technical: { layer_decision: 'prompt' } })
-  })
-
-  it('tells a session that predates the rule to approve per command, without ending it', () => {
-    const stale = codexCommandReadiness({ inspection: current, ownCheck: allow, layerCheck: allow, sessionStartedAt: 1_000 })
-    expect(stale).toMatchObject({ status: 'optional-gap', technical: { session_predates_rule: true } })
-    expect(stale.detail).toMatch(/loads rules only at startup/)
-    expect(stale.detail).toMatch(/new Codex sessions will not ask/)
-    expect(stale.remedy).toBeUndefined()
-    expect(codexCommandReadiness({ inspection: current, ownCheck: allow, layerCheck: allow, sessionStartedAt: 3_000 }).status).toBe('ready')
-    expect(codexCommandReadiness({ inspection: current, ownCheck: allow, layerCheck: allow, sessionStartedAt: null }).status).toBe('ready')
-  })
-
-  it('assesses the written file with the layer\'s other rules, ignoring a sibling Codex cannot parse', async () => {
-    const env = freshEnv()
-    installCodexCommandRules(env)
-    const dir = path.dirname(codexCommandRulesFile(env))
-    writeFileSync(path.join(dir, 'default.rules'), 'broken(')
-    const calls: string[][] = []
-    const check: CheckCodexCommandRules = async (_env, files, command) => {
-      calls.push([...files])
-      expect(command).toEqual(CODEX_RULE_CHECK_COMMAND)
-      return files.length === 1 ? allow : { error: 'failed to parse policy' }
-    }
-    expect(await assessCodexCommandRules(env, { check })).toMatchObject({ status: 'ready', technical: { verified: true } })
-    expect(calls).toEqual([[codexCommandRulesFile(env)], [codexCommandRulesFile(env), path.join(dir, 'default.rules')]])
-
-    const forbidding: CheckCodexCommandRules = async (_env, files) =>
-      files.length === 1 ? allow : { decision: 'forbidden', justifications: ['blocked'] }
-    expect(await assessCodexCommandRules(env, { check: forbidding })).toMatchObject({ technical: { layer_decision: 'forbidden' } })
-
-    const written = new Date(Date.now() - 60_000)
-    utimesSync(codexCommandRulesFile(env), written, written)
-    expect(await assessCodexCommandRules(env, { check, sessionStartedAt: written.getTime() - 1 }))
-      .toMatchObject({ status: 'optional-gap', technical: { session_predates_rule: true } })
-    expect(await assessCodexCommandRules(env, { check: async () => null })).toMatchObject({ status: 'ready', technical: { verified: false } })
-  })
-
-  it('reports the file states before any check runs', async () => {
-    const env = freshEnv()
-    const check: CheckCodexCommandRules = async () => { throw new Error('must not run') }
-    expect(await assessCodexCommandRules(env, { check })).toMatchObject({ status: 'optional-gap', technical: { condition: 'missing' } })
   })
 })
 

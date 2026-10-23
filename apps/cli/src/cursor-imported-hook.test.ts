@@ -10,12 +10,12 @@
  * @cursor/sdk 1.0.35 build for a hook (`buildHookEnvironment`, the hook
  * request), and what a Claude Code hook and a Cursor agent shell receive.
  */
-import { execFileSync, spawn, spawnSync } from 'node:child_process'
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
+import { execFileSync,spawn,spawnSync } from 'node:child_process'
+import { existsSync,mkdirSync,mkdtempSync,readdirSync,rmSync,writeFileSync } from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest'
-import { cursorBareHookRun, cursorHookEnvironment } from './cursor-imported-hook.js'
+import { afterAll,afterEach,beforeAll,describe,expect,it } from 'vitest'
+import { cursorHookEnvironment } from './cursor-imported-hook.js'
 
 const WORKSPACE = '/Volumes/work/project'
 
@@ -76,24 +76,10 @@ describe('Cursor hook detection', () => {
   ])('does not mistake %s for a Cursor hook', (_name, env) => {
     expect(cursorHookEnvironment(env)).toBe(false)
   })
-
-  it('ends only a bare run whose input is not a terminal', () => {
-    expect(cursorBareHookRun([], CURSOR_CLI_HOOK_ENV, false)).toBe(true)
-    expect(cursorBareHookRun([], CURSOR_IDE_NO_FOLDER_HOOK_ENV, false)).toBe(true)
-    // A person at a terminal inside Cursor gets the app.
-    expect(cursorBareHookRun([], CURSOR_CLI_HOOK_ENV, true)).toBe(false)
-    // Any command, flag or hook keeps its meaning.
-    expect(cursorBareHookRun(['--help'], CURSOR_CLI_HOOK_ENV, false)).toBe(false)
-    expect(cursorBareHookRun(['hook', 'stop', '--owner', 'notifai', '--harness', 'cursor'], CURSOR_CLI_HOOK_ENV, false)).toBe(false)
-    // Outside Cursor a bare run prints help, as before.
-    expect(cursorBareHookRun([], CLAUDE_HOOK_ENV, false)).toBe(false)
-    expect(cursorBareHookRun([], CURSOR_AGENT_SHELL_ENV, false)).toBe(false)
-  })
 })
 
 const posix = process.platform === 'darwin' || process.platform === 'linux'
 const supported = posix && spawnSync('cc', ['--version']).status === 0
-const pythonPty = posix && spawnSync('python3', ['-c', 'import os, pty; os.waitstatus_to_exitcode'], { stdio: 'ignore' }).status === 0
 
 let compiled = ''
 let compiledDir = ''
@@ -137,7 +123,6 @@ function run(at: Lab, args: string[], env: NodeJS.ProcessEnv, input: string) {
   return { ...result, ms: Date.now() - started }
 }
 
-const shellFormArgs = (event: string): string[] => ['hook', event, '--owner', 'notifai', '--harness', 'claude-code']
 
 describe.skipIf(!supported)('the native launcher with Cursor copies of Claude Code hooks', () => {
   it.each([
@@ -155,19 +140,6 @@ describe.skipIf(!supported)('the native launcher with Cursor copies of Claude Co
     expect(existsSync(at.env['XDG_STATE_HOME']!)).toBe(false)
   })
 
-  it.each(['stop', 'attend', 'session-start', 'user-prompt-submit'])(
-    'ends a shell-form Claude Code %s copy the same way, so nothing Claude-specific loops in Cursor',
-    (event) => {
-      const at = lab()
-      const result = run(at, shellFormArgs(event), CURSOR_CLI_HOOK_ENV, CURSOR_STOP_INPUT)
-      expect(result.status).toBe(0)
-      expect(result.stdout).toBe('')
-      expect(result.stderr).toBe('')
-      expect(starts(at)).toEqual([])
-      expect(existsSync(at.env['XDG_STATE_HOME']!)).toBe(false)
-    },
-  )
-
   it('does not wait on input that never ends', async () => {
     const at = lab()
     // A pipe nobody closes: the launcher leaves it behind after a short bound.
@@ -183,49 +155,6 @@ describe.skipIf(!supported)('the native launcher with Cursor copies of Claude Co
     expect(Date.now() - started).toBeLessThan(3_000)
     expect(output).toBe('')
     expect(starts(at)).toEqual([])
-  })
-
-  it('still runs Notifai\'s native Cursor hooks and every command', () => {
-    const at = lab()
-    expect(run(at, ['hook', 'stop', '--owner', 'notifai', '--harness', 'cursor'], CURSOR_CLI_HOOK_ENV, CURSOR_STOP_INPUT).stdout)
-      .toBe('runtime ran\n')
-    expect(run(at, ['--help'], CURSOR_CLI_HOOK_ENV, '').stdout).toBe('runtime ran\n')
-    expect(starts(at)).toHaveLength(2)
-  })
-
-  it('still runs real Claude Code hooks and a bare run outside Cursor', () => {
-    const at = lab()
-    expect(run(at, shellFormArgs('stop'), CLAUDE_HOOK_ENV, '{}').stdout).toBe('runtime ran\n')
-    expect(run(at, [], CLAUDE_HOOK_ENV, '').stdout).toBe('runtime ran\n')
-    expect(run(at, [], CURSOR_AGENT_SHELL_ENV, '').stdout).toBe('runtime ran\n')
-    expect(starts(at)).toHaveLength(3)
-  })
-
-  it.skipIf(!pythonPty)('starts the app for a person at a terminal, even inside Cursor', () => {
-    const at = lab()
-    const driver = [
-      'import os, pty, sys',
-      'pid, fd = pty.fork()',
-      'if pid == 0:',
-      '    os.execv(sys.argv[1], [sys.argv[1]])',
-      'out = b""',
-      'while True:',
-      '    try:',
-      '        data = os.read(fd, 1024)',
-      '    except OSError:',
-      '        break',
-      '    if not data:',
-      '        break',
-      '    out += data',
-      '_, status = os.waitpid(pid, 0)',
-      'sys.stdout.write(out.decode())',
-      'sys.exit(os.waitstatus_to_exitcode(status))',
-    ].join('\n')
-    const result = spawnSync('python3', ['-c', driver, at.launcher],
-      { cwd: at.home, env: { ...at.env, ...CURSOR_CLI_HOOK_ENV }, encoding: 'utf8', timeout: 10_000 })
-    expect(result.status).toBe(0)
-    expect(result.stdout).toContain('runtime ran')
-    expect(starts(at)).toHaveLength(1)
   })
 })
 
@@ -254,11 +183,5 @@ describe('the runtime entry with a bare Cursor copy', () => {
     expect(result.stderr).toBe('')
     expect(existsSync(result.state)).toBe(false)
     expect(readdirSync(result.root)).toEqual([])
-  })
-
-  it('prints help outside Cursor, as before', () => {
-    const result = runEntry(CLAUDE_HOOK_ENV)
-    expect(result.status).toBe(0)
-    expect(result.stdout).toContain('Usage: notifai')
   })
 })

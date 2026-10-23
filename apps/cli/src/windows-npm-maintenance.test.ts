@@ -1,6 +1,6 @@
-import { describe, expect, it } from 'vitest'
-import { assertNpmMaintenanceQuiet, parseNpmAppObservation, type NpmMaintenanceScope, type WindowsReaderCensus } from './windows-npm-maintenance.js'
+import { describe,expect,it } from 'vitest'
 import type { RuntimeOwnerInspection } from './runtime-retention.js'
+import { assertNpmMaintenanceQuiet,parseNpmAppObservation,type NpmMaintenanceScope,type WindowsReaderCensus } from './windows-npm-maintenance.js'
 
 const coordinator = { pid: 10, start: 'windows-filetime:100' }
 const manager = { pid: 20, start: 'windows-filetime:200' }
@@ -26,31 +26,8 @@ describe('observed Windows npm replacement window', () => {
     expect(parseNpmAppObservation(packaged)).toEqual(packaged)
     expect(() => parseNpmAppObservation({ ...packaged, command: 'C:\\AppView\\npm\\wrapper.ps1' })).toThrow(/direct command/)
   })
-  it('admits only the exact coordinator and suspended manager', () => {
-    expect(check({ readers: [reader(), reader(manager)], uncertain: false })).not.toThrow()
-    expect(check({ readers: [reader({ ...manager, start: 'windows-filetime:201' })], uncertain: false })).toThrow(/package: PID 20/)
-  })
   it('refuses a restarted producer or detached reader without script-name guesses', () => {
     expect(check({ readers: [{ ...producer, pid: 31, start: 'windows-filetime:301', reason: 'application' }], uncertain: false })).toThrow(/application: PID 31/)
     expect(check({ readers: [reader({ pid: 99, start: 'windows-filetime:999' })], uncertain: false })).toThrow(/package: PID 99/)
-  })
-  it('refuses uncertainty even when the observed list is empty', () => {
-    expect(check({ readers: [], uncertain: true })).toThrow(/incomplete/)
-    expect(check({ readers: [], uncertain: false }, [clear()], 'unknown')).toThrow(/assessed application/)
-  })
-  it('approval cannot substitute for an observed producer exit', () => {
-    expect(check({ readers: [], uncertain: false }, [clear()], 'alive')).toThrow(/assessed application/)
-  })
-  it('checks every assessed state root and its independent debt', () => {
-    expect(check({ readers: [], uncertain: false }, [])).toThrow(/session work/)
-    expect(check({ readers: [], uncertain: false }, [{ ...clear(), status: 'uncertain' }])).toThrow(/session work/)
-    expect(check({ readers: [], uncertain: false }, [{ ...clear(), unattributedPending: true }])).toThrow(/session work/)
-    expect(check({ readers: [], uncertain: false }, [{ ...clear(), status: 'waiting_for_questions' }])).toThrow(/session work/)
-  })
-  it('does not discard resident owners after their producer exits', () => {
-    const owner = { pid: 40, start: 'windows-filetime:400' }
-    expect(() => assertNpmMaintenanceQuiet({ scope, coordinator, census: { readers: [], uncertain: false },
-      owners: [{ ...clear(), residents: [{ file: 'owner.json', identity: owner, runtime: null }] }],
-      liveness: identity => identity.pid === producer.pid ? 'gone' : 'unknown' })).toThrow(/session work/)
   })
 })

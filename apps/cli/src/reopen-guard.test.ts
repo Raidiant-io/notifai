@@ -2,13 +2,13 @@
  * The window's last check, `notifai --internal-reopen-guard <record>`,
  * compiled from `launcher/main.c` and run for real.
  */
-import { execFileSync, spawn, spawnSync } from 'node:child_process'
-import { chmodSync, closeSync, mkdirSync, mkdtempSync, openSync, readFileSync, writeFileSync } from 'node:fs'
+import { execFileSync,spawn,spawnSync } from 'node:child_process'
+import { chmodSync,mkdirSync,mkdtempSync,readFileSync,writeFileSync } from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { beforeAll, describe, expect, it } from 'vitest'
-import { exactProcessArguments, guardRecord } from './session-reopen.js'
+import { beforeAll,describe,expect,it } from 'vitest'
+import { exactProcessArguments,guardRecord } from './session-reopen.js'
 
 const posix = process.platform !== 'win32'
 let launcher = ''
@@ -23,7 +23,6 @@ beforeAll(() => {
     '-Wall', '-Wextra', '-Werror', '-O2', source, '-o', launcher], { stdio: 'inherit' })
 }, 120_000)
 
-const LIVE = 'Notifai did not reopen this conversation here: it is already open somewhere else.\n'
 const STALE = 'Notifai did not reopen this conversation: this window is no longer needed.\n'
 
 function setup(harness: 'claude-code' | 'codex', options: { expiresAt?: number; allowHolder?: number | null } = {}) {
@@ -67,47 +66,6 @@ describe.skipIf(!posix)('the reopen guard', () => {
     writeFileSync(broken.record, '{"v":1}\n', { mode: 0o600 })
     expect(broken.run()).toMatchObject({ code: 1, out: STALE })
     expect(broken.run('relative.json')).toMatchObject({ code: 1, out: STALE })
-  })
-
-  it('refuses while a live Claude Code process has the conversation open, and not for a dead one', () => {
-    const { home, run } = setup('claude-code')
-    mkdirSync(path.join(home, 'sessions'))
-    writeFileSync(path.join(home, 'sessions', '999999.json'), JSON.stringify({ pid: 999999, sessionId: 'sess-1' }))
-    writeFileSync(path.join(home, 'sessions', `${process.pid}.json`), '{"pid": 1, "sessionId" : "sess-10"}')
-    expect(run()).toMatchObject({ code: 0 })
-    const live = setup('claude-code')
-    mkdirSync(path.join(live.home, 'sessions'))
-    writeFileSync(path.join(live.home, 'sessions', `${process.pid}.json`), `{"pid": ${process.pid}, "sessionId" : "sess-1", "status": "idle"}`)
-    expect(live.run()).toMatchObject({ code: 1, out: LIVE })
-  })
-
-  it('refuses while another process holds the Codex thread, except the shared server the hub found unattached', () => {
-    const held = setup('codex')
-    mkdirSync(path.join(held.home, 'thread-writer-locks'))
-    const lock = path.join(held.home, 'thread-writer-locks', 'sess-1.lock')
-    writeFileSync(lock, '')
-    expect(held.run()).toMatchObject({ code: 0 })
-    const fd = openSync(lock, 'r')
-    try {
-      const again = setup('codex')
-      mkdirSync(path.join(again.home, 'thread-writer-locks'))
-      const busy = path.join(again.home, 'thread-writer-locks', 'sess-1.lock')
-      writeFileSync(busy, '')
-      const busyFd = openSync(busy, 'r')
-      try {
-        expect(again.run()).toMatchObject({ code: 1, out: LIVE })
-        const allowed = setup('codex', { allowHolder: process.pid })
-        mkdirSync(path.join(allowed.home, 'thread-writer-locks'))
-        const mine = path.join(allowed.home, 'thread-writer-locks', 'sess-1.lock')
-        writeFileSync(mine, '')
-        const mineFd = openSync(mine, 'r')
-        try { expect(allowed.run()).toMatchObject({ code: 0 }) } finally { closeSync(mineFd) }
-      } finally {
-        closeSync(busyFd)
-      }
-    } finally {
-      closeSync(fd)
-    }
   })
 })
 

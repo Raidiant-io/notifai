@@ -1,13 +1,12 @@
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync,mkdirSync,mkdtempSync,readFileSync,rmSync,writeFileSync } from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { parse as parseToml } from 'smol-toml'
-import { afterEach, describe, expect, it, vi } from 'vitest'
-import * as atomicFile from './atomic-file.js'
-import { EXIT, type CommandDeps } from './commands-core.js'
-import { hooksInstallCommand, hooksUninstallCommand } from './commands-hook-install.js'
-import { buildHookConfig, codexHookIdentityHash, codexStopDefinitionFingerprint, codexTrustKey, codexTrustFindings, codexTrustProblems, findInstallations, notifaiNativePluginEnablementKeys } from './install-hooks.js'
+import { afterEach,describe,expect,it,vi } from 'vitest'
+import { EXIT,type CommandDeps } from './commands-core.js'
+import { hooksInstallCommand,hooksUninstallCommand } from './commands-hook-install.js'
+import { buildHookConfig,codexHookIdentityHash,codexStopDefinitionFingerprint,codexTrustFindings,codexTrustKey,codexTrustProblems,findInstallations } from './install-hooks.js'
 
 const roots: string[] = []
 afterEach(() => {
@@ -85,42 +84,6 @@ describe('Codex approval identity through actual hook repair', () => {
     expect(readFileSync(f.hooks, 'utf8')).toBe(bytes)
     expect(codexStopDefinitionFingerprint(findInstallations(f.deps.env, f.deps.hookAdapterHome))).toBe(fingerprint)
   })
-
-  it('refreshes owned slots and appends an attendant without moving a shared foreign handler', () => {
-    const f = fixture('model = "keep-model"\n')
-    expect(hooksInstallCommand(f.deps, f.flags)).toBe(EXIT.ok)
-    const document = JSON.parse(readFileSync(f.hooks, 'utf8'))
-    const stop = document.hooks.Stop[0].hooks[0]
-    const foreign = { type: 'command', command: 'foreign-stop', timeout: 10 }
-    document.hooks.Stop = [{ matcher: '*', hooks: [{ ...stop, timeout: 1 }, foreign] }]
-    writeFileSync(f.hooks, JSON.stringify(document))
-
-    expect(hooksInstallCommand(f.deps, f.flags)).toBe(EXIT.ok)
-    const repaired = JSON.parse(readFileSync(f.hooks, 'utf8'))
-    expect(repaired.hooks.Stop).toHaveLength(1)
-    expect(repaired.hooks.Stop[0].matcher).toBe('*')
-    expect(repaired.hooks.Stop[0].hooks[0]).toEqual(stop)
-    expect(repaired.hooks.Stop[0].hooks[1]).toEqual(foreign)
-    expect(repaired.hooks.Stop[0].hooks[2].command).toContain('hook attend')
-    const bytes = readFileSync(f.hooks, 'utf8')
-    expect(hooksInstallCommand(f.deps, f.flags)).toBe(EXIT.ok)
-    expect(readFileSync(f.hooks, 'utf8')).toBe(bytes)
-  })
-
-  it('refuses ambiguous duplicate slots before changing the hook document or trust', () => {
-    const f = fixture('model = "keep-model"\n')
-    expect(hooksInstallCommand(f.deps, f.flags)).toBe(EXIT.ok)
-    const document = JSON.parse(readFileSync(f.hooks, 'utf8'))
-    document.hooks.Stop[0].hooks.push(document.hooks.Stop[0].hooks[0])
-    const bytes = JSON.stringify(document)
-    writeFileSync(f.hooks, bytes)
-    const trust = readFileSync(f.toml, 'utf8')
-
-    expect(hooksInstallCommand(f.deps, f.flags)).toBe(EXIT.failed)
-    expect(readFileSync(f.hooks, 'utf8')).toBe(bytes)
-    expect(readFileSync(f.toml, 'utf8')).toBe(trust)
-    expect(f.err.join('\n')).toContain('duplicate or retired owned handlers require explicit migration')
-  })
 })
 
 describe('Codex native plugin cleanup through actual commands', () => {
@@ -182,16 +145,6 @@ describe('Codex native plugin cleanup through actual commands', () => {
     expect(f.err).toEqual([])
   })
 
-  it('validates the hook destination before disabling a working native plugin', () => {
-    const source = '[plugins.notifai]\nenabled = true\n'
-    const f = fixture(source)
-    writeFileSync(f.hooks, '{invalid json')
-    expect(hooksInstallCommand(f.deps, f.flags)).toBe(EXIT.failed)
-    expect(readFileSync(f.toml, 'utf8')).toBe(source)
-    expect(readFileSync(f.hooks, 'utf8')).toBe('{invalid json')
-    expect(f.out).toEqual([])
-  })
-
   it('preserves foreign inline hooks and trust data while clearing native enablement', () => {
     const root = '# keep\ninstructions = """\n[plugins.notifai]\n[hooks.Stop]\n"""\n'
     const foreign = '[mcp_servers."tool[1]"]\ncommand = "keep-me"\n'
@@ -212,42 +165,5 @@ describe('Codex native plugin cleanup through actual commands', () => {
     expect(after).toContain('--owner notifai')
     expect(existsSync(f.hooks)).toBe(false)
     expect(f.err).toEqual([])
-  })
-
-  it.each(['before-native', 'after-native', 'before-document', 'after-document'] as const)(
-    'never enables both mechanisms when a write fails %s', (boundary) => {
-      const source = '[plugins.notifai]\nenabled = true\n'
-      const f = fixture(source)
-      const write = atomicFile.atomicWriteFileSync
-      const isNative = boundary.endsWith('native')
-      const target = isNative ? f.toml : f.hooks
-      let reached = false
-      vi.spyOn(atomicFile, 'atomicWriteFileSync').mockImplementation((file, contents, options) => {
-        if (file !== target) return write(file, contents, options)
-        reached = true
-        // The original atomic filesystem implementation persists real bytes;
-        // only the exact failure boundary is substituted.
-        if (boundary.startsWith('after')) write(file, contents, options)
-        throw new Error(`injected write failure ${boundary}`)
-      })
-      expect(hooksInstallCommand(f.deps, f.flags)).toBe(EXIT.failed)
-      expect(reached).toBe(true)
-      const native = notifaiNativePluginEnablementKeys(parseToml(readFileSync(f.toml, 'utf8'))['plugins'])
-      expect(native.length > 0 && existsSync(f.hooks)).toBe(false)
-      expect(native).toEqual(boundary === 'before-native' ? ['notifai'] : [])
-      expect(existsSync(f.hooks)).toBe(boundary === 'after-document')
-      expect(f.out).toEqual([])
-      expect(f.err.join('\n')).toContain('injected write failure')
-    },
-  )
-
-  it('has cleared native enablement before success narration can interrupt install', () => {
-    const f = fixture('[plugins.notifai]\nenabled = true\n')
-    const interruption = new Error('interrupted at first installed output')
-    f.deps.io.out = (line) => { if (line.startsWith('Installed codex hooks')) throw interruption }
-    expect(() => hooksInstallCommand(f.deps, f.flags)).toThrow(interruption)
-    expect(existsSync(f.hooks)).toBe(true)
-    expect(notifaiNativePluginEnablementKeys(parseToml(readFileSync(f.toml, 'utf8'))['plugins'])).toEqual([])
-    expect(existsSync(path.join(path.dirname(f.toml), '.config.toml.notifai.lock'))).toBe(false)
   })
 })

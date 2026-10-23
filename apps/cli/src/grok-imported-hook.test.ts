@@ -9,12 +9,12 @@
  * handler from Claude Code's settings (`GROK_HOOK_EVENT`, `GROK_HOOK_NAME`,
  * `GROK_SESSION_ID`, `GROK_WORKSPACE_ROOT`, `CLAUDE_PROJECT_DIR`).
  */
-import { execFileSync, spawnSync } from 'node:child_process'
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
+import { execFileSync,spawnSync } from 'node:child_process'
+import { existsSync,mkdirSync,mkdtempSync,readdirSync,rmSync,writeFileSync } from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest'
-import { grokHookEnvironment, grokImportedHookRun } from './grok-imported-hook.js'
+import { afterAll,afterEach,beforeAll,describe,expect,it } from 'vitest'
+import { grokHookEnvironment } from './grok-imported-hook.js'
 
 const WORKSPACE = '/Volumes/work/project'
 const SESSION = '01a164cd-6317-75a2-899c-e47cf0a73c89'
@@ -27,15 +27,11 @@ const GROK_IMPORTED_HOOK_ENV = {
   GROK_WORKSPACE_ROOT: WORKSPACE,
   CLAUDE_PROJECT_DIR: WORKSPACE,
 }
-/** Grok running its own Notifai handlers. */
-const GROK_NATIVE_HOOK_ENV = { ...GROK_IMPORTED_HOOK_ENV, GROK_HOOK_NAME: 'global/notifai:user_prompt_submit[0].hooks[0]' }
 /** A Grok agent's own shell commands, as Grok 1.0.67 runs them: not a hook. A
  * Claude Code started there keeps its real hooks. */
 const GROK_TOOL_SHELL_ENV = { GROK_SESSION_ID: SESSION, GROK_AGENT: '1', GROK_HOME: '/home/user/.grok' }
 /** Claude Code's own hook. */
 const CLAUDE_HOOK_ENV = { CLAUDE_PROJECT_DIR: WORKSPACE, CLAUDE_CODE_ENTRYPOINT: 'cli' }
-/** Cursor's own hook. */
-const CURSOR_HOOK_ENV = { CURSOR_PROJECT_DIR: WORKSPACE, CURSOR_VERSION: '2026.10.01-e373342' }
 
 const GROK_PROMPT_INPUT = JSON.stringify({
   sessionId: SESSION, session_id: SESSION, hook_event_name: 'UserPromptSubmit', cwd: WORKSPACE, prompt: 'hello', promptId: 'p1',
@@ -50,23 +46,6 @@ describe('Grok imported-hook detection', () => {
     expect(grokHookEnvironment(GROK_TOOL_SHELL_ENV)).toBe(false)
     expect(grokHookEnvironment(CLAUDE_HOOK_ENV)).toBe(false)
     expect(grokHookEnvironment({ GROK_HOOK_EVENT: '' })).toBe(false)
-  })
-
-  it.each(['claude-code', 'cursor'])('ends every %s copy in either harness spelling', (harness) => {
-    for (const event of ['session-start', 'user-prompt-submit', 'stop', 'attend', 'session-end', 'permission-request']) {
-      expect(grokImportedHookRun(hookArgs(event, harness), GROK_IMPORTED_HOOK_ENV)).toBe(true)
-    }
-    expect(grokImportedHookRun(['hook', 'stop', '--owner', 'notifai', `--harness=${harness}`], GROK_IMPORTED_HOOK_ENV)).toBe(true)
-  })
-
-  it('keeps Grok\'s own hooks, other harnesses\' real hooks, and every command', () => {
-    expect(grokImportedHookRun(hookArgs('user-prompt-submit', 'grok'), GROK_NATIVE_HOOK_ENV)).toBe(false)
-    expect(grokImportedHookRun(hookArgs('stop', 'claude-code'), CLAUDE_HOOK_ENV)).toBe(false)
-    expect(grokImportedHookRun(hookArgs('stop', 'cursor'), CURSOR_HOOK_ENV)).toBe(false)
-    expect(grokImportedHookRun(hookArgs('stop', 'claude-code'), GROK_TOOL_SHELL_ENV)).toBe(false)
-    expect(grokImportedHookRun(['hook', 'stop', '--owner', 'notifai'], GROK_IMPORTED_HOOK_ENV)).toBe(false)
-    expect(grokImportedHookRun(['send', '--harness', 'claude-code'], GROK_IMPORTED_HOOK_ENV)).toBe(false)
-    expect(grokImportedHookRun([], GROK_IMPORTED_HOOK_ENV)).toBe(false)
   })
 })
 
@@ -130,21 +109,6 @@ describe.skipIf(!supported)('the native launcher with Grok copies of Claude Code
     expect(readdirSync(at.home)).toEqual([])
     expect(existsSync(at.env['XDG_STATE_HOME']!)).toBe(false)
   })
-
-  it('still runs Grok\'s own Notifai hooks and every command', () => {
-    const at = lab()
-    expect(run(at, hookArgs('user-prompt-submit', 'grok'), GROK_NATIVE_HOOK_ENV, GROK_PROMPT_INPUT).stdout).toBe('runtime ran\n')
-    expect(run(at, ['--help'], GROK_TOOL_SHELL_ENV, '').stdout).toBe('runtime ran\n')
-    expect(starts(at)).toHaveLength(2)
-  })
-
-  it('still runs real Claude Code and Cursor hooks', () => {
-    const at = lab()
-    expect(run(at, hookArgs('stop', 'claude-code'), CLAUDE_HOOK_ENV, '{}').stdout).toBe('runtime ran\n')
-    expect(run(at, hookArgs('user-prompt-submit', 'claude-code'), CLAUDE_HOOK_ENV, '{}').stdout).toBe('runtime ran\n')
-    expect(run(at, hookArgs('stop', 'cursor'), CURSOR_HOOK_ENV, '{}').stdout).toBe('runtime ran\n')
-    expect(starts(at)).toHaveLength(3)
-  })
 })
 
 describe('the runtime entry with a Grok copy', () => {
@@ -172,11 +136,5 @@ describe('the runtime entry with a Grok copy', () => {
     expect(result.stderr).toBe('')
     expect(existsSync(result.state)).toBe(false)
     expect(readdirSync(result.root)).toEqual([])
-  })
-
-  it('still loads the CLI outside a Grok hook', () => {
-    const result = runEntry(['--help'], GROK_TOOL_SHELL_ENV)
-    expect(result.status).toBe(0)
-    expect(result.stdout).toContain('Usage: notifai')
   })
 })

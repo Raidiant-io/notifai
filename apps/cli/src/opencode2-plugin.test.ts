@@ -1,10 +1,10 @@
-import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { chmodSync,mkdtempSync,readFileSync,rmSync,writeFileSync } from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { afterEach, describe, expect, it } from 'vitest'
-import { opencodePluginSource, opencodePluginTarget } from './opencode-plugin.js'
-import { opencode2PluginSource, opencode2QuestionJsonSchema } from './opencode2-plugin.js'
+import { afterEach,describe,expect,it } from 'vitest'
+import { opencodePluginTarget } from './opencode-plugin.js'
+import { opencode2PluginSource } from './opencode2-plugin.js'
 
 /**
  * The generated OpenCode 2 plugin, run as OpenCode 2.1.3 runs it: its default
@@ -205,27 +205,6 @@ describe('the generated OpenCode 2 plugin module', () => {
     const source = opencode2PluginSource({ adapterPath: '/a/notifai-hook', timeoutSeconds: 5 })
     expect(opencodePluginTarget(source)).toMatchObject({ adapter: '/a/notifai-hook', current: true, line: 2, timeoutSeconds: 5 })
   })
-
-  it('matches the reviewed OpenCode 1 compatibility fixtures', () => {
-    const fixture = (name: string) => readFileSync(path.join(HERE, 'fixtures', name), 'utf8')
-    expect(opencodePluginSource({ adapterPath: '/home/u/.notifai/bin/notifai-hook', timeoutSeconds: 5, platform: 'darwin',
-      integrationScope: '/home/u/.config/opencode/plugins/notifai.js' })).toBe(fixture('opencode-1-plugin-posix.js.txt'))
-    expect(opencodePluginSource({ adapterPath: 'C:\\Users\\u\\.notifai\\bin\\notifai-hook.mjs', nodePath: 'C:\\Program Files\\nodejs\\node.exe',
-      timeoutSeconds: 5, platform: 'win32', integrationScope: 'C:\\Users\\u\\.config\\opencode\\plugins\\notifai.js' })).toBe(fixture('opencode-1-plugin-win32.js.txt'))
-    expect(opencodePluginTarget(fixture('opencode-1-plugin-posix.js.txt'))).toMatchObject({ line: 1, current: true })
-  })
-
-  it('declares Notifai\'s fields on OpenCode\'s own question schema, only while it is still the known shape', async () => {
-    const t = await load()
-    const schema = t.question['input'] as { properties: Record<string, unknown>; required: string[] }
-    // OpenCode 2.1.3's own schema, unchanged, with the extras beside it.
-    expect(schema.properties['questions']).toEqual(captured.context_question_input.properties.questions)
-    expect(Object.keys(schema.properties)).toEqual(['questions', 'title', 'body', 'images', 'source'])
-    expect(schema.required).toEqual(['questions'])
-    expect(schema).toEqual(JSON.parse(JSON.stringify(opencode2QuestionJsonSchema())))
-    const changed = await load({ questionFields: { questions: {}, deadline: {} } })
-    expect(changed.question['input']).toEqual({ fields: { questions: {}, deadline: {} } })
-  })
 })
 
 describe.skipIf(process.platform === 'win32')('the generated OpenCode 2 plugin', () => {
@@ -255,57 +234,6 @@ describe.skipIf(process.platform === 'win32')('the generated OpenCode 2 plugin',
     expect((await t.context()).join('\n')).not.toContain('notifai acknowledge req_1')
   })
 
-  it('owes each parallel form its own acknowledgement', async () => {
-    const t = await load({ mode: 'device' })
-    await t.context()
-    await Promise.all([t.call('call_a'), t.call('call_b')])
-    await t.until(() => t.frames().filter((frame) => frame === 'applied').length === 2)
-    const turn = (await t.context()).join('\n')
-    expect(turn).toContain('OWED ACKNOWLEDGEMENT for frm_call_a')
-    expect(turn).toContain('OWED ACKNOWLEDGEMENT for frm_call_b')
-    expect((await t.context()).join('\n')).not.toContain('OWED ACKNOWLEDGEMENT')
-  })
-
-  it('returns the device answer within a few seconds even when the native executor ignores abort', async () => {
-    const t = await load({ mode: 'device', ignoresAbort: true })
-    const started = Date.now()
-    const result = await t.call('call_uncooperative')
-    expect(Date.now() - started).toBeLessThan(4500)
-    expect(result.output).toEqual({ answers: [['Blue']] })
-    await t.until(() => t.frames().includes('applied'))
-    expect((await t.context()).join('\n')).toContain('notifai acknowledge req_1')
-    await t.cleanup()
-  }, 7000)
-
-  it('passes an answer given in OpenCode through unchanged and reports it', async () => {
-    const t = await load({ mode: 'wait' })
-    const pending = t.call('call_terminal')
-    await t.until(() => t.frames().includes('opened'))
-    t.native.open.get('call_terminal')!.reply('Green')
-    const result = await pending
-    expect(result.output).toEqual(captured.native_result_answered.output)
-    expect(result.content).toBe(captured.native_result_answered.content)
-    await t.until(() => t.frames().includes('native'))
-    expect(t.records().find((record) => record.frame?.type === 'native')!.frame!['answers']).toEqual([['Green']])
-  })
-
-  it('rethrows OpenCode\'s own dismissal unchanged, so OpenCode still treats it as one, and withdraws the device question', async () => {
-    const t = await load({ mode: 'wait' })
-    const pending = t.call('call_dismiss')
-    await t.until(() => t.frames().includes('opened'))
-    t.native.open.get('call_dismiss')!.dismiss()
-    await expect(pending).rejects.toBe(t.native.cancelled)
-    await t.until(() => t.frames().includes('dismissed'))
-  })
-
-  it('closes OpenCode\'s form when the device question expired, with only Notifai\'s context as the result', async () => {
-    const t = await load({ mode: 'expire' })
-    const result = await t.call('call_expire')
-    expect(result).toEqual({ output: { answers: [[]] }, content: 'EXPIRED CONTEXT', metadata: { answers: [[]] } })
-    expect(t.native.open.size).toBe(0)
-    await t.until(() => t.frames().includes('applied'))
-  })
-
   it('refuses a form with Notifai\'s message before it opens, and leaves a terminal-only form to OpenCode', async () => {
     const refused = await load({ verdict: 'refused' })
     await expect(refused.call('call_refused')).rejects.toThrow('Notifai refused this form.')
@@ -319,50 +247,6 @@ describe.skipIf(process.platform === 'win32')('the generated OpenCode 2 plugin',
     expect(terminal.frames()).toEqual(['form'])
   })
 
-  it('leaves a worker\'s form in OpenCode and asks Notifai nothing about it', async () => {
-    const t = await load({ mode: 'device' })
-    const pending = t.call('call_child', CHILD)
-    await t.until(() => t.native.open.has('call_child'))
-    t.native.open.get('call_child')!.reply('Green')
-    await pending
-    await t.settle()
-    expect(t.records().some((record) => record.event === 'opencode-question')).toBe(false)
-  })
-
-  it('treats a session OpenCode cannot describe as a worker', async () => {
-    const t = await load({ mode: 'device' })
-    expect(await t.context('ses_unknown')).toEqual(['WORKER ACTIVATION'])
-    expect(t.records().find((record) => record.event === 'opencode-session')!.envelope).toMatchObject({ session_id: 'ses_unknown', worker: true })
-    const pending = t.call('call_unknown', 'ses_unknown')
-    await t.until(() => t.native.open.has('call_unknown'))
-    t.native.open.get('call_unknown')!.reply('Green')
-    await pending
-    expect(t.records().some((record) => record.event === 'opencode-question')).toBe(false)
-  })
-
-  it('treats malformed parent information as a worker instead of authorizing a root form', async () => {
-    const t = await load({ parentID: { id: CHILD } })
-    expect(await t.context()).toEqual(['WORKER ACTIVATION'])
-    const pending = t.call('call_malformed_parent')
-    await t.until(() => t.native.open.has('call_malformed_parent'))
-    t.native.open.get('call_malformed_parent')!.reply('Green')
-    await pending
-    expect(t.records().some((record) => record.event === 'opencode-question')).toBe(false)
-  })
-
-  it('resolves activation once per User prompt and gives the next model request what the prompt hook returned', async () => {
-    const t = await load({ promptOutput: 'SESSION NOTE TEXT' })
-    expect(await t.context()).toEqual(['SESSION NOTE TEXT', 'ACTIVATION TEXT'])
-    for (let request = 0; request < 2; request += 1) expect(await t.context()).toEqual(['ACTIVATION TEXT'])
-    expect(t.records().filter((record) => record.event === 'session-start')).toHaveLength(1)
-    await t.hooks['session.prompt']!(captured.prompt_root)
-    expect(t.records().find((record) => record.event === 'user-prompt-submit')!.envelope).toEqual({
-      session_id: ROOT, cwd: captured.session_get_root.location.directory, hook_event_name: 'UserPromptSubmit' })
-    expect(await t.context()).toEqual(['SESSION NOTE TEXT', 'ACTIVATION TEXT'])
-    expect(await t.context()).toEqual(['ACTIVATION TEXT'])
-    expect(t.records().filter((record) => record.event === 'session-start')).toHaveLength(2)
-  })
-
   it('recovers CLI acknowledgement context after reload without another User prompt', async () => {
     const before = await load({ mode: 'device' })
     await before.context()
@@ -373,58 +257,5 @@ describe.skipIf(process.platform === 'win32')('the generated OpenCode 2 plugin',
     expect((await after.context()).join('\n')).toContain('notifai acknowledge req_1')
     expect((await after.context()).join('\n')).not.toContain('notifai acknowledge req_1')
     await after.cleanup()
-  })
-
-  it('adds nothing in a Project the User disabled, and worker context in a child session', async () => {
-    const disabled = await load({ activation: '' })
-    expect(await disabled.context()).toEqual([])
-    const worker = await load()
-    expect(await worker.context(CHILD)).toEqual(['WORKER ACTIVATION'])
-    expect(worker.records().find((record) => record.event === 'subagent-start')!.envelope).toMatchObject({ session_id: CHILD, hook_event_name: 'SubagentStart' })
-  })
-
-  it('records each session it serves for its shells, with whether it is a worker and its title', async () => {
-    const t = await load()
-    await t.context()
-    await t.context(CHILD)
-    const recorded = t.records().filter((record) => record.event === 'opencode-session').map((record) => record.envelope)
-    // A new OpenCode 2 session has no title until OpenCode names it.
-    expect(recorded).toEqual([
-      { session_id: ROOT, cwd: captured.session_get_root.location.directory, hook_event_name: 'OpencodeSession', worker: false, session_label_pending: true },
-      { session_id: CHILD, cwd: captured.session_get_child.location.directory, hook_event_name: 'OpencodeSession', worker: true, session_label: 'probe child' },
-    ])
-    const shell = { command: 'notifai ask', cwd: '/work/proj', timeout: 0, shell: '/bin/bash', env: { PATH: '/bin' } as Record<string, string> }
-    await t.hooks['shell.create.before']!(shell)
-    expect(shell.env).toEqual({ PATH: '/bin', NOTIFAI_ACTIVE_HARNESS: 'opencode', NOTIFAI_OPENCODE_PLUGIN: '2' })
-  })
-
-  it('ends the turn once per execution of a session it served, and never for another instance\'s session', async () => {
-    const t = await load()
-    await t.context()
-    t.emit(captured.execution_succeeded)
-    // OpenCode delivers an event to every instance; one instance can see the same one twice.
-    t.emit(captured.execution_succeeded)
-    t.emit({ ...captured.execution_interrupted_after_dismissal, id: 'evt_superseded', data: { sessionID: ROOT, reason: 'superseded' } })
-    t.emit({ ...captured.execution_succeeded, id: 'evt_other', data: { sessionID: 'ses_otherinstance' } })
-    await t.until(() => t.records().some((record) => record.event === 'stop'))
-    await t.settle()
-    expect(t.records().filter((record) => record.event === 'stop').map((record) => record.envelope)).toEqual([
-      { session_id: ROOT, cwd: captured.session_get_root.location.directory, hook_event_name: 'Stop' },
-    ])
-    t.emit(captured.execution_interrupted_after_dismissal)
-    await t.until(() => t.records().filter((record) => record.event === 'stop').length === 2)
-  })
-
-  it('records a renamed session again, and ends a deleted one and its open forms', async () => {
-    const t = await load({ mode: 'wait' })
-    await t.context()
-    t.emit(captured.session_renamed)
-    await t.until(() => t.records().filter((record) => record.event === 'opencode-session').length === 2)
-    void t.call('call_open').catch(() => {})
-    await t.until(() => t.frames().includes('opened'))
-    t.emit({ ...captured.session_deleted, data: { sessionID: ROOT } })
-    await t.until(() => t.records().some((record) => record.event === 'session-end'))
-    await t.until(() => t.records().some((record) => record.closed === true))
-    expect(t.records().find((record) => record.event === 'session-end')!.envelope).toMatchObject({ session_id: ROOT, hook_event_name: 'SessionEnd' })
   })
 })

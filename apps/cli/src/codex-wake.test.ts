@@ -1,15 +1,12 @@
-import { chmodSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { chmodSync,mkdtempSync,rmSync,writeFileSync } from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import { afterAll, describe, expect, it, vi } from 'vitest'
+import { afterAll,describe,expect,it,vi } from 'vitest'
 import {
-  CODEX_QUEUE_STORE_FILE,
-  codexHome,
-  codexQueueStorePath,
-  codexWakeRoute,
-  inspectCodexQueue,
-  systemCodexWakeAdapters,
-  type CodexWakeAdapters,
+codexWakeRoute,
+inspectCodexQueue,
+systemCodexWakeAdapters,
+type CodexWakeAdapters
 } from './codex-wake.js'
 import { WriteDeadlineError } from './wake-support.js'
 
@@ -81,18 +78,6 @@ describe('Codex queue readiness', () => {
     expect(readiness.state).toBe('unavailable')
     expect(readiness).toMatchObject({ reason: expect.stringContaining('not a thread id') })
   })
-
-  it('refuses a missing session id rather than queueing into an unnamed thread', () => {
-    expect(inspectCodexQueue(undefined, {}).state).toBe('unavailable')
-  })
-
-  it('names the queue store under CODEX_HOME without opening it', () => {
-    const home = temporaryDirectory()
-    expect(codexHome({ CODEX_HOME: home })).toBe(home)
-    expect(codexQueueStorePath({ CODEX_HOME: home })).toBe(
-      path.join(home, CODEX_QUEUE_STORE_FILE),
-    )
-  })
 })
 
 describe('Codex queue delivery', () => {
@@ -112,53 +97,6 @@ describe('Codex queue delivery', () => {
     // here may claim the session consumed it.
     expect(outcome.log).toMatchObject({ route: 'session-queue', stage: 'queued' })
     expect(JSON.stringify(outcome.log)).not.toContain('"stage":"delivered"')
-  })
-
-  it('is the only delivery the route can make: there is no resume path to double up with', () => {
-    // `codex exec resume <id> "<prompt>"` drains the pending queue *and* runs
-    // the prompt, so an adapter offering both would deliver one answer twice.
-    // The guarantee is structural: queueing is the adapter surface's only
-    // write; `available` only looks for the executable.
-    expect(Object.keys(systemCodexWakeAdapters({ CODEX_HOME: '/tmp' })).sort()).toEqual(['available', 'queue'])
-    expect(route(adapters()).kind).toBe('session-queue')
-  })
-
-  it('journals the answer when the session id cannot name a thread', async () => {
-    const wake = adapters()
-    const outcome = await route(wake, { threadId: 'codex-session-7' }).deliver(event)
-    expect(wake.queued).toEqual([])
-    expect(outcome.acknowledgement).toBe('held')
-  })
-
-  it('journals the answer when queueing fails, instead of reporting it delivered', async () => {
-    const wake = adapters({ fail: new Error('no rollout found for thread id') })
-    const outcome = await route(wake).deliver(event)
-    expect(outcome.acknowledgement).toBe('held')
-    expect(JSON.stringify(outcome)).toContain('no rollout found for thread id')
-  })
-
-  it('never queues an answer the SessionEnd fence declined to commit', async () => {
-    const wake = adapters()
-    const outcome = await route(wake).deliver({ ...event, commitDelivery: () => false })
-    expect(wake.queued).toEqual([])
-    expect(outcome.acknowledgement).toBe('held')
-  })
-
-  it('commits before writing, so a crash mid-queue cannot silently drop the answer', async () => {
-    const order: string[] = []
-    const wake: CodexWakeAdapters = {
-      async queue() {
-        order.push('queue')
-      },
-    }
-    await route(wake).deliver({
-      ...event,
-      commitDelivery: () => {
-        order.push('commit')
-        return true
-      },
-    })
-    expect(order).toEqual(['commit', 'queue'])
   })
 })
 

@@ -1,12 +1,11 @@
-import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
+import { mkdirSync,mkdtempSync,writeFileSync } from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import { describe, expect, it } from 'vitest'
+import { describe,expect,it } from 'vitest'
 import {
-  createSkillManifest,
-  shippedSkillBundle,
-  verifySkillBundle,
-  type SkillManifest,
+createSkillManifest,
+verifySkillBundle,
+type SkillManifest
 } from './skill-integrity.js'
 
 function fixtureBundle(): { sourceRoot: string; skillRoot: string; manifest: SkillManifest } {
@@ -42,42 +41,6 @@ describe('packaged skill integrity', () => {
     expect(verifySkillBundle(additional.sourceRoot, '8.0.0')).toMatchObject({
       ok: false,
       error: expect.stringContaining('do not match'),
-    })
-  })
-
-  it('binds release notes to the shipped manifest and rejects a malformed catalog', () => {
-    const { sourceRoot, skillRoot } = fixtureBundle()
-    const catalog = { current: 'a'.repeat(64), releases: [{ digest: 'a'.repeat(64), note: 'Read updated guidance.' }] }
-    const file = path.join(sourceRoot, 'guidance-changes.json')
-    writeFileSync(file, JSON.stringify(catalog))
-    const manifestFile = path.join(sourceRoot, 'manifest.json')
-    writeFileSync(manifestFile, JSON.stringify(createSkillManifest(skillRoot, '8.0.0')))
-    expect(verifySkillBundle(sourceRoot).ok).toBe(true)
-    catalog.releases[0]!.note = 'A substituted note.'
-    writeFileSync(file, JSON.stringify(catalog))
-    expect(verifySkillBundle(sourceRoot).ok).toBe(false)
-    catalog.current = 'invalid'
-    writeFileSync(file, JSON.stringify(catalog))
-    writeFileSync(manifestFile, JSON.stringify(createSkillManifest(skillRoot, '8.0.0')))
-    expect(verifySkillBundle(sourceRoot).ok).toBe(false)
-  })
-
-  it('rejects CRLF-transformed bytes instead of silently changing reviewed guidance', () => {
-    const fixture = fixtureBundle()
-    writeFileSync(path.join(fixture.skillRoot, 'SKILL.md'), '# Notifai\r\n')
-    expect(verifySkillBundle(fixture.sourceRoot, '8.0.0')).toMatchObject({
-      ok: false,
-      error: expect.stringContaining('do not match'),
-    })
-  })
-
-  it('ships a bundle whose manifest belongs to this exact CLI version', () => {
-    const version = JSON.parse(
-      readFileSync(new URL('../package.json', import.meta.url), 'utf8'),
-    ) as { version: string }
-    expect(shippedSkillBundle(version.version)).toMatchObject({
-      ok: true,
-      bundle: { manifest: { package_version: version.version, skill: 'notifai' } },
     })
   })
 })

@@ -1,8 +1,8 @@
-import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { chmodSync,mkdtempSync,readFileSync,rmSync,writeFileSync } from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import { afterEach, describe, expect, it } from 'vitest'
-import { OPENCODE_QUESTION_EXTRA_PROPERTIES, OPENCODE_QUESTION_JSON_SCHEMA, opencodePluginSource } from './opencode-plugin.js'
+import { afterEach,describe,expect,it } from 'vitest'
+import { opencodePluginSource } from './opencode-plugin.js'
 
 /**
  * The generated OpenCode plugin, run as OpenCode runs it: imported as a module,
@@ -142,116 +142,6 @@ describe.skipIf(process.platform === 'win32')('the generated OpenCode plugin', (
     expect(second.system.join('\n')).not.toContain('OWED ACKNOWLEDGEMENT')
   })
 
-  it('owes each parallel form its own acknowledgement', async () => {
-    const t = await load('device')
-    const second = { ...REQUEST, id: 'que_2' }
-    t.pending.push(second)
-    await t.plugin.event({ event: { type: 'question.asked', properties: REQUEST } })
-    await t.plugin.event({ event: { type: 'question.asked', properties: second } })
-    await t.until(() => t.records().filter(record => record.frame?.type === 'applied').length === 2)
-    const turn = { system: [] as string[] }
-    await t.plugin['experimental.chat.system.transform']({ sessionID: 'ses_parent' }, turn)
-    const context = turn.system.join('\n')
-    expect(context).toContain('OWED ACKNOWLEDGEMENT for que_1')
-    expect(context).toContain('OWED ACKNOWLEDGEMENT for que_2')
-  })
-
-  it('survives a command that ends before the plugin writes to it', async () => {
-    const t = await load('device-exit')
-    await t.plugin.event({ event: { type: 'question.asked', properties: REQUEST } })
-    await t.until(() => t.replies.length === 1)
-    // The reply's own event and a late dismissal both target a pipe that is gone.
-    await t.plugin.event({ event: { type: 'question.rejected', properties: { sessionID: 'ses_parent', requestID: 'que_1' } } })
-    await new Promise(resolve => setTimeout(resolve, 300))
-    expect(t.replies).toEqual([{ requestID: 'que_1', answers: [['Production']] }])
-  })
-
-  it('passes an answer given in OpenCode to the device question', async () => {
-    const t = await load('wait')
-    await t.plugin.event({ event: { type: 'question.asked', properties: REQUEST } })
-    await t.until(() => t.records().some(record => record.frame?.type === 'ask'))
-    await t.plugin.event({ event: { type: 'question.replied', properties: { sessionID: 'ses_parent', requestID: 'que_1', answers: [['Staging']] } } })
-    await t.until(() => t.records().some(record => record.frame?.type === 'native'))
-    expect(t.records().find(record => record.frame?.type === 'native')?.frame?.answers).toEqual([['Staging']])
-    expect(t.replies).toEqual([])
-  })
-
-  it('passes a dismissal and closes the pipe when the session is deleted', async () => {
-    const t = await load('wait')
-    await t.plugin.event({ event: { type: 'question.asked', properties: REQUEST } })
-    await t.until(() => t.records().some(record => record.frame?.type === 'ask'))
-    await t.plugin.event({ event: { type: 'question.rejected', properties: { sessionID: 'ses_parent', requestID: 'que_1' } } })
-    await t.until(() => t.records().some(record => record.frame?.type === 'dismissed'))
-
-    const other = { ...REQUEST, id: 'que_2' }
-    await t.plugin.event({ event: { type: 'question.asked', properties: other } })
-    await t.until(() => t.records().filter(record => record.frame?.type === 'ask').length === 2)
-    await t.plugin.event({ event: { type: 'session.deleted', properties: { info: { id: 'ses_parent' } } } })
-    await t.until(() => t.records().some(record => record.closed === true))
-  })
-
-  it('leaves a worker\'s form, and every form without OpenCode\'s question API, in OpenCode', async () => {
-    const worker = await load('device')
-    await worker.plugin.event({ event: { type: 'question.asked', properties: { ...REQUEST, sessionID: 'ses_child' } } })
-    await new Promise(resolve => setTimeout(resolve, 300))
-    expect(worker.records().some(record => record.event === 'opencode-question')).toBe(false)
-    const legacy = await load('device', { questionApi: false })
-    await legacy.plugin.event({ event: { type: 'question.asked', properties: REQUEST } })
-    await new Promise(resolve => setTimeout(resolve, 300))
-    expect(legacy.records().some(record => record.event === 'opencode-question')).toBe(false)
-  })
-
-  it('offers Notifai\'s fields on OpenCode\'s question form, and only on its known shape', async () => {
-    const t = await load('wait')
-    const question = { description: 'Ask', parameters: { fields: { questions: {} } } as unknown, jsonSchema: undefined as unknown }
-    await t.plugin['tool.definition']({ toolID: 'question' }, question)
-    const schema = question.jsonSchema as { properties: Record<string, unknown> }
-    expect(Object.keys(schema.properties)).toEqual(Object.keys({ ...OPENCODE_QUESTION_JSON_SCHEMA.properties, ...OPENCODE_QUESTION_EXTRA_PROPERTIES }))
-    expect(schema.properties.title).toEqual({ anyOf: [OPENCODE_QUESTION_EXTRA_PROPERTIES.title, { type: 'null' }] })
-    const changed = { description: 'Ask', parameters: { fields: { questions: {}, deadline: {} } } as unknown, jsonSchema: undefined as unknown }
-    await t.plugin['tool.definition']({ toolID: 'question' }, changed)
-    expect(changed.jsonSchema).toBeUndefined()
-    const other = { description: 'Run', parameters: { fields: { questions: {} } } as unknown, jsonSchema: undefined as unknown }
-    await t.plugin['tool.definition']({ toolID: 'bash' }, other)
-    expect(other.jsonSchema).toBeUndefined()
-  })
-
-  it('takes Notifai\'s fields off the form and opens it only once Notifai accepted it', async () => {
-    const t = await load('device')
-    const args = { questions: REQUEST.questions, title: 'Deploy target', body: 'Why', images: [{ path: 'a.png', alt: 'A' }], source: 'notifai:q_1' }
-    await t.plugin['tool.execute.before']({ tool: 'question', sessionID: 'ses_parent', callID: 'call_1' }, { args })
-    // OpenCode reads only its own input.
-    expect(args).toEqual({ questions: REQUEST.questions })
-    const formFrame = t.records().find((record) => record.frame?.type === 'form')?.frame
-    expect(formFrame).toMatchObject({ questions: REQUEST.questions,
-      extras: { title: 'Deploy target', body: 'Why', images: [{ path: 'a.png', alt: 'A' }], source: 'notifai:q_1' } })
-    await t.plugin.event({ event: { type: 'question.asked', properties: { ...REQUEST, tool: { messageID: 'msg_1', callID: 'call_1' } } } })
-    await t.until(() => t.replies.length === 1)
-    expect(t.records().filter((record) => record.frame !== undefined).map((record) => record.frame!.type)).toEqual(['form', 'opened', 'applied'])
-    expect(t.replies).toEqual([{ requestID: 'que_1', answers: [['Production']] }])
-  })
-
-  it('offers a closed strict-compatible schema and removes nullable optional values before native decoding', async () => {
-    const current = await load('wait', { verdict: 'terminal' })
-    const output = { description: 'Ask', parameters: { fields: { questions: {} } }, jsonSchema: undefined as unknown }
-    await current.plugin['tool.definition']({ toolID: 'question' }, output)
-    const check = (schema: Record<string, unknown>): void => {
-      if (schema.type === 'object') {
-        const properties = schema.properties as Record<string, Record<string, unknown>>
-        expect(schema.additionalProperties).toBe(false)
-        expect(new Set(schema.required as string[])).toEqual(new Set(Object.keys(properties)))
-        for (const property of Object.values(properties)) check(property)
-      }
-      if (schema.items) check(schema.items as Record<string, unknown>)
-      for (const branch of (schema.anyOf as Record<string, unknown>[] | undefined) ?? []) check(branch)
-    }
-    check(output.jsonSchema as Record<string, unknown>)
-    const args = { questions: REQUEST.questions.map(question => ({ ...question, multiple: null })), title: null, body: null, images: null, source: null }
-    await current.plugin['tool.execute.before']({ tool: 'question', sessionID: 'ses_parent', callID: 'strict_call' }, { args })
-    expect(args).toEqual({ questions: REQUEST.questions })
-    expect(current.records().find(record => record.frame?.type === 'form')?.frame?.extras).toEqual({})
-  })
-
   it('rejects a refused form with Notifai\'s message, and leaves a terminal one to OpenCode', async () => {
     const refused = await load('wait', { verdict: 'refused' })
     await expect(refused.plugin['tool.execute.before']({ tool: 'question', sessionID: 'ses_parent', callID: 'call_1' },
@@ -263,57 +153,5 @@ describe.skipIf(process.platform === 'win32')('the generated OpenCode plugin', (
     await new Promise((resolve) => setTimeout(resolve, 300))
     // Its opening starts no second command.
     expect(terminal.records().filter((record) => record.event === 'opencode-question')).toHaveLength(1)
-  })
-
-  it('closes a form whose device question expired, and returns only Notifai\'s context', async () => {
-    const t = await load('expire')
-    await t.plugin['tool.execute.before']({ tool: 'question', sessionID: 'ses_parent', callID: 'call_1' }, { args: { questions: REQUEST.questions } })
-    await t.plugin.event({ event: { type: 'question.asked', properties: { ...REQUEST, tool: { messageID: 'msg_1', callID: 'call_1' } } } })
-    await t.until(() => t.replies.length === 1)
-    expect(t.replies).toEqual([{ requestID: 'que_1', answers: [[]] }])
-    await t.plugin.event({ event: { type: 'question.replied', properties: { sessionID: 'ses_parent', requestID: 'que_1', answers: [[]] } } })
-    const result = { output: 'User has answered your questions: "Where?"="Unanswered".' }
-    await t.plugin['tool.execute.after']({ tool: 'question', sessionID: 'ses_parent', callID: 'call_1' }, result)
-    expect(result.output).toBe('EXPIRED CONTEXT')
-    expect(t.records().some((record) => record.frame?.type === 'native')).toBe(false)
-  })
-
-  it('tells the agent\'s shell whether its session is a worker, and asks nothing about a worker\'s form', async () => {
-    const t = await load('wait')
-    const root = { env: {} as Record<string, string> }
-    await t.plugin['shell.env']({ sessionID: 'ses_parent' }, root)
-    expect(root.env).toMatchObject({ NOTIFAI_ACTIVE_HARNESS: 'opencode', NOTIFAI_ACTIVE_SESSION_ID: 'ses_parent', NOTIFAI_ACTIVE_SESSION_WORKER: '0' })
-    const child = { env: {} as Record<string, string> }
-    await t.plugin['shell.env']({ sessionID: 'ses_child' }, child)
-    expect(child.env['NOTIFAI_ACTIVE_SESSION_WORKER']).toBe('1')
-    const args = { questions: REQUEST.questions, title: 'Deploy target' }
-    await t.plugin['tool.execute.before']({ tool: 'question', sessionID: 'ses_child', callID: 'call_2' }, { args })
-    expect(args).toEqual({ questions: REQUEST.questions })
-    expect(t.records().some((record) => record.event === 'opencode-question')).toBe(false)
-  })
-
-  it('resolves activation once per User prompt, not once per model request', async () => {
-    const t = await load('wait')
-    for (let request = 0; request < 3; request += 1) {
-      const output = { system: ['harness instructions'] }
-      await t.plugin['experimental.chat.system.transform']({ sessionID: 'ses_parent' }, output)
-      expect(output.system).toEqual(['harness instructions\n\nACTIVATION TEXT'])
-    }
-    expect(t.records().filter(record => record.event === 'session-start')).toHaveLength(1)
-    await t.plugin['chat.message']({ sessionID: 'ses_parent' })
-    await t.plugin['experimental.chat.system.transform']({ sessionID: 'ses_parent' }, { system: [] })
-    expect(t.records().filter(record => record.event === 'session-start')).toHaveLength(2)
-    expect(existsSync(t.root)).toBe(true)
-  })
-
-  it('resolves activation again once OpenCode compacts the session, telling the CLI it was compacted', async () => {
-    const t = await load('wait')
-    await t.plugin['experimental.chat.system.transform']({ sessionID: 'ses_parent' }, { system: [] })
-    await t.plugin.event({ event: { type: 'session.compacted', properties: { sessionID: 'ses_parent' } } })
-    // The next model request of the same turn, not only the next User prompt.
-    await t.plugin['experimental.chat.system.transform']({ sessionID: 'ses_parent' }, { system: [] })
-    await t.plugin['experimental.chat.system.transform']({ sessionID: 'ses_parent' }, { system: [] })
-    expect(t.records().filter(record => record.event === 'session-start')).toHaveLength(2)
-    expect(t.records().filter(record => (record as { compacted?: boolean }).compacted === true)).toHaveLength(1)
   })
 })

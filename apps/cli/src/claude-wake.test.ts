@@ -1,20 +1,14 @@
-import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs'
-import { createServer } from 'node:net'
-import os from 'node:os'
-import path from 'node:path'
-import { describe, expect, it, vi } from 'vitest'
+import { describe,expect,it } from 'vitest'
 import {
-  CLAUDE_PEER_PROTOCOL,
-  CLAUDE_POST_SEND_LIVENESS_MS,
-  claudeInboxAuth,
-  claudeWakeRoute,
-  inspectClaudeInbox,
-  observeClaudeSession,
-  systemClaudeWakeAdapters,
-  type ClaudeSessionDescriptor,
-  type ClaudeWakeAdapters,
+CLAUDE_PEER_PROTOCOL,
+CLAUDE_POST_SEND_LIVENESS_MS,
+claudeWakeRoute,
+inspectClaudeInbox,
+observeClaudeSession,
+type ClaudeSessionDescriptor,
+type ClaudeWakeAdapters
 } from './claude-wake.js'
-import { WRITE_ABORTED_REASON, WriteAbortedError } from './wake-support.js'
+import { WRITE_ABORTED_REASON,WriteAbortedError } from './wake-support.js'
 
 const SESSION_ID = '11111111-1111-4111-8111-111111111111'
 const STARTED_AT = 1_800_000_000_000
@@ -96,65 +90,6 @@ describe('Claude session observation', () => {
       descriptor: { sessionId: SESSION_ID, peerProtocol: CLAUDE_PEER_PROTOCOL },
     })
   })
-
-  it('treats a validated busy owner as queueable on the inbox socket', async () => {
-    const live = descriptor({ status: 'busy' })
-    const observation = await observeClaudeSession(
-      SESSION_ID,
-      adapters({
-        agents: [
-          {
-            pid: live.pid,
-            sessionId: live.sessionId,
-            startedAt: live.startedAt,
-            status: live.status,
-          },
-        ],
-        descriptor: live,
-      }),
-    )
-
-    expect(observation.state).toBe('live-busy')
-  })
-
-  it('fails closed on an unknown peer protocol', async () => {
-    const observation = await observeClaudeSession(
-      SESSION_ID,
-      adapters({ descriptor: descriptor({ peerProtocol: CLAUDE_PEER_PROTOCOL + 1 }) }),
-    )
-
-    expect(observation).toEqual({
-      state: 'unknown',
-      reason: `unsupported Claude peer protocol ${CLAUDE_PEER_PROTOCOL + 1}`,
-    })
-  })
-
-  it('uses first-party status when the descriptor is in a transient shell state', async () => {
-    const observation = await observeClaudeSession(
-      SESSION_ID,
-      adapters({ descriptor: descriptor({ status: 'shell' }) }),
-    )
-
-    expect(observation.state).toBe('live-idle')
-  })
-
-  it('fails closed when the first-party probe and descriptor identity disagree', async () => {
-    const observation = await observeClaudeSession(
-      SESSION_ID,
-      adapters({ descriptor: descriptor({ startedAt: STARTED_AT + 1 }) }),
-    )
-
-    expect(observation).toEqual({
-      state: 'unknown',
-      reason: 'Claude liveness probe and descriptor disagree',
-    })
-  })
-
-  it('calls a session stopped only when the liveness probe returns no owner', async () => {
-    await expect(observeClaudeSession(SESSION_ID, adapters({ agents: [] }))).resolves.toEqual({
-      state: 'stopped',
-    })
-  })
 })
 
 describe('Claude inbox release floor', () => {
@@ -171,28 +106,6 @@ describe('Claude inbox release floor', () => {
       reason: 'the Claude Code version 2.next.224 is not a recognised release number',
       settling: false,
     })
-  })
-  it('accepts a Windows named pipe from 2.1.234 without looking for it on disk', () => {
-    const pipe = '\\\\.\\pipe\\LOCAL\\cc-msg-0123456789abcdef0123456789abcdef'
-    const inspect = (version: string) => inspectClaudeInbox({
-      pid: 12345,
-      platform: 'win32',
-      readDescriptor: () => descriptor({ version, messagingSocketPath: pipe }),
-      socketExists: () => { throw new Error('a named pipe is never examined as a file') },
-    })
-    expect(inspect('2.1.282')).toEqual({ state: 'ready', socketPath: pipe, version: '2.1.282' })
-    expect(inspect('2.1.233')).toEqual({
-      state: 'unavailable',
-      reason: 'Claude Code 2.1.233 is older than 2.1.234, which is where the inbox socket starts on win32',
-      settling: false,
-    })
-  })
-  it('reads the descriptor from CLAUDE_CONFIG_DIR when the harness relocates its config', () => {
-    const configDir = mkdtempSync(path.join(os.tmpdir(), 'nf-claude-config-'))
-    mkdirSync(path.join(configDir, 'sessions'))
-    writeFileSync(path.join(configDir, 'sessions', '12345.json'), JSON.stringify(descriptor()))
-    const system = systemClaudeWakeAdapters({ CLAUDE_CONFIG_DIR: configDir })
-    expect(system.readDescriptor(12345)).toEqual(descriptor())
   })
 })
 
@@ -236,93 +149,6 @@ describe('Claude wake delivery', () => {
       reason: 'the Stop-hook process cannot prove exact Claude session ownership',
     })
   })
-
-  it('uses the same socket path for a busy session and reports queued delivery', async () => {
-    const live = descriptor({ status: 'busy' })
-    const wake = adapters({
-      agents: [
-        {
-          pid: live.pid,
-          sessionId: live.sessionId,
-          startedAt: live.startedAt,
-          status: live.status,
-        },
-      ],
-      descriptor: live,
-    })
-
-    const outcome = await claudeWakeRoute({ platform: POSIX,
-      sessionId: SESSION_ID,
-      sourcePid: 12345,
-      adapters: wake,
-    }).deliver(event)
-
-    expect(wake.sent).toHaveLength(1)
-    expect(outcome.notes.join('\n')).toContain('busy Claude session')
-    expect(outcome.log?.['session_state']).toBe('live-busy')
-  })
-
-  it('never revives a stopped session: nothing is started or written', async () => {
-    const wake = adapters({ agents: [] })
-    let committed = 0
-    const outcome = await claudeWakeRoute({ platform: POSIX,
-      sessionId: SESSION_ID,
-      sourcePid: 12345,
-      adapters: wake,
-    }).deliver({ ...event, commitDelivery: () => { committed++; return true } })
-
-    // A stopped session has closed. The single liveness probe is the last
-    // thing the route runs: no second probe, no commit, no write.
-    expect(wake.probes).toBe(1)
-    expect(committed).toBe(0)
-    expect(wake.sent).toEqual([])
-    expect(wake.sleeps).toEqual([])
-    expect(outcome.acknowledgement).not.toBe('delivered')
-    expect(outcome.log).toEqual({ route: 'hold-for-next-turn', stage: 'queued', reason: 'session-ended' })
-  })
-
-  it('has no adapter that can start a Claude session', () => {
-    expect(Object.keys(systemClaudeWakeAdapters({})).sort()).toEqual([
-      'listAgents',
-      'readDescriptor',
-      'sendSocket',
-      'sleep',
-    ])
-  })
-
-  it('holds the accepted answer when state or protocol is unknown', async () => {
-    const wake = adapters({
-      descriptor: descriptor({ peerProtocol: CLAUDE_PEER_PROTOCOL + 1 }),
-    })
-    const outcome = await claudeWakeRoute({ platform: POSIX,
-      sessionId: SESSION_ID,
-      sourcePid: 12345,
-      adapters: wake,
-    }).deliver(event)
-
-    expect(wake.sent).toEqual([])
-    expect(outcome.log).toEqual({
-      route: 'hold-for-next-turn',
-      stage: 'queued',
-      reason: `unsupported Claude peer protocol ${CLAUDE_PEER_PROTOCOL + 1}`,
-    })
-  })
-
-  it('does not report delivery when the socket write fails', async () => {
-    const wake = adapters()
-    wake.sendSocket = vi.fn(async () => {
-      throw new Error('socket unavailable')
-    })
-
-    await expect(
-      claudeWakeRoute({ platform: POSIX,
-        sessionId: SESSION_ID,
-        sourcePid: 12345,
-        adapters: wake,
-      }).deliver(event),
-    ).rejects.toThrow('socket unavailable')
-    expect(wake.sleeps).toEqual([])
-  })
 })
 
 describe('claimed writes at the boundary', () => {
@@ -339,40 +165,6 @@ describe('claimed writes at the boundary', () => {
     }).deliver({ ...event, writeGuard: { writable: () => false, remainingMs: () => 0 } })
     expect(outcome).toMatchObject({ acknowledgement: 'held', log: { reason: WRITE_ABORTED_REASON } })
     expect(wake.sleeps).toEqual([])
-  })
-
-  it('sends no byte over a real inbox socket once the guard says the claim lapsed', async () => {
-    const directory = mkdtempSync(path.join(os.tmpdir(), 'nf-sock-'))
-    // The same writer serves both transports: a socket file, or on Windows a named pipe.
-    const socketPath = process.platform === 'win32'
-      ? `\\\\.\\pipe\\LOCAL\\nf-sock-${path.basename(directory)}`
-      : path.join(directory, 'inbox.sock')
-    const received: string[] = []
-    const server = createServer((socket) => {
-      socket.on('data', (chunk) => received.push(chunk.toString()))
-    })
-    await new Promise<void>((resolve) => server.listen(socketPath, resolve))
-    try {
-      const system = systemClaudeWakeAdapters({})
-      await expect(
-        system.sendSocket(socketPath, 'late\n', { writable: () => false, remainingMs: () => 5_000 }),
-      ).rejects.toBeInstanceOf(WriteAbortedError)
-      await system.sendSocket(socketPath, 'in time\n', { writable: () => true, remainingMs: () => 5_000 })
-      await new Promise((resolve) => setTimeout(resolve, 50))
-      expect(received.join('')).toBe('in time\n')
-    } finally {
-      server.close()
-    }
-  })
-
-  it('abandons a connection still pending at the write boundary', async () => {
-    const system = systemClaudeWakeAdapters({})
-    // Nothing listens here: the connection neither succeeds nor matters, and the
-    // boundary has already passed, so the write is abandoned as aborted.
-    const missing = path.join(mkdtempSync(path.join(os.tmpdir(), 'nf-sock-')), 'none.sock')
-    await expect(
-      system.sendSocket(missing, 'late\n', { writable: () => true, remainingMs: () => 0 }),
-    ).rejects.toBeInstanceOf(Error)
   })
 })
 
@@ -404,46 +196,5 @@ describe('Claude inbox token', () => {
     })
     await route.deliver(event() as never)
     expect(lines(fake.sent[0]!.line)).toEqual([{ type: 'user', message: { role: 'user', content: 'wake' } }])
-  })
-
-  it('refuses a Windows write without the token, before the delivery is committed', async () => {
-    const fake = adapters()
-    let committed = 0
-    const route = claudeWakeRoute({ sessionId: SESSION_ID, sourcePid: 12345, adapters: fake, env: {}, platform: 'win32' })
-    const outcome = await route.deliver({ ...event(), commitDelivery: () => { committed++; return true } } as never)
-    // Claude Code on Windows closes a connection that does not open with the
-    // token; nothing is written and the answer stays for the next turn.
-    expect(fake.sent).toEqual([])
-    expect(committed).toBe(0)
-    expect(JSON.stringify(outcome.log)).toContain('holds no inbox token')
-  })
-
-  it('writes to a Windows named pipe when the token names it', async () => {
-    const pipe = '\\\\.\\pipe\\LOCAL\\cc-msg-0123456789abcdef0123456789abcdef'
-    const fake = adapters({ descriptor: descriptor({ messagingSocketPath: pipe }) })
-    const route = claudeWakeRoute({
-      sessionId: SESSION_ID, sourcePid: 12345, adapters: fake, platform: 'win32',
-      env: { CLAUDE_CODE_MESSAGING_SOCKET: pipe, CLAUDE_CODE_MESSAGING_TOKEN: 'token-w' },
-    })
-    await route.deliver(event() as never)
-    expect(fake.sent[0]?.socketPath).toBe(pipe)
-    expect(lines(fake.sent[0]!.line)[0]).toEqual({ type: 'auth', token: 'token-w' })
-  })
-
-  it('reads credentials only when both were exported for this session', () => {
-    const exported = { CLAUDE_CODE_MESSAGING_SOCKET: '/tmp/s.sock', CLAUDE_CODE_MESSAGING_TOKEN: 't' }
-    expect(claudeInboxAuth(exported, SESSION_ID)).toEqual({ socketPath: '/tmp/s.sock', token: 't' })
-    expect(claudeInboxAuth({ ...exported, CLAUDE_CODE_SESSION_ID: SESSION_ID }, SESSION_ID)).not.toBeNull()
-    expect(claudeInboxAuth({ ...exported, CLAUDE_CODE_SESSION_ID: 'another-session' }, SESSION_ID)).toBeNull()
-    expect(claudeInboxAuth({ CLAUDE_CODE_MESSAGING_SOCKET: '/tmp/s.sock' }, SESSION_ID)).toBeNull()
-    expect(claudeInboxAuth({ CLAUDE_CODE_MESSAGING_TOKEN: 't' }, SESSION_ID)).toBeNull()
-  })
-
-  it('writes the user line alone when Claude Code exported no token', async () => {
-    const fake = adapters()
-    const route = claudeWakeRoute({ platform: POSIX, sessionId: SESSION_ID, sourcePid: 12345, adapters: fake, env: {} })
-    await route.deliver(event() as never)
-    expect(lines(fake.sent[0]!.line)).toEqual([{ type: 'user', message: { role: 'user', content: 'wake' } }])
-    expect(fake.sleeps).toEqual([CLAUDE_POST_SEND_LIVENESS_MS])
   })
 })

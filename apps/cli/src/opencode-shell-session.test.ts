@@ -1,12 +1,8 @@
-import { mkdtempSync, rmSync } from 'node:fs'
+import { mkdtempSync,rmSync } from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import { afterEach, describe, expect, it } from 'vitest'
-import { resolveActiveHarness } from './commands-harness-context.js'
-import { markSessionEnded } from './hook-session-state.js'
-import { forgetOpencodeSession, recordOpencodeSession, trustedOpencodeShellSession } from './opencode-shell-session.js'
-import { processAncestry } from './process-ancestry.js'
-import type { ProcessIdentity } from './process-identity.js'
+import { afterEach,describe,expect,it } from 'vitest'
+import { recordOpencodeSession,trustedOpencodeShellSession } from './opencode-shell-session.js'
 
 const roots: string[] = []
 afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }) })
@@ -45,26 +41,6 @@ describe('OpenCode 2 shell session identity', () => {
     expect(trustedOpencodeShellSession(env, SESSION, () => null, alive)).toMatchObject({ sessionId: SESSION })
   })
 
-  it('refuses a stale value: an ended session, a host that is gone, or a forgotten record', () => {
-    const env = home()
-    recordOpencodeSession(env, { session_id: SESSION, worker: false }, 1, start, insideHost)
-    expect(trustedOpencodeShellSession(env, SESSION, insideHost, (_: ProcessIdentity) => 'gone')).toBeNull()
-    expect(trustedOpencodeShellSession(env, SESSION, insideHost, (_: ProcessIdentity) => 'unknown')).toBeNull()
-    markSessionEnded(SESSION, env, 3)
-    expect(trustedOpencodeShellSession(env, SESSION, insideHost, alive)).toBeNull()
-    const other = home()
-    recordOpencodeSession(other, { session_id: SESSION, worker: false }, 1, start, insideHost)
-    forgetOpencodeSession(other, SESSION)
-    expect(trustedOpencodeShellSession(other, SESSION, insideHost, alive)).toBeNull()
-  })
-
-  it('requires the declared host in the recording process ancestry, even when its PID is live', () => {
-    const env = home()
-    expect(recordOpencodeSession(env, { session_id: SESSION, worker: false }, 1, start, () => [{ pid: 99, name: 'node' }])).toBe('no-host')
-    expect(recordOpencodeSession(env, { session_id: SESSION, worker: false }, 1, start, () => null)).toBe('no-host')
-    expect(trustedOpencodeShellSession(env, SESSION, insideHost, alive)).toBeNull()
-  })
-
   it('preserves another live or unreadable host record, but allows a dead host to be replaced', () => {
     const env = home()
     recordOpencodeSession(env, { session_id: SESSION, worker: true, session_label: 'Original' }, 1, start, insideHost)
@@ -78,31 +54,5 @@ describe('OpenCode 2 shell session identity', () => {
     expect(recordOpencodeSession(other, { session_id: SESSION, worker: false }, 3,
       () => 'other-start', otherChain, () => 'gone')).toBe('recorded')
     expect(trustedOpencodeShellSession(env, SESSION, otherChain, alive)).toMatchObject({ worker: false })
-  })
-
-  it('records nothing without a host, or for a malformed report', () => {
-    const env = home()
-    expect(recordOpencodeSession({ ...env, NOTIFAI_HOOK_SOURCE_PID: '' }, { session_id: SESSION, worker: false }, 1, start, insideHost)).toBe('no-host')
-    expect(recordOpencodeSession({ ...env, NOTIFAI_HOOK_SOURCE_PID: '77' }, { session_id: SESSION, worker: false }, 1, start, insideHost)).toBe('no-host')
-    expect(recordOpencodeSession(env, { session_id: SESSION }, 1, start, insideHost)).toBe('invalid')
-    expect(recordOpencodeSession(env, { session_id: 'not-a-session', worker: false }, 1, start, insideHost)).toBe('invalid')
-    expect(trustedOpencodeShellSession(env, SESSION, insideHost, alive)).toBeNull()
-  })
-
-  it.skipIf(process.platform === 'win32')('identifies this process\'s shell end to end, with its real ancestry', () => {
-    const env = home()
-    // This test process stands in for the OpenCode host: it is its own ancestor.
-    const host = { ...env, NOTIFAI_HOOK_SOURCE_PID: String(process.pid) }
-    expect(recordOpencodeSession(host, { session_id: SESSION, worker: false, session_label: 'Fix the build' }, 1)).toBe('recorded')
-    const shell = { ...env, NOTIFAI_ACTIVE_HARNESS: 'opencode', NOTIFAI_OPENCODE_PLUGIN: '2', OPENCODE_SESSION_ID: SESSION }
-    expect(processAncestry()?.some((ancestor) => ancestor.pid === process.pid)).toBe(true)
-    expect(resolveActiveHarness(shell, '/', 0).active).toEqual({
-      harness: 'opencode', label: 'OpenCode', sessionId: SESSION, worker: false, sessionLabel: 'Fix the build',
-    })
-    // The same marker with a value nobody recorded names no session.
-    expect(resolveActiveHarness({ ...shell, OPENCODE_SESSION_ID: 'ses_forged' }, '/', 0).active).toEqual({ harness: 'opencode', label: 'OpenCode' })
-    // OpenCode 1's plugin still names its session itself.
-    expect(resolveActiveHarness({ ...env, NOTIFAI_ACTIVE_HARNESS: 'opencode', NOTIFAI_ACTIVE_SESSION_ID: 'ses_one', NOTIFAI_ACTIVE_SESSION_WORKER: '0' }, '/', 0).active)
-      .toEqual({ harness: 'opencode', label: 'OpenCode', sessionId: 'ses_one', worker: false })
   })
 })

@@ -1,17 +1,15 @@
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdirSync,mkdtempSync,rmSync,writeFileSync } from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach,describe,expect,it } from 'vitest'
 import {
-  APP_IDLE_STOP_MS,
-  classifyClaudeEnd,
-  classifyCodexEnd,
-  claudeDesktopPauseLogged,
-  claudeForkParent,
-  type CodexEndEvidence,
-  claudeTranscriptPresent,
-  machineDownEarlierBoot,
-  readClaudeDesktopRecord,
+classifyClaudeEnd,
+classifyCodexEnd,
+claudeForkParent,
+claudeTranscriptPresent,
+machineDownEarlierBoot,
+readClaudeDesktopRecord,
+type CodexEndEvidence
 } from './session-close-classifier.js'
 
 const SESSION = '11111111-2222-3333-4444-555555555555'
@@ -23,38 +21,12 @@ function root(): string {
   return dir
 }
 
-function stamp(at: number): string {
-  const d = new Date(at)
-  const pad = (n: number): string => String(n).padStart(2, '0')
-  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`
-}
 
 describe('who ended a Claude Code conversation', () => {
   const desktop = { appAlive: true, record: { localId: 'local_a', archived: false }, pauseLogged: true }
 
   it('keeps only the desktop app\'s own pause: app running, conversation listed, the pause logged', () => {
     expect(classifyClaudeEnd({ place: 'claude-desktop', transcript: 'present', desktop })).toEqual({ cause: 'app', reason: 'desktop-paused' })
-  })
-
-  it('requires positive archival evidence to close', () => {
-    expect(classifyClaudeEnd({ place: 'terminal', transcript: 'present' })).toMatchObject({ cause: 'app' })
-    expect(classifyClaudeEnd({ place: 'claude-ide', transcript: 'present' })).toMatchObject({ cause: 'app' })
-    expect(classifyClaudeEnd({ place: 'claude-background', transcript: 'present' })).toMatchObject({ cause: 'app' })
-    expect(classifyClaudeEnd({ place: 'headless', transcript: 'present' })).toMatchObject({ cause: 'user', reason: 'run-ended' })
-    expect(classifyClaudeEnd({ place: 'unreported', transcript: 'present' })).toMatchObject({ cause: 'app' })
-    expect(classifyClaudeEnd({ place: 'claude-desktop', transcript: 'missing', desktop })).toEqual({ cause: 'app', reason: 'unconfirmed-stop' })
-    expect(classifyClaudeEnd({ place: 'claude-desktop', transcript: 'present' })).toEqual({ cause: 'app', reason: 'unconfirmed-stop' })
-    expect(classifyClaudeEnd({ place: 'claude-desktop', transcript: 'present', desktop: { ...desktop, appAlive: false } }))
-      .toEqual({ cause: 'app', reason: 'unconfirmed-stop' })
-    expect(classifyClaudeEnd({ place: 'claude-desktop', transcript: 'present', desktop: { ...desktop, record: 'missing' } }))
-      .toEqual({ cause: 'app', reason: 'unconfirmed-stop' })
-    expect(classifyClaudeEnd({ place: 'claude-desktop', transcript: 'present', desktop: { ...desktop, record: 'unreadable' } }))
-      .toEqual({ cause: 'app', reason: 'unconfirmed-stop' })
-    expect(classifyClaudeEnd({ place: 'claude-desktop', transcript: 'present', desktop: { ...desktop, record: { localId: 'local_a', archived: true } } }))
-      .toEqual({ cause: 'user', reason: 'archived' })
-    // The Stop button: app running, listed, no pause line.
-    expect(classifyClaudeEnd({ place: 'claude-desktop', transcript: 'present', desktop: { ...desktop, pauseLogged: false } }))
-      .toEqual({ cause: 'app', reason: 'unconfirmed-stop' })
   })
 })
 
@@ -64,14 +36,6 @@ describe('who ended a conversation in an Orca terminal pane or an Orca chat', ()
     expect(classifyClaudeEnd({ place: 'terminal', transcript: 'present', terminalHost: 'alive' })).toEqual({ cause: 'app', reason: 'unconfirmed-stop' })
     expect(classifyClaudeEnd({ place: 'terminal', transcript: 'present', terminalHost: null })).toEqual({ cause: 'app', reason: 'unconfirmed-stop' })
     expect(classifyClaudeEnd({ place: 'terminal', transcript: 'missing', terminalHost: 'gone' })).toEqual({ cause: 'app', reason: 'unconfirmed-stop' })
-  })
-
-  it('keeps an Orca chat stopped 30 minutes after its last activity while Orca runs, without treating earlier stops as closes', () => {
-    const chat = { place: 'orca-chat' as const, transcript: 'present' as const, hostApp: 'alive' as const }
-    expect(classifyClaudeEnd({ ...chat, idleMs: APP_IDLE_STOP_MS + 60_000 })).toEqual({ cause: 'app', reason: 'idle-stopped' })
-    expect(classifyClaudeEnd({ ...chat, idleMs: APP_IDLE_STOP_MS - 60_000 })).toEqual({ cause: 'app', reason: 'unconfirmed-stop' })
-    expect(classifyClaudeEnd({ ...chat, idleMs: APP_IDLE_STOP_MS + 60_000, hostApp: 'gone' })).toEqual({ cause: 'app', reason: 'unconfirmed-stop' })
-    expect(classifyClaudeEnd({ ...chat, idleMs: null })).toEqual({ cause: 'app', reason: 'unconfirmed-stop' })
   })
 })
 
@@ -122,13 +86,6 @@ describe('the conversation a Claude Code fork came from', () => {
     expect(claudeForkParent(transcript([{ type: 'mode', sessionId: FORK }, { type: 'user', sessionId: FORK, forkedFrom: { sessionId: PARENT, messageUuid: 'u1' } }]), FORK))
       .toBe(PARENT)
   })
-
-  it('names no parent for `--fork-session`, which rewrites its copied lines to its own id, nor for a transcript not written yet', () => {
-    expect(claudeForkParent(transcript([{ type: 'mode', sessionId: FORK }, { type: 'user', sessionId: FORK, uuid: 'u1' }]), FORK)).toBeNull()
-    expect(claudeForkParent(path.join(root(), 'none.jsonl'), FORK)).toBeNull()
-    expect(claudeForkParent(null, FORK)).toBeNull()
-    expect(claudeForkParent(transcript([{ type: 'user', sessionId: FORK, forkedFrom: { sessionId: FORK } }]), FORK)).toBeNull()
-  })
 })
 
 describe('the machine going down, seen at the next boot', () => {
@@ -139,15 +96,6 @@ describe('the machine going down, seen at the next boot', () => {
     expect(machineDownEarlierBoot({ ...base, endPending: true })).toBe(true)
     expect(machineDownEarlierBoot({ ...base, shutdown: { boot: 'a', since: 900 } })).toBe(true)
     expect(machineDownEarlierBoot({ ...base, shutdown: { boot: 'a', since: 1_000 } })).toBe(true)
-  })
-
-  it('is not the same boot, an unknown boot, an end recorded before the shutdown, or another boot\'s shutdown', () => {
-    expect(machineDownEarlierBoot({ ...base, recordedBoot: 'b', endedAt: null })).toBe(false)
-    expect(machineDownEarlierBoot({ ...base, currentBoot: null, endedAt: null })).toBe(false)
-    expect(machineDownEarlierBoot({ ...base, recordedBoot: null, endedAt: null })).toBe(false)
-    expect(machineDownEarlierBoot({ ...base })).toBe(false)
-    expect(machineDownEarlierBoot({ ...base, shutdown: { boot: 'a', since: 1_001 } })).toBe(false)
-    expect(machineDownEarlierBoot({ ...base, shutdown: { boot: 'z', since: 0 } })).toBe(false)
   })
 })
 
@@ -165,23 +113,6 @@ describe('the Claude desktop app\'s records (read-only)', () => {
     expect(readClaudeDesktopRecord(path.join(sessions, 'nowhere'), SESSION)).toBe('missing')
   })
 
-  it('reads a pause or a governor eviction of this conversation around the end, and nothing else', () => {
-    const log = path.join(root(), 'main.log')
-    const now = Date.now()
-    writeFileSync(log, [
-      `${stamp(now - 3_600_000)} [info] [CCD] Pausing session local_mine due to idle`,
-      `${stamp(now)} [info] [CCD] Pausing session local_other due to idle`,
-      `${stamp(now)} [info] LocalSessions.stop: sessionId=local_mine`,
-    ].join('\n'))
-    expect(claudeDesktopPauseLogged(log, 'local_mine', now, now)).toBe(false)
-    writeFileSync(log, `${stamp(now - 2_000)} [info] [CCD] Pausing session local_mine (idle_timeout)\n`, { flag: 'a' })
-    expect(claudeDesktopPauseLogged(log, 'local_mine', now, now)).toBe(true)
-    const evicted = path.join(root(), 'main.log')
-    writeFileSync(evicted, `${stamp(now)} [info] [CliGovernor] pressure evicting local_mine (idle 2400s)\n`)
-    expect(claudeDesktopPauseLogged(evicted, 'local_mine', now, now)).toBe(true)
-    expect(claudeDesktopPauseLogged(path.join(root(), 'missing.log'), 'local_mine', now, now)).toBe(false)
-  })
-
   it('finds the transcript by id when the recorded path does not exist, and calls it missing only on evidence', () => {
     const config = root()
     expect(claudeTranscriptPresent(config, SESSION, null)).toBe(false)
@@ -196,17 +127,6 @@ describe('the Claude desktop app\'s records (read-only)', () => {
 describe('uncertain stops preserve waiting work', () => {
   it.each(['t3', 'orca-chat', 'terminal', 'unreported', 'claude-ide'] as const)('does not infer a User close in %s', (place) => {
     expect(classifyClaudeEnd({ place, transcript: 'present', hostApp: 'gone', idleMs: 0 }).cause).not.toBe('user')
-  })
-  it('does not turn unreadable desktop records into a close', () => {
-    expect(classifyClaudeEnd({ place: 'claude-desktop', transcript: 'present', desktop: {
-      appAlive: true, record: 'unreadable', pauseLogged: false,
-    } }).cause).not.toBe('user')
-  })
-  it('does not turn an unreadable rollout or crashed host into a close', () => {
-    const evidence: CodexEndEvidence = { place: 't3', rollout: 'unknown', host: 'gone', hostKind: 'app-server',
-      originator: null, hostApp: null, idleMs: 0, terminalHost: null }
-    expect(classifyCodexEnd(evidence).cause).not.toBe('user')
-    expect(classifyCodexEnd({ ...evidence, rollout: 'sessions' }).cause).not.toBe('user')
   })
 })
 

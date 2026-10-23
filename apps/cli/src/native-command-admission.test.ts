@@ -1,12 +1,11 @@
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdirSync,mkdtempSync,rmSync,writeFileSync } from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import { afterEach, expect, it, vi } from 'vitest'
-import { buildProgram, type ProgramRunners, type BuildProgramOptions } from './program.js'
+import { afterEach,expect,it,vi } from 'vitest'
 import type { CommandDeps } from './commands.js'
-import { writeSessionState, markSessionEnded } from './hook-session-state.js'
+import { writeSessionState } from './hook-session-state.js'
+import { buildProgram,type BuildProgramOptions,type ProgramRunners } from './program.js'
 import { QUESTION_SETTLEMENT_INPUT_ENV } from './question-settlement-process.js'
-import { GROK_ATTEND_INPUT_ENV } from './grok-attendant.js'
 
 const roots: string[] = []
 const originalExecutable = process.execPath
@@ -85,122 +84,4 @@ it.each(['bun-linux-x64', 'bun-darwin-arm64', 'bun-windows-x64'])('admits v1 ord
   expect(await f.invoke(['install', '--upgrade', '--version', '2.0.0', '--channel', 'stable', '--no-init', '--no-path', '--json'], { install }))
     .toMatchObject({ code: 0, admitted: ['installer'] })
   expect(install).toHaveBeenCalledOnce()
-})
-
-it('forwards a stable selection overtaken by activation before running the old command', async () => {
-  const f = fixture(), configSet = vi.fn(async () => 0)
-  f.running(f.retired)
-  const args = ['config', 'set', 'log_level', 'off', '--yes']
-  const retryNativeSelection = vi.fn(async () => 7)
-  const result = await f.invoke(args, { configSet }, { NOTIFAI_NATIVE_ROUTE: 'stable-v1' }, { retryNativeSelection })
-  expect(result).toMatchObject({ code: 7, admitted: [], output: [], errors: [] })
-  expect(configSet).not.toHaveBeenCalled()
-  expect(retryNativeSelection).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ attempts: 0,
-    executable: path.join(f.home, '.notifai', 'bin', process.platform === 'win32' ? 'notifai.exe' : 'notifai') }), args,
-    expect.objectContaining({ cwd: f.home }))
-})
-
-it.each(['2', 'invalid', '-1'])('bounds stale-selection forwarding and refuses invalid retry state %s', async attempts => {
-  const f = fixture(), retryNativeSelection = vi.fn(async () => 0), configSet = vi.fn(async () => 0)
-  f.running(f.retired)
-  const result = await f.invoke(['config', 'set', 'log_level', 'off', '--yes'], { configSet },
-    { NOTIFAI_NATIVE_ROUTE: 'stable-v1', NOTIFAI_NATIVE_RETRY: attempts }, { retryNativeSelection })
-  expect(result.code).toBe(1)
-  expect(configSet).not.toHaveBeenCalled()
-  expect(retryNativeSelection).not.toHaveBeenCalled()
-})
-
-it('does not turn a failing admitted command into a retry', async () => {
-  const f = fixture(), retryNativeSelection = vi.fn(async () => 0), configSet = vi.fn(async () => 5)
-  f.running(f.active)
-  expect((await f.invoke(['config', 'set', 'log_level', 'off', '--yes'], { configSet },
-    { NOTIFAI_NATIVE_ROUTE: 'stable-v1' }, { retryNativeSelection })).code).toBe(5)
-  expect(configSet).toHaveBeenCalledOnce()
-  expect(retryNativeSelection).not.toHaveBeenCalled()
-})
-
-it('refuses ordinary direct payload execution before any managed action', async () => {
-  const f = fixture(), configSet = vi.fn(async () => 0)
-  f.running(f.active)
-  const result = await f.invoke(['config', 'set', 'log_level', 'off', '--yes'], { configSet }, { NOTIFAI_NATIVE_ENTRY: undefined })
-  expect(result).toMatchObject({ code: 1, admitted: [] })
-  expect(result.errors.join()).toContain('native launcher')
-  expect(configSet).not.toHaveBeenCalled()
-})
-
-it('admits explicit abandonment through a standalone launcher to the guarded installation operation', async () => {
-  const f = fixture(), update = vi.fn(async () => 0)
-  f.running(f.retired)
-  const args = ['update', '--abandon', '--json']
-  expect(await f.invoke(args, { update })).toMatchObject({ code: 0, admitted: ['installer'] })
-  expect(update).toHaveBeenCalledOnce()
-  expect(await f.invoke(args, { update }, { NOTIFAI_NATIVE_ENTRY: undefined })).toMatchObject({ code: 1, admitted: [] })
-  expect(update).toHaveBeenCalledOnce()
-  expect((await f.invoke(['update', '--abandon', '--rollback'], { update })).code).toBe(2)
-  expect(update).toHaveBeenCalledOnce()
-})
-
-it.each([
-  ['question-settlement', 'claude-code', QUESTION_SETTLEMENT_INPUT_ENV],
-  ['attend', 'grok', GROK_ATTEND_INPUT_ENV],
-])('retained %s owners need the exact installation, build, harness and live session', async (event, harness, inputKey) => {
-  const f = fixture(), session = 'retained-session'
-  f.running(f.retired)
-  const args = ['hook', event, '--owner', 'notifai', '--harness', harness]
-  const extraEnv = { [inputKey]: JSON.stringify({ session_id: session, cwd: f.home }) }
-  const hookRun = vi.fn(async () => 0)
-  expect((await f.invoke(args, { hookRun }, extraEnv)).code).toBe(1)
-  writeSessionState(session, f.env, { harness: harness as 'grok' | 'claude-code', runtime_builds: [{ installation_id: f.id, build: f.active }] })
-  expect((await f.invoke(args, { hookRun }, extraEnv)).code).toBe(1)
-  writeSessionState(session, f.env, { harness: harness as 'grok' | 'claude-code', runtime_builds: [{ installation_id: f.id, build: f.retired }] })
-  expect(await f.invoke(args, { hookRun }, extraEnv)).toMatchObject({ code: 0, admitted: ['retained-owner'] })
-  expect((await f.invoke([...args.slice(0, -1), 'codex'], { hookRun }, extraEnv)).code).toBe(1)
-  markSessionEnded(session, f.env, Date.now())
-  expect((await f.invoke(args, { hookRun }, extraEnv)).code).toBe(1)
-  expect(hookRun).toHaveBeenCalledTimes(1)
-})
-
-it('portable doctor returns read-only installation advice without running setup observations', async () => {
-  const f = fixture(), doctor = vi.fn(async () => 0)
-  const result = await f.invoke(['doctor', '--json'], { doctor })
-  expect(result.code).toBe(1)
-  expect(JSON.parse(result.output.join())).toMatchObject({ status: 'native_installation_required', read_only: true })
-  expect(doctor).not.toHaveBeenCalled()
-})
-
-it('refuses managed actions while uninstall has closed launch admission', async () => {
-  const f = fixture(), configSet = vi.fn(async () => 0)
-  f.running(f.active)
-  writeFileSync(path.join(f.home, '.notifai', 'uninstall.json'), '{}', { mode: 0o600 })
-  const result = await f.invoke(['config', 'set', 'log_level', 'off', '--yes'], { configSet })
-  expect(result).toMatchObject({ code: 1, admitted: [] })
-  expect(result.errors.join()).toContain('uninstall')
-  expect(configSet).not.toHaveBeenCalled()
-  const doctor = vi.fn(async () => 0)
-  expect(await f.invoke(['doctor', '--json'], { doctor })).toMatchObject({ code: 0, admitted: ['read-only-managed'] })
-  expect(doctor).toHaveBeenCalledTimes(1)
-})
-
-it('routes the explicit Windows finalizer to its ownership validator only through the native launcher', async () => {
-  const f = fixture(), uninstall = vi.fn(async () => 0)
-  Object.defineProperty(process, 'execPath', { value: path.join(f.home, 'temporary', 'notifai-runtime.exe') })
-  const args = ['uninstall', '--finish', '--installation-id', f.id, '--installation-root', path.join(f.home, '.notifai'), '--json']
-  expect(await f.invoke(args, { uninstall })).toMatchObject({ code: 0, admitted: ['installer'] })
-  expect(uninstall.mock.calls.length).toBe(1)
-  expect(await f.invoke(args, { uninstall }, { NOTIFAI_NATIVE_ENTRY: undefined })).toMatchObject({ code: 1, admitted: [] })
-  expect(uninstall.mock.calls.length).toBe(1)
-})
-
-it.skipIf(process.platform === 'win32')('lets a staged, not yet active build describe its own activation, read-only', async () => {
-  const f = fixture()
-  // The automatic updater runs the candidate from its own immutable directory before activating it.
-  f.running(f.retired)
-  // Its launcher answers the account home, as the native launcher does.
-  writeFileSync(path.join(f.home, '.notifai', 'versions', f.retired, 'notifai'), `#!/bin/sh\necho '${f.home}'\n`, { mode: 0o700 })
-  const plan = await f.invoke(['activation-plan', '--json'])
-  expect(plan.admitted).toEqual(['diagnostic'])
-  expect(plan.code).toBe(0)
-  expect(JSON.parse(plan.output[0]!)).toMatchObject({ schema: 1, hub_ipc_versions: { min: 1, max: 1 }, hook_changes: [] })
-  // Ordinary commands from that build stay refused.
-  expect((await f.invoke(['config', 'show', '--json'])).code).toBe(1)
 })

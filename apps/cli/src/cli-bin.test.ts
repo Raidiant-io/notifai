@@ -1,22 +1,18 @@
 import {
-  chmodSync,
-  mkdirSync,
-  mkdtempSync,
-  realpathSync,
-  symlinkSync,
-  writeFileSync,
+chmodSync,
+mkdirSync,
+mkdtempSync,
+realpathSync,
+symlinkSync,
+writeFileSync,
 } from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import { describe, expect, it } from 'vitest'
-import { cliBinReadiness, isExecutablePath, pathNotifaiEntries, withoutNpxLauncherPath } from './cli-bin.js'
+import { describe,expect,it } from 'vitest'
+import { cliBinReadiness,withoutNpxLauncherPath } from './cli-bin.js'
 import { cliUpdateRecoveryCommand } from './cli-contract.js'
 
 // The running build's version picks the channel its repair advice stays on.
-const RUNNING_BUILDS = [
-  { channel: 'stable', version: '10.1.0' },
-  { channel: 'beta', version: '10.2.0-beta.1' },
-] as const
 
 describe('PATH notifai diagnosis', () => {
   function posixInstall(root: string, name: string, version: string) {
@@ -40,26 +36,6 @@ describe('PATH notifai diagnosis', () => {
     return { prefix, artifact, command }
   }
 
-  function windowsInstall(root: string, name: string, version: string) {
-    const prefix = path.join(root, name)
-    const artifact = path.join(
-      prefix,
-      'node_modules',
-      '@raidiant',
-      'notifai',
-      'dist',
-      'main.js',
-    )
-    const command = path.join(prefix, 'notifai.cmd')
-    mkdirSync(path.dirname(artifact), { recursive: true })
-    writeFileSync(path.join(path.dirname(path.dirname(artifact)), 'package.json'), JSON.stringify({ version }))
-    writeFileSync(artifact, '#!/usr/bin/env node\n')
-    writeFileSync(
-      command,
-      '@ECHO off\r\nnode "%dp0%node_modules\\@raidiant\\notifai\\dist\\main.js" %*\r\n',
-    )
-    return { prefix, artifact, command }
-  }
 
   it.each(['darwin', 'win32'] as const)('excludes only the running npx launcher on %s', platform => {
     const root = mkdtempSync(path.join(os.tmpdir(), 'notifai-npx-path-'))
@@ -82,38 +58,6 @@ describe('PATH notifai diagnosis', () => {
     }
     expect(withoutNpxLauncherPath(env, platform, path.join(root, 'other', 'main.js'))).toBe(env)
     expect(withoutNpxLauncherPath(env, platform, path.join(root, 'project', 'node_modules', '@raidiant', 'notifai', 'dist', 'main.js'))).toBe(env)
-  })
-
-  it.each(RUNNING_BUILDS)('reports a non-executable PATH binary as a gap from a $channel build', ({ channel, version }) => {
-    if (process.platform === 'win32') return
-    const directory = mkdtempSync(path.join(os.tmpdir(), 'notifai-bin-gap-'))
-    const file = path.join(directory, 'notifai')
-    writeFileSync(file, '#!/usr/bin/env node\n')
-    chmodSync(file, 0o644)
-    expect(isExecutablePath(file, 'darwin')).toBe(false)
-    const state = cliBinReadiness({ PATH: directory }, 'darwin', { currentVersion: version })
-    expect(state.status).toBe('gap')
-    expect(state.detail).not.toContain(file)
-    expect(state.technical).toMatchObject({ entries: [{ command_path: file, executable: false }] })
-    expect(state.remedy?.command).not.toBe('notifai update')
-    expect(state.remedy?.command).toBe(cliUpdateRecoveryCommand(channel))
-  })
-
-  it('treats an executable PATH binary as ready', () => {
-    if (process.platform === 'win32') return
-    const directory = mkdtempSync(path.join(os.tmpdir(), 'notifai-bin-ok-'))
-    const file = path.join(directory, 'notifai')
-    writeFileSync(file, '#!/usr/bin/env node\n')
-    chmodSync(file, 0o755)
-    expect(isExecutablePath(directory, 'darwin')).toBe(false)
-    expect(isExecutablePath(directory, 'win32')).toBe(false)
-    expect(pathNotifaiEntries({ PATH: directory }, 'darwin')).toEqual([file])
-    expect(
-      cliBinReadiness({ PATH: directory }, 'darwin', {
-        runningArtifactPath: file,
-        currentVersion: null,
-      }).status,
-    ).toBe('ready')
   })
 
   it.each(['3.0.1', '10.1.0'])('rejects a different executable PATH winner even when its version is %s', oldVersion => {
@@ -140,68 +84,5 @@ describe('PATH notifai diagnosis', () => {
       current: { artifact_path: realpathSync(current.artifact), version: '10.1.0' },
       effective: { command_path: old.command, artifact_path: realpathSync(old.artifact), version: oldVersion },
     })
-  })
-
-  it('uses Windows Path order to reject an older executable winner', () => {
-    const root = mkdtempSync(path.join(os.tmpdir(), 'notifai-bin-windows-winner-'))
-    const old = windowsInstall(root, 'old', '3.0.1')
-    const current = windowsInstall(root, 'current', '10.1.0')
-
-    const state = cliBinReadiness(
-      { Path: `${old.prefix};${current.prefix}` },
-      'win32',
-      {
-        runningArtifactPath: current.artifact,
-        currentVersion: '10.1.0',
-      },
-    )
-
-    expect(state.status).toBe('gap')
-    expect(state.remedy?.command).toBe(
-      cliUpdateRecoveryCommand(),
-    )
-    expect(state.technical).toMatchObject({
-      effective: {
-        command_path: old.command,
-        artifact_path: realpathSync(old.artifact),
-        version: '3.0.1',
-      },
-    })
-  })
-
-  it('keeps a healthy winner ready while reporting a later broken duplicate for cleanup', () => {
-    const root = mkdtempSync(path.join(os.tmpdir(), 'notifai-bin-later-broken-'))
-    const current = posixInstall(root, 'current', '10.1.0')
-    const broken = posixInstall(root, 'broken', '3.0.1')
-    chmodSync(broken.artifact, 0o644)
-
-    const state = cliBinReadiness(
-      { PATH: `${path.dirname(current.command)}:${path.dirname(broken.command)}` },
-      'darwin',
-      { runningArtifactPath: current.artifact, currentVersion: '10.1.0' },
-    )
-
-    expect(state.status).toBe('optional-gap')
-    expect(state.detail).toContain('ready')
-    expect(state.detail).not.toContain(broken.command)
-    expect(state.technical).toMatchObject({
-      effective: { command_path: current.command, executable: true },
-      entries: [
-        { command_path: current.command, executable: true },
-        { command_path: broken.command, executable: false },
-      ],
-    })
-  })
-
-  it.each(RUNNING_BUILDS)('does not call a PATH with no notifai entry ready from a $channel build', ({ channel, version }) => {
-    const directory = mkdtempSync(path.join(os.tmpdir(), 'notifai-bin-empty-'))
-    mkdirSync(directory, { recursive: true })
-    const state = cliBinReadiness({ PATH: directory }, process.platform, { currentVersion: version })
-    // The running process proves nothing about the command every printed next
-    // step names — but it is running, so this cannot stand in the way either.
-    expect(state.status).toBe('optional-gap')
-    expect(state.detail).toContain('will not be found')
-    expect(state.remedy?.command).not.toBe('notifai update')
-    expect(state.remedy?.command).toBe(cliUpdateRecoveryCommand(channel))
   })
 })

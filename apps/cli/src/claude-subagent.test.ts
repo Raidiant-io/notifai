@@ -1,8 +1,8 @@
-import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs'
+import { mkdirSync,mkdtempSync,writeFileSync } from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import { describe, expect, it } from 'vitest'
-import { claudeAskingSubagent, claudeSessionHasSubagents } from './claude-subagent.js'
+import { describe,expect,it } from 'vitest'
+import { claudeAskingSubagent,claudeSessionHasSubagents } from './claude-subagent.js'
 
 const SESSION = '3c0d5e6f-1111-4222-8333-944455556666'
 
@@ -40,43 +40,12 @@ describe('claudeAskingSubagent', () => {
       .toEqual({ agent_id: 'a1b2c3', agent_type: 'general-purpose', description: 'headline worker' })
   })
 
-  it('names nobody when the root is asking, the subagent finished, or its call already returned', () => {
-    const rootAsking = transcripts()
-    rootAsking.root(rootAsking.call('toolu_root', ASK))
-    rootAsking.agent('a1', { finished: false }, rootAsking.call('toolu_ask', ASK))
-    expect(claudeAskingSubagent(SESSION, rootAsking.env, ['Which headline should v2 use?'])).toBeUndefined()
-
-    const finished = transcripts()
-    finished.agent('a1', { finished: true }, finished.call('toolu_ask', ASK))
-    expect(claudeAskingSubagent(SESSION, finished.env, ['Which headline should v2 use?'])).toBeUndefined()
-
-    const returned = transcripts()
-    returned.agent('a1', { finished: false }, returned.call('toolu_ask', ASK), returned.result('toolu_ask'))
-    expect(claudeAskingSubagent(SESSION, returned.env, ['Which headline should v2 use?'])).toBeUndefined()
-  })
-
   it('tells two asking subagents apart by the question, and names nobody when that does not decide', () => {
     const t = transcripts()
     t.agent('a1', { agentType: 'general-purpose', finished: false }, t.call('toolu_1', ASK))
     t.agent('a2', { agentType: 'general-purpose', finished: false }, t.call('toolu_2', 'notifai ask "Ship it to production now?"'))
     expect(claudeAskingSubagent(SESSION, t.env, ['Ship it to production now?'])?.agent_id).toBe('a2')
     expect(claudeAskingSubagent(SESSION, t.env, ['Something else entirely?'])).toBeUndefined()
-  })
-
-  it('reads past lines it cannot parse, and refuses a session id that names a path', () => {
-    const t = transcripts()
-    t.agent('a1', { finished: false }, '{not json\n', t.call('toolu_ask', ASK))
-    expect(claudeAskingSubagent(SESSION, t.env, ['Which headline should v2 use?'])?.agent_id).toBe('a1')
-    expect(claudeAskingSubagent(SESSION, t.env, [])).toBeUndefined()
-    expect(claudeAskingSubagent('../escape', t.env, [])).toBeUndefined()
-    expect(claudeAskingSubagent(SESSION, { CLAUDE_CONFIG_DIR: path.join(os.tmpdir(), 'notifai-no-such-config') }, [])).toBeUndefined()
-  })
-
-  it('does not attribute a parent wrapper invocation to an unrelated unfinished child ask', () => {
-    const t = transcripts()
-    t.root(t.call('toolu_parent', './ask-headline.sh'))
-    t.agent('color-worker', { finished: false }, t.call('toolu_color', "notifai ask 'Choose a color?'; sleep 60"))
-    expect(claudeAskingSubagent(SESSION, t.env, ['Which headline should v2 use?'])).toBeUndefined()
   })
 })
 

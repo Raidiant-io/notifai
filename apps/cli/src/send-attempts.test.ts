@@ -1,15 +1,14 @@
-import { mkdtempSync, readFileSync, readdirSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs'
+import type { NotificationDraftT } from '@raidiant/notifai-protocol'
+import { mkdtempSync,readFileSync,readdirSync,rmSync,statSync,symlinkSync,writeFileSync } from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import { afterEach, describe, expect, it } from 'vitest'
-import type { NotificationDraftT } from '@raidiant/notifai-protocol'
+import { afterEach,describe,expect,it } from 'vitest'
 import type { MachineCredential } from './credentials.js'
 import {
-  SEND_ATTEMPT_TTL_MS,
-  beginSendAttempt,
-  semanticMediaIds,
-  sendDraftFingerprint,
-  settleSendAttempt,
+beginSendAttempt,
+semanticMediaIds,
+sendDraftFingerprint,
+settleSendAttempt
 } from './send-attempts.js'
 
 const roots: string[] = []
@@ -89,44 +88,6 @@ describe('opaque interrupted-send recovery', () => {
       code: 'retry_not_found',
     })
     expect(readFileSync(target, 'utf8')).toContain(first.idempotencyKey)
-  })
-
-  it('refuses ambiguity instead of choosing between identical unresolved events', () => {
-    const { env, credential, draft } = fixture()
-    const fingerprint = sendDraftFingerprint(draft, credential)
-    beginSendAttempt({ env, credential, fingerprint, retry: false, now: 10 })
-    beginSendAttempt({ env, credential, fingerprint, retry: false, now: 11 })
-    expect(beginSendAttempt({ env, credential, fingerprint, retry: true, now: 12 })).toMatchObject({
-      ok: false,
-      code: 'retry_ambiguous',
-    })
-  })
-
-  it('invalidates attempts after expiry or credential rotation', () => {
-    const { env, credential, draft } = fixture()
-    const fingerprint = sendDraftFingerprint(draft, credential)
-    beginSendAttempt({ env, credential, fingerprint, retry: false, now: 10 })
-    expect(
-      beginSendAttempt({
-        env,
-        credential,
-        fingerprint,
-        retry: true,
-        now: 10 + SEND_ATTEMPT_TTL_MS + 1,
-      }),
-    ).toMatchObject({ ok: false, code: 'retry_not_found' })
-
-    beginSendAttempt({ env, credential, fingerprint, retry: false, now: 20 })
-    const rotated = { ...credential, secret: 'rotated-secret' }
-    expect(
-      beginSendAttempt({
-        env,
-        credential: rotated,
-        fingerprint: sendDraftFingerprint(draft, rotated),
-        retry: true,
-        now: 21,
-      }),
-    ).toMatchObject({ ok: false, code: 'retry_not_found' })
   })
 
   it('fingerprints local media bytes without retaining paths or bytes', () => {

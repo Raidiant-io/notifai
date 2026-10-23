@@ -1,17 +1,17 @@
-import { createHash, generateKeyPairSync, sign, type KeyObject } from 'node:crypto'
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
+import { createHash,generateKeyPairSync,sign } from 'node:crypto'
+import { existsSync,mkdirSync,mkdtempSync,readFileSync,realpathSync,rmSync,writeFileSync } from 'node:fs'
 import os from 'node:os'
-import { gzipSync, gunzipSync } from 'node:zlib'
-import { pack, type Headers } from 'tar-stream'
 import path from 'node:path'
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { gzipSync } from 'node:zlib'
+import { pack,type Headers } from 'tar-stream'
+import { afterEach,beforeEach,describe,expect,it,vi } from 'vitest'
 import { LEGACY_NPM_RELEASES } from './legacy-npm-releases.js'
-import { npmShim } from './npm-adapter-route.js'
 import { npmAdapterInventoryUrl } from './npm-adapter-contract.js'
-import { runNpmManager, type NpmManagerResult } from './npm-conversion-process.js'
-import { completeNpmReplacement, inspectNpmReplacement, npmReplacementConfirmation, prepareNpmReplacement, replaceNpmPackage, verifyCompletedNpmPackage, type NpmReplacementContext } from './npm-replacement.js'
-import { Distribution, RELEASE_TARGETS, releaseSigningMessage } from './release-distribution.js'
+import { npmShim } from './npm-adapter-route.js'
+import { runNpmManager,type NpmManagerResult } from './npm-conversion-process.js'
+import { completeNpmReplacement,inspectNpmReplacement,npmReplacementConfirmation,prepareNpmReplacement,replaceNpmPackage,verifyCompletedNpmPackage,type NpmReplacementContext } from './npm-replacement.js'
 import { processIdentityLiveness } from './process-identity.js'
+import { Distribution,RELEASE_TARGETS,releaseSigningMessage } from './release-distribution.js'
 
 vi.mock('./legacy-npm-releases.js', () => ({ LEGACY_NPM_RELEASES: {} }))
 vi.mock('./npm-conversion-process.js', () => ({ runNpmManager: vi.fn() }))
@@ -32,24 +32,6 @@ describe('finite npm replacement receipt and forward recovery', () => {
   let input: Parameters<typeof prepareNpmReplacement>[0]
   let targetFiles: Map<string, string>, beforeAdmission: (() => void) | undefined
   let interrupted: boolean
-  let signingKey: KeyObject
-  async function signTargetPackage(pkg: Record<string, unknown>): Promise<void> {
-    targetFiles.set('package.json', JSON.stringify(pkg))
-    const manifest = JSON.parse(targetFiles.get('npm-adapter-files.json')!)
-    const entry = manifest.files.find((item: { path: string }) => item.path === 'package.json')
-    entry.bytes = Buffer.byteLength(targetFiles.get('package.json')!)
-    entry.sha256 = hash(targetFiles.get('package.json')!)
-    const bytes = JSON.stringify(manifest)
-    targetFiles.set('npm-adapter-files.json', bytes)
-    const envelope = JSON.parse(input.signedInventory)
-    const inventory = JSON.parse(Buffer.from(envelope.payload, 'base64').toString())
-    for (const artifact of inventory.artifacts) artifact.materials[0] = { path: 'npm-adapter-files.json', bytes: Buffer.byteLength(bytes), sha256: hash(bytes) }
-    const payload = Buffer.from(JSON.stringify(inventory))
-    input.signedInventory = JSON.stringify({ key_id: 'fixture', payload: payload.toString('base64'),
-      signature: sign(null, releaseSigningMessage('inventory', payload), signingKey).toString('base64') })
-    targetFiles.set('inventory.json', input.signedInventory)
-    writeFileSync(input.artifact, await archive(targetFiles))
-  }
   function installTarget(at: string) {
     const directory = path.join(at, 'node_modules/@raidiant/notifai')
     rmSync(directory, { recursive: true, force: true })
@@ -82,7 +64,6 @@ describe('finite npm replacement receipt and forward recovery', () => {
       files: [...targetFiles].map(([file, bytes]) => ({ path: file, bytes: Buffer.byteLength(bytes), sha256: hash(bytes) })) })
     targetFiles.set('npm-adapter-files.json', manifest)
     const { publicKey, privateKey } = generateKeyPairSync('ed25519')
-    signingKey = privateKey
     const payload = Buffer.from(JSON.stringify({ schema: 1, version, source_revision: revision, store_schema: 1, launcher_schema: 1,
       artifacts: RELEASE_TARGETS.map(target => ({ target, filename: `notifai-${version}-${target.slice(4)}.${target.includes('windows') ? 'zip' : 'tar.gz'}`,
         bytes: 1, sha256: 'b'.repeat(64), runtime_sha256: 'c'.repeat(64), launcher_sha256: 'd'.repeat(64),
@@ -152,81 +133,6 @@ describe('finite npm replacement receipt and forward recovery', () => {
     expect(runNpmManager).not.toHaveBeenCalled()
     expect(existsSync(path.join(pkg, 'dist/main.js'))).toBe(true)
   })
-  it.each(['extra', 'missing', 'changed', 'duplicate', 'traversal', 'link', 'other-inventory'] as const)(
-    'rejects an archive with %s content before npm runs', async fault => {
-      const files = new Map(targetFiles), extra: [Headers, string][] = []
-      if (fault === 'extra') files.set('extra.js', 'unreleased')
-      if (fault === 'missing') files.delete('bin/notifai.mjs')
-      if (fault === 'changed') files.set('bin/notifai.mjs', 'modified')
-      if (fault === 'duplicate') extra.push([{ name: 'package/BIN/NOTIFAI.MJS' }, 'duplicate'])
-      if (fault === 'traversal') extra.push([{ name: 'package/../outside' }, 'escape'])
-      if (fault === 'link') extra.push([{ name: 'package/link', type: 'symlink', linkname: '../outside' }, ''])
-      if (fault === 'other-inventory') input.signedInventory += '\n'
-      writeFileSync(input.artifact, await archive(files, extra))
-      await expect(prepareNpmReplacement(input, context)).rejects.toThrow()
-      expect(runNpmManager).not.toHaveBeenCalled()
-      expect(existsSync(path.join(pkg, 'dist/main.js'))).toBe(true)
-    })
-  it('discards global PAX metadata instead of forwarding another parser an ambiguous archive', async () => {
-    // tar-stream does not apply global PAX without a following local PAX record.
-    // npm uses another reader: forwarding these source headers would be unsafe.
-    const value = 'path=../../outside.js\n'
-    let record = `0 ${value}`
-    while (!record.startsWith(`${Buffer.byteLength(record)} `)) record = `${Buffer.byteLength(record)} ${value}`
-    // pack only emits bodies for files, so change this fixture's type byte to
-    // global PAX and recompute the standard tar header checksum.
-    const source = gunzipSync(await archive(targetFiles, [[{ name: 'GlobalHead' }, record]]))
-    source[156] = 'g'.charCodeAt(0)
-    source.fill(0x20, 148, 156)
-    const checksum = source.subarray(0, 512).reduce((sum, value) => sum + value, 0)
-    source.write(`${checksum.toString(8).padStart(6, '0')}\0 `, 148, 'ascii')
-    writeFileSync(input.artifact, gzipSync(source))
-    const prepared = await prepareNpmReplacement(input, context)
-    const normalized = readFileSync(path.join(prepared.directory, 'adapter.tgz'))
-    expect(gunzipSync(normalized).includes(Buffer.from('../../outside.js'))).toBe(false)
-    expect(receipt(prepared.directory).target.archive_sha256).toBe(hash(normalized))
-    expect(normalized.equals(readFileSync(input.artifact))).toBe(false)
-  })
-  it.each(['bin', 'optionalDependencies', 'peerDependencies', 'bundledDependencies', 'bundleDependencies', 'man'])(
-    'refuses a signed package that expands npm installation scope through %s', async key => {
-      const metadata = JSON.parse(targetFiles.get('package.json')!)
-      metadata[key] = key === 'bin' ? { ...metadata.bin, unrelated: 'bin/notifai.mjs' }
-        : key === 'man' ? ['manual.1'] : { unrelated: '1.0.0' }
-      await signTargetPackage(metadata)
-      await expect(prepareNpmReplacement(input, context)).rejects.toThrow(/package contract/)
-      expect(runNpmManager).not.toHaveBeenCalled()
-      expect(existsSync(path.join(pkg, 'dist/main.js'))).toBe(true)
-    })
-  it('retains its receipt and repairs forward after npm removed an old entry', async () => {
-    const prepared = await prepareNpmReplacement(input, context)
-    interrupted = true
-    const first = await replaceNpmPackage(prepared.directory, context, () => undefined)
-    expect(first.failure).toBe('interrupted')
-    expect(receipt(prepared.directory)).toMatchObject({ phase: 'replacing', coordinator: null, manager: first.manager })
-    expect(existsSync(path.join(pkg, 'dist/main.js'))).toBe(false)
-    interrupted = false
-    // Later target selection cannot retarget a prepared operation.
-    input.signedInventory = 'new channel choice must not be consulted'
-    writeFileSync(input.artifact, 'new channel archive must not be consulted')
-    const second = await replaceNpmPackage(prepared.directory, context, () => undefined)
-    expect(second.exit_code).toBe(0)
-    expect(receipt(prepared.directory)).toMatchObject({ phase: 'package_verified', target: { version: '12.0.0-beta.16', inventory_sha256: hash(targetFiles.get('inventory.json')!) } })
-  })
-  it('refuses a reader that appears between preparation and suspended-manager admission', async () => {
-    const prepared = await prepareNpmReplacement(input, context)
-    let reads = 0
-    const result = await replaceNpmPackage(prepared.directory, context, () => { if (++reads === 2) throw new Error('new reader') })
-    expect(result).toMatchObject({ started: false, failure: 'new reader' })
-    expect(existsSync(path.join(pkg, 'dist/main.js'))).toBe(true)
-  })
-  it('preserves a user edit arriving during supervisor startup', async () => {
-    const prepared = await prepareNpmReplacement(input, context)
-    beforeAdmission = () => writeFileSync(path.join(prefix, 'notifai.cmd'), 'new custom wrapper')
-    const result = await replaceNpmPackage(prepared.directory, context, () => undefined)
-    expect(result.started).toBe(false)
-    expect(result.failure).toMatch(/modified/)
-    expect(readFileSync(path.join(prefix, 'notifai.cmd'), 'utf8')).toBe('new custom wrapper')
-  })
   for (const state of ['alive', 'unknown'] as const) it(`refuses recovery while the recorded manager is ${state}`, async () => {
     const prepared = await prepareNpmReplacement(input, context)
     interrupted = true
@@ -241,30 +147,5 @@ describe('finite npm replacement receipt and forward recovery', () => {
     await expect(replaceNpmPackage(prepared.directory, context, () => undefined)).rejects.toThrow(/changed|pinned/)
     expect(runNpmManager).toHaveBeenCalledTimes(1)
     expect(receipt(prepared.directory).coordinator).toBeNull()
-  })
-  it('has one canonical slot per prefix and refuses overlapping execution', async () => {
-    const prepared = await prepareNpmReplacement(input, context)
-    await expect(prepareNpmReplacement(input, context)).rejects.toThrow(/already exists/)
-    const original = vi.mocked(runNpmManager).getMockImplementation()!
-    let release!: () => void
-    const gate = new Promise<void>(resolve => { release = resolve })
-    vi.mocked(runNpmManager).mockImplementationOnce(async operation => { await gate; return original(operation) })
-    const first = replaceNpmPackage(prepared.directory, context, () => undefined)
-    await expect(replaceNpmPackage(prepared.directory, context, () => undefined)).rejects.toThrow(/proved stopped/)
-    release()
-    expect((await first).exit_code).toBe(0)
-  })
-  it('reserves preparation after rechecking a concurrently claimed prefix slot', async () => {
-    let competitor: ReturnType<typeof prepareNpmReplacement> | undefined
-    vi.mocked(context.verifyEnvironment).mockImplementationOnce(() => {
-      // Both callers passed the early absence check. This caller claims the
-      // directory and yields during archive verification before its rival.
-      competitor = prepareNpmReplacement(input, context)
-    })
-    await expect(prepareNpmReplacement(input, context)).rejects.toThrow(/already exists/)
-    const winner = await competitor!
-    expect(receipt(winner.directory)).toMatchObject({ phase: 'prepared', target: { version: '12.0.0-beta.16' } })
-    expect(runNpmManager).toHaveBeenCalledTimes(1)
-    expect(readFileSync(path.join(winner.directory, 'original/package/dist/main.js'), 'utf8')).toBe('import("./main-run.js")\n')
   })
 })

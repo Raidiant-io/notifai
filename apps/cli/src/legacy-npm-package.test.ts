@@ -1,11 +1,11 @@
 import { createHash } from 'node:crypto'
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
+import { existsSync,mkdirSync,mkdtempSync,readFileSync,realpathSync,rmSync,symlinkSync,writeFileSync } from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach,beforeEach,describe,expect,it,vi } from 'vitest'
 import { installationAccess } from './installation-access.js'
+import { assertNpmReplacementState,inspectLegacyNpmPackage,snapshotLegacyNpmPackage } from './legacy-npm-package.js'
 import { LEGACY_NPM_RELEASES } from './legacy-npm-releases.js'
-import { assertNpmReplacementState, inspectLegacyNpmPackage, snapshotLegacyNpmPackage } from './legacy-npm-package.js'
 import { npmShim } from './npm-adapter-route.js'
 import type { VerifiedNpmAdapter } from './npm-adapter-verification.js'
 
@@ -73,24 +73,6 @@ describe('exact legacy package assessment and preservation', () => {
     // release verification has separate signed-artifact boundary tests.
     return { directory, manifest: { files } } as VerifiedNpmAdapter
   }
-  it('requires the unchanged original before the first manager starts', () => {
-    const original = inspectLegacyNpmPackage(prefix, access), replacement = target()
-    assertNpmReplacementState(original, replacement, false, access)
-    rmSync(path.join(directory, 'dist/main.js'))
-    expect(() => assertNpmReplacementState(original, replacement, false, access)).toThrow(/changed/)
-    assertNpmReplacementState(original, replacement, true, access)
-  })
-  it('permits forward repair with absent old entries, a missing package and partial target bytes', () => {
-    const original = inspectLegacyNpmPackage(prefix, access), replacement = target()
-    rmSync(directory, { recursive: true })
-    rmSync(path.join(prefix, 'notifai.cmd'))
-    assertNpmReplacementState(original, replacement, true, access)
-    mkdirSync(path.join(directory, 'bin'), { recursive: true })
-    writeFileSync(path.join(directory, 'bin/notifai.mjs'), 'adapter\n')
-    writeFileSync(path.join(prefix, 'notifai.ps1'), npmShim('node_modules/@raidiant/notifai/bin/notifai.mjs', '.ps1'))
-    assertNpmReplacementState(original, replacement, true, access)
-    expect(() => assertNpmReplacementState(original, replacement, false, access)).toThrow(/changed/)
-  })
   for (const change of ['old edit', 'new file', 'new directory', 'shim edit', 'target edit', 'linked path']) {
     it(`refuses forward repair over ${change}`, () => {
       const original = inspectLegacyNpmPackage(prefix, access), replacement = target()

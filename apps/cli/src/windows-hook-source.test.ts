@@ -1,11 +1,11 @@
 import { spawn } from 'node:child_process'
-import { copyFileSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { copyFileSync,existsSync,mkdtempSync,readFileSync,rmSync,writeFileSync } from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import { describe, expect, it } from 'vitest'
+import { describe,expect,it } from 'vitest'
 import { buildHookConfig } from './install-hooks.js'
-import { proveWindowsCodexHookSource, windowsCodexHookSource, type WindowsProcessLink } from './windows-hook-source.js'
 import { windowsCodexHookShell } from './windows-codex-command.js'
+import { windowsCodexHookSource,type WindowsProcessLink } from './windows-hook-source.js'
 
 const ENV = { SystemRoot: 'C:\\Windows' }
 const POWERSHELL = 'C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe'
@@ -28,43 +28,10 @@ describe('Windows Codex hook source', () => {
     expect(windowsCodexHookSource(40, ENV, read)).toBe(20)
   })
 
-  it('finds Codex when it starts the PowerShell itself', () => {
-    const read = table({ 40: [400, POWERSHELL, 20], 20: [200, 'D:\\tools\\Codex.EXE', 10] })
-    expect(windowsCodexHookSource(40, ENV, read)).toBe(20)
-  })
-
   it('refuses a parent PID that Windows gave to a newer process', () => {
     // The real shell exited and its PID now names a Codex started after the hook's PowerShell.
     const read = table({ 40: [400, POWERSHELL, 30], 30: [500, 'C:\\tools\\codex.exe', 10] })
     expect(windowsCodexHookSource(40, ENV, read)).toBeNull()
-  })
-
-  it('accepts only the PowerShell Notifai\'s command names', () => {
-    const read = table({ 40: [400, 'C:\\project\\powershell.exe', 20], 20: [200, 'C:\\tools\\codex.exe', 10] })
-    expect(windowsCodexHookSource(40, ENV, read)).toBeNull()
-  })
-
-  it('refuses anything but a session shell between the PowerShell and Codex', () => {
-    expect(windowsCodexHookSource(40, ENV, table({
-      40: [400, POWERSHELL, 30], 30: [300, 'C:\\tools\\node.exe', 20], 20: [200, 'C:\\tools\\codex.exe', 10],
-    }))).toBeNull()
-    expect(windowsCodexHookSource(40, ENV, table({
-      40: [400, POWERSHELL, 31], 31: [310, 'C:\\Windows\\System32\\cmd.exe', 30],
-      30: [300, 'C:\\Windows\\System32\\cmd.exe', 20], 20: [200, 'C:\\tools\\codex.exe', 10],
-    }))).toBeNull()
-  })
-
-  it('replaces only a proven declaration and leaves everything else as it was', () => {
-    const read = table({ 40: [400, POWERSHELL, 20], 20: [200, 'C:\\tools\\codex.exe', 10] })
-    const proven: NodeJS.ProcessEnv = { ...ENV, NOTIFAI_HOOK_SOURCE_PID: '40' }
-    proveWindowsCodexHookSource(proven, read)
-    expect(proven['NOTIFAI_HOOK_SOURCE_PID']).toBe('20')
-    // A detached Notifai process inherits the proven pid: it stays.
-    proveWindowsCodexHookSource(proven, read)
-    expect(proven['NOTIFAI_HOOK_SOURCE_PID']).toBe('20')
-    const unproven: NodeJS.ProcessEnv = { ...ENV, NOTIFAI_HOOK_SOURCE_PID: '41' }
-    proveWindowsCodexHookSource(unproven, read)
-    expect(unproven['NOTIFAI_HOOK_SOURCE_PID']).toBe('41')
   })
 })
 

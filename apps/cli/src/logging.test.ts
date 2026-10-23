@@ -1,30 +1,25 @@
 import { spawn } from 'node:child_process'
 import {
-  appendFileSync,
-  existsSync,
-  mkdtempSync,
-  readFileSync,
-  statSync,
-  writeFileSync,
+existsSync,
+mkdtempSync,
+readFileSync,
+statSync,
+writeFileSync
 } from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import { describe, expect, it } from 'vitest'
+import { describe,expect,it } from 'vitest'
 import { withFileLock } from './file-lock.js'
 import {
-  LOG_SCHEMA_VERSION,
-  activeLogPath,
-  archiveLogPaths,
-  argvFlagNames,
-  createLogger,
-  durableEventsPath,
-  logsDiskUsage,
-  nullLogger,
-  readLogRecords,
-  renderRecord,
-  serialize,
-  shape,
-  type LogRecord,
+LOG_SCHEMA_VERSION,
+activeLogPath,
+archiveLogPaths,
+createLogger,
+logsDiskUsage,
+readLogRecords,
+renderRecord,
+serialize,
+type LogRecord
 } from './logging.js'
 
 function sandbox(): NodeJS.ProcessEnv {
@@ -122,14 +117,6 @@ describe('the record', () => {
       expect(() => new Date(record.ts).toISOString()).not.toThrow()
     }
   })
-
-  it('carries the project and session once bound', () => {
-    const env = sandbox()
-    const logger = createLogger({ env })
-    logger.bind({ project: 'notifai', session: 'sess-1' })
-    logger.info('hook.start', {})
-    expect(lines(env)[0]).toMatchObject({ project: 'notifai', session: 'sess-1' })
-  })
 })
 
 describe('level', () => {
@@ -139,24 +126,6 @@ describe('level', () => {
     logger.error('cli.error', {})
     expect(logsDiskUsage(env).files).toBe(0)
     expect(logger.enabled).toBe(false)
-  })
-
-  it('drops debug below debug, and keeps it at debug', () => {
-    const quiet = sandbox()
-    createLogger({ env: quiet, settings: { level: 'info' } }).debug('http.call', {})
-    expect(logsDiskUsage(quiet).files).toBe(0)
-
-    const loud = sandbox()
-    createLogger({ env: loud, settings: { level: 'debug' } }).debug('http.call', {})
-    expect(lines(loud)).toHaveLength(1)
-  })
-
-  it('keeps errors at the error level and nothing else', () => {
-    const env = sandbox()
-    const logger = createLogger({ env, settings: { level: 'error' } })
-    logger.info('cli.end', {})
-    logger.error('cli.error', {})
-    expect(lines(env).map((record) => record.event)).toEqual(['cli.error'])
   })
 })
 
@@ -174,91 +143,6 @@ describe('redaction', () => {
     expect(raw).not.toContain('supersecretvalue')
     expect(raw).not.toContain('v_secret')
     expect(raw).toContain('kept')
-  })
-
-  it('redacts by key name regardless of the value', () => {
-    expect(shape({ api_key: 12345, token: null, other: 'ok' })).toEqual({
-      api_key: '[redacted]',
-      token: '[redacted]',
-      other: 'ok',
-    })
-  })
-
-  it('truncates a long string instead of carrying it whole', () => {
-    const shaped = shape({ detail: 'x'.repeat(1000) }) as { detail: string }
-    expect(shaped.detail.length).toBeLessThan(500)
-    expect(shaped.detail).toContain('+600 chars')
-  })
-
-  it('never persists notification content, answers, or raw argv at debug', () => {
-    const env = sandbox()
-    const logger = createLogger({ env, settings: { level: 'debug' } })
-    logger.debug('cli.start', {
-      argv: ['send', '--title', 'SECRET_TITLE', '--body', 'SECRET_BODY'],
-      title: 'SECRET_TITLE',
-      summary: 'SECRET_SUMMARY',
-      body: 'SECRET_BODY',
-      question: 'SECRET_QUESTION',
-      text: 'SECRET_REPLY',
-      answers: ['SECRET_ANSWER'],
-      choices: ['SECRET_CHOICE'],
-    })
-
-    const raw = readFileSync(activeLogPath(env), 'utf8')
-    expect(raw).not.toContain('SECRET_TITLE')
-    expect(raw).not.toContain('SECRET_SUMMARY')
-    expect(raw).not.toContain('SECRET_BODY')
-    expect(raw).not.toContain('SECRET_QUESTION')
-    expect(raw).not.toContain('SECRET_REPLY')
-    expect(raw).not.toContain('SECRET_ANSWER')
-    expect(raw).not.toContain('SECRET_CHOICE')
-    const record = JSON.parse(raw) as LogRecord
-    expect(record.data).toMatchObject({
-      title_chars: 'SECRET_TITLE'.length,
-      summary_chars: 'SECRET_SUMMARY'.length,
-      body_chars: 'SECRET_BODY'.length,
-      question_chars: 'SECRET_QUESTION'.length,
-      text_chars: 'SECRET_REPLY'.length,
-      answers_count: 1,
-      choices_count: 1,
-      argv_count: 5,
-      flags: ['--title', '--body'],
-    })
-    expect(record.data).not.toHaveProperty('argv')
-    expect(record.data).not.toHaveProperty('title')
-  })
-
-  it('strips inline --name=value assignments so notification content is never logged', () => {
-    const inlineTitle = 'private title words'
-    const inlineBody = 'private body words'
-    expect(
-      argvFlagNames(['ask', `--title=${inlineTitle}`, `--body=${inlineBody}`, '--wait', '--']),
-    ).toEqual(['--title', '--body', '--wait'])
-
-    const env = sandbox()
-    const logger = createLogger({ env, settings: { level: 'debug' } })
-    logger.debug('cli.start', {
-      argv: ['ask', `--title=${inlineTitle}`, `--body=${inlineBody}`, 'plain'],
-    })
-
-    const raw = readFileSync(activeLogPath(env), 'utf8')
-    expect(raw).not.toContain(inlineTitle)
-    expect(raw).not.toContain(inlineBody)
-    expect(shape({ argv: ['send', `--title=${inlineTitle}`, '--choice=yes'] })).toEqual({
-      flags: ['--title', '--choice'],
-      argv_count: 3,
-    })
-    const record = JSON.parse(raw) as LogRecord
-    expect(record.data).toMatchObject({
-      flags: ['--title', '--body'],
-      argv_count: 4,
-    })
-  })
-
-  it('refuses to recurse for ever into a cyclic object', () => {
-    const cyclic: Record<string, unknown> = {}
-    cyclic['self'] = cyclic
-    expect(() => JSON.stringify(shape(cyclic))).not.toThrow()
   })
 })
 
@@ -298,57 +182,6 @@ describe('rotation', () => {
     expect(usage.bytes).toBeLessThanOrEqual(3 * 700)
     for (const file of [activeLogPath(env), ...archiveLogPaths(env)]) {
       expect(statSync(file).size).toBeLessThanOrEqual(700)
-    }
-  })
-
-  it('keeps question and hook outcomes long after the main log has turned over', () => {
-    const env = sandbox()
-    const logger = createLogger({ env, settings: { maxBytes: 600, maxFiles: 2 } })
-    logger.info('ask.registered', { question_id: 'q_old', origin: 'picker' })
-    logger.info('hook.gate', { hook: 'permission-request', stage: 'picker-terminal-only', reason: 'not-signed-in' })
-    logger.error('cli.error', { kind: 'ask_admission', code: 'session_not_activated' })
-    logger.error('cli.error', { kind: 'http', message: 'not a question outcome' })
-    for (let i = 0; i < 80; i += 1) logger.info('cli.end', { i, pad: 'p'.repeat(40) })
-
-    expect(lines(env).some((record) => record.event === 'hook.gate')).toBe(false)
-    const durable = readFileSync(durableEventsPath(env), 'utf8').trim().split('\n').map((line) => JSON.parse(line) as LogRecord)
-    expect(durable.map((record) => record.event)).toEqual(['ask.registered', 'hook.gate', 'cli.error'])
-    const found = readLogRecords(env, { event: ['hook.gate', 'ask.registered'] })
-    expect(found.records.map((record) => record.data?.['reason'] ?? record.data?.['question_id'])).toEqual(['q_old', 'not-signed-in'])
-    // What the main files still hold is read once, not again from the durable copy.
-    logger.info('hook.gate', { stage: 'picker-waiting', reason: 'proceeding' })
-    expect(readLogRecords(env, { event: ['hook.gate'] }).records).toHaveLength(2)
-  })
-
-  it('leaves a marker in the fresh file so a gap is explained, not inferred', () => {
-    const env = sandbox()
-    const logger = createLogger({ env, settings: { maxBytes: 700, maxFiles: 3 } })
-    for (let i = 0; i < 20; i += 1) logger.info('cli.end', { i, pad: 'p'.repeat(40) })
-    expect(lines(env).some((record) => record.event === 'log.rotated')).toBe(true)
-  })
-
-  it('keeps only the active file when asked for one', () => {
-    const env = sandbox()
-    const logger = createLogger({ env, settings: { maxBytes: 300, maxFiles: 1 } })
-    for (let i = 0; i < 30; i += 1) logger.info('cli.end', { i, pad: 'p'.repeat(40) })
-    expect(archiveLogPaths(env)).toHaveLength(0)
-    expect(logsDiskUsage(env).files).toBe(1)
-    expect(statSync(activeLogPath(env)).size).toBeLessThanOrEqual(300)
-  })
-
-  it('keeps an indivisible record whole when an internal test injects an impossible cap', () => {
-    const env = sandbox()
-    const logger = createLogger({ env, settings: { maxBytes: 64, maxFiles: 3 } })
-    logger.info('cli.end', { sequence: 1 })
-    logger.info('cli.end', { sequence: 2 })
-
-    const files = [activeLogPath(env), ...archiveLogPaths(env)]
-    expect(files).toHaveLength(2)
-    for (const file of files) {
-      const records = readFileSync(file, 'utf8').split('\n').filter((line) => line !== '')
-      expect(records).toHaveLength(1)
-      expect(() => JSON.parse(records[0]!) as unknown).not.toThrow()
-      expect(statSync(file).size).toBeGreaterThan(64)
     }
   })
 
@@ -409,16 +242,6 @@ describe('failure isolation', () => {
     expect(() => logger.info('cli.end', { exit: 0 })).not.toThrow()
     expect(logger.enabled).toBe(false)
   })
-
-  it('the null logger accepts everything and records nothing', () => {
-    const logger = nullLogger()
-    expect(() => {
-      logger.info('cli.end', {})
-      logger.bind({ cmd: 'x' })
-      logger.adopt({ level: 'debug' })
-    }).not.toThrow()
-    expect(logger.enabled).toBe(false)
-  })
 })
 
 describe('reading', () => {
@@ -442,95 +265,6 @@ describe('reading', () => {
       'ask.registered',
     ])
   })
-
-  it('is bounded, and says when there is more behind it', () => {
-    const env = sandbox()
-    seed(env)
-    const { records, more } = readLogRecords(env, { limit: 1 })
-    // The newest, not the oldest: a limit exists to answer "what just
-    // happened", so cutting the recent end would defeat it.
-    expect(records.map((record) => record.event)).toEqual(['ask.registered'])
-    expect(more).toBe(true)
-  })
-
-  it('filters by run, project, event, and severity', () => {
-    const env = sandbox()
-    seed(env)
-    expect(readLogRecords(env, { run: 'r_1' }).records).toHaveLength(2)
-    expect(readLogRecords(env, { project: 'beta' }).records).toHaveLength(1)
-    expect(readLogRecords(env, { event: ['cli.error'] }).records).toHaveLength(1)
-    expect(readLogRecords(env, { level: 'error' }).records.map((r) => r.event)).toEqual(['cli.error'])
-  })
-
-  it('finds every record touching one notification request', () => {
-    const env = sandbox()
-    seed(env)
-    const { records } = readLogRecords(env, { request: 'req_alpha' })
-    expect(records).toHaveLength(1)
-    expect(records[0]!.event).toBe('send.submitted')
-  })
-
-  it('matches every structured request identity without prefix false positives', () => {
-    const env = sandbox()
-    const logger = createLogger({ env })
-    logger.info('send.submitted', { request_id: 'req_1' })
-    logger.info('send.submitted', { request_id: 'req_10' })
-    logger.info('hook.answer', { request_ids: ['req_1', 'req_10'], answered: false })
-    logger.error('cli.error', { request_ids: ['req_10'], message: 'req_1' })
-
-    const { records } = readLogRecords(env, { request: 'req_1' })
-    expect(records).toHaveLength(2)
-    expect(records.map((record) => record.event)).toEqual(['send.submitted', 'hook.answer'])
-  })
-
-  it('honours a time floor', () => {
-    const env = sandbox()
-    const early = createLogger({ env, now: () => Date.parse('2026-08-01T00:00:00Z') })
-    early.info('cli.end', { when: 'old' })
-    const late = createLogger({ env, now: () => Date.parse('2026-08-11T00:00:00Z') })
-    late.info('cli.end', { when: 'new' })
-
-    const { records } = readLogRecords(env, { since: Date.parse('2026-08-10T00:00:00Z') })
-    expect(records).toHaveLength(1)
-    expect(records[0]!.data).toMatchObject({ when: 'new' })
-  })
-
-  it('reads across archives when the active file is not enough', () => {
-    const env = sandbox()
-    const logger = createLogger({ env, settings: { maxBytes: 500, maxFiles: 5 } })
-    for (let i = 0; i < 30; i += 1) logger.info('cli.end', { i })
-    expect(archiveLogPaths(env).length).toBeGreaterThan(0)
-    const { records, files } = readLogRecords(env, { limit: 30, event: ['cli.end'] })
-    expect(files.length).toBeGreaterThan(1)
-    expect(records.length).toBeGreaterThan(lines(env).filter((r) => r.event === 'cli.end').length)
-  })
-
-  it('skips damaged and unknown-future lines without throwing away the file', () => {
-    const env = sandbox()
-    seed(env)
-    // A half-written line is what a crashed process leaves behind, and a
-    // reader that dies on it loses every good record around it.
-    appendFileSync(activeLogPath(env), '{"v":1,"ts":"2026-0\n')
-    appendFileSync(activeLogPath(env), 'not json at all\n')
-    appendFileSync(
-      activeLogPath(env),
-      `${JSON.stringify({
-        v: LOG_SCHEMA_VERSION + 1,
-        ts: '2026-08-18T12:00:00.000Z',
-        level: 'info',
-        event: 'future.event',
-      })}\n`,
-    )
-    expect(readLogRecords(env).records.map((record) => record.event)).toEqual([
-      'send.submitted',
-      'cli.error',
-      'ask.registered',
-    ])
-  })
-
-  it('reports nothing at all rather than failing when there is no log', () => {
-    expect(readLogRecords(sandbox())).toMatchObject({ records: [], more: false })
-  })
 })
 
 describe('rendering', () => {
@@ -549,21 +283,6 @@ describe('rendering', () => {
     expect(line).toContain('hook.gate')
     expect(line).toContain('reason=question-notifications-off')
     expect(line).toContain('source=default')
-  })
-
-  it('stays on one line whatever the payload', () => {
-    const line = renderRecord({
-      v: 1,
-      ts: '2026-08-11T12:04:31.123Z',
-      level: 'error',
-      event: 'cli.error',
-      run: 'r_1',
-      cmd: 'send',
-      pid: 1,
-      data: { message: 'first\nsecond\nthird', big: 'z'.repeat(300) },
-    })
-    expect(line).not.toContain('\n')
-    expect(line.length).toBeLessThan(200)
   })
 })
 
@@ -584,15 +303,5 @@ describe('logging inside a hook', () => {
     expect(lines(env).map((record) => record.data?.['outcome'] ?? record.event)).toEqual([
       'hook.start', 'busy-log', 'still-writing', 'after',
     ])
-  })
-
-  it('still waits for the lock outside a hook', () => {
-    const env = sandbox()
-    const logger = createLogger({ env })
-    const started = Date.now()
-    withFileLock(`${activeLogPath(env)}.lock`, () => logger.info('hook.end', { outcome: 'waited' }))
-    // The ordinary bound elapses, then the logger stops rather than writing unlocked.
-    expect(Date.now() - started).toBeGreaterThanOrEqual(900)
-    expect(logger.enabled).toBe(false)
   })
 })

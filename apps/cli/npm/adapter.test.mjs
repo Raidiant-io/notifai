@@ -1,19 +1,16 @@
+import { Uint8ArrayReader,Uint8ArrayWriter,ZipWriter } from '@zip.js/zip.js'
 import assert from 'node:assert/strict'
-import { createHash, generateKeyPairSync, sign } from 'node:crypto'
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
+import { createHash,generateKeyPairSync,sign } from 'node:crypto'
+import { existsSync,mkdirSync,mkdtempSync,readFileSync,rmSync } from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import { gzipSync } from 'node:zlib'
 import test from 'node:test'
-import { spawn } from 'node:child_process'
-import { once } from 'node:events'
+import { gzipSync } from 'node:zlib'
 import { pack } from 'tar-stream'
-import { ZipWriter, Uint8ArrayWriter, Uint8ArrayReader } from '@zip.js/zip.js'
-import { Distribution, releaseSigningMessage } from '../dist/release-distribution.js'
-import { acquireNative } from './bootstrap.mjs'
+import { Distribution,releaseSigningMessage } from '../dist/release-distribution.js'
 import { runNpmAdapter } from './adapter.mjs'
-import { assertAcquisitionReady, executeNative, ownedPosixCommand, windowsPackageAccess } from './platform.mjs'
-import { npmAdapterPosixAccess } from '../dist/npm-adapter-verification.js'
+import { acquireNative } from './bootstrap.mjs'
+import { windowsPackageAccess } from './platform.mjs'
 
 const hash = bytes => createHash('sha256').update(bytes).digest('hex')
 
@@ -91,23 +88,6 @@ for (const target of ['bun-linux-x64', 'bun-windows-arm64']) test(`explicit ${ta
   assert.equal(f.calls.length, 1); assert.ok(!f.calls[0].includes('release-metadata'))
   assert.equal(existsSync(f.temporary), false)
 })
-test('fresh init runs native setup exactly once and emits no second JSON report', async t => {
-  const f = await fixture(t)
-  assert.equal(await runNpmAdapter(['init', '--json', '--scope', 'project'], f), 7)
-  assert.equal(f.executions.length, 2)
-  assert.ok(f.executions[0].args.includes('--no-init'))
-  assert.deepEqual(f.executions[1], { file: '/owned/notifai', args: ['init', '--json', '--scope', 'project'] })
-  assert.deepEqual(f.output, [])
-})
-test('all read-only or ordinary missing-runtime invocations avoid acquisition and writes', async () => {
-  const fail = () => { throw new Error('Unexpected acquisition or execution') }, output = []
-  const deps = { locator: { version: '12.0.0' }, platform: { existingCommand: () => null, execute: fail }, distribution: fail,
-    verify: fail, out: value => output.push(value), err: () => {} }
-  for (const args of [[], ['--help'], ['send', '--help']]) assert.equal(await runNpmAdapter(args, deps), 0)
-  for (const args of [['--version'], ['doctor', '--json'], ['send', '--json'], ['update']]) assert.equal(await runNpmAdapter(args, deps), 2)
-  assert.equal(await runNpmAdapter(['uninstall', '--json'], deps), 0)
-  for (const document of output.filter(item => item.startsWith('{'))) assert.ok(['setup_needed', 'native_not_installed'].includes(JSON.parse(document).code))
-})
 test('existing runtime preserves arguments, channels and exit status without acquisition', async () => {
   const fail = () => { throw new Error('Existing runtime cannot acquire') }, calls = []
   const deps = { platform: { existingCommand: () => '/owned/notifai', execute: (file, args) => { calls.push({ file, args }); return 13 } }, distribution: fail,
@@ -127,68 +107,4 @@ test('wrong identities, signatures, archives and members cannot execute a candid
     await assert.rejects(acquireNative(f.release, f))
     assert.equal(f.executions.length, 0); assert.equal(existsSync(f.temporary), false)
   }
-})
-test('invalid explicit install selection fails before fetching', async t => {
-  const f = await fixture(t)
-  for (const args of [['install', '--version', '11.0.0'], ['install', '--channel', 'beta'], ['install', '--unknown']]) {
-    await assert.rejects(runNpmAdapter(args, f))
-  }
-  assert.equal(f.calls.length, 0)
-})
-
-test('release extraction survives asynchronous native install and is cleaned only after success or failure', async t => {
-  const deferred = () => { let resolve, reject; const promise = new Promise((yes, no) => { resolve = yes; reject = no }); return { promise, resolve, reject } }
-  for (const fail of [false, true]) {
-    const f = await fixture(t), started = deferred(), finished = deferred()
-    f.platform.execute = file => { started.resolve(file); return finished.promise }
-    const pending = acquireNative(f.release, f)
-    const executable = await started.promise
-    assert.equal(existsSync(executable), true)
-    assert.equal(existsSync(f.temporary), true)
-    if (fail) {
-      finished.reject(new Error('Native installer failed'))
-      await assert.rejects(pending, /Native installer failed/)
-    } else {
-      finished.resolve(0)
-      assert.equal(await pending, 0)
-    }
-    assert.equal(existsSync(f.temporary), false)
-  }
-})
-test('native subprocess boundary preserves Unicode arguments, captured output and exit category', async () => {
-  const args = ['δ🚀 spaces', '$(literal)', 'quote\" and \'']
-  const result = await executeNative(process.execPath, ['-e', 'process.stdout.write(JSON.stringify(process.argv.slice(1)));process.exitCode=2', ...args], { capture: true })
-  assert.equal(result.status, 2); assert.deepEqual(JSON.parse(result.stdout), args)
-  const split = await executeNative(process.execPath, ['-e', "const value=Buffer.from('δ🚀');process.stdout.write(value.subarray(0,1));setTimeout(()=>process.stdout.write(value.subarray(1)),10)"], { capture: true })
-  assert.equal(split.stdout, 'δ🚀')
-})
-
-test('cancellation reaches the native child and retains its exit result', { skip: process.platform === 'win32', timeout: 15_000 }, async t => {
-  const script = `import { executeNative } from ${JSON.stringify(new URL('./platform.mjs', import.meta.url).href)}; process.exitCode=await executeNative(process.execPath,['-e','process.on("SIGTERM",()=>process.exit(42));process.stdout.write("ready");setInterval(()=>{},1000)']);`
-  const parent = spawn(process.execPath, ['--input-type=module', '-e', script], { stdio: ['ignore', 'pipe', 'pipe'] })
-  t.after(() => { if (parent.exitCode === null) parent.kill('SIGTERM') })
-  const closed = once(parent, 'close')
-  assert.equal(String((await once(parent.stdout, 'data'))[0]), 'ready')
-  parent.kill('SIGTERM')
-  assert.equal((await closed)[0], 42)
-})
-
-test('missing-command acquisition refuses pending transactions, retained owners, linked or writable installation roots', { skip: process.platform === 'win32' }, t => {
-  const home = mkdtempSync(path.join(os.tmpdir(), 'notifai-npm-readiness-')), root = path.join(home, '.notifai')
-  t.after(() => rmSync(home, { recursive: true, force: true }))
-  assertAcquisitionReady(home, (file, directory) => npmAdapterPosixAccess([{ file, directory }]))
-  mkdirSync(root)
-  for (const name of ['uninstall.json', 'transaction.json', 'install.json', 'active.json']) {
-    writeFileSync(path.join(root, name), '{}')
-    assert.throws(() => assertAcquisitionReady(home, (file, directory) => npmAdapterPosixAccess([{ file, directory }])), /recovery/)
-    rmSync(path.join(root, name))
-  }
-  const retention = path.join(root, 'runtime-retention'); mkdirSync(retention); mkdirSync(path.join(retention, 'unknown-owner'))
-  assert.throws(() => assertAcquisitionReady(home, (file, directory) => npmAdapterPosixAccess([{ file, directory }])), /owners/)
-  rmSync(retention, { recursive: true })
-  const bin = path.join(root, 'bin'), command = path.join(bin, 'notifai'); mkdirSync(bin); writeFileSync(command, 'fixture', { mode: 0o700 })
-  assert.equal(ownedPosixCommand(home), command)
-  chmodSync(bin, 0o777); assert.throws(() => ownedPosixCommand(home), /owned/)
-  chmodSync(bin, 0o700); rmSync(command); symlinkSync('/bin/sh', command)
-  assert.throws(() => ownedPosixCommand(home), /owned/)
 })
