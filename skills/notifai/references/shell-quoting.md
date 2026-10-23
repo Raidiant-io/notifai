@@ -28,8 +28,8 @@ command wrapper is uncertain; leave the User's shell settings alone.
   they do not establish PowerShell approval. Let that tool ask. On macOS/Linux
   its Bash tool uses POSIX quoting.
 - Codex uses bash/zsh on macOS/Linux and PowerShell on native Windows. The
-  POSIX apostrophe escape is lossless but does not match its prompt-free rule.
-  See [Codex command limits](harness-codex.md#command-approval).
+  literal concatenation in the skill preserves apostrophes and matches its
+  rules. The backslash variant `'it'\''s'` does not match. See [Codex command limits](harness-codex.md#command-approval).
 - Grok on native Windows prefers pwsh, then Windows PowerShell, then Git Bash;
   GROK_SHELL can override it. Use the actual tool shell's quoting rule.
 - Cursor runs commands in its agent terminal; native Windows can use

@@ -56,27 +56,27 @@ outside the repository), no flag writes this machine, and `--yes` skips the
 CLI's confirmation once the User approved the value and layer:
 
 ```bash
-notifai guidance set when-to-notify 'Only when you'\''re blocked or CI-length work finishes' --local --yes
+notifai guidance set when-to-notify 'Only when you'"'"'re blocked or CI-length work finishes' --local --yes
 ```
 
 ## Send
 
 Preserve text exactly, including the User's guidance. Quote every text value
-for the shell running the tool, including questions, choices and JSON:
+for the shell running the tool:
 
-- **bash/zsh** (macOS, Linux, WSL or Git Bash): single-quote the value;
-  nothing expands. For each ASCII apostrophe, close the quotes, write `\'`,
-  and reopen them: `'SELECT '\''ready'\'';'` passes `SELECT 'ready';`.
+- **bash/zsh**: single-quote the value;
+  nothing expands. For each ASCII apostrophe, close the single quotes,
+  double-quote the apostrophe, and reopen the single quotes: `'SELECT '"'"'ready'"'"';'`
+  passes `SELECT 'ready';`.
 - **PowerShell**: single-quote the value;
   nothing expands. Double each single-quote character inside it: `'`, `’`,
   `‘`, `‚` and `‛`. For example, `'It''s ‘‘ready’’.'` passes `It's ‘ready’.`.
-  See [shell details](references/shell-quoting.md) for native Windows
-  argument handling and file transport.
+  Read [shell details](references/shell-quoting.md) for native Windows arguments.
 
 Keep `notifai` as one plain command for harness approval rules. If lossless
 quoting or a file write needs approval, use that route and let the harness
-ask; never replace characters to avoid it. See
-[shell and harness limits](references/shell-quoting.md#harness-shells-and-approvals).
+ask; never replace characters to avoid it. Read
+[shell limits](references/shell-quoting.md#harness-shells-and-approvals) when needed.
 
 ```bash
 notifai send --kind done \

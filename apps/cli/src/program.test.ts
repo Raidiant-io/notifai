@@ -356,20 +356,16 @@ describe('program argv parsing', () => {
     const ask = (async (_deps, _question, flags) => ((seen = flags as Record<string, unknown>), 0)) as ProgramRunners['ask']
     const inline = '{"title":"Release","summary":"Release choices?","questions":[{"text":"Ship it?"}]}'
     const dir = mkdtempSync(path.join(os.tmpdir(), 'notifai-program-form-'))
-    const oldCwd = process.cwd()
-    try {
-      process.chdir(dir)
-      for (const file of ['form.json', '{release}.json', '  {release}.json']) {
-        writeFileSync(file, inline)
-        expect((await parse(['ask', '--form', file], { ask })).exitCode).toBe(0)
-        expect(seen).toEqual({ form: inline })
-      }
-      const missing = await parse(['ask', '--form', '{missing}.json'], { ask })
-      expect(missing.exitCode).toBe(2)
-      expect(missing.deps.errLines.join('\n')).toContain('Could not read {missing}.json')
-    } finally {
-      process.chdir(oldCwd)
+    const deps = makeDeps()
+    deps.cwd = dir
+    for (const file of ['form.json', '{release}.json', '  {release}.json']) {
+      writeFileSync(path.join(dir, file), inline)
+      expect((await parse(['ask', '--form', file], { ask }, deps)).exitCode).toBe(0)
+      expect(seen).toEqual({ form: inline })
     }
+    const missing = await parse(['ask', '--form', '{missing}.json'], { ask }, deps)
+    expect(missing.exitCode).toBe(2)
+    expect(missing.deps.errLines.join('\n')).toContain('{missing}.json')
   })
 
   it('rejects ambiguous form inputs before dispatching the question', async () => {

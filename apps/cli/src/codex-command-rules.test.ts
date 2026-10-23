@@ -40,14 +40,14 @@ function skillCommandExamples(source: string): string[][] {
   const examples: string[][] = []
   for (const block of source.matchAll(/```bash\n([\s\S]*?)```/g)) {
     const script = block[1]!.replace(/\\\n\s*/g, ' ')
-    // A single-quoted value may hold real line breaks; only a line break
-    // outside quotes ends a command.
-    for (const line of script.match(/(?:'[^']*'|[^'\n])+/g) ?? []) {
+    // Literal quoted pieces may hold real line breaks and concatenate;
+    // only an unquoted line break ends a command.
+    for (const line of script.match(/(?:'[^']*'|"[^"]*"|[^'"\n])+/g) ?? []) {
       const trimmed = line.trim()
       if (!trimmed.startsWith('notifai ')) continue
       // Quoted text is one word to a shell; operators matter only outside it.
-      const unquoted = trimmed.replace(/'[^']*'|<[^<>\s]+>/g, 'q')
-      // Every text value is single-quoted, so the shell expands nothing in it.
+      const unquoted = trimmed.replace(/'[^']*'|"[^"$`\\]*"|<[^<>\s]+>/g, 'q')
+      // Every quoted piece is literal, including a double-quoted apostrophe.
       expect(unquoted, trimmed).not.toContain('"')
       expect(unquoted, trimmed).not.toMatch(/<<|\$\(|`|(^|\s)[A-Z_]+=|\||&&|;|>|</)
       examples.push(shellWords(trimmed))

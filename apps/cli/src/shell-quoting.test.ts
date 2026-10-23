@@ -11,7 +11,7 @@ const root = mkdtempSync(path.join(os.tmpdir(), 'notifai-shell-'))
 const driver = path.join(root, 'cli.cjs')
 const shells = ['bash', 'zsh', 'pwsh', ...(process.platform === 'win32' ? ['powershell.exe'] : [])]
 const available = (shell: string) => spawnSync(shell, ['-c', 'exit 0'], { timeout: 15_000 }).status === 0
-const posixQuote = (value: string) => `'${value.replaceAll("'", "'\\''")}'`
+const posixQuote = (value: string) => `'${value.replaceAll("'", `'"'"'`)}'`
 const powershellQuote = (value: string) => `'${value.replace(/['’‘‚‛]/g, '$&$&')}'`
 
 beforeAll(() => {
@@ -35,10 +35,14 @@ buildProgram(deps, { exit: code => process.exit(code), runners: {
 afterAll(() => rmSync(root, { recursive: true, force: true }))
 
 for (const shell of shells) {
-  describe.skipIf(!available(shell))(`${shell} lossless shell transport`, () => {
+  const present = available(shell)
+  const required = shell === 'bash' || (process.platform === 'darwin' && shell === 'zsh') || (process.platform === 'win32' && /^(pwsh|powershell)/.test(shell))
+  if (required && !present) throw new Error(`Required shell is unavailable: ${shell}`)
+  describe.skipIf(!present)(`${shell} lossless shell transport`, () => {
     const powershell = /^(pwsh|powershell)/.test(shell)
     const quote = powershell ? powershellQuote : posixQuote
-    const hostile = "SELECT 'ready'; ’ ‘ ‚ ‛\n$(touch SHELL_SENTINEL) `touch SHELL_SENTINEL`\n$(New-Item SHELL_SENTINEL); #\nexample'; Write-Output SENTINEL; #\n"
+    const baseHostile = "SELECT 'ready'; ’ ‘ ‚ ‛\n$(touch SHELL_SENTINEL) `touch SHELL_SENTINEL`\n$(New-Item SHELL_SENTINEL); #\nexample'; Write-Output SENTINEL; #\n"
+    const hostile = baseHostile + [..."'’‘‚‛"].map((q) => `example${q}; New-Item SHELL_SENTINEL; #\n`).join('')
     function run(args: string[]) {
       const script = path.join(root, powershell ? 'command.ps1' : `command-${shell}.sh`)
       // Node + driver stands in for the installed executable; argv goes straight
@@ -71,6 +75,8 @@ for (const shell of shells) {
       expect(run(['send', '--kind', 'done', '--title', 'Review', '--summary', 'Review', '--body-file', 'body.md']))
         .toMatchObject({ body })
       expect(run(['ask', '--form', '{release}.json'])).toEqual({ form })
+      expect(run(['guidance', 'set', 'when-to-notify', '--file', 'body.md', '--local', '--yes']))
+        .toEqual({ topic: 'when-to-notify', text: body })
     })
     // Legacy Windows PowerShell strips embedded double quotes on native argv.
     // Its documented file route is exercised above; pwsh 7.3+ preserves quotes.

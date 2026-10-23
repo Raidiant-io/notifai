@@ -22,9 +22,10 @@
  *   splits a `bash -lc` script into commands only when it is plain words
  *   joined by `&&`, `||`, `;` or `|`; redirection, heredocs, `$(…)` and
  *   `VAR=…` leave the whole script unmatched, and so does a quoted value
- *   that is not one plain string, such as `'It'\''s'` or `"$HOME"`. The skill
- *   therefore passes every text value, a Markdown body included, inline in
- *   single quotes, with real line breaks inside them.
+ *   containing an unquoted escape or expansion, such as `'It'\''s'` or
+ *   "$HOME". The skill joins single-quoted pieces with a double-quoted
+ *   apostrophe (`'It'"'"'s'`), which preserves text and matches, and keeps
+ *   real line breaks inside the quotes.
  * - The most restrictive decision wins, so a managed `forbidden` rule beats
  *   this file. `doctor` reports that as the organization's choice.
  */
