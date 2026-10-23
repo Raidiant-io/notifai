@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "behavior_digest": "sha256:7ea1f21d113a3b86983dd3a6c33511d31ddbcebe600957063bdc64bcebffec52",
+  "behavior_digest": "sha256:814708e654f7710f2a9477c500f421e55e0e998db3c7699129cc6c61183807c2",
   "outcome": "guidance-updated",
   "surfaces_reviewed": [
     "lifecycle-hooks",
@@ -9,5 +9,5 @@
     "cli-readiness",
     "domain-terms"
   ],
-  "reason": "Reviewed lifecycle, skill, harness recovery, CLI guidance and domain terms. The aggregate read digest remains authoritative with bounded optional topic history. Claude session lookup uses its cwd project with an uncapped cheap fallback, never folder count as child evidence. Reload notices select the token remedy where needed. Ownership and acknowledgement wording names work the receiving Agent Session does itself; ordinary answer ownership appears once per injection. Cursor recovery and superseded-read diagnostics are explicit. No headless special route or parent handle is added. Retained the session-start work-before-reporting sentence after a real delegated-worker evaluation acknowledged and only reported the answer instead of doing its work."
+  "reason": "Reviewed lifecycle, skill, harness recovery, CLI guidance and domain terms. The aggregate read digest remains authoritative with bounded optional topic history. Claude session lookup uses its cwd project with an uncapped cheap fallback, never folder count as child evidence. Reload notices select the token remedy where needed. Ownership and acknowledgement wording names work the receiving Agent Session does itself; ordinary answer ownership appears once per injection. Cursor recovery and superseded-read diagnostics are explicit. No headless special route or parent handle is added. Retained the session-start work-before-reporting sentence after a real delegated-worker evaluation acknowledged and only reported the answer instead of doing its work. Answer resumption restores the reason to act before reporting without assuming any briefer; its once-per-injection delivery and all other surfaces remain unchanged."
 }

@@ -1,5 +1,5 @@
 {
-  "current": "99a848d99a5b3b7a17ad2b4f4dbf49fd521b5106abe09dfbbfcb0ad812d2c43c",
+  "current": "1871665280bc6ea83df87e55ff9e7874ce5de84ea4412f71a81e7286825f704c",
   "releases": [
     {
       "digest": "3e47b01bc6bbfb43e910c660b9964fab6459d75148c3c02dcbcd0be64cfb2963",
@@ -8,6 +8,10 @@
     {
       "digest": "99a848d99a5b3b7a17ad2b4f4dbf49fd521b5106abe09dfbbfcb0ad812d2c43c",
       "note": "If `notifai guidance` reports that guidance changed while it printed, run it again before your next Notification Request."
+    },
+    {
+      "digest": "1871665280bc6ea83df87e55ff9e7874ce5de84ea4412f71a81e7286825f704c",
+      "note": "An answer returns to its asking Agent Session. Do the work it unblocks there before reporting: a report sent in place of that work may never be read."
     }
   ]
 }

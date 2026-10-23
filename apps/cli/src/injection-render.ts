@@ -92,4 +92,4 @@ export function sessionMessageContext(message: AttendanceMessage): string {
 }
 
 /** The answer is local custody, even when the asking brief expects a report. */
-export const ANSWER_RESUMPTION_CONTEXT = 'Only this Agent Session received this answer: do the work it unblocks here, then report.'
+export const ANSWER_RESUMPTION_CONTEXT = 'Only this Agent Session received this answer, and a report sent instead of the work may never be read: do the work it unblocks here, then report.'
