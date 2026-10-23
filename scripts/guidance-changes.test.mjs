@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict'
+import { createHash } from 'node:crypto'
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
@@ -13,6 +14,8 @@ test('a reordered shipped instruction requires an authored note for its exact di
     const skill = path.join(root, 'skills/notifai/SKILL.md')
     writeFileSync(skill, 'Validate.\nSend.\n')
     const old = shippedGuidanceDigest(root)
+    // The manifest key is portable even when the checkout uses Windows paths.
+    assert.equal(old, createHash('sha256').update('skills/notifai/SKILL.md\0Validate.\nSend.\n\0').digest('hex'))
     const releases = [{ digest: old, note: 'Validate before sending.' }]
     const catalog = path.join(root, 'skills/guidance-changes.json')
     writeFileSync(catalog, JSON.stringify({ current: old, releases }))
