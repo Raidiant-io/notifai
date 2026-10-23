@@ -14,6 +14,7 @@ import {
   readSessionEndMarker,
   readSessionState,
   recordSessionStart,
+  sessionStatePath,
   updateSessionState,
 } from './hook-session-state.js'
 import { END_CONFIRM_MS } from './hub.js'
@@ -68,13 +69,22 @@ describe('SessionEnd without a hub', () => {
     expect(readSessionState(SESSION, f.env).pending).toHaveLength(1)
   })
 
-  it('ends at once when its confirmation process cannot start', async () => {
+  it('preserves questions when its confirmation process cannot start', async () => {
     const f = fixture('codex')
-    f.deps.spawnEndConfirmation = () => { throw new Error('no process') }
+    f.deps.spawnEndConfirmation = () => { throw Object.assign(new Error('disk full'), { code: 'ENOSPC' }) }
     await f.sessionEnd()
-    expect(existsSync(endCandidatePath(SESSION, f.env))).toBe(false)
-    expect(readSessionEndMarker(SESSION, f.env)).not.toBeNull()
-    expect(readSessionState(SESSION, f.env).pending).toBeUndefined()
+    expect(existsSync(endCandidatePath(SESSION, f.env))).toBe(true)
+    expect(readSessionEndMarker(SESSION, f.env)).toBeNull()
+    expect(readSessionState(SESSION, f.env).pending).toHaveLength(1)
+  })
+
+  it('does not read a truncated state as nothing waiting', async () => {
+    const f = fixture('claude-code')
+    writeFileSync(sessionStatePath(SESSION, f.env), '{"pending":')
+    await f.sessionEnd()
+    expect(await confirmSessionEnds(f.deps, { wait: false }, NO_RESTART)).toMatchObject({ ended: 0, deferred: 1 })
+    expect(readSessionEndMarker(SESSION, f.env)).toBeNull()
+    expect(readFileSync(sessionStatePath(SESSION, f.env), 'utf8')).toBe('{"pending":')
   })
 
   it('ends at once when closing loses nothing', async () => {
@@ -85,15 +95,13 @@ describe('SessionEnd without a hub', () => {
     expect(readSessionEndMarker(SESSION, f.env)).not.toBeNull()
   })
 
-  it('ends the session after the confirmation when nothing brought it back', async () => {
+  it('defers an unconfirmed end while a question still waits', async () => {
     const f = fixture('claude-code')
     await f.sessionEnd()
-    expect(await confirmSessionEnds(f.deps, { wait: false }, NO_RESTART)).toEqual({ ended: 1, kept: 0, deferred: 0, superseded: 0 })
-    expect(readSessionEndMarker(SESSION, f.env)).not.toBeNull()
-    expect(readSessionState(SESSION, f.env).pending).toBeUndefined()
-    expect(existsSync(endCandidatePath(SESSION, f.env))).toBe(false)
-    // No hub took the end, so a detached process retires the queued question.
-    expect(f.retirements).toEqual([expect.objectContaining({ harness: 'claude-code' })])
+    expect(await confirmSessionEnds(f.deps, { wait: false }, NO_RESTART)).toEqual({ ended: 0, kept: 0, deferred: 1, superseded: 0 })
+    expect(readSessionEndMarker(SESSION, f.env)).toBeNull()
+    expect(readSessionState(SESSION, f.env).pending).toHaveLength(1)
+    expect(f.retirements).toEqual([])
   })
 
   it('keeps a session that started again within the confirmation', async () => {
@@ -117,7 +125,7 @@ describe('SessionEnd without a hub', () => {
     expect(existsSync(endCandidatePath(SESSION, f.env))).toBe(false)
   })
 
-  it('keeps a Codex thread a live process holds again, and ends one whose holder cannot be read', async () => {
+  it('keeps a Codex thread a live process holds again, and preserves one whose holder cannot be read', async () => {
     const held = fixture('codex')
     await held.sessionEnd()
     expect(await confirmSessionEnds(held.deps, { wait: false }, { ...NO_RESTART, codexThreadHolders: () => [process.ppid] }))
@@ -127,8 +135,8 @@ describe('SessionEnd without a hub', () => {
     const unreadable = fixture('codex')
     await unreadable.sessionEnd()
     expect(await confirmSessionEnds(unreadable.deps, { wait: false }, { ...NO_RESTART, codexThreadHolders: () => 'unknown' }))
-      .toEqual({ ended: 1, kept: 0, deferred: 0, superseded: 0 })
-    expect(readSessionEndMarker(SESSION, unreadable.env)).not.toBeNull()
+      .toEqual({ ended: 0, kept: 0, deferred: 1, superseded: 0 })
+    expect(readSessionEndMarker(SESSION, unreadable.env)).toBeNull()
   })
 
   it('keeps a Claude Code conversation another live process still has open, not one only the ending process names', async () => {
@@ -140,7 +148,7 @@ describe('SessionEnd without a hub', () => {
     const alone = fixture('claude-code')
     writeDescriptor(alone.env, process.pid)
     await alone.sessionEnd()
-    expect(await confirmSessionEnds(alone.deps, { wait: false }, seams)).toEqual({ ended: 1, kept: 0, deferred: 0, superseded: 0 })
+    expect(await confirmSessionEnds(alone.deps, { wait: false }, seams)).toEqual({ ended: 0, kept: 0, deferred: 1, superseded: 0 })
     // Another live process has it open too.
     const elsewhere = fixture('claude-code')
     writeDescriptor(elsewhere.env, process.pid)
@@ -180,8 +188,8 @@ describe('SessionEnd without a hub', () => {
     const seams = { ...NO_RESTART, confirmationMs: 1_000 }
     expect(await confirmSessionEnds(f.deps, { wait: false }, seams)).toEqual({ ended: 0, kept: 0, deferred: 0, superseded: 0 })
     expect(readSessionEndMarker(SESSION, f.env)).toBeNull()
-    expect(await confirmSessionEnds(f.deps, { wait: true }, seams)).toEqual({ ended: 1, kept: 0, deferred: 0, superseded: 0 })
-    expect(readSessionEndMarker(SESSION, f.env)).not.toBeNull()
+    expect(await confirmSessionEnds(f.deps, { wait: true }, seams)).toEqual({ ended: 0, kept: 0, deferred: 1, superseded: 0 })
+    expect(readSessionEndMarker(SESSION, f.env)).toBeNull()
   })
 
   it('uses the hub\'s end confirmation', () => {

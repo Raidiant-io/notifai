@@ -654,9 +654,11 @@ export async function runSessionAttendant(options: SessionAttendantOptions): Pro
 function finalReport(reason: AttendantExitReason): 'ended' | 'withdrawn' | null {
   switch (reason) {
     case 'harness-gone':
-    case 'session-replaced':
     case 'session-end-hook':
     case 'signal':
+      // Losing an attendant or host is not positive conversation-close evidence.
+      return 'withdrawn'
+    case 'session-replaced':
       return 'ended'
     case 'superseded':
       // A newer start of the same session attends now; ending would end it.

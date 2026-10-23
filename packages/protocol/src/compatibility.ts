@@ -25,6 +25,8 @@ import type { Platform } from './notification.js'
  * - `notification_content_batch` (server only): one exchange returns the
  *   content of many Notification Requests. Listed as a Server Feature of the
  *   same name.
+ * - `session_confirmed_end` (server only): accepts `end_reason: 'closed'`
+ *   only for positive close evidence. Unqualified legacy ends preserve inputs.
  * - `session_continued_successor` (server only): a `continued` end may name
  *   a successor the server has not seen yet, such as a fork that has not
  *   notified; the server creates it for this machine. Without it, a CLI names
@@ -42,6 +44,7 @@ export const CLIENT_CAPABILITIES = [
   'session_stopped_hold',
   'question_dismiss',
   'session_continued_successor',
+  'session_confirmed_end',
   'notification_content_batch',
 ] as const
 export type ClientCapability = (typeof CLIENT_CAPABILITIES)[number]

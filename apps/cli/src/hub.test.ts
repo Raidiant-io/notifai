@@ -90,6 +90,11 @@ describe('hub session lease', () => {
     expect(lease.finalEntry(SESSION)).toBeNull()
     lease.final = 'ended'
     expect(lease.finalEntry(SESSION)).toEqual({ session_id: SESSION, incarnation: 'inc_aaaaaaaaaaaa', state: 'ended' })
+    expect(lease.finalEntry(SESSION, true)).not.toHaveProperty('end_reason')
+    lease.confirmedEnd = true
+    expect(lease.finalEntry(SESSION, true)).toHaveProperty('end_reason', 'closed')
+    expect(lease.finalEntry(SESSION)).not.toHaveProperty('end_reason')
+
     lease.generation = 4
     expect(lease.finalEntry(SESSION)).toMatchObject({ generation: 4, state: 'ended' })
     expect(lease.apply({ status: 'withdrawn' }, 0, 0, 0, null, true)).toEqual({ kind: 'reported', state: 'ended', successor: null })
@@ -1247,14 +1252,14 @@ describe('hub end confirmation and writers', () => {
     requestHub(env0!, { type: 'session-end-candidate', session_id: SESSION, harness_pid: harnessPid })
   let env0: NodeJS.ProcessEnv | null = null
 
-  it('expires a closed conversation only after the end confirmation', async () => {
+  it('preserves a crashed conversation and its question after the end confirmation', async () => {
     const env = env0 = hubEnv()
     recordSessionNotified(SESSION, env, Date.now())
     const host = await standIn()
     describeHost(env, host)
     const service = fakeService()
     const peers = new Map<number, PeerCredentials>()
-    const { done } = startHub(env, service, peers, memoryStore(), 100, { endConfirmMs: 600 })
+    const { hub, done } = startHub(env, service, peers, memoryStore(), 100, { endConfirmMs: 600 })
     await hubListening(env)
     const child = await writerChild(env, peers, 900200, host)
     expect(child.frames[0]).toMatchObject({ type: 'registered' })
@@ -1269,11 +1274,12 @@ describe('hub end confirmation and writers', () => {
     expect(ended(service)).toBe(false)
     expect(readSessionEndMarker(SESSION, env)).toBeNull()
     expect(readSessionState(SESSION, env).pending).toHaveLength(1)
-    await until(() => ended(service), 5_000)
-    await until(() => readSessionEndMarker(SESSION, env) !== null)
-    // Its question expired with it.
-    await until(() => (readSessionState(SESSION, env).pending ?? []).length === 0)
+    await until(() => hub.sessions.get(SESSION)?.stopped != null, 5_000)
+    expect(ended(service)).toBe(false)
+    expect(readSessionEndMarker(SESSION, env)).toBeNull()
+    expect(readSessionState(SESSION, env).pending).toHaveLength(1)
     child.socket.destroy()
+    hub.requestExit('test')
     service.release()
     await done
   })
@@ -1499,6 +1505,12 @@ describe('hub and Codex SessionEnd', () => {
     return file
   }
 
+  function archiveRollout(file: string): void {
+    const target = path.join(path.dirname(path.dirname(file)), 'archived_sessions', path.basename(file))
+    mkdirSync(path.dirname(target), { recursive: true })
+    renameSync(file, target)
+  }
+
   /** A codex host for this test: this process, or a real child process the test can stop. */
   async function codexSession(env: NodeJS.ProcessEnv, service: FakeService, peers: Map<number, PeerCredentials>, childPid: number,
     transcript: string, host = HARNESS): Promise<FakeChild> {
@@ -1577,7 +1589,7 @@ describe('hub and Codex SessionEnd', () => {
     await hubListening(env)
     const child = await codexSession(env, service, peers, 900070, transcript)
     expect(await requestHub(env, { type: 'session-end-candidate', session_id: SESSION, transcript_path: transcript })).toMatchObject({ held: true })
-    if (archive) rmSync(transcript)
+    if (archive) archiveRollout(transcript)
     child.socket.destroy()
     service.release()
     await until(() => reportedEnd(service))
@@ -1661,7 +1673,7 @@ describe('hub and Codex SessionEnd', () => {
     await done
   })
 
-  it('leaves an answer waiting in a stopped conversation as one queued wake, and ends it when the app quits', async () => {
+  it('leaves an answer waiting in a stopped conversation as one queued wake, and preserves it when the app disappears', async () => {
     const env = hubEnv()
     recordSessionNotified(SESSION, env, Date.now())
     const transcript = codexRollout(env, 'Codex Desktop')
@@ -1694,8 +1706,9 @@ describe('hub and Codex SessionEnd', () => {
       // Quitting the app ends it: questions expire, unread input is dropped.
       app.kill('SIGKILL')
       service.release()
-      await until(() => reportedEnd(service))
-      await until(() => readSessionEndMarker(SESSION, env) !== null)
+      await new Promise(resolve => setTimeout(resolve, 350))
+      expect(reportedEnd(service)).toBe(false)
+      expect(readSessionEndMarker(SESSION, env)).toBeNull()
       expect(existsSync(transcript)).toBe(true)
     } finally {
       app.kill('SIGKILL')
@@ -1714,7 +1727,7 @@ describe('hub and Codex SessionEnd', () => {
     const { hub, done } = startHub(env, service, peers, memoryStore(), 100, { endConfirmMs: 50, codexHostKind: () => 'app-server', wake: noWake })
     await hubListening(env)
     const child = await codexSession(env, service, peers, 900100, transcript)
-    rmSync(transcript)
+    archiveRollout(transcript)
     service.release()
     await until(() => reportedEnd(service))
     child.socket.destroy()
@@ -1723,7 +1736,7 @@ describe('hub and Codex SessionEnd', () => {
     await done
   })
 
-  it('adopts a stopped conversation after a restart: still open, its answer owner running, its answer queued, ended when the app quits', async () => {
+  it('adopts a stopped conversation after a restart: still open, its answer owner running, its answer queued, preserved when the app disappears', async () => {
     const env = hubEnv()
     recordSessionNotified(SESSION, env, Date.now())
     const transcript = codexRollout(env, 'Codex Desktop')
@@ -1775,8 +1788,9 @@ describe('hub and Codex SessionEnd', () => {
       // Quitting the app ends it and its questions expire.
       app.kill('SIGKILL')
       service.release()
-      await until(() => reportedEnd(service))
-      await until(() => readSessionEndMarker(SESSION, env) !== null)
+      await new Promise(resolve => setTimeout(resolve, 350))
+      expect(reportedEnd(service)).toBe(false)
+      expect(readSessionEndMarker(SESSION, env)).toBeNull()
     } finally {
       app.kill('SIGKILL')
       second?.hub.requestExit('test')
@@ -1805,7 +1819,7 @@ describe('hub and Codex SessionEnd', () => {
     first.hub.requestExit('test-crash')
     service.release()
     await first.done
-    if (archive) rmSync(transcript)
+    if (archive) archiveRollout(transcript)
     const second = startHub(env, service, peers, memoryStore(), 100, { endConfirmMs: 50, codexHostKind: () => 'app-server', wake: noWake })
     if (archive) {
       await until(() => reportedEnd(service))
@@ -2595,9 +2609,16 @@ describe('hub: conversations stopped by their app or the machine', () => {
       question(env)
       if (variant === 'archived') logPause(desktop.log)
       await end(env, child, host)
+      if (variant === 'archived') {
       await until(() => ended(service), 5_000)
       await until(() => (readSessionState(SESSION, env).pending ?? []).length === 0)
       expect(readSessionEndMarker(SESSION, env)).not.toBeNull()
+      } else {
+        await until(() => hub.sessions.get(SESSION)?.stopped != null, 5_000)
+        expect(ended(service)).toBe(false)
+        expect(readSessionEndMarker(SESSION, env)).toBeNull()
+        expect(readSessionState(SESSION, env).pending).toHaveLength(1)
+      }
       child.socket.destroy()
       await stopHub(hub, service, done)
     }
@@ -2618,8 +2639,10 @@ describe('hub: conversations stopped by their app or the machine', () => {
     await until(() => renewals(service) >= 1)
     question(env)
     await end(env, child, host)
-    await until(() => ended(service), 5_000)
-    expect(hub.sessions.get(SESSION)).toBeUndefined()
+    await until(() => hub.sessions.get(SESSION)?.stopped != null, 5_000)
+    expect(ended(service)).toBe(false)
+    expect(readSessionEndMarker(SESSION, env)).toBeNull()
+    expect(readSessionState(SESSION, env).pending).toHaveLength(1)
     child.socket.destroy()
     await stopHub(hub, service, done)
   })
@@ -2698,7 +2721,10 @@ describe('hub: conversations stopped by their app or the machine', () => {
     expect(ended(service)).toBe(false)
     // An app holds the shutdown up and nobody answers its dialog for half an hour.
     shift = 31 * 60_000
-    await until(() => ended(service), 5_000)
+    await until(() => hub.sessions.get(SESSION)?.stopped != null, 5_000)
+    expect(ended(service)).toBe(false)
+    expect(readSessionEndMarker(SESSION, env)).toBeNull()
+    expect(readSessionState(SESSION, env).pending).toHaveLength(1)
     child.socket.destroy()
     await stopHub(hub, service, done)
   })
@@ -2726,8 +2752,10 @@ describe('hub: conversations stopped by their app or the machine', () => {
     expect(ended(service)).toBe(false)
     expect(existsSync(path.join(path.dirname(hubLockPath(env)), 'shutdown.json'))).toBe(true)
     post!({ kind: 'cancelled', name: 'com.apple.system.loginwindow.logoutcancelled' })
-    await until(() => ended(service), 5_000)
-    expect(existsSync(path.join(path.dirname(hubLockPath(env)), 'shutdown.json'))).toBe(false)
+    await until(() => hub.sessions.get(SESSION)?.stopped != null, 5_000)
+    expect(ended(service)).toBe(false)
+    expect(readSessionEndMarker(SESSION, env)).toBeNull()
+    expect(readSessionState(SESSION, env).pending).toHaveLength(1)
     child.socket.destroy()
     await stopHub(hub, service, done)
   })
@@ -2930,14 +2958,21 @@ describe('hub: conversations stopped by their app or the machine', () => {
       await until(() => hub.sessions.get(SESSION)?.stopped?.cause === 'app', 5_000)
       if (variant === 'archive') desktopApp(env, true)
       else app.process.kill('SIGKILL')
+      if (variant === 'archive') {
       await until(() => ended(service), 5_000)
       await until(() => (readSessionState(SESSION, env).pending ?? []).length === 0)
+      } else {
+        await until(() => hub.sessions.get(SESSION)?.stopped != null, 5_000)
+        expect(ended(service)).toBe(false)
+        expect(readSessionEndMarker(SESSION, env)).toBeNull()
+        expect(readSessionState(SESSION, env).pending).toHaveLength(1)
+      }
       child.socket.destroy()
       await stopHub(hub, service, done)
     }
   })
 
-  it('keeps a conversation whose terminal exit was recorded after the machine said it was going down, and not one recorded before', async () => {
+  it('keeps a conversation whose terminal exit was recorded after the machine said it was going down, and preserves an unconfirmed exit recorded before', async () => {
     for (const after of [true, false]) {
       const env = hubEnv()
       recordSessionNotified(SESSION, env, Date.now())
@@ -2966,7 +3001,9 @@ describe('hub: conversations stopped by their app or the machine', () => {
         await until(() => second.hub.sessions.get(SESSION)?.stopped?.cause === 'machine', 5_000)
         expect(ended(service)).toBe(false)
       } else {
-        await until(() => ended(service), 5_000)
+        await new Promise(resolve => setTimeout(resolve, 400))
+        expect(ended(service)).toBe(false)
+        expect(readSessionState(SESSION, env).pending).toHaveLength(1)
       }
       await stopHub(second.hub, service, second.done)
     }
@@ -3066,9 +3103,16 @@ describe('hub: Codex conversations stopped by their app or the machine, Orca pan
         await requestHub(env, { type: 'session-end-candidate', session_id: SESSION, transcript_path: transcript, harness_pid: server.pid })
         child.socket.destroy()
       }
+      if (variant !== 'quit') {
       await until(() => ended(service), 5_000)
       await until(() => readSessionEndMarker(SESSION, env) !== null)
       expect(hub.sessions.get(SESSION)?.stopped ?? null).toBeNull()
+      } else {
+        await until(() => hub.sessions.get(SESSION)?.stopped != null, 5_000)
+        expect(ended(service)).toBe(false)
+        expect(readSessionEndMarker(SESSION, env)).toBeNull()
+        expect(readSessionState(SESSION, env).pending).toHaveLength(1)
+      }
       child.socket.destroy()
       await stopHub(hub, service, done)
     }
@@ -3143,7 +3187,7 @@ describe('hub: Codex conversations stopped by their app or the machine, Orca pan
     await stopHub(hub, service, done)
   })
 
-  it('expires a T3 thread stopped before 30 minutes, or after T3 itself quit', async () => {
+  it('preserves a T3 thread stopped before 30 minutes, or after T3 itself disappears', async () => {
     for (const variant of ['early', 'quit'] as const) {
       const env = hubEnv()
       recordSessionNotified(SESSION, env, Date.now())
@@ -3163,8 +3207,10 @@ describe('hub: Codex conversations stopped by their app or the machine, Orca pan
       shift = (variant === 'early' ? 29 : 31) * 60_000
       if (variant === 'quit') t3.process.kill('SIGKILL')
       exit(child, server)
-      await until(() => ended(service), 5_000)
-      expect(hub.sessions.get(SESSION)?.stopped ?? null).toBeNull()
+      await until(() => hub.sessions.get(SESSION)?.stopped != null, 5_000)
+      expect(ended(service)).toBe(false)
+      expect(readSessionEndMarker(SESSION, env)).toBeNull()
+      expect(readSessionState(SESSION, env).pending).toHaveLength(1)
       child.socket.destroy()
       await stopHub(hub, service, done)
     }
@@ -3323,8 +3369,10 @@ describe('hub: Codex conversations stopped by their app or the machine, Orca pan
         expect(hub.sessions.get(SESSION)?.stopped).toBeNull()
         back.socket.destroy()
       } else {
-        await until(() => ended(service), 5_000)
-        expect(hub.sessions.get(SESSION)).toBeUndefined()
+        await until(() => hub.sessions.get(SESSION)?.stopped != null, 5_000)
+        expect(ended(service)).toBe(false)
+        expect(readSessionEndMarker(SESSION, env)).toBeNull()
+        expect(readSessionState(SESSION, env).pending).toHaveLength(1)
       }
       child.socket.destroy()
       await stopHub(hub, service, done)

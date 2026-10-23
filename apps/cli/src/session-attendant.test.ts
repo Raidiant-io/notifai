@@ -245,7 +245,7 @@ describe('Session Attendant', () => {
     await h.clock.advance(1)
   })
 
-  it('reports ended once when the harness goes away, then exits', async () => {
+  it('withdraws once when the harness goes away, then exits', async () => {
     const h = startAttendant()
     await h.clock.advance(1)
     h.service.last().respond(h.service.attending(2))
@@ -253,14 +253,14 @@ describe('Session Attendant', () => {
     h.probe = { state: 'ended', reason: 'harness-gone' }
     await h.clock.advance(2_000)
     const final = h.service.last()
-    expect(final.body).toEqual({ incarnation: 'inc_aaaaaaaaaaaa', generation: 2, state: 'ended' })
+    expect(final.body).toEqual({ incarnation: 'inc_aaaaaaaaaaaa', generation: 2, state: 'withdrawn' })
     final.respond({ status: 'withdrawn' })
     const result = await h.result
-    expect(result).toEqual({ reason: 'harness-gone', reported: 'ended' })
+    expect(result).toEqual({ reason: 'harness-gone', reported: 'withdrawn' })
     expect(h.statuses.at(-1)).toMatchObject({ phase: 'exited', reason: 'harness-gone' })
   })
 
-  it('treats a termination signal as ending and reports once', async () => {
+  it('treats a termination signal as lost observation and reports once', async () => {
     const h = startAttendant()
     await h.clock.advance(1)
     h.service.last().respond(h.service.attending(1))
@@ -268,9 +268,9 @@ describe('Session Attendant', () => {
     h.signal()
     await h.clock.advance(1)
     const final = h.service.last()
-    expect(final.body.state).toBe('ended')
+    expect(final.body.state).toBe('withdrawn')
     final.respond({ status: 'withdrawn' })
-    expect(await h.result).toEqual({ reason: 'signal', reported: 'ended' })
+    expect(await h.result).toEqual({ reason: 'signal', reported: 'withdrawn' })
   })
 
   it('steps aside without ending the session when the host hands it to a newer attendant', async () => {
@@ -319,7 +319,7 @@ describe('Session Attendant', () => {
     const final = h.service.last()
     // The real timer bounds it; aborting stands in for that timer firing.
     final.fail(new Error('timed out'))
-    expect(await h.result).toEqual({ reason: 'signal', reported: 'ended' })
+    expect(await h.result).toEqual({ reason: 'signal', reported: 'withdrawn' })
   })
 
   it('pauses renewal while evidence is uncertain and never reports running', async () => {
@@ -569,8 +569,8 @@ describe('Session Attendant', () => {
     expect(h.statuses.at(-1)).toMatchObject({ phase: 'unsupported' })
     h.probe = { state: 'ended', reason: 'session-end-hook' }
     await h.clock.advance(2_000)
-    // The session had notified, so its end is still worth recording.
-    h.service.last().respond({ status: 'withdrawn' })
+    // No lease was acquired; a failed observer has no close to report.
+    expect(h.service.exchanges).toHaveLength(0)
     expect((await h.result).reason).toBe('session-end-hook')
   })
 
@@ -632,8 +632,8 @@ describe('Session Attendant', () => {
       await h.clock.advance(2_000)
       h.service.holdCompatibility.release?.()
       await h.clock.advance(1)
-      h.service.last().respond({ status: 'withdrawn' })
-      expect(await h.result).toEqual({ reason: 'harness-gone', reported: 'ended' })
+      expect(h.service.exchanges).toHaveLength(0)
+      expect(await h.result).toEqual({ reason: 'harness-gone', reported: null })
       expect(running(h)).toHaveLength(0)
     })
   })

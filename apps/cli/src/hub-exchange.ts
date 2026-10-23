@@ -231,7 +231,7 @@ export class ExchangeDriver {
     const running: { session: AttendedSession; entry: AttendanceBatchEntryT }[] = []
     const stopped: { session: AttendedSession; entry: AttendanceBatchEntryT }[] = []
     for (const session of sessions) {
-      const final = session.lease.finalEntry(session.id)
+      const final = session.lease.finalEntry(session.id, this.offers('session_confirmed_end'))
       const stop = final === null ? this.stoppedEntry(session) : null
       if (final !== null) finals.push({ session, entry: final })
       else if (stop !== null) { if (now >= session.lease.pausedUntil) stopped.push({ session, entry: stop }) }
@@ -365,7 +365,7 @@ export class ExchangeDriver {
     while (!this.stopping.signal.aborted && this.mode === 'per-session' && this.host.client() === client &&
       this.host.sessions().includes(session)) {
       const now = this.host.clock.monotonic()
-      const final = session.lease.finalEntry(session.id)
+      const final = session.lease.finalEntry(session.id, this.offers('session_confirmed_end'))
       const stop = final === null && now >= session.lease.pausedUntil ? this.stoppedEntry(session) : null
       if (final === null && stop === null && !session.runnable(now)) {
         await this.nextChange(Math.max(1_000, session.lease.pausedUntil - now))

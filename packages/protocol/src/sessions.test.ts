@@ -130,6 +130,10 @@ describe('Session Attendance exchange', () => {
     ).toBe(false)
   })
 
+  it('accepts an explicitly confirmed close without a successor', () => {
+    expect(Value.Check(AttendanceRequest, { incarnation, state: 'ended', end_reason: 'closed' })).toBe(true)
+  })
+
   it('names a continued end with its successor, and nothing else, as the end reason', () => {
     expect(
       Value.Check(AttendanceRequest, {
@@ -137,7 +141,7 @@ describe('Session Attendance exchange', () => {
       }),
     ).toBe(true)
     expect(
-      Value.Check(AttendanceRequest, { incarnation, state: 'ended', end_reason: 'closed', successor_session_id: 'x' }),
+      Value.Check(AttendanceRequest, { incarnation, state: 'ended', end_reason: 'unsupported', successor_session_id: 'x' }),
     ).toBe(false)
     expect(
       Value.Check(AttendanceRequest, { incarnation, state: 'ended', successor_session_id: '' }),

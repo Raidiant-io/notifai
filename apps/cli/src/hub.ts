@@ -55,6 +55,7 @@ import {
   readSessionEndMarker,
   readSessionIncarnation,
   readSessionState,
+  readSessionStateForEnd,
   refreshSessionMarkers,
   rehostSessionIncarnation,
   rotateSessionIncarnation,
@@ -626,7 +627,7 @@ class HubSession implements AttendedSession {
   transcriptGone(): boolean {
     if (this.harness !== 'codex' || this.registration.transcriptPath === null) return false
     const place = this.rollout()
-    return (place === 'missing' || place === 'archived') && this.transcriptSeen
+    return place === 'archived' && this.transcriptSeen
   }
 
   /**
@@ -993,8 +994,9 @@ class HubSession implements AttendedSession {
  */
 function owesWhileStopped(sessionId: string, env: NodeJS.ProcessEnv, since: number, lease: DeliveryLease | null, wall: number,
   held: readonly { created_at: string }[] = []): boolean {
+  const state = readSessionStateForEnd(sessionId, env)
+  if (state === null) return true
   if (wall - since >= STOPPED_CEILING_MS) return false
-  const state = readSessionState(sessionId, env)
   const open = (deadline: number | undefined): boolean => deadline === undefined || deadline > wall
   // Asked of the User (a request exists, or its submission began) and not past its window.
   if (pendingList(state).some((entry) => (entry.request_id !== undefined || entry.submission !== undefined) && open(entry.reply_deadline_at))) return true
@@ -1022,7 +1024,7 @@ function recordedLiveness(identity: ProcessIdentity | null): Recorded {
  */
 function watchedAfter(reason: AppStopReason): StoppedWatch {
   if (reason === 'app-unloaded' || reason === 'ide-unloaded') return 'harness'
-  return reason === 'terminal-host-died' ? null : 'host-app'
+  return reason === 'terminal-host-died' || reason === 'unconfirmed-stop' ? null : 'host-app'
 }
 
 /** A stopped conversation the start sweep or a previous hub recorded; nothing a scripted run may take over. */
@@ -2343,6 +2345,7 @@ export class Hub {
     for (const standby of session.standbys) standby.child.send({ type: 'bye' })
     this.logger.info('hub.session', { event: 'ending', session: session.id, reason, ...(successor === null ? {} : { successor }) })
     if (session.notified) {
+      session.lease.confirmedEnd = reason === 'session-archived' || reason === 'session-replaced' || reason === 'window-over'
       session.lease.final = 'ended'
       session.lease.successor = successor
       session.lease.pausedUntil = 0
@@ -2417,13 +2420,15 @@ export class Hub {
         kept('hosted-elsewhere')
         return
       }
+      const probe = session.probe()
+      if (probe.state === 'ended' && probe.reason === 'session-replaced') { this.endSession(session, 'session-replaced'); return }
       // The machine is going down: the next boot decides (machine down); a cancellation, this hub.
       if (this.holdForShutdown(session, candidate)) return
       const verdict = this.classifyClaudeStop(session, candidate.since)
       this.logger.info('hub.session', { event: 'end-classified', session: session.id, verdict: verdict.cause === 'app' ? 'stopped' : 'closed',
         reason: verdict.reason, place: session.registration.place })
       if (verdict.cause === 'app') { this.stopSession(session, 'app', verdict.reason, undefined, watchedAfter(verdict.reason)); return }
-      this.endSession(session, candidate.reason)
+      this.endSession(session, verdict.reason === 'archived' ? 'session-archived' : candidate.reason)
       return
     }
     // Codex: the host holds the thread again (the shared server reloaded it
@@ -2588,19 +2593,13 @@ export class Hub {
     session.dropExpiredAnswers()
     if (!session.stoppedOwes(this.clock.wall())) { this.endSession(session, 'window-over'); return }
     const record = this.recordPresent(session)
-    if (record === 'deleted') { this.endSession(session, 'session-deleted'); return }
     if (record === 'archived') { this.endSession(session, 'session-archived'); return }
     if (session.registration.place === 'claude-desktop') {
       const paths = this.desktopPaths()
       const desktop = paths === null ? 'unreadable' : readClaudeDesktopRecord(paths.sessions, session.id)
-      if (desktop === 'missing') { this.endSession(session, 'session-deleted'); return }
       if (typeof desktop === 'object' && desktop.archived) { this.endSession(session, 'session-archived'); return }
     }
-    // Its app quit while the machine stayed up: the User closed it after all.
-    const boot = (this.options.bootIdentity ?? currentBootIdentity)()
-    const watched = stopped.watch === 'harness' ? session.harnessProcess : stopped.watch === 'host-app' ? session.registration.hostApp : null
-    if (stopped.cause === 'app' && (stopped.boot === null || stopped.boot === boot) && watched !== null && !this.shutdownInProgress() &&
-        processIdentityLiveness(watched) === 'gone') { this.endSession(session, 'app-quit'); return }
+    // Losing the host is not evidence that the User closed the conversation.
     if (session.harness === 'codex') void this.stoppedWake(session)
     void this.reopenStopped(session, trigger)
   }
@@ -2940,6 +2939,9 @@ export class Hub {
       for (const file of records) rmSync(file, { force: true })
       return
     }
+    // A crashed hub/child is no close witness. Keep waiting work untouched;
+    // a later writer can acquire attendance and drain it normally.
+    if (owesWhileStopped(sessionId, this.env, this.clock.wall(), lease, this.clock.wall())) return
     if (!endsIncarnation(readSessionEndMarker(sessionId, this.env), incarnation)) {
       void import('./hook-lifecycle.js').then(({ handleSessionEnd }) => {
         try { handleSessionEnd(this.env, { session_id: sessionId }, this.clock.wall()) } catch { /* reported below anyway */ }
