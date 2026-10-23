@@ -7,6 +7,7 @@ import {
   checkCodexBinary,
   cleanUp,
   codexAttachCheckDue,
+  codexAttachRetryMs,
   CODEX_ATTACH_RETRY_MS,
   runCodexAttachCanary,
   privateServerSocket,
@@ -136,6 +137,12 @@ describe('when the behaviour check runs', () => {
     expect(codexAttachResultFor(env, binary)?.outcome).toBe('failed')
   })
 
+  it('keeps permanent step-zero contract failures on the daily cadence', () => {
+    for (const detail of ['unknown command daemon start', 'invalid --version output', 'private control socket is outside the throwaway home']) {
+      expect(codexAttachRetryMs({ step: 0, detail, startFailures: 1 })).toBe(CODEX_ATTACH_RETRY_MS)
+    }
+  })
+
   it('records the outcome for that binary, unless the binary changed while it ran', async () => {
     const home = root()
     const env = { XDG_STATE_HOME: path.join(home, 'state') }
@@ -162,10 +169,10 @@ describe('when the behaviour check runs', () => {
     writeFileSync(executable, 'test executable identity')
     const binary = codexBinaryIdentity(executable)!
     let now = 1_000
-    for (const delay of [5_000, 10_000, 20_000, 40_000, 80_000, 160_000, 300_000, 300_000]) {
-      await checkCodexBinary(env, binary, now, async () => { throw new Error('daemon start failed') })
+    for (const delay of [5_000, 10_000, 20_000, 40_000, 80_000, 160_000, 300_000, CODEX_ATTACH_RETRY_MS]) {
+      await checkCodexBinary(env, binary, now, async () => { throw Object.assign(new Error('ENOSPC'), { code: 'ENOSPC' }) })
       const persisted = codexAttachResultFor({ ...env }, binary)!
-      expect(persisted).toMatchObject({ outcome: 'failed', step: 0, detail: 'daemon start failed' })
+      expect(persisted).toMatchObject({ outcome: 'failed', step: 0, detail: 'ENOSPC' })
       expect(codexAttachCheckDue(persisted, now + delay - 1)).toBe(false)
       expect(codexAttachCheckDue(persisted, now + delay)).toBe(true)
       now += delay

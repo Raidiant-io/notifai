@@ -1,3 +1,4 @@
+import { visibleInputWakeFault } from './session-inputs.js'
 import { automaticUpdateReport, automaticUpdatesRunHere } from './automatic-update.js'
 import { processArguments, reopenLine, reopenReport, reopenStalledLine } from './session-reopen.js'
 import { CLAUDE_EXEC_FORM_MIN_VERSION, claudeHookFormFor, describeClaudeHookForm } from './claude-hook-form.js'
@@ -2009,12 +2010,12 @@ function hookChecks(deps: CommandDeps): HookCheck[] {
   })
 
   const wakeRoute = wakeRouteCheck(deps, active, activeInstallations)
-  const wakeFault = active?.sessionId === undefined ? undefined : readSessionState(active.sessionId, deps.env).input_wake_fault
+  const wakeFault = active?.sessionId === undefined ? undefined : visibleInputWakeFault(readSessionState(active.sessionId, deps.env), (deps.now ?? Date.now)())
   if (wakeRoute !== null) checks.push(wakeFault === undefined ? wakeRoute : {
-    ...wakeRoute, ok: wakeFault.recovered_at !== undefined, reportOnly: true,
-    detail: wakeFault.recovered_at === undefined
+    ...wakeRoute, ok: wakeRoute.ok && wakeFault.recovered_at !== undefined, reportOnly: true,
+    detail: `${wakeRoute.detail}. ${wakeFault.recovered_at === undefined
       ? 'Notifai could not wake this Agent Session. User input stays queued for retry or its next prompt or tool callback; queue acceptance does not prove it was read'
-      : 'An earlier wake failed; User input has since reached this Agent Session',
+      : 'An earlier wake failed; User input has since reached this Agent Session'}`,
     technical: { route: wakeRoute.technical ?? null, wake_fault: wakeFault },
   })
 

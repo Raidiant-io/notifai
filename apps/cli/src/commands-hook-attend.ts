@@ -1,6 +1,6 @@
 import { releaseCodexCardHandbacks } from './codex-card-handback.js'
 import { nativeInstallationIdentity } from './native-installation-identity.js'
-import { hasSessionInputs, inputWakeDeferred, inputWakeOverdue, stageSessionMessages, wakeSessionInputs, wakeCodexSessionInputs, reconcileSessionInputWakes } from './session-inputs.js'
+import { WAKE_SEND_TIMEOUT_MS, hasSessionInputs, inputWakeDeferred, inputWakeOverdue, stageSessionMessages, wakeSessionInputs, wakeCodexSessionInputs, reconcileSessionInputWakes } from './session-inputs.js'
 /**
  * `notifai hook attend`: the asynchronous handler that becomes an Agent
  * Session's Session Attendant, or exits within milliseconds when a healthy
@@ -609,7 +609,7 @@ async function sessionMessageWriter(input: {
         begin: () => attendant.mayWrite(), holdAfterSend: false, writer: 'Session Attendant',
         ...(deps.hookPlatform === undefined ? {} : { platform: deps.hookPlatform }),
       })
-      return result.status === 'written'
+      return result.status === 'written' || result.status === 'failed' ? result.status : 'not-attempted'
     }, logger, { unique: true, replaceLost: input.settledIdle, now: () => clock.wall() })
     return 'done'
   }
@@ -652,15 +652,17 @@ function codexMessageWriter(input: {
     // The resident observes completion even when no further tool runs. Recheck
     // eligibility and pending input immediately before queue admission; a hook
     // may have consumed the batch since the last attendance exchange.
-    await wakeSessionInputs(sessionId, deps.env, async (text) => {
+    await wakeSessionInputs(sessionId, deps.env, async (text, signal) => {
       if (!attendant.mayWrite() || !mayWake() ||
-          !hasSessionInputs(sessionId, deps.env, { incarnation: attendant.incarnation(), generation })) return false
+          !hasSessionInputs(sessionId, deps.env, { incarnation: attendant.incarnation(), generation })) return 'not-attempted'
+      const deadlineAt = performance.now() + WAKE_SEND_TIMEOUT_MS
       const result = await deliverIntoCodexThread({
+        signal, guard: { writable: () => !signal.aborted && attendant.mayWrite(), remainingMs: () => Math.max(0, deadlineAt - performance.now()) },
         threadId: queue.threadId, cwd, env: deps.env, adapters, text,
         begin: () => attendant.mayWrite() && mayWake() &&
           hasSessionInputs(sessionId, deps.env, { incarnation: attendant.incarnation(), generation }),
       })
-      return result.status === 'written'
+      return result.status === 'written' || result.status === 'failed' ? result.status : 'not-attempted'
     }, logger)
     return 'done'
   }

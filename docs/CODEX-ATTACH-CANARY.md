@@ -50,9 +50,12 @@ server, identified by its real path, size and modification time, and caches
 the result in `<state>/notifai/codex-attach-canary.json`. It runs in the
 background the first time a shared-server session needs it, again for each
 new binary, and at most once a day after a behavioural failure. A check that
-cannot start (step 0, including a failed private-server launch or disk error)
-retries after 5 seconds, doubling the delay up to 5 minutes. Its consecutive
-startup failures and retry timing survive a Hub restart. Until a binary passes,
+cannot start because of an environmental error (disk or process resource limits,
+spawn failure or timeout) retries after 5 seconds, doubling up to 5 minutes.
+After eight consecutive failures it returns to the daily cadence. Permanent
+step-0 contract failures, including changed commands or an invalid private socket,
+use the daily cadence immediately. Consecutive startup failures and retry timing
+survive a Hub restart; persistence failures also back off in Hub memory. Until a binary passes,
 nothing on that server is woken while idle (answers wait for the next prompt)
 and nothing is ended by the watch.
 
@@ -90,4 +93,6 @@ never marks the answer delivered. The session records a `wake_fault` in
 alongside the retained input. A fault is recovered only when a wake is observed
 or input is handed in, not when a queue merely accepts it. Uncertain native
 queue writes keep their existing identity-based reconciliation before retry,
-so retrying cannot bypass an earlier possibly accepted write.
+so retrying cannot bypass an earlier possibly accepted write. Recovered fault
+diagnostics expire after an hour and appear alongside the current wake route.
+Daily behavioural checks are route diagnostics, not waiting-input wake faults.

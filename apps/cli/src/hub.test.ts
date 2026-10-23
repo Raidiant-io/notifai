@@ -1,9 +1,8 @@
-import { spawn } from 'node:child_process'
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs'
 import { createConnection, createServer, type Socket } from 'node:net'
 import os from 'node:os'
 import path from 'node:path'
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import type {
   AttendanceBatchRequestT,
   AttendanceBatchResponse,
@@ -19,7 +18,9 @@ import { beginSessionIncarnation, lifecycleStamp, markSessionEnded, readSessionE
 import { claimQuestionPush, questionPushHeld, releaseQuestionPush } from './hook-question-lock.js'
 import { hookRunCommand } from './commands-hook-run.js'
 import type { CodexWakeAdapters } from './codex-wake.js'
-import { hasSessionInputs, sessionInputWake, stageSessionMessages } from './session-inputs.js'
+import * as sessionState from './hook-session-state.js'
+import { runWakeCommand } from './wake-support.js'
+import { hasSessionInputs, observeSessionInputWake, sessionInputWake, stageSessionMessages } from './session-inputs.js'
 import { attendantStatusPath, recordTurnEnd, recordTurnStart } from './session-attendant-state.js'
 import { ExchangeDriver, type AttendedSession, type ExchangeHost } from './hub-exchange.js'
 import { credentialGenerationPath, encodeFrame, ensurePrivateDirectory, FrameDecoder, fnv64Hex, hubLockPath, hubSocketPath, requestHub } from './hub-ipc.js'
@@ -1193,6 +1194,52 @@ describe('hub end confirmation and writers', () => {
     return Object.assign(service, { note: () => { pending = true; service.release() } })
   }
 
+  it.each(['failed', 'cancelled', 'unavailable'] as const)('paces Claude hub handoffs only after an actual send failure (%s)', async result => {
+    const env = hubEnv()
+    const host = await standIn()
+    describeHost(env, host)
+    recordSessionNotified(SESSION, env, Date.now())
+    // Like the service, the note comes back on every exchange until it is acknowledged.
+    let noted = false
+    const service = fakeService({ batch: (body) => ({ message_cursor: noted ? 'c2' : 'c1',
+      sessions: body.sessions.map((entry) => entry.state !== 'running' ? { session_id: entry.session_id, status: 'withdrawn' as const } : {
+        session_id: entry.session_id, status: 'attending' as const, generation: entry.generation ?? 1, lease_remaining_ms: 120_000,
+        message_cursor: noted ? 'c2' : 'c1', messages: noted && entry.accepts_messages ? [{ message_id: 'sm_r1', kind: 'note' as const, body: 'Later',
+          created_at: new Date(0).toISOString(), agent_acknowledgement_text_required: false }] : [] }) }) })
+    const peers = new Map<number, PeerCredentials>()
+    let offset = 0
+    const { hub, done } = startHub(env, service, peers, memoryStore(), 100, {}, {
+      clock: { wall: () => Date.now() + offset, monotonic: () => performance.now() + offset },
+    })
+    let child: FakeChild | undefined
+    try {
+      await hubListening(env)
+      child = await writerChild(env, peers, 900199, host)
+      await until(() => service.batches.some(batch => batch.waitSeconds > 0))
+      const write = vi.spyOn(hub.sessions.get(SESSION)!, 'writeClaude').mockResolvedValue(result)
+      noted = true
+      service.release()
+      await until(() => write.mock.calls.length > 0)
+      if (result === 'failed') {
+        // Safety ticks and fresh exchanges keep coming; none writes again inside the backoff.
+        await new Promise(resolve => setTimeout(resolve, 600))
+        expect(write).toHaveBeenCalledTimes(1)
+        expect(readSessionState(SESSION, env).input_wake_fault).toMatchObject({ kind: 'transport', attempts: 1 })
+        offset += 5_100
+        await until(() => write.mock.calls.length === 2)
+        expect(readSessionState(SESSION, env).input_wake_fault).toMatchObject({ kind: 'transport', attempts: 2 })
+      } else {
+        // Nothing was attempted: no fault, and the next tick tries again without a backoff.
+        await until(() => write.mock.calls.length >= 2)
+        expect(readSessionState(SESSION, env).input_wake_fault).toBeUndefined()
+      }
+    } finally {
+      vi.restoreAllMocks(); child?.socket.destroy(); hub.requestExit('test')
+      let gone = false; void done.then(() => { gone = true })
+      while (!gone) { service.release(); await new Promise(resolve => setTimeout(resolve, 50)) }
+    }
+  })
+
   const ended = (service: FakeService): boolean => service.batches.some((batch) => batch.body.sessions.some((entry) => entry.state === 'ended'))
   const question = (env: NodeJS.ProcessEnv): void => updateSessionState(SESSION, env, (state) => ({ ...state,
     pending: [{ question: 'Deploy?', summary: 'Deploy?', request_id: 'req_r1', collapse_key: 'ck_r1', device_ids: ['dev_r1'] } as never] }))
@@ -1870,6 +1917,8 @@ describe('hub and Codex SessionEnd', () => {
       clock?: HubOptions['clock']
       state?: (input: AttachInput) => Promise<Attach> | Attach
       watchMs?: number
+      wake?: CodexWakeAdapters
+      hostKind?: HubOptions['codexHostKind']
     }) {
       const env = hubEnv()
       recordSessionNotified(SESSION, env, Date.now())
@@ -1887,7 +1936,7 @@ describe('hub and Codex SessionEnd', () => {
           : { session_id: entry.session_id, status: 'withdrawn' as const }),
       }) })
       const peers = new Map<number, PeerCredentials>()
-      const { hub, done } = startHub(env, service, peers, memoryStore(), 100, { codexHostKind: () => 'shared-server', wake }, {
+      const { hub, done } = startHub(env, service, peers, memoryStore(), 100, { codexHostKind: options.hostKind ?? (() => 'shared-server'), wake: options.wake ?? wake }, {
         codexAttach: {
           verified: () => typeof options.verified === 'function' ? options.verified() : options.verified ?? true,
           state: async (input) => { asked.push(input); return await (options.state?.(input) ?? { state: 'unknown', confirmed: false, reason: 'test' }) },
@@ -1988,9 +2037,119 @@ describe('hub and Codex SessionEnd', () => {
         offset += 5_000
         await run.deliverNote()
         expect(checks).toBe(2)
-        expect({ queued: run.queued, asked: run.asked.length, fault: readSessionState(SESSION, run.env).input_wake_fault, wake: readSessionState(SESSION, run.env).input_wake }).toMatchObject({ queued: [SESSION] })
+        expect(run.queued).toEqual([SESSION])
+        expect(readSessionState(SESSION, run.env).input_wake).toMatchObject({ queued: true })
+        expect(readSessionState(SESSION, run.env).input_wake_fault).toMatchObject({ kind: 'codex-check', attempts: 1 })
+        expect(readSessionState(SESSION, run.env).input_wake_fault?.recovered_at).toBeUndefined()
+        const now = Date.now() + offset
+        observeSessionInputWake(SESSION, run.env, sessionInputWake(), now)
+        expect(readSessionState(SESSION, run.env).input_wake_fault?.recovered_at).toBe(now)
         expect(reportedEnd(run.service)).toBe(false)
       } finally { await run.stop() }
+    })
+
+    it('keeps state-write failures paced in memory while the hub stays alive', async () => {
+      let offset = 0
+      const run = await sharedServer({ verified: false,
+        clock: { wall: () => Date.now() + offset, monotonic: () => performance.now() + offset },
+        checkBuild: async () => { throw new Error('ENOSPC writing canary result') },
+      })
+      const original = sessionState.updateSessionState
+      const persist = vi.spyOn(sessionState, 'updateSessionState').mockImplementation((id, env, update) =>
+        original(id, env, state => {
+          const next = update(state)
+          if (next.input_wake_fault !== state.input_wake_fault) throw new Error('ENOSPC writing session fault')
+          return next
+        }))
+      try {
+        await run.deliverNote(2)
+        expect(run.builds).toHaveLength(1)
+        offset += 5_100
+        await run.deliverNote(2)
+        expect(run.builds).toHaveLength(2)
+        offset += 5_100
+        await run.deliverNote(2)
+        expect(run.builds).toHaveLength(2)
+        expect(run.hub.sessions.has(SESSION)).toBe(true)
+        expect(run.pending()).toBe(true)
+      } finally { persist.mockRestore(); await run.stop() }
+    })
+
+    it('does not turn a daily behavioural failure into a waiting-input fault', async () => {
+      const run = await sharedServer({ verified: false, checkBuild: async () => ({ outcome: 'failed', step: 2, codexVersion: '0.163.0' }) })
+      try {
+        await run.deliverNote(3)
+        expect(run.builds).toHaveLength(1)
+        expect(readSessionState(SESSION, run.env).input_wake_fault).toBeUndefined()
+        expect(run.pending()).toBe(true)
+      } finally { await run.stop() }
+    })
+
+    it('keeps the different-process idle wake route open while the shared-server check waits', async () => {
+      const run = await sharedServer({ verified: false, hostKind: pid => pid === HARNESS.pid ? 'shared-server' : 'other' })
+      try {
+        const session = run.hub.sessions.get(SESSION)!
+        expect(run.hub.codexIdleWake(session, HARNESS)).toBe(false)
+        expect(run.hub.codexIdleWake(session, { pid: HARNESS.pid + 1, start: HARNESS.start })).toBe(true)
+      } finally { await run.stop() }
+    })
+
+    it('does not fault or wake a session that ends while its retry is running', async () => {
+      let offset = 0
+      let finish!: (result: { outcome: 'failed'; step: number; detail: string; codexVersion: null }) => void
+      let checks = 0
+      const run = await sharedServer({ verified: false,
+        clock: { wall: () => Date.now() + offset, monotonic: () => performance.now() + offset },
+        checkBuild: async () => ++checks === 1
+          ? { outcome: 'failed', step: 0, detail: 'ENOSPC', codexVersion: null }
+          : new Promise(resolve => { finish = resolve }),
+      })
+      try {
+        await run.deliverNote(2)
+        offset += 5_100
+        await run.deliverNote(2)
+        expect(checks).toBe(2)
+        markSessionEnded(SESSION, run.env, Date.now() + offset)
+        const fault = readSessionState(SESSION, run.env).input_wake_fault
+        finish({ outcome: 'failed', step: 0, detail: 'ENOSPC', codexVersion: null })
+        await run.deliverNote(2)
+        expect(run.queued).toEqual([])
+        expect(readSessionState(SESSION, run.env).input_wake_fault).toEqual(fault)
+      } finally { await run.stop() }
+    })
+
+    it('does not fault an idle session with no input when a host check fails', async () => {
+      const run = await sharedServer({ verified: false, checkBuild: async () => ({ outcome: 'failed', step: 0, detail: 'ENOSPC', codexVersion: null }) })
+      try {
+        await run.hub.checkCodexAttach(run.hub.sessions.get(SESSION)!, 'watch')
+        await until(() => run.builds.length > 0)
+        await new Promise(resolve => setTimeout(resolve, 50))
+        expect(readSessionState(SESSION, run.env).input_wake_fault).toBeUndefined()
+      } finally { await run.stop() }
+    })
+
+    it('kills a stalled Codex child at the hub send deadline and retains the input', async () => {
+      let pid: number | undefined
+      let killed = false
+      const run = await sharedServer({ state: () => ({ state: 'attached', confirmed: true, reason: 'terminal-live+joined' }),
+        wake: { available: () => true, queue: async (_thread, _cwd, _text, _spawn, signal) => {
+          try { await runWakeCommand(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { signal, onSpawn: child => { pid = child } }) }
+          finally { killed = true }
+        } },
+      })
+      // Keep real clocks and all other timers; shorten only the production send budget.
+      const timeout = globalThis.setTimeout
+      const timer = vi.spyOn(globalThis, 'setTimeout').mockImplementation(((fn, ms, ...args) =>
+        timeout(fn, ms === 30_000 ? 100 : ms, ...args)) as typeof setTimeout)
+      try {
+        await run.deliverNote(3)
+        await until(() => killed)
+        expect(pid).toBeTypeOf('number')
+        await until(() => !pidExists(pid!))
+        expect(readSessionState(SESSION, run.env).input_wake_fault).toMatchObject({ kind: 'transport', attempts: 1 })
+        expect(readSessionState(SESSION, run.env).input_wake).toBeUndefined()
+        expect(run.pending()).toBe(true)
+      } finally { timer.mockRestore(); if (pid !== undefined && pidExists(pid)) process.kill(pid, 'SIGKILL'); await run.stop() }
     })
 
     it('watches an open question\'s conversation and expires its questions once no terminal shows it, ignoring the SessionEnd its own request causes', async () => {

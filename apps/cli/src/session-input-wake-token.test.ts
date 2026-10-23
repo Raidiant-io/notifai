@@ -1,12 +1,14 @@
 import { mkdtempSync, rmSync } from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import { afterEach, describe, expect, it } from 'vitest'
-import { beginSessionIncarnation, lifecycleStamp, readSessionState } from './hook-session-state.js'
+import { afterEach, describe, expect, it, vi } from 'vitest'
+import * as sessionState from './hook-session-state.js'
+import { beginSessionIncarnation, lifecycleStamp, readSessionState, markSessionEnded } from './hook-session-state.js'
 import { currentProcessIdentity } from './process-identity.js'
 import {
   LOST_WAKE_MS,
   inputWakeOverdue,
+  inputWakeFaultContext,
   inputWakeToken,
   observeSessionInputWake,
   sessionInputWake,
@@ -16,7 +18,7 @@ import {
 
 const SESSION = 'claude-wake-token'
 const roots: string[] = []
-afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }) })
+afterEach(() => { vi.restoreAllMocks(); for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }) })
 
 function setup() {
   const root = mkdtempSync(path.join(os.tmpdir(), 'notifai-wake-token-'))
@@ -26,7 +28,7 @@ function setup() {
   const sent: string[] = []
   let now = 1_000_000
   const wake = (options: { replaceLost?: () => boolean } = {}) =>
-    wakeSessionInputs(SESSION, env, async (text) => { sent.push(text); return true }, undefined,
+    wakeSessionInputs(SESSION, env, async (text) => { sent.push(text); return 'written' as const }, undefined,
       { unique: true, now: () => now, ...options })
   return { env, sent, wake, advance: (ms: number) => { now += ms }, clock: () => now }
 }
@@ -114,7 +116,7 @@ describe('Claude input wakes', () => {
     const wake = () => wakeSessionInputs(SESSION, h.env, async () => {
       attempts += 1
       if (failing) throw new Error(message)
-      return true
+      return 'written'
     }, undefined, { now: h.clock })
     await expect(wake()).resolves.toBeUndefined()
     expect(readSessionState(SESSION, h.env).input_wake_fault).toMatchObject({ attempts: 1, kind: 'transport' })
@@ -138,6 +140,42 @@ describe('Claude input wakes', () => {
     expect(readSessionState(SESSION, h.env).input_wake_fault?.recovered_at).toBe(h.clock())
   })
 
+  it('does not throw when fault persistence fails on a full disk', () => {
+    const h = setup()
+    vi.spyOn(sessionState, 'updateSessionState').mockImplementation(() => { throw new Error('ENOSPC') })
+    expect(() => recordInputWakeFailure(SESSION, h.env, 'transport')).not.toThrow()
+  })
+
+  it('does not fault a send that was not attempted and allows an immediate later send', async () => {
+    const h = setup()
+    await wakeSessionInputs(SESSION, h.env, async () => 'not-attempted', undefined, { now: h.clock })
+    expect(readSessionState(SESSION, h.env).input_wake_fault).toBeUndefined()
+    expect(readSessionState(SESSION, h.env).input_wake).toBeUndefined()
+    await h.wake()
+    expect(h.sent).toHaveLength(1)
+  })
+
+  it('does not retry when the session ends during backoff', async () => {
+    const h = setup()
+    await wakeSessionInputs(SESSION, h.env, async () => { throw new Error('ENOSPC') }, undefined, { now: h.clock })
+    markSessionEnded(SESSION, h.env, h.clock())
+    h.advance(10_000)
+    await h.wake()
+    expect(h.sent).toEqual([])
+  })
+
+  it('allows a working wake route during a daily deferred Codex check', async () => {
+    const h = setup()
+    recordInputWakeFailure(SESSION, h.env, 'codex-check', h.clock(), 24 * 60 * 60_000)
+    await h.wake()
+    expect(h.sent).toHaveLength(1)
+    expect(readSessionState(SESSION, h.env).input_wake).toMatchObject({ queued: true })
+  })
+
+  it('omits a recovered fault after native delivery consumed the waiting input', () => {
+    expect(inputWakeFaultContext({ input_wake_fault: { kind: 'transport', attempts: 1, first_at: 1, last_at: 2, retry_at: 3, recovered_at: 2 } })).toBeNull()
+  })
+
   it('does not let a cached failed check replace a newer transport fault', async () => {
     const h = setup()
     await wakeSessionInputs(SESSION, h.env, async () => { throw new Error('socket closed') }, undefined, { now: h.clock })
@@ -149,15 +187,15 @@ describe('Claude input wakes', () => {
 
   it('recovers a stuck wake reservation while its writer still runs, and fences its late failure', async () => {
     const h = setup()
-    let finish!: (accepted: boolean) => void
-    const stuck = wakeSessionInputs(SESSION, h.env, async () => new Promise<boolean>(resolve => { finish = resolve }), undefined, { now: h.clock })
+    let finish!: (accepted: 'written' | 'failed') => void
+    const stuck = wakeSessionInputs(SESSION, h.env, async () => new Promise<'written' | 'failed'>(resolve => { finish = resolve }), undefined, { now: h.clock })
     await h.wake()
     expect(h.sent).toHaveLength(0)
     h.advance(60_000)
     await h.wake()
     expect(h.sent).toHaveLength(1)
     expect(readSessionState(SESSION, h.env).input_wake_fault).toMatchObject({ kind: 'transport', attempts: 1 })
-    finish(false)
+    finish('failed')
     await stuck
     expect(readSessionState(SESSION, h.env).input_wake).toMatchObject({ queued: true })
     expect(readSessionState(SESSION, h.env).input_wake_fault?.attempts).toBe(1)
@@ -165,11 +203,11 @@ describe('Claude input wakes', () => {
 
   it('times out a stalled transport, retains a fault, and ignores its late acceptance', async () => {
     const h = setup()
-    let finish!: (accepted: boolean) => void
+    let finish!: (accepted: 'written' | 'failed') => void
     let signal: AbortSignal | undefined
     const stuck = wakeSessionInputs(SESSION, h.env, async (_text, abort) => {
       signal = abort
-      return new Promise<boolean>(resolve => { finish = resolve })
+      return new Promise<'written' | 'failed'>(resolve => { finish = resolve })
     }, undefined, { now: h.clock, sendTimeoutMs: 10 })
     let deadline: ReturnType<typeof setTimeout> | undefined
     try {
@@ -184,13 +222,13 @@ describe('Claude input wakes', () => {
       h.advance(5_000)
       await h.wake()
       const replacement = readSessionState(SESSION, h.env).input_wake
-      finish(true)
+      finish('written')
       await stuck
       expect(readSessionState(SESSION, h.env).input_wake).toEqual(replacement)
       expect(h.sent).toHaveLength(1)
     } finally {
       if (deadline !== undefined) clearTimeout(deadline)
-      finish(false)
+      finish('failed')
       await stuck
     }
   })

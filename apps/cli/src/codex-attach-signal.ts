@@ -259,6 +259,8 @@ export interface CodexAttachCanaryResult {
   step?: number
   detail?: string
   checkedAt: number
+  /** A resource, process-start or timeout failure, rather than a contract failure. */
+  environmental?: boolean
   /** Consecutive failures to run the check, rather than failed behaviour. */
   startFailures?: number
 }

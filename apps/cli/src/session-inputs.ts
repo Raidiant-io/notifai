@@ -18,7 +18,7 @@ import { readSessionIncarnation, readSessionState, recordSessionNotified, sessio
 import type { AcceptedAnswerDelivery, AnsweredPending, EscalationDeliveryRoute, SessionState } from './hook-types.js'
 import { sessionMessageContext } from './injection-render.js'
 import { currentProcessIdentity, processIdentityLiveness } from './process-identity.js'
-import type { Logger } from './logging.js'
+import { bootstrapLogger, type Logger } from './logging.js'
 import { answerWriterGone, beginHandOff, readDeliveryJournal, type DeliveryLease, type NativeAnswerPresentation, type SequencerDeps } from './session-delivery.js'
 import { CodexControlNotSent } from './codex-native-control.js'
 import { connectCodexQueue, type QueueControl } from './codex-queue-control.js'
@@ -92,12 +92,18 @@ function clearUnansweredWakes(state: SessionState): SessionState {
 /** Failed transport attempts are paced independently of wakes the agent saw. */
 export function inputWakeRetryDeferred(state: SessionState, now: number): boolean {
   const fault = state.input_wake_fault
-  return fault !== undefined && fault.recovered_at === undefined && now >= fault.last_at && now < fault.retry_at
+  return fault !== undefined && fault.kind !== 'codex-check' && fault.recovered_at === undefined && now >= fault.last_at && now < fault.retry_at
 }
 
 export function recordInputWakeFailure(sessionId: string, env: NodeJS.ProcessEnv,
-  kind: NonNullable<SessionState['input_wake_fault']>['kind'], now = Date.now(), retryMs?: number): void {
-  updateSessionState(sessionId, env, state => withInputWakeFailure(state, kind, now, retryMs))
+  kind: NonNullable<SessionState['input_wake_fault']>['kind'], now = Date.now(), retryMs?: number, log?: Logger): void {
+  try {
+    updateSessionState(sessionId, env, state => withInputWakeFailure(state, kind, now, retryMs))
+  } catch (error) {
+    // Diagnostics must never take down the delivery loop, even on a full disk.
+    try { (log ?? bootstrapLogger({ env })).error('delivery.handoff', { route: 'input-wake', stage: 'fault-record-failed', session: sessionId,
+      message: error instanceof Error ? error.message : String(error) }) } catch { /* logging may share the full disk */ }
+  }
 }
 
 function withInputWakeFailure(state: SessionState, kind: NonNullable<SessionState['input_wake_fault']>['kind'], now: number, retryMs?: number): SessionState {
@@ -117,10 +123,19 @@ function recoverInputWakeFault(state: SessionState, now: number): SessionState {
     : { ...state, input_wake_fault: { ...state.input_wake_fault, recovered_at: now } }
 }
 
-/** Agent-facing diagnostic, repeated only after a new failed attempt. */
-export function inputWakeFaultContext(state: SessionState): string | null {
+export const INPUT_WAKE_RECOVERED_TTL_MS = 60 * 60_000
+
+export function visibleInputWakeFault(state: SessionState, now: number): SessionState['input_wake_fault'] {
   const fault = state.input_wake_fault
-  if (fault === undefined || (fault.reported_at ?? -1) >= fault.last_at) return null
+  return fault?.recovered_at !== undefined && now - fault.recovered_at >= INPUT_WAKE_RECOVERED_TTL_MS ? undefined : fault
+}
+
+/** Agent-facing diagnostic, repeated only after a new failed attempt. */
+export function inputWakeFaultContext(state: SessionState, waiting = (state.waiting_answers?.length ?? 0) > 0): string | null {
+  const fault = state.input_wake_fault
+  if (fault === undefined || (fault.reported_at ?? -1) >= fault.last_at ||
+      (fault.recovered_at !== undefined && fault.recovered_at >= fault.last_at &&
+        !waiting)) return null
   return 'Notifai could not wake this Agent Session for waiting User input. The input was kept for this turn; use any input supplied here, or run `notifai receive` once if none was supplied. Check `notifai doctor` for the delivery fault. Queue acceptance alone does not mean the agent read the answer.'
 }
 
@@ -129,9 +144,11 @@ export function markInputWakeFaultReported(sessionId: string, env: NodeJS.Proces
     ? { ...state, input_wake_fault: { ...state.input_wake_fault, reported_at: now } } : state)
 }
 
+export type InputWakeSendResult = 'written' | 'not-attempted' | 'failed'
+
 /** Atomically coalesce native wakes until one actually reaches its consumer. */
 export async function wakeSessionInputs(
-  sessionId: string, env: NodeJS.ProcessEnv, send: (text: string, signal: AbortSignal) => Promise<boolean>, log?: Logger,
+  sessionId: string, env: NodeJS.ProcessEnv, send: (text: string, signal: AbortSignal) => Promise<InputWakeSendResult>, log?: Logger,
   options: WakeOptions = {},
 ): Promise<void> {
   const incarnation = readSessionIncarnation(sessionId, env)?.incarnation ?? `session:${sessionId}`
@@ -166,17 +183,17 @@ export async function wakeSessionInputs(
         retry_in_ms: unanswered.presented_at + inputWakeBackoffMs(unanswered.count) - now() }) })
     return
   }
-  let sent = false
+  let sent: InputWakeSendResult = 'failed'
   const abort = new AbortController()
   let timer: ReturnType<typeof setTimeout> | undefined
   try {
     sent = await Promise.race([
       send(options.unique === true ? sessionInputWake(token) : sessionInputWake(), abort.signal),
-      new Promise<boolean>(resolve => { timer = setTimeout(() => { abort.abort(); resolve(false) }, options.sendTimeoutMs ?? WAKE_SEND_TIMEOUT_MS) }),
+      new Promise<InputWakeSendResult>(resolve => { timer = setTimeout(() => { abort.abort(); resolve('failed') }, options.sendTimeoutMs ?? WAKE_SEND_TIMEOUT_MS) }),
     ])
-    log?.info('delivery.handoff', { route: 'input-wake', stage: sent ? 'queued' : 'deferred', session: sessionId,
+    log?.info('delivery.handoff', { route: 'input-wake', stage: sent === 'written' ? 'queued' : 'deferred', session: sessionId,
       ...(replacement ? { replacement } : {}) })
-    if (sent) updateSessionState(sessionId, env, (state) => state.input_wake?.token === token
+    if (sent === 'written') updateSessionState(sessionId, env, (state) => state.input_wake?.token === token
       ? { ...state, input_wake: { ...state.input_wake, queued: true, queued_at: now() } } : state)
   } catch {
     // Only the content-free wake failed. Preserve User input for retry and
@@ -185,9 +202,9 @@ export async function wakeSessionInputs(
   } finally {
     if (timer !== undefined) clearTimeout(timer)
     abort.abort()
-    if (!sent) updateSessionState(sessionId, env, (state) => {
+    if (sent !== 'written') updateSessionState(sessionId, env, (state) => {
       if (state.input_wake?.token !== token) return state
-      const next = { ...withInputWakeFailure(state, 'transport', now()) }
+      const next = { ...(sent === 'failed' ? withInputWakeFailure(state, 'transport', now()) : state) }
       delete next.input_wake
       return next
     })
@@ -280,7 +297,7 @@ export function sessionInputRoute(sessionId: string, env: NodeJS.ProcessEnv, rou
         commitDelivery: () => !signal.aborted && !sessionHasEnded(sessionId, env),
         writeGuard: { writable: () => !signal.aborted && !sessionHasEnded(sessionId, env), remainingMs: () => WAKE_SEND_TIMEOUT_MS },
       })
-      return result.acknowledgement === 'delivered'
+      return result.acknowledgement === 'delivered' ? 'written' : 'not-attempted'
     }, log, wake)
   } }
 }
@@ -414,7 +431,7 @@ export async function wakeCodexSessionInputs(input: {
         return control.add(token, text)
       },
     } })
-    if (elected !== null && readInputWakes(input).some(attempt => attempt.token === elected.token && ['unknown', 'cancelled'].includes(attempt.phase))) {
+    if (elected !== null && readInputWakes(input).some(attempt => attempt.token === elected.token && attempt.phase === 'unknown')) {
       recordInputWakeFailure(input.sessionId, input.env, 'transport')
     }
     return true
@@ -624,12 +641,15 @@ async function drainSessionInputsOnce(input: {
       return false
     }
     outputAttempted = true
-    const fault = inputWakeFaultContext(current)
+    const fault = inputWakeFaultContext(current, true)
     if (prepared === null) {
       input.write(fault === null ? text : `${fault}\n\n${text}`)
       if (fault !== null) markInputWakeFaultReported(deps.sessionId, deps.env, current.input_wake_fault!.last_at, deps.wall())
     }
-    else await prepared.write(() => input.mayWrite() && handOff.writable())
+    else {
+      await prepared.write(() => input.mayWrite() && handOff.writable())
+      if (fault !== null) markInputWakeFaultReported(deps.sessionId, deps.env, current.input_wake_fault!.last_at, deps.wall())
+    }
     await handOff.finish('written')
     deps.log?.info('delivery.handoff', {
       route: prepared === null ? 'input-drain' : 'native-answer', stage: 'presented', answers: readyAnswers.length, messages: readyMessages.length,
