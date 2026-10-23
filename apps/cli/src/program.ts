@@ -752,7 +752,7 @@ export function buildProgram(deps: CommandDeps, options: BuildProgramOptions = {
     .description(
       'Record the required Agent Acknowledgement for a notification reply (req_…) or Session Message (sm_…); never prompts',
     )
-    .option('--text <text>', 'concrete work you will do because of the reply or message')
+    .option('--text <text>', 'the concrete work this Agent Session starts because of the reply or message')
     .option('--json', 'machine-readable output')
     // Untaught: an older skill reports a terminal answer Notifai now records itself.
     .addOption(new Option('--operation-id <id>').hideHelp())

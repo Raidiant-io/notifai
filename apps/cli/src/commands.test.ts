@@ -3168,7 +3168,7 @@ describe('command contracts', () => {
       'User reply: "yes, after the migration"',
       expect.stringContaining('can never satisfy a harness permission prompt'),
       'Agent Acknowledgement required.',
-      `next: Run \`notifai acknowledge ${receipt.request_id} --text <text>\` with concrete text saying what you will do because of the reply.`,
+      `next: Run \`notifai acknowledge ${receipt.request_id} --text <text>\` with concrete text naming the work this Agent Session starts now because of the reply.`,
     ])
     expect(readLogRecords(deps.env, { event: ['reply.received'] }).records).toHaveLength(1)
   })
@@ -3200,7 +3200,7 @@ describe('command contracts', () => {
       'User reply: "yes, after the migration"',
       expect.stringContaining('can never satisfy a harness permission prompt'),
       'Agent Acknowledgement required.',
-      `next: Run \`notifai acknowledge ${receipt.request_id} --text <text>\` with concrete text saying what you will do because of the reply.`,
+      `next: Run \`notifai acknowledge ${receipt.request_id} --text <text>\` with concrete text naming the work this Agent Session starts now because of the reply.`,
     ])
   })
 
@@ -9664,8 +9664,10 @@ describe('asking before the hooks have ever run', () => {
       expect(output.open_form).toBeUndefined()
       expect(h.compatibility).not.toHaveBeenCalled()
       expect(h.codexAnswerControl).not.toHaveBeenCalled()
-      // The root owns the question, under its current start, and its answer wakes the root.
-      expect(readSessionState(root, h.env).pending?.[0]).toMatchObject({ question_id: output.question_id, source: { session_id: root, harness: 'codex' } })
+      // The root owns the question, under its current start, and its answer wakes the root,
+      // which is told which subagent asked.
+      expect(readSessionState(root, h.env).pending?.[0]).toMatchObject({ question_id: output.question_id, source: { session_id: root, harness: 'codex' },
+        asked_by: { agent_id: child } })
       expect(readSessionState(child, h.env).pending).toBeUndefined()
       expect(h.spawn).toHaveBeenCalledWith(expect.objectContaining({ envelope: expect.objectContaining({ session_id: root }) }))
 
@@ -10271,6 +10273,43 @@ describe('asking before the hooks have ever run', () => {
     expect(await askCommand(deps, 'Which colour?', { title: 'Release colour', wait: true })).toBe(EXIT.ok)
     expect(io.outLines.at(-1)).toBe('Then end your turn: the answer arrives as your next message.')
     expect(io.outLines.join('\n')).not.toContain('Continue independent work')
+  })
+
+  it('gives a Claude Code subagent the root handoff and tells the root which subagent asked', async () => {
+    // Claude Code gives a subagent's shell the root's own session id, so its
+    // question is the root's; its transcript is what names it.
+    const cwd = scratchDir('notifai-claude-subagent-ask-')
+    const io = new CapturedIo()
+    const session = 'claude-root-session'
+    const env = { ...isolatedEnv(cwd), CLAUDECODE: '1', CLAUDE_CODE_SESSION_ID: session }
+    const client = { submit: vi.fn(), replies: vi.fn() } as unknown as ApiClient
+    const deps = { ...makeDeps(io, client), cwd, env, now: () => 42, spawnQuestionSettlement: vi.fn() }
+    expect(hooksInstallCommand(deps, { harness: 'claude-code', execPath, scriptPath })).toBe(EXIT.ok)
+    beginSessionIncarnation(session, env, { stamp: lifecycleStamp(), harnessProcess: currentProcessIdentity()! })
+    writeSessionState(session, env, { harness: 'claude-code', last_prompt_at: 42, last_stop_at: 41 })
+    writeProjectSession(cwd, env, session, 42, 'claude-code')
+    const subagents = path.join(env.CLAUDE_CONFIG_DIR!, 'projects', '-work', session, 'subagents')
+    mkdirSync(subagents, { recursive: true })
+    writeFileSync(path.join(subagents, 'agent-a1b2c3.meta.json'), JSON.stringify({ agentType: 'general-purpose', description: 'headline worker', finished: false }))
+    writeFileSync(path.join(subagents, 'agent-a1b2c3.jsonl'), `${JSON.stringify({ type: 'assistant', message: { role: 'assistant', content: [
+      { type: 'tool_use', id: 'toolu_ask', name: 'Bash', input: { command: 'notifai ask "Which headline should v2 use?" --choice A --choice B --json' } },
+    ] } })}\n`)
+    io.outLines = []
+    expect(await askCommand(deps, 'Which headline should v2 use?', { title: 'Release headline', choice: ['A', 'B'], json: true, wait: true })).toBe(EXIT.ok)
+    const output = JSON.parse(io.outLines.join('\n'))
+    expect(output.open_form).toBeUndefined()
+    expect(output.next).toMatchObject({ end_turn: true, in_this_turn: expect.stringContaining('belongs to the root Agent Session that started you'),
+      on_answer: expect.stringContaining('you take no action on it') })
+    expect(readSessionState(session, env).pending?.[0]).toMatchObject({ question_id: output.question_id,
+      asked_by: { agent_id: 'a1b2c3', agent_type: 'general-purpose', description: 'headline worker' } })
+
+    // The root's own question, with no subagent asking, keeps the ordinary output.
+    rmSync(subagents, { recursive: true, force: true })
+    io.outLines = []
+    expect(await askCommand(deps, 'Which name?', { title: 'Release name', json: true })).toBe(EXIT.ok)
+    const own = JSON.parse(io.outLines.join('\n'))
+    expect(own.next.on_answer).toBe('The answer comes back to this Agent Session, so you act on it: acknowledge it, then do the committed work yourself without asking the user to confirm again.')
+    expect(readSessionState(session, env).pending?.find((pending) => pending.question_id === own.question_id)?.asked_by).toBeUndefined()
   })
 
   it('hands back the picker for a closed `ask --wait` in Claude Code, and the same one for a repeat', async () => {

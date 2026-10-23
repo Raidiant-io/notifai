@@ -59,6 +59,7 @@ import {
 import {
   type EscalationDeliveryRoute,
   type HookContext,
+  type HookEnvelope,
   type HookHarness,
   type HookOutcome,
 } from './hook-types.js'
@@ -77,7 +78,8 @@ import { codexCardPostToolUse, codexPreToolUse } from './codex-question-hooks.js
 import { grokQuestionFormGate, unlinkedQuestionFormContext } from './unlinked-question-forms.js'
 import { spawnQuestionSettlement } from './question-settlement-process.js'
 import { QUESTION_WAITER_CEILING_SECONDS } from './question-timing.js'
-import { sessionActivationOutput, userPromptContextOutput } from './session-activation.js'
+import { rootGuidanceDigest, sessionActivationOutput, userPromptContextOutput } from './session-activation.js'
+import { GUIDANCE_NOT_GIVEN, claimGuidanceChange, compactedNotice, recordGuidanceGiven, startingCurrency } from './guidance-currency.js'
 import { currentProcessIdentity } from './process-identity.js'
 import { attendantSupport } from './session-attendant-probe.js'
 import { proveWindowsCodexHookSource } from './windows-hook-source.js'
@@ -114,7 +116,7 @@ const INTERNAL_HOOK_EVENTS = [
   'openclaw-turn-start', 'openclaw-turn-end', 'openclaw-list-pending',
   'openclaw-attendance-ready', 'openclaw-settlement',
   'openclaw-verify-prepared', 'maintenance', 'retirement', 'hub-handover',
-  'end-confirmation',
+  'end-confirmation', 'guidance-check',
 ] as const
 
 /**
@@ -582,6 +584,29 @@ export async function hookRunCommand(
       logger.error('hook.gate', { stage: 'hub-handover', outcome: 'ignored', ...failureData(err) })
     }
   }
+  // A plugin's turn start (Hermes): guidance that changed since this root
+  // session was given it, told once. Nothing else happens on this call.
+  if (event === 'guidance-check') {
+    start({ cwd })
+    let notice: string | undefined
+    try {
+      if (harness !== undefined && envelope.session_id !== undefined && lifecycleEnabled()) {
+        const digest = rootGuidanceDigest(cwd, deps.env)
+        if (envelope.compacted === true) {
+          recordGuidanceGiven(envelope.session_id, deps.env, digest)
+          notice = compactedNotice()
+        } else {
+          notice = claimGuidanceChange(envelope.session_id, deps.env, digest,
+            readSessionIncarnation(envelope.session_id, deps.env) !== null)
+        }
+      }
+    } catch (err) {
+      logger.error('hook.gate', { stage: 'guidance-currency', outcome: 'ignored', ...failureData(err) })
+    }
+    if (notice !== undefined) deps.io.out(notice)
+    logger.info('hook.end', { hook: event, outcome: notice === undefined ? 'current' : 'guidance-changed', decided: false })
+    return EXIT.ok
+  }
   // Grok's startup and prompt output never reaches the model, so the notices
   // other harnesses get at SessionStart ride on its activation instead, and a
   // later fault on the next tool result. Each is claimed only if printed.
@@ -593,7 +618,7 @@ export async function hookRunCommand(
     start({ cwd })
     let context: string | undefined
     try {
-      if (event === 'post-compact') resetGrokActivation(envelope.session_id!, deps.env)
+      if (event === 'post-compact') resetGrokActivation(envelope.session_id!, deps.env, true)
       else if (lifecycleEnabled()) {
         const { update, fault } = grokNotices()
         context = claimGrokActivation(envelope, cwd, deps.env, [update, fault].filter((notice): notice is PendingNotice => notice !== undefined))
@@ -659,9 +684,12 @@ export async function hookRunCommand(
       // every Project; the fault notice is guidance, so only a Project with
       // guidance on carries it.
       if (harness === 'codex') {
-        const faultNotice = lifecycleEnabled() ? cachedIntegrationFaultNotice({ ...deps, cwd }, harness) : undefined
+        const enabled = lifecycleEnabled()
+        const faultNotice = enabled ? cachedIntegrationFaultNotice({ ...deps, cwd }, harness) : undefined
+        // A busy turn learns of changed guidance at its next tool boundary.
+        const changed = enabled ? guidanceChangeFor(deps, harness, envelope, cwd) : undefined
         const notice = [cardContext, unlinkedQuestionFormContext(deps, envelope, harness, cwd),
-          takeCodexTerminalConflictContext(deps, envelope), faultNotice].filter(Boolean).join('\n\n') || undefined
+          takeCodexTerminalConflictContext(deps, envelope), faultNotice, changed].filter(Boolean).join('\n\n') || undefined
         let wrote = false
         const io = { ...deps.io, out: (line: string) => {
           wrote = true
@@ -752,6 +780,29 @@ export async function hookRunCommand(
     const faultNotice = guidanceOn && event === 'session-start' && harness !== undefined && harness !== 'grok'
       ? pendingIntegrationFaultNotice({ ...deps, cwd }, harness) : undefined
     const notices = [updateNotice, faultNotice].filter((part): part is PendingNotice => part !== undefined)
+    // A root session's record of the guidance it was given decides whether
+    // this start must also reload what it read before (`guidance-currency.ts`).
+    const owner = event === 'session-start' && envelope.session_id !== undefined && harness !== 'grok'
+    let digest: string | undefined
+    if (guidanceOn && owner) {
+      try {
+        digest = rootGuidanceDigest(cwd, deps.env)
+      } catch (err) {
+        logger.error('hook.gate', { stage: 'guidance-currency', outcome: 'ignored', ...failureData(err) })
+      }
+    }
+    const currencyFor = (compacted: boolean): string | undefined => {
+      if (digest === undefined) return undefined
+      try {
+        return startingCurrency({ sessionId: envelope.session_id!, env: deps.env, digest, source: envelope.source, compacted })
+      } catch {
+        return undefined
+      }
+    }
+    const recordGiven = (): void => {
+      if (!owner) return
+      recordGuidanceGiven(envelope.session_id!, deps.env, guidanceOn ? digest ?? GUIDANCE_NOT_GIVEN : GUIDANCE_NOT_GIVEN)
+    }
     if (harness === 'openclaw' && envelope.session_id !== undefined) {
       try {
         const sessionKey = envelope.session_id
@@ -783,15 +834,28 @@ export async function hookRunCommand(
           observeIntegration()
           // A conversation recorded while guidance was off gets its activation
           // at the first prompt after the Project is enabled.
-          if (!guidanceOn) return 'recorded'
-          if (generation.activationPrinted) return 'already-activated'
+          if (!guidanceOn) {
+            recordGiven()
+            return 'recorded'
+          }
+          // The conversation already carries its activation, unless a
+          // compaction summarized it away (the plugin finds it missing from
+          // the prompt's messages): then it is activated again.
+          const reactivate = generation.activationPrinted === true && envelope.compacted === true
+          if (generation.activationPrinted && !reactivate) {
+            const changed = owner && digest !== undefined ? claimGuidanceChange(sessionKey, deps.env, digest, true) : undefined
+            if (changed === undefined) return 'already-activated'
+            deps.io.out(changed)
+            return 'guidance-changed'
+          }
           const output = sessionActivationOutput(
             harness, event === 'session-start' ? 'SessionStart' : 'SubagentStart',
-            cwd, deps.env, notices,
+            cwd, deps.env, notices, false, owner ? currencyFor(reactivate) : undefined,
           )
           if (output === undefined || output.trim().length === 0) return 'activation-unavailable'
           writeOpenclawGeneration(sessionKey, deps.env, { ...generation, activationPrinted: true })
           deps.io.out(output)
+          recordGiven()
           return 'context-added'
         })
         logger.info('hook.end', {
@@ -812,9 +876,11 @@ export async function hookRunCommand(
         deps.env,
         notices,
         envelope.hermes_prompt_sections === 2,
+        owner ? currencyFor(envelope.compacted === true) : undefined,
       )
       : undefined
     if (stdout !== undefined) deps.io.out(stdout)
+    if (stdout !== undefined || !guidanceOn) recordGiven()
     let settlementRecovery: Record<string, unknown> = {}
     if (event === 'session-start' && envelope.session_id !== undefined) {
       try {
@@ -1114,8 +1180,8 @@ export async function hookRunCommand(
     let runElsewhere = false
     if (event === 'user-prompt-submit') {
       if (envelope.session_id !== undefined) observeSessionInputWake(envelope.session_id, deps.env, envelope.prompt, (deps.now ?? Date.now)())
-      const notice = lifecycleEnabled() && harness !== undefined && PROMPT_CONTEXT_REACHES_MODEL.has(harness)
-        ? cachedIntegrationFaultNotice({ ...deps, cwd }, harness) : undefined
+      const enabled = harness !== undefined && PROMPT_CONTEXT_REACHES_MODEL.has(harness) && lifecycleEnabled()
+      const notice = enabled ? cachedIntegrationFaultNotice({ ...deps, cwd }, harness) : undefined
       // A scripted run (`claude -p`, an SDK script, `codex exec`) of a conversation
       // another process hosts is not where the User is: nothing held for it is handed in here.
       const elsewhere = envelope.session_id !== undefined && scriptedRunElsewhere(deps, harness, envelope.session_id)
@@ -1133,6 +1199,10 @@ export async function hookRunCommand(
       }
       handedStdout = outcome.stdout
       if (notice !== undefined) outcome.stdout = appendIntegrationContext(outcome.stdout, notice, harness, 'UserPromptSubmit')
+      // Guidance that changed since this owner session read it, told once at
+      // its next turn. Not in a scripted run of a conversation hosted elsewhere.
+      const changed = enabled && !elsewhere ? guidanceChangeFor(deps, harness, envelope, cwd) : undefined
+      if (changed !== undefined) outcome.stdout = appendIntegrationContext(outcome.stdout, changed, harness, 'UserPromptSubmit')
       // A device answer returned through a picker that Claude Code never took
       // is still owed to the agent; this prompt carries it.
       if (harness === 'claude-code' && envelope.session_id !== undefined && envelope.agent_id === undefined && !elsewhere) {
@@ -1387,6 +1457,23 @@ export function codexRunElsewhere(sessionId: string, env: NodeJS.ProcessEnv, sou
 function scriptedRunElsewhere(deps: CommandDeps, harness: string | undefined, sessionId: string): boolean {
   if (harness === 'claude-code') return claudeRunElsewhere(sessionId, deps.env, claudeHookSourcePid(deps.env, deps.hookPlatform ?? process.platform))
   return harness === 'codex' && codexRunElsewhere(sessionId, deps.env, declaredHookSourcePid(deps))
+}
+
+/**
+ * The change notice for a root owner session whose guidance changed since it
+ * was given it (`guidance-currency.ts`), claimed. Only where the harness
+ * shows this hook's context to the model: Claude Code and Codex prompts, and
+ * Codex tool boundaries.
+ */
+function guidanceChangeFor(deps: CommandDeps, harness: HookHarness | undefined, envelope: HookEnvelope, cwd: string): string | undefined {
+  if ((harness !== 'claude-code' && harness !== 'codex') || envelope.session_id === undefined || envelope.agent_id !== undefined) return undefined
+  try {
+    return claimGuidanceChange(envelope.session_id, deps.env, rootGuidanceDigest(cwd, deps.env),
+      readSessionIncarnation(envelope.session_id, deps.env) !== null)
+  } catch {
+    // Guidance currency never fails a hook.
+    return undefined
+  }
 }
 
 /** Stable harness parent propagated by the managed adapter across child tools. */

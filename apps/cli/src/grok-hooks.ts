@@ -3,7 +3,8 @@
 import { createHash } from 'node:crypto'
 import type { ContinuationEvent, EscalationDeliveryRoute, HookEnvelope } from './hook-types.js'
 import { updateSessionState } from './hook-session-state.js'
-import { grokActivationContext } from './session-activation.js'
+import { grokActivationContext, rootGuidanceDigest } from './session-activation.js'
+import { compactedNotice, guidanceChangedNotice, guidanceGiven, GUIDANCE_NOT_GIVEN, recordGuidanceGiven, shippedSkill } from './guidance-currency.js'
 import type { PendingNotice } from './pending-notice.js'
 import { stopAnswerOutput } from './hook-acknowledgements.js'
 import { GrokLeaderSession } from './grok-leader.js'
@@ -28,10 +29,13 @@ export function grokHookEnvelope(input: HookEnvelope): HookEnvelope | null {
   }
 }
 
-export function resetGrokActivation(sessionId: string, env: NodeJS.ProcessEnv): void {
+/** Re-arm activation for the next tool boundary; `compacted` when a compaction summarized it away. */
+export function resetGrokActivation(sessionId: string, env: NodeJS.ProcessEnv, compacted = false): void {
   updateSessionState(sessionId, env, current => {
     const next = { ...current }
     delete next.grok_activation_context
+    if (compacted) next.grok_compacted = true
+    else delete next.grok_compacted
     return next
   })
 }
@@ -42,24 +46,34 @@ export function grokWorker(envelope: HookEnvelope): boolean {
 }
 
 /** The digest deduplicates unchanged guidance while allowing current User
- * guidance and role changes to reach the model at its next tool boundary.
- * It covers the guidance alone: a notice is shown once, so it must neither
- * repeat unchanged guidance nor be spent by an activation that is not shown.
- * A root activation carries the due notices that fit; a worker's carries none. */
+ * guidance, a changed skill and role changes to reach the model at its next
+ * tool boundary. A root activation sent again after a compaction or a change
+ * of guidance says what to reload (`guidance-currency.ts`). */
 export function claimGrokActivation(envelope: HookEnvelope, cwd: string, env: NodeJS.ProcessEnv,
   notices: readonly PendingNotice[] = []): string | undefined {
-  if (envelope.session_id === undefined) return undefined
+  const sessionId = envelope.session_id
+  if (sessionId === undefined) return undefined
   const worker = grokWorker(envelope)
-  const context = grokActivationContext(cwd, env, worker)
-  const digest = createHash('sha256').update(context).digest('hex')
+  const plain = grokActivationContext(cwd, env, worker)
+  const digest = createHash('sha256').update(worker ? plain : `${plain}\n${shippedSkill().digest ?? ''}`).digest('hex')
   let claimed = false
-  updateSessionState(envelope.session_id, env, current => {
+  let compacted = false
+  updateSessionState(sessionId, env, current => {
     if (current.grok_activation_context === digest) return current
     claimed = true
-    return { ...current, grok_activation_context: digest }
+    compacted = current.grok_compacted === true
+    const next = { ...current, grok_activation_context: digest }
+    delete next.grok_compacted
+    return next
   })
   if (!claimed) return undefined
-  return worker || notices.length === 0 ? context : grokActivationContext(cwd, env, worker, notices)
+  if (worker) return plain
+  const guidance = rootGuidanceDigest(cwd, env)
+  const given = guidanceGiven(sessionId, env)
+  recordGuidanceGiven(sessionId, env, guidance)
+  const currency = compacted ? compactedNotice()
+    : given !== undefined && given !== GUIDANCE_NOT_GIVEN && given !== guidance ? guidanceChangedNotice() : undefined
+  return currency === undefined && notices.length === 0 ? plain : grokActivationContext(cwd, env, false, notices, currency)
 }
 
 /** Grok clips Stop feedback. Large answers travel by their immutable request

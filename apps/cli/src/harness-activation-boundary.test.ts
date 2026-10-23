@@ -87,10 +87,17 @@ describe('generated activation through the real isolated CLI', () => {
     const binding = projectBinding(cwd, process.env)
     if (binding === null) throw new Error('test Project binding unavailable')
     enableProject(binding)
-    expect((await activate({}, ctx))?.prependContext).toMatch(/Notifai.*enabled.*Project/i)
+    const activation = (await activate({}, ctx))?.prependContext
+    expect(activation).toMatch(/Notifai.*enabled.*Project/i)
     expect(readOpenclawGeneration(ctx.sessionKey, process.env)).toMatchObject({
       id: recorded!.id, recorded: true, activationPrinted: true,
     })
     expect(await activate({}, ctx)).toBeUndefined()
+    // The activation rides in the conversation; once a compaction summarizes it
+    // away, the next prompt activates the conversation again and says so.
+    expect(await activate({ messages: [{ role: 'user', content: [{ type: 'text', text: `${activation}\n\nHello` }] }] }, ctx)).toBeUndefined()
+    const again = (await activate({ messages: [{ role: 'user', content: 'Summary of the earlier conversation.' }] }, ctx))?.prependContext
+    expect(again).toMatch(/You own Notification Requests/)
+    expect(again).toMatch(/This conversation was compacted\./)
   })
 })

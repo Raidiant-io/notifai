@@ -75,8 +75,10 @@ Grok's permission mode or rules yourself.
 
 ## After a Notifai update
 
-The native hooks call the updated CLI; reread guidance in the current Agent
-Session. Changed hooks count as loaded once a natural callback shows them.
+The native hooks call the updated CLI. When the guidance this Agent Session read
+has changed, its next tool result carries the guidance again and says so, as it
+does after a compaction. Changed hooks count as loaded once a natural callback
+shows them.
 
 ## Question cards
 

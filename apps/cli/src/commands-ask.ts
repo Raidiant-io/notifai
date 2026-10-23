@@ -12,6 +12,7 @@ import { EXIT, authedClient, log, makeClient, type CommandDeps } from './command
 import type { ServiceIdentity } from './credentials.js'
 import { resolveAskingHarness } from './commands-harness-context.js'
 import { codexSubagentShell } from './codex-subagent.js'
+import { claudeAskingSubagent } from './claude-subagent.js'
 import {
   CODEX_FRESH_SESSION_USER_ACTION,
   CODEX_HOOK_APPROVAL_USER_ACTION,
@@ -24,7 +25,7 @@ import { loadConfig, type CliConfig } from './config.js'
 import { QuestionRegistrationChanged, registerQuestion, type RegisteredQuestion } from './hook-lifecycle.js'
 import { captureCandidates, findOpenEqualQuestion } from './question-guard.js'
 import { readSessionIncarnation, readSessionState, sessionHasEnded, updateSessionState } from './hook-session-state.js'
-import type { PendingQuestion } from './hook-types.js'
+import type { PendingQuestion, QuestionAsker } from './hook-types.js'
 import { CLAUDE_QUESTION_TOOL } from './claude-question-bindings.js'
 import { CLAUDE_PICKER_MATCHER } from './hook-events.js'
 import { handBackInput, recordHandBack, type ClaudePickerInput } from './claude-picker-handback.js'
@@ -439,12 +440,13 @@ function recordRegisteredQuestion(
   json = false,
   wait = false,
   rootKey?: string,
+  asker?: QuestionAsker,
 ): number | Promise<number> {
   const ordinary = () => persistRegisteredQuestion(deps, sessionId, built, draft, service, json, wait,
-    undefined, rootKey, undefined, rootKey !== undefined)
+    undefined, rootKey, undefined, rootKey !== undefined || asker !== undefined, asker)
   // A wait ends the turn, and Codex drops every open card at turn end, so a
   // waiting ask never links one. Codex offers no subagent the card at all.
-  if (wait || rootKey !== undefined) return ordinary()
+  if (wait || rootKey !== undefined || asker !== undefined) return ordinary()
   if (!codexCardAsks(deps, sessionId) || built.questions.length > 10 || formsDisabledInProject(deps, sessionId)) return ordinary()
   if (built.questions.some(question => question.multi === true)) return ordinary()
   const local = currentCodexQuestionContext(readSessionState(sessionId, deps.env), sessionId, deps.env)
@@ -524,7 +526,7 @@ const KEEP_SESSION_OPEN = 'Keep this Agent Session open while the question waits
 
 const ROUTE_NEUTRAL = 'Never say where the answer must arrive; it returns by whatever route the harness supports.'
 
-const ON_ANSWER = 'Acknowledge it, then resume the committed work without asking the user to confirm again.'
+const ON_ANSWER = 'The answer comes back to this Agent Session, so you act on it: acknowledge it, then do the committed work yourself without asking the user to confirm again.'
 
 /**
  * The end-the-turn wait: this Agent Session has a proven return path, so the
@@ -713,6 +715,7 @@ function persistRegisteredQuestion(
   ownerKey?: string,
   nativeUnavailable?: NativeUnavailable,
   worker = false,
+  asker?: QuestionAsker,
 ): number {
   let registered: RegisteredQuestion
   const credential = deps.store.load()
@@ -736,6 +739,7 @@ function persistRegisteredQuestion(
         ...(draft.project !== undefined ? { project: draft.project } : {}),
         ...(draft.source !== undefined ? { source: draft.source } : {}),
         ...(draft.presentation.media !== undefined ? { media: draft.presentation.media } : {}),
+        ...(asker === undefined ? {} : { asked_by: asker }),
       },
       (deps.now ?? Date.now)(),
       nativeAdmission,
@@ -899,7 +903,7 @@ function persistRegisteredQuestion(
     }
   }
   deps.io.out(
-    'When the answer arrives, resume the matching work without asking the user to confirm again. Frame this as work you will resume, not as approval you receive.',
+    'The answer comes back to this Agent Session, so you do the matching work yourself when it arrives, without asking the user to confirm again. Frame this as work you will resume, not as approval you receive.',
   )
   deps.io.out(
     'A Notifai answer cannot answer a harness permission prompt; leave those to the harness and user.',
@@ -935,6 +939,7 @@ async function uploadAskMedia(
   invocation: DraftInvocation,
   service: ServiceIdentity,
   rootKey?: string,
+  asker?: QuestionAsker,
 ): Promise<number> {
   const authed = authedClient(deps, config)
   if (!authed) {
@@ -978,7 +983,7 @@ async function uploadAskMedia(
   if (!ready.ok) {
     return askFailure(deps, flags, 'invalid_draft', 'draft', ready.error, 'fix the reported field and retry')
   }
-  return recordRegisteredQuestion(deps, sessionId, built, ready.draft, service, flags.json === true, flags.wait === true, rootKey)
+  return recordRegisteredQuestion(deps, sessionId, built, ready.draft, service, flags.json === true, flags.wait === true, rootKey, asker)
 }
 
 /**
@@ -1254,8 +1259,12 @@ export function askCommand(
   // costs no media round trip; registration repeats it under the session lock.
   const open = findOpenEqualQuestion(readSessionState(sessionId, deps.env), built.questions)
   const rootKey = active!.harness === 'codex' ? active!.rootKey : undefined
+  // A subagent asks for its root Agent Session; the root is told which one
+  // asked when the answer arrives (`claude-subagent.ts`, `codex-subagent.ts`).
+  const asker = askingSubagent(deps, active!.harness, sessionId, rootKey, built)
   if (open !== undefined) {
-    return reportAlreadyOpen(deps, sessionId, built, open.question_id!, flags.json === true, flags.wait === true, rootKey !== undefined)
+    return reportAlreadyOpen(deps, sessionId, built, open.question_id!, flags.json === true, flags.wait === true,
+      rootKey !== undefined || asker !== undefined)
   }
   if ((flags.image?.length ?? 0) > 0) {
     return uploadAskMedia(
@@ -1267,8 +1276,25 @@ export function askCommand(
       source.invocation,
       { base_url: credential.baseUrl, machine_id: credential.machineId },
       rootKey,
+      asker,
     )
   }
   return recordRegisteredQuestion(deps, sessionId, built, preflight.draft,
-    { base_url: credential.baseUrl, machine_id: credential.machineId }, flags.json === true, flags.wait === true, rootKey)
+    { base_url: credential.baseUrl, machine_id: credential.machineId }, flags.json === true, flags.wait === true, rootKey, asker)
+}
+
+/** The subagent asking for this root Agent Session, when the harness's own records name it. */
+function askingSubagent(deps: CommandDeps, harness: string, sessionId: string, rootKey: string | undefined,
+  built: BuiltQuestions): QuestionAsker | undefined {
+  if (rootKey !== undefined) {
+    const thread = deps.env['CODEX_THREAD_ID']
+    return thread === undefined || thread === '' ? undefined : { agent_id: thread.slice(0, 64) }
+  }
+  if (harness !== 'claude-code') return undefined
+  try {
+    return claudeAskingSubagent(sessionId, deps.env, built.questions.map((question) => question.text))
+  } catch {
+    // Naming the asker is an enrichment; the question is the root's either way.
+    return undefined
+  }
 }

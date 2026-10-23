@@ -4096,7 +4096,7 @@ describe('session-start hook', () => {
       // Root activation must reach owners before they discover or load the skill.
       expect(context).toMatch(/you own Notification Requests unless your assignment delegates them elsewhere/i)
       expect(context).toMatch(/another agent started this Agent Session with a task brief, that agent owns them unless the brief delegates them to you/i)
-      expect(context).toMatch(/load the Notifai skill before your first Notification Request/i)
+      expect(context).toMatch(/load the Notifai skill \(or read `[^`]+SKILL\.md`\) before your first Notification Request/i)
       expect(context).toMatch(/`notifai ask`.*same turn/i)
       expect(context).toMatch(/ask for readiness, never for a credential/i)
       expect(first.hookSpecificOutput?.additionalContext).toContain('# How to read this guidance')
@@ -9160,5 +9160,137 @@ describe('prompt-time fault notices', () => {
     } finally {
       cached.mockRestore()
     }
+  })
+})
+
+describe('guidance currency', () => {
+  const contextOf = (line: string | undefined): string => {
+    const value = JSON.parse(line ?? '{}') as { hookSpecificOutput?: { additionalContext?: string } }
+    return value.hookSpecificOutput?.additionalContext ?? ''
+  }
+  const changeGuidance = (h: Harness, text: string): void => {
+    const dir = personalProjectGuidanceDir(h.deps.cwd, h.env)
+    mkdirSync(dir, { recursive: true })
+    writeFileSync(path.join(dir, 'when-to-notify.md'), text)
+  }
+  const CHANGED = /^Notifai's guidance changed after this Agent Session read it\. Before your next Notification Request, load the Notifai skill again \(or read `[^`]+SKILL\.md`\) and run `notifai guidance`; follow them over what you read earlier\.$/
+  const COMPACTED = /This conversation was compacted\. Before your next Notification Request, load the Notifai skill again \(or read `[^`]+SKILL\.md`\) and run `notifai guidance`\./
+
+  it('tells an activated session once, at its next prompt, that the guidance it read changed', async () => {
+    const h = harness()
+    await hookRunCommand(h.deps, 'session-start', stdin({ session_id: 'current', source: 'startup' }), 'claude-code')
+    expect(contextOf(h.io.outLines[0])).not.toMatch(/guidance changed|was compacted/)
+    h.io.outLines = []
+    await hookRunCommand(h.deps, 'user-prompt-submit', stdin({ session_id: 'current', prompt: 'first' }), 'claude-code')
+    expect(h.io.outLines).toEqual([])
+    changeGuidance(h, '# When to notify\n\nOnly for deploys.\n')
+    await hookRunCommand(h.deps, 'user-prompt-submit', stdin({ session_id: 'current', prompt: 'second' }), 'claude-code')
+    expect(h.io.outLines).toHaveLength(1)
+    expect(contextOf(h.io.outLines[0])).toMatch(CHANGED)
+    h.io.outLines = []
+    await hookRunCommand(h.deps, 'user-prompt-submit', stdin({ session_id: 'current', prompt: 'third' }), 'claude-code')
+    expect(h.io.outLines).toEqual([])
+  })
+
+  it('has a compacted session reload, and a resumed one that read other guidance', async () => {
+    const h = harness()
+    const start = async (source: string): Promise<string> => {
+      h.io.outLines = []
+      await hookRunCommand(h.deps, 'session-start', stdin({ session_id: 'resumed', source }), 'codex')
+      return contextOf(h.io.outLines[0])
+    }
+    expect(await start('startup')).not.toMatch(/guidance changed|was compacted/)
+    const compacted = await start('compact')
+    expect(compacted).toMatch(COMPACTED)
+    // What to reload comes right after ownership, before the guidance itself.
+    expect(compacted.indexOf('This conversation was compacted')).toBeLessThan(compacted.indexOf('# How to read this guidance'))
+    expect(await start('resume')).not.toMatch(/guidance changed|was compacted/)
+    changeGuidance(h, '# When to notify\n\nOnly for deploys.\n')
+    expect(await start('resume')).toMatch(/Notifai's guidance changed after this Agent Session read it\./)
+    expect(await start('resume')).not.toMatch(/guidance changed/)
+  })
+
+  it('tells a session an earlier build activated once, and never one SessionStart did not activate', async () => {
+    const h = harness()
+    sessionStateModule.recordSessionStart('earlier-build', h.env, 'claude-code', h.deps.cwd)
+    await hookRunCommand(h.deps, 'user-prompt-submit', stdin({ session_id: 'earlier-build', prompt: 'p' }), 'claude-code')
+    expect(contextOf(h.io.outLines[0])).toMatch(CHANGED)
+    h.io.outLines = []
+    await hookRunCommand(h.deps, 'user-prompt-submit', stdin({ session_id: 'earlier-build', prompt: 'q' }), 'claude-code')
+    await hookRunCommand(h.deps, 'user-prompt-submit', stdin({ session_id: 'never-started', prompt: 'p' }), 'claude-code')
+    expect(h.io.outLines).toEqual([])
+  })
+
+  it('stays silent for a session started with guidance off', async () => {
+    const h = harness()
+    const binding = projectBinding(h.deps.cwd, h.env)!
+    disableProject(binding)
+    await hookRunCommand(h.deps, 'session-start', stdin({ session_id: 'off', source: 'startup' }), 'claude-code')
+    enableProject(binding, new Date(NOW))
+    changeGuidance(h, '# When to notify\n\nOnly for deploys.\n')
+    await hookRunCommand(h.deps, 'user-prompt-submit', stdin({ session_id: 'off', prompt: 'p' }), 'claude-code')
+    expect(h.io.outLines).toEqual([])
+  })
+
+  it('tells a busy Codex turn at its next tool boundary', async () => {
+    const h = harness()
+    await hookRunCommand(h.deps, 'session-start', stdin({ session_id: 'busy', source: 'startup' }), 'codex')
+    h.io.outLines = []
+    changeGuidance(h, '# When to notify\n\nOnly for deploys.\n')
+    await hookRunCommand(h.deps, 'post-tool-use', stdin({ session_id: 'busy', cwd: h.deps.cwd, tool_name: 'shell', turn_id: 't1' }), 'codex')
+    expect(h.io.outLines.map((line) => contextOf(line)).join('\n')).toMatch(/Notifai's guidance changed after this Agent Session read it\./)
+  })
+
+  it('answers a plugin turn check with what the session must reload, once', async () => {
+    const h = harness()
+    await hookRunCommand(h.deps, 'session-start', stdin({ session_id: 'hermes-main', hermes_prompt_sections: 2 }), 'hermes')
+    h.io.outLines = []
+    const check = async (extra: Record<string, unknown> = {}): Promise<string[]> => {
+      h.io.outLines = []
+      await hookRunCommand(h.deps, 'guidance-check', stdin({ session_id: 'hermes-main', ...extra }), 'hermes')
+      return h.io.outLines
+    }
+    expect(await check()).toEqual([])
+    expect((await check({ compacted: true })).join('\n')).toMatch(COMPACTED)
+    changeGuidance(h, '# When to notify\n\nOnly for deploys.\n')
+    expect((await check()).join('\n')).toMatch(CHANGED)
+    expect(await check()).toEqual([])
+  })
+
+  it('activates a compacted OpenClaw conversation again, and tells it of changed guidance once', async () => {
+    const h = harness()
+    const envelope = { session_id: 'agent:main:currency', cwd: h.deps.cwd, openclaw_session_id: 'transcript-a' }
+    await hookRunCommand(h.deps, 'openclaw-lifecycle', stdin({ ...envelope, hook_event_name: 'SessionStart' }), 'openclaw')
+    const prompt = async (extra: Record<string, unknown> = {}): Promise<string> => {
+      h.io.outLines = []
+      await hookRunCommand(h.deps, 'session-start', stdin({ ...envelope, ...extra }), 'openclaw')
+      return h.io.outLines.join('\n')
+    }
+    // The first prompt carries no activation yet, so the plugin reports it missing.
+    const first = await prompt({ compacted: true })
+    expect(first).toContain('You own Notification Requests')
+    expect(first).not.toMatch(/was compacted/)
+    expect(await prompt()).toBe('')
+    const again = await prompt({ compacted: true })
+    expect(again).toContain('You own Notification Requests')
+    expect(again).toMatch(COMPACTED)
+    changeGuidance(h, '# When to notify\n\nOnly for deploys.\n')
+    expect(await prompt()).toMatch(CHANGED)
+    expect(await prompt()).toBe('')
+  })
+
+  it('says what Grok must reload when it activates again after a compaction', async () => {
+    const h = harness()
+    const input = { sessionId: 'grok-currency', cwd: h.deps.cwd, promptId: 'prompt-one' }
+    await hookRunCommand(h.deps, 'session-start', stdin(input), 'grok')
+    await hookRunCommand(h.deps, 'post-tool-use', stdin(input), 'grok')
+    expect(contextOf(h.io.outLines[0])).not.toMatch(/was compacted|guidance changed/)
+    await hookRunCommand(h.deps, 'post-compact', stdin(input), 'grok')
+    await hookRunCommand(h.deps, 'post-tool-use', stdin({ ...input, promptId: 'prompt-two' }), 'grok')
+    expect(contextOf(h.io.outLines[1])).toMatch(COMPACTED)
+    changeGuidance(h, '# When to notify\n\nOnly for deploys.\n')
+    await hookRunCommand(h.deps, 'post-tool-use', stdin({ ...input, promptId: 'prompt-three' }), 'grok')
+    expect(contextOf(h.io.outLines[2])).toMatch(/Notifai's guidance changed after this Agent Session read it\./)
+    expect(contextOf(h.io.outLines[2])).toContain('Only for deploys.')
   })
 })

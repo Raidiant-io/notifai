@@ -553,7 +553,8 @@ describe('session-start guidance', () => {
     const context = rootContext('codex', cwd, env).replace(/\s+/g, ' ')
     const opening = context.slice(0, context.indexOf('# How to read this guidance'))
     expect(opening).toMatch(/^Notifai is enabled for this Project\. You own Notification Requests/)
-    expect(opening).toMatch(/Load the Notifai skill before your first Notification Request/)
+    // The skill is named with the bundled file, which works where no harness copy is installed.
+    expect(opening).toMatch(/Load the Notifai skill \(or read `[^`]+SKILL\.md`\) before your first Notification Request/)
     expect(opening).toMatch(/job changes completely[^.]*rename this Agent Session/)
     expect(opening).toMatch(/unless your assignment delegates them elsewhere/)
     // An orchestrator's worker can be a top-level session with no parent the
@@ -569,6 +570,9 @@ describe('session-start guidance', () => {
     expect(opening).toMatch(/conversation alone misses an away User/)
     expect(opening).toMatch(/never for a credential/)
     expect(opening).toMatch(/permission prompts stay in the harness/i)
+    // The asker acts on its answer, and a brief says so for a worker in its own Agent Session.
+    expect(opening).toMatch(/An answer comes back to the Agent Session that asked, and is acted on there\./)
+    expect(opening).toMatch(/When you brief an agent that runs in its own Agent Session, say whether it owns Notification Requests; if it does, it acts on its own answers before it reports back, so never brief it to ask and then end\./)
   })
 
   it('keeps an added topic that fits inline under its own provenance', () => {

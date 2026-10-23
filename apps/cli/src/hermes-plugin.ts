@@ -62,6 +62,10 @@ _attendants = {}
 _lock = threading.RLock()
 # The latest rendered session and its guidance section.
 _sections = {"session": "", "guidance": ""}
+# Each session's history length at its last turn. Hermes keeps the system
+# prompt, Notifai's sections included, through compression; a shorter history
+# is how a turn learns that what the session read was summarized away.
+_history = {}
 _session = {"id": "", "turn": False, "tools": 0, "requests": 0, "approvals": 0,
             "switching": False, "activity_at": 0.0}
 
@@ -85,7 +89,7 @@ def _observe_session(session_id):
         if session_id and _session["id"] != session_id:
             _replace_session(session_id)
 
-def _on_turn_start(session_id=None, platform=None, parent_session_id=None, **_):
+def _on_turn_start(session_id=None, platform=None, parent_session_id=None, conversation_history=None, **_):
     current = _main_session_event(session_id, platform, parent_session_id)
     if not current:
         return None
@@ -94,7 +98,32 @@ def _on_turn_start(session_id=None, platform=None, parent_session_id=None, **_):
             _replace_session(current)
         _session.update({"turn": True, "tools": 0, "requests": 0, "approvals": 0,
                          "switching": False, "activity_at": time.monotonic()})
-    return None
+        length = len(conversation_history) if isinstance(conversation_history, list) else None
+        previous = _history.get(current)
+        if length is not None:
+            _history[current] = length
+    return _guidance_change(current, previous is not None and length is not None and length < previous)
+
+def _guidance_change(session_id, compacted):
+    # What this session must reload, told once with this turn's message:
+    # guidance that changed since its system prompt was built, which Hermes
+    # keeps for the whole session, or what a compaction summarized away.
+    if not _classic_cli():
+        return None
+    cwd = _session_cwd({})
+    if not cwd:
+        return None
+    envelope = {"session_id": session_id, "cwd": cwd, "hook_event_name": "GuidanceCheck"}
+    if compacted:
+        envelope["compacted"] = True
+    try:
+        result = subprocess.run(COMMAND + ["hook", "guidance-check", "--owner", "notifai", "--harness", "hermes", "--integration-revision", NOTIFAI_INTEGRATION_REVISION],
+                                input=json.dumps(envelope), text=True, capture_output=True,
+                                timeout=5, check=False)
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    notice = result.stdout.strip() if result.returncode == 0 else ""
+    return {"context": notice} if notice else None
 
 def _on_turn_end(session_id=None, platform=None, parent_session_id=None, **_):
     current = _main_session_event(session_id, platform, parent_session_id)

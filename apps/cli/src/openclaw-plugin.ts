@@ -15,6 +15,7 @@ import { hookHostPlatform, type HookHostPlatform } from './hook-adapter.js'
 import { harnessAccountHome } from './install-hooks.js'
 import {
   MISSING_LIFECYCLE_GUIDANCE_CONTEXT,
+  ROOT_ACTIVATION_MARK,
   WORKER_ACTIVATION_CONTEXT,
 } from './session-activation.js'
 
@@ -1249,6 +1250,22 @@ function isWorkerSession(sessionKey, ctx) {
   return false
 }
 
+// Words only the root activation carries, so a compaction summary that
+// mentions Notifai does not pass for it.
+const ACTIVATION_MARK = ${JSON.stringify(ROOT_ACTIVATION_MARK)}
+
+/**
+ * Whether the conversation still holds its activation. The activation is
+ * prepended to the first prompt of a conversation; a compaction summarizes it
+ * away, and then the conversation is activated again.
+ */
+function activationPresent(messages) {
+  if (!Array.isArray(messages)) return true
+  const textOf = (content) => typeof content === "string" ? content
+    : Array.isArray(content) ? content.map((part) => typeof part === "string" ? part : part?.text ?? "").join("\\n") : ""
+  return messages.some((message) => textOf(message?.content).includes(ACTIVATION_MARK))
+}
+
 function isUserMessage(event, ctx) {
   const from = event?.from ?? event?.context?.from ?? ctx?.senderId
   if (typeof from !== "string" || from.trim().length === 0) return false
@@ -1335,7 +1352,8 @@ function register(api) {
     const envelope = { ...envelopeFor(sessionKey, event, ctx, "BeforePromptBuild"),
       ...(nativeRevision === null ? {} : { openclaw_lifecycle_revision: nativeRevision }) }
     const resolved = await runHook(worker ? "subagent-start" : "session-start",
-      { ...envelope, hook_event_name: worker ? "SubagentStart" : "SessionStart" })
+      { ...envelope, hook_event_name: worker ? "SubagentStart" : "SessionStart",
+        ...(worker || activationPresent(event?.messages) ? {} : { compacted: true }) })
     // chat.send does not emit message_received on this supported Gateway path.
     // The prompt build is the exact session's authoritative turn-start seam.
     await runHook("openclaw-turn-start", envelope)

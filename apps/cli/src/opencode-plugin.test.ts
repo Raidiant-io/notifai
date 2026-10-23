@@ -27,7 +27,15 @@ const fs = require("node:fs")
 const event = process.argv[3]
 const log = process.env.FAKE_LOG
 fs.appendFileSync(log, JSON.stringify({ event }) + "\\n")
-if (event === "session-start") { process.stdin.resume(); process.stdin.on("end", () => { process.stdout.write("ACTIVATION TEXT"); }); return }
+if (event === "session-start") {
+  let input = ""
+  process.stdin.on("data", (chunk) => { input += chunk })
+  process.stdin.on("end", () => {
+    if (JSON.parse(input || "{}").compacted === true) fs.appendFileSync(log, JSON.stringify({ compacted: true }) + "\\n")
+    process.stdout.write("ACTIVATION TEXT")
+  })
+  return
+}
 if (event !== "opencode-question") { process.stdin.resume(); process.stdin.on("end", () => process.exit(0)); return }
 let buffered = ""
 let asked = false
@@ -296,5 +304,16 @@ describe.skipIf(process.platform === 'win32')('the generated OpenCode plugin', (
     await t.plugin['experimental.chat.system.transform']({ sessionID: 'ses_parent' }, { system: [] })
     expect(t.records().filter(record => record.event === 'session-start')).toHaveLength(2)
     expect(existsSync(t.root)).toBe(true)
+  })
+
+  it('resolves activation again once OpenCode compacts the session, telling the CLI it was compacted', async () => {
+    const t = await load('wait')
+    await t.plugin['experimental.chat.system.transform']({ sessionID: 'ses_parent' }, { system: [] })
+    await t.plugin.event({ event: { type: 'session.compacted', properties: { sessionID: 'ses_parent' } } })
+    // The next model request of the same turn, not only the next User prompt.
+    await t.plugin['experimental.chat.system.transform']({ sessionID: 'ses_parent' }, { system: [] })
+    await t.plugin['experimental.chat.system.transform']({ sessionID: 'ses_parent' }, { system: [] })
+    expect(t.records().filter(record => record.event === 'session-start')).toHaveLength(2)
+    expect(t.records().filter(record => (record as { compacted?: boolean }).compacted === true)).toHaveLength(1)
   })
 })

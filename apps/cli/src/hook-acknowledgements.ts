@@ -20,6 +20,7 @@ import {
 } from './hook-session-state.js'
 import { SESSION_MESSAGE_ID_PREFIX } from '@raidiant/notifai-protocol'
 import type {
+  PendingQuestion,
   AcceptedAnswerDelivery,
   AcknowledgementDue,
   AnsweredPending,
@@ -104,13 +105,30 @@ function answerContext(answered: AnsweredPending): string {
       : `question_id${answeredQuestionIds.length === 1 ? '' : 's'} ${answeredQuestionIds.join(', ')}, `
   const question = `question ${quoted(pending.question)}`
   if (replies.length === 1 || pendingHasChoices(pending)) {
-    return `Notifai — ${identity}${question}; the user answered ${quoted(latest.text)}.`
+    return `Notifai — ${identity}${question}; the user answered ${quoted(latest.text)}.${askerContext(pending)}`
   }
   const parts = replies.map((reply) => quoted(reply.text)).join(', then ')
   return (
     `Notifai — ${identity}${question}; the user answered in ${replies.length} parts, ` +
-    `in the order written: ${parts}. Later parts extend or correct earlier ones.`
+    `in the order written: ${parts}. Later parts extend or correct earlier ones.${askerContext(pending)}`
   )
+}
+
+/**
+ * For a question a subagent asked on this session's behalf: which subagent,
+ * what it offered, and whose work the answer unblocks. The root never asked
+ * it, so without this it cannot tell what the answer is for.
+ */
+export function askerContext(pending: PendingQuestion): string {
+  const asker = pending.asked_by
+  if (asker === undefined) return ''
+  const kind = asker.agent_type === undefined ? 'subagent' : `${quoted(asker.agent_type)} subagent`
+  const described = asker.description === undefined ? '' : ` ${quoted(asker.description)}`
+  const offered = (pending.questions ?? []).filter((entry) => (entry.choices?.length ?? 0) > 0).map((entry) =>
+    `${(pending.questions?.length ?? 0) > 1 ? `${quoted(entry.text)}: ` : ''}${entry.choices!.map((choice) => quoted(choice.label)).join(' / ')}`)
+  return ` Your ${kind}${described} (agent ${asker.agent_id}) asked it for this Agent Session` +
+    `${offered.length === 0 ? '' : `, offering ${offered.join('; ')}`}, so the work it unblocks is that subagent's: ` +
+    'send it this answer if it can still take messages, otherwise do that work yourself.'
 }
 
 export function acknowledgementContext(answered: AnsweredPending[]): string {
@@ -182,7 +200,7 @@ export function answersContext(answered: AnsweredPending[], remaining: number): 
         : `${replies.map((reply) => quoted(reply.text)).join(', then ')} (parts in the order written; later parts extend or correct earlier ones)`
     const ids = [...new Set(latest.answers.map((entry) => entry.question_id))]
     const identity = ids.length === 0 ? '' : `question_id${ids.length === 1 ? '' : 's'} ${ids.join(', ')}: `
-    return `- ${identity}${quoted(pending.question)} → ${answer}`
+    return `- ${identity}${quoted(pending.question)} → ${answer}${askerContext(pending)}`
   })
   return `Notifai — the user answered ${answered.length} questions:\n${lines.join('\n')}\n${(tail + guidance).trimStart()}`
 }

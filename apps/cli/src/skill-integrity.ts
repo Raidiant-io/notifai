@@ -162,12 +162,16 @@ export function verifySkillBundle(
   }
 }
 
-/** Locate the generated bundle in a published install or a built source checkout. */
-export function shippedSkillBundle(expectedPackageVersion?: string, budget?: SkillInspectionBudget): SkillBundleResult {
+/** The directory holding the generated bundle (`notifai/` and `manifest.json`) in a published install or a built source checkout. */
+export function shippedSkillSourceRoot(): string {
   const moduleDirectory = path.dirname(fileURLToPath(import.meta.url))
-  const sourceRoot = bundledSkillRoot() ?? path.join(
+  return bundledSkillRoot() ?? path.join(
     moduleDirectory,
     path.basename(moduleDirectory) === 'dist' ? 'skill-source' : '../dist/skill-source',
   )
-  return verifySkillBundle(sourceRoot, expectedPackageVersion, budget)
+}
+
+/** Locate the generated bundle in a published install or a built source checkout. */
+export function shippedSkillBundle(expectedPackageVersion?: string, budget?: SkillInspectionBudget): SkillBundleResult {
+  return verifySkillBundle(shippedSkillSourceRoot(), expectedPackageVersion, budget)
 }

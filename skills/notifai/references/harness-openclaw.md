@@ -52,5 +52,7 @@ ran.
 ## After a Notifai update
 
 The loaded plugin checks before each prompt and injects guidance once per
-conversation. Changed plugin code needs a Gateway reload: keep existing routes
-until a safe reload, then confirm a prompt served by the reloaded plugin.
+conversation, and again once a compaction has summarized it away. When the
+guidance a conversation read has changed, its next prompt says so once. Changed
+plugin code needs a Gateway reload: keep existing routes until a safe reload,
+then confirm a prompt served by the reloaded plugin.

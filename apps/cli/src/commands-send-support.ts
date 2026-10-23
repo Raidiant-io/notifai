@@ -239,7 +239,7 @@ export function printAcknowledgementStatus(deps: CommandDeps, response: ListRepl
     deps.io.out('Agent Acknowledgement required.')
     deps.io.out(
       textRequired
-        ? `next: Run \`${acknowledgeInvocation(response.request_id, true)}\` with concrete text saying what you will do because of the reply.`
+        ? `next: Run \`${acknowledgeInvocation(response.request_id, true)}\` with concrete text naming the work this Agent Session starts now because of the reply.`
         : `next: Run \`${acknowledgeInvocation(response.request_id, false)}\` so the user sees you read the reply; this account turned acknowledgement text off.`,
     )
     return

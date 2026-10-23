@@ -46,6 +46,8 @@ another session.
 ## After a Notifai update
 
 A compatible plugin keeps the session's answer route while its files are
-refreshed; reread guidance yourself. Changed plugin code counts as loaded only
-once a loaded plugin shows it. An older plugin may need its old file kept until
-its work finishes: follow the update's continuity diagnosis.
+refreshed. Hermes keeps a session's first guidance in its system prompt, so when
+that guidance has changed, Notifai says so once with the next turn, as it does
+after a compaction. Changed plugin code counts as loaded only once a loaded
+plugin shows it. An older plugin may need its old file kept until its work
+finishes: follow the update's continuity diagnosis.

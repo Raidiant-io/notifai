@@ -173,7 +173,11 @@ running and check the new definition in a fresh session.
 
 ## After a Notifai update
 
-Existing hook owners and approvals carry over. A changed handler can need the
-User's `/hooks` approval. Follow the specific reload or stale-Stop remedy the
-update reports, then confirm real hook calls, including the tool-boundary call
-(`tool_boundary_notes` in [Updating Notifai](updates.md#local-integration-faults)).
+Existing hook owners and approvals carry over. When the guidance this Agent
+Session read has changed, Notifai says so once, at its next prompt or tool call,
+as it does after a compaction: load the skill again and run `notifai guidance`
+before the next Notification Request. A changed handler can need the User's
+`/hooks` approval. Follow the specific reload or stale-Stop remedy the update
+reports, then confirm real hook calls, including the tool-boundary call
+(`tool_boundary_notes` in [Updating
+Notifai](updates.md#local-integration-faults)).

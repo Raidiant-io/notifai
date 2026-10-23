@@ -359,6 +359,9 @@ export const NotifAIPlugin = async ({ directory, client }) => {
   // request: one turn can make many requests, and each used to start a CLI.
   // A User prompt clears it, so enabling a Project applies from the next one.
   const activations = new Map()
+  // Sessions OpenCode compacted since their activation was last resolved:
+  // the next resolution tells the session to reload what it read before.
+  const compacted = new Set()
   // Acknowledgements the agent owes for device answers, by session then
   // request, each shown once: parallel forms each keep their own.
   const owedAcknowledgements = new Map()
@@ -376,12 +379,14 @@ export const NotifAIPlugin = async ({ directory, client }) => {
   }
 
   function resolveActivation(sessionID) {
+    const wasCompacted = compacted.delete(sessionID)
     return (async () => {
       const worker = await isWorker(sessionID)
       const resolved = await runHook(worker ? "subagent-start" : "session-start", {
         session_id: sessionID,
         cwd,
         hook_event_name: worker ? "SubagentStart" : "SessionStart",
+        ...(wasCompacted ? { compacted: true } : {}),
       })
       return { worker, resolved }
     })()
@@ -692,6 +697,12 @@ export const NotifAIPlugin = async ({ directory, client }) => {
         if (form === undefined || form.sessionID !== event?.properties?.sessionID) return
         form.settled = true
         send(form, { type: "dismissed" })
+      } else if (event?.type === "session.compacted") {
+        const sessionID = event?.properties?.sessionID
+        if (typeof sessionID === "string") {
+          compacted.add(sessionID)
+          activations.delete(sessionID)
+        }
       } else if (event?.type === "session.idle") {
         await runHook("stop", {
           session_id: event?.properties?.sessionID,
@@ -701,6 +712,7 @@ export const NotifAIPlugin = async ({ directory, client }) => {
       } else if (event?.type === "session.deleted") {
         const sessionID = event?.properties?.info?.id
         activations.delete(sessionID)
+        compacted.delete(sessionID)
         owedAcknowledgements.delete(sessionID)
         for (const form of [...forms.values()]) if (form.sessionID === sessionID) endForm(form)
         await runHook("session-end", {
