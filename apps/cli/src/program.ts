@@ -23,6 +23,8 @@ import {
   doctorCommand,
   guidanceSetCommand,
   guidanceShowCommand,
+  guidanceChangesCommand,
+  guidanceCheckCommand,
   guidanceUnsetCommand,
   hookDefersDiagnosticsUntilAfterCleanup,
   hookRunCommand,
@@ -149,6 +151,8 @@ const defaultRunners = {
   configSet: configSetCommand,
   configUnset: configUnsetCommand,
   guidanceShow: guidanceShowCommand,
+  guidanceChanges: guidanceChangesCommand,
+  guidanceCheck: guidanceCheckCommand,
   guidanceSet: guidanceSetCommand,
   guidanceUnset: guidanceUnsetCommand,
   /**
@@ -721,6 +725,8 @@ export function buildProgram(deps: CommandDeps, options: BuildProgramOptions = {
       exit(await runners.send(deps, sendOpts as unknown as Parameters<typeof sendCommand>[1]))
     })
 
+  send.option('--guidance-token <token>', 'local conversation token returned by guidance check')
+
   send.addHelpText(
     'after',
     `\nKind is required, and it selects the sound the notification arrives with: done rings the completion chime, failed the most insistent tone, blocked and question a distinct attention tone, update Device default.\nAn explicit --sound or saved sound preference outranks that default. --sound accepts a shipped name, an Account custom sound name or id from \`notifai sounds\`, or none. --level is Apple-only; Android attention is owned by kind, product channels, and device settings.\n`,
@@ -752,7 +758,7 @@ export function buildProgram(deps: CommandDeps, options: BuildProgramOptions = {
     .description(
       'Record the required Agent Acknowledgement for a notification reply (req_…) or Session Message (sm_…); never prompts',
     )
-    .option('--text <text>', 'concrete work you will do because of the reply or message')
+    .option('--text <text>', 'the concrete work this Agent Session will do itself because of the reply or message')
     .option('--json', 'machine-readable output')
     // Untaught: an older skill reports a terminal answer Notifai now records itself.
     .addOption(new Option('--operation-id <id>').hideHelp())
@@ -802,6 +808,8 @@ export function buildProgram(deps: CommandDeps, options: BuildProgramOptions = {
     )
     .option('--form <path>', 'ask several questions from a JSON file (use - for stdin), with "title", "summary" and "questions", each question carrying its own "title" when there are several')
     .option('--form-json <json>', 'ask several questions from inline JSON; use --form for a file or stdin')
+    .option('--resumes <work>', 'unblocked work this Agent Session does itself before reporting; reporting the answer is not that work')
+    .option('--guidance-token <token>', 'local conversation token from guidance check, for hosts without an exact session id')
     .option(
       '--image <path|url|media_id>',
       'upload or attach an image; show it in Body as ![description](media:N), N in --image order (repeatable, maximum 8)',
@@ -831,6 +839,8 @@ export function buildProgram(deps: CommandDeps, options: BuildProgramOptions = {
       literalBackslashN?: boolean
       form?: string
       formJson?: string
+      resumes?: string
+      guidanceToken?: string
       image?: string[]
       imageAlt?: string[]
       project?: string
@@ -892,6 +902,8 @@ export function buildProgram(deps: CommandDeps, options: BuildProgramOptions = {
         ...(opts.sessionLabel !== undefined ? { sessionLabel: opts.sessionLabel } : {}),
         ...(opts.json === true ? { json: true } : {}),
         ...(opts.literalBackslashN === true ? { literalBackslashN: true } : {}),
+        ...(typeof opts.resumes === 'string' ? { resumes: opts.resumes } : {}),
+        ...(typeof opts.guidanceToken === 'string' ? { guidanceToken: opts.guidanceToken } : {}),
       }
       exit(await runners.ask(deps, question, flags))
     })
@@ -1084,11 +1096,18 @@ export function buildProgram(deps: CommandDeps, options: BuildProgramOptions = {
     .description('How notifications are written: the shipped guidance and your overrides, per topic')
     .summary('Show or change how notifications are written')
     .helpGroup(GROUP.daily)
+  guidance.command('changes')
+    .description('Print the complete release-authored guidance change notes in order')
+    .action(() => { exit(runners.guidanceChanges(deps)) })
+  guidance.command('check [token]')
+    .description('Check the guidance receipt held by this conversation; return current context when it changed or is absent')
+    .action((token?: string) => { exit(runners.guidanceCheck(deps, token)) })
   guidance
     .command('show', { isDefault: true })
     .description('Print the effective guidance, every topic under the layer that supplied it')
     .option('--json', 'machine-readable output')
-    .action(async (opts: { json?: boolean }) => {
+    .option('--session-token <token>', 'local conversation token returned by guidance check')
+    .action(async (opts: { json?: boolean; sessionToken?: string }) => {
       exit(await runners.guidanceShow(deps, opts))
     })
   guidance

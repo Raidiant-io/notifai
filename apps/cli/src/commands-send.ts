@@ -9,6 +9,7 @@ import {
   type ReplyView,
   type SubmissionReceipt,
 } from '@raidiant/notifai-protocol'
+import { currentCommandGuidance } from './command-guidance.js'
 import { quoted, TRANSPORT_LIMIT } from './injection-render.js'
 import { ApiCallError, NetworkError, isRetryableReplyPollError, type ApiClient } from './client.js'
 import type { FlagOverrides, loadConfig } from './config.js'
@@ -204,6 +205,12 @@ export async function sendCommand(
         'Ask the way you would without Notifai: in the conversation, or in your own question form, which stays in the terminal; ' +
         'change the setting only if the User asks.',
     )
+    return EXIT.usage
+  }
+  const currency = currentCommandGuidance(deps, flags.guidanceToken)
+  if (currency !== null) {
+    if (flags.json) deps.io.out(JSON.stringify({ ok: false, ...currency }))
+    else deps.io.err(`${currency.message}\n${currency.guidance}\n${currency.remedy}`)
     return EXIT.usage
   }
   const activeSession = sourceContextHarnessSession(deps.env, deps.cwd, (deps.now ?? Date.now)())

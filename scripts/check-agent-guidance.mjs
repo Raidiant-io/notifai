@@ -9,6 +9,7 @@ export const DEFAULT_INPUT_ROOTS = [
   'apps/cli/src',
   'packages/protocol/src',
   'skills/notifai',
+  'skills/guidance-changes.json',
   'README.md',
   'docs/TRUST.md',
 ]
@@ -44,6 +45,7 @@ export function behaviorDigest(repo, inputRoots = DEFAULT_INPUT_ROOTS) {
   const files = inputRoots
     .flatMap((relative) => filesUnder(repo, relative))
     .filter((file) => !file.endsWith('.test.ts') && !file.endsWith('.test.mjs'))
+    .map((file) => file.split(path.sep).join('/'))
     .sort()
   const digest = createHash('sha256')
   for (const file of files) {

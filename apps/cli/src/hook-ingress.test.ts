@@ -179,13 +179,17 @@ describe.skipIf(!supported)('hook ingress through the launcher', () => {
     const context = (run: HookRun): string => JSON.parse(run.stdout).hookSpecificOutput.additionalContext as string
     const first = await runHook(at, 'session-start', 'claude-code', envelope('SessionStart', { source: 'startup' }, at))
     const compacted = await runHook(at, 'session-start', 'claude-code', envelope('SessionStart', { source: 'compact' }, at))
-    expect(context(compacted)).toBe(context(first))
+    expect(context(compacted)).toContain('This conversation was compacted.')
+    expect(context(compacted)).toMatch(/load the Notifai skill again \(from `[^`]+SKILL\.md`\)/)
+    expect(context(compacted)).toContain('run `notifai guidance`')
+    expect(context(first)).not.toContain('This conversation was compacted.')
     const topic = SHIPPED_GUIDANCE[0]!.name
     const overrides = path.join(at.env['XDG_CONFIG_HOME']!, 'notifai', 'guidance')
     mkdirSync(overrides, { recursive: true })
     writeFileSync(path.join(overrides, `${topic}.md`), 'B11 OVERRIDE: changed house rule.\n')
     const changed = await runHook(at, 'session-start', 'claude-code', envelope('SessionStart', { source: 'resume' }, at))
     expect(context(changed)).toContain('B11 OVERRIDE: changed house rule.')
+    expect(context(changed)).toContain("Notifai's guidance changed")
     expect(context(first)).not.toContain('B11 OVERRIDE')
     expect(runtimeRuns(at)).toEqual([])
   })

@@ -45,7 +45,8 @@ export {
 } from './commands-config.js'
 export {
   guidanceSetCommand,
-  guidanceShowCommand,
+  guidanceShowCommand, guidanceChangesCommand,
+  guidanceCheckCommand,
   guidanceUnsetCommand,
 } from './commands-guidance.js'
 export { logsCommand, parseSince } from './commands-logs.js'

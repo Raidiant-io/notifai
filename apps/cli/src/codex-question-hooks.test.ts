@@ -18,6 +18,8 @@ import { hookAdapterPath, installHookAdapter } from './hook-adapter.js'
 import { buildHookConfig, codexHookIdentityHash, codexTrustKey, findInstallations } from './install-hooks.js'
 import { currentProcessIdentity } from './process-identity.js'
 import { disableProject, enableProject, projectBinding, projectEnablementState } from './project-enablement.js'
+import { recordGuidanceGiven } from './guidance-currency.js'
+import { rootGuidanceDigest } from './session-activation.js'
 
 const SESSION = '22222222-2222-4222-8222-222222222222'
 const TURN = 'card-turn'
@@ -30,7 +32,7 @@ function fixtureHooks(home: string) {
   return buildHookConfig({ adapterPath: hookAdapterPath(home), harness: 'codex', ...(process.platform === 'win32' ? { nodePath: process.execPath } : {}) })
 }
 
-function setup(options: { transport?: boolean; enabled?: boolean; disabled?: boolean; signedIn?: boolean; routing?: boolean } = {}) {
+function setup(options: { transport?: boolean; enabled?: boolean; disabled?: boolean; signedIn?: boolean; routing?: boolean; guidanceCurrent?: boolean } = {}) {
   const root = mkdtempSync(path.join(os.tmpdir(), 'notifai-codex-card-'))
   roots.push(root)
   const env = { HOME: path.join(root, 'home'), XDG_CONFIG_HOME: path.join(root, 'config'), XDG_STATE_HOME: path.join(root, 'state'),
@@ -51,6 +53,7 @@ function setup(options: { transport?: boolean; enabled?: boolean; disabled?: boo
   }
   beginSessionIncarnation(SESSION, env, { stamp: lifecycleStamp(), harnessProcess: currentProcessIdentity()! })
   writeSessionState(SESSION, env, { harness: 'codex', last_prompt_at: Date.now() })
+  if (options.guidanceCurrent !== false) recordGuidanceGiven(SESSION, env, rootGuidanceDigest(root, env))
   const transcript = path.join(env.CODEX_HOME, 'sessions', 'owned.jsonl')
   mkdirSync(path.dirname(transcript), { recursive: true })
   writeFileSync(transcript, [
@@ -73,6 +76,24 @@ function setup(options: { transport?: boolean; enabled?: boolean; disabled?: boo
     hook_event_name: 'PreToolUse', tool_name: 'request_user_input_async', tool_use_id: 'call_card', tool_input: CARD }
   return { deps, env, root, envelope, output, launch }
 }
+
+it.each([false, true])('returns one card hook document when old guidance needs refreshing (native transport: %s)', async transport => {
+  const h = setup({ transport, guidanceCurrent: false })
+  recordGuidanceGiven(SESSION, h.env, '0'.repeat(64))
+  await hookRunCommand(h.deps, 'pre-tool-use', async () => JSON.stringify(h.envelope), 'codex')
+  expect(h.output).toHaveLength(1)
+  const decision = JSON.parse(h.output.join('\n')).hookSpecificOutput
+  expect(decision.hookEventName).toBe('PreToolUse')
+  expect(decision.permissionDecision).toBe(transport ? undefined : 'deny')
+  expect(decision.additionalContext).toContain("Notifai's guidance changed")
+  expect(transport ? decision.additionalContext : decision.permissionDecisionReason).toContain(
+    transport ? 'registers this card' : 'plain conversation',
+  )
+  h.output.length = 0
+  await hookRunCommand(h.deps, 'pre-tool-use', async () => JSON.stringify(h.envelope), 'codex')
+  expect(h.output).toHaveLength(1)
+  expect(JSON.parse(h.output[0]!).hookSpecificOutput.additionalContext ?? '').not.toContain("Notifai's guidance changed")
+})
 
 it('registers the card itself and prevents a device-unclosable card while retaining a conversation answer', async () => {
   const h = setup()

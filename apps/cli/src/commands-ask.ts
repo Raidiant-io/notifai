@@ -8,10 +8,12 @@ import {
   type Platform,
   type QuestionT,
 } from '@raidiant/notifai-protocol'
+import { currentCommandGuidance } from './command-guidance.js'
 import { EXIT, authedClient, log, makeClient, type CommandDeps } from './commands-core.js'
 import type { ServiceIdentity } from './credentials.js'
 import { resolveAskingHarness } from './commands-harness-context.js'
 import { codexSubagentShell } from './codex-subagent.js'
+import { claudeAskingSubagent } from './claude-subagent.js'
 import {
   CODEX_FRESH_SESSION_USER_ACTION,
   CODEX_HOOK_APPROVAL_USER_ACTION,
@@ -24,7 +26,7 @@ import { loadConfig, type CliConfig } from './config.js'
 import { QuestionRegistrationChanged, registerQuestion, type RegisteredQuestion } from './hook-lifecycle.js'
 import { captureCandidates, findOpenEqualQuestion } from './question-guard.js'
 import { readSessionIncarnation, readSessionState, sessionHasEnded, updateSessionState } from './hook-session-state.js'
-import type { PendingQuestion } from './hook-types.js'
+import type { PendingQuestion, QuestionAsker } from './hook-types.js'
 import { CLAUDE_QUESTION_TOOL } from './claude-question-bindings.js'
 import { CLAUDE_PICKER_MATCHER } from './hook-events.js'
 import { handBackInput, recordHandBack, type ClaudePickerInput } from './claude-picker-handback.js'
@@ -55,6 +57,10 @@ import {
 export interface AskFlags {
   /** Emit the registration and its turn obligation as one JSON object. */
   json?: boolean
+  /** Work this answer resumes in the asking Agent Session. Kept locally. */
+  resumes?: string
+  /** Opaque conversation receipt for hosts without an exact session id. */
+  guidanceToken?: string
   /**
    * Wait for the answer the way the agent would without Notifai. Where a
    * later answer can return to this Agent Session the agent ends its turn;
@@ -181,6 +187,7 @@ const missingQuestionTitlesNote = (numbers: number[]): string =>
   `notifai: give each question of a form its own "title", a word or two naming its decision; ${numbers.map(n => `question ${n}`).join(', ')} ${numbers.length === 1 ? 'has' : 'have'} none.`
 
 export interface BuiltQuestions {
+  resumes?: string
   questions: QuestionT[]
   /**
    * The agent's title for the question, or the form's title for everything it
@@ -439,12 +446,13 @@ function recordRegisteredQuestion(
   json = false,
   wait = false,
   rootKey?: string,
+  asker?: QuestionAsker,
 ): number | Promise<number> {
   const ordinary = () => persistRegisteredQuestion(deps, sessionId, built, draft, service, json, wait,
-    undefined, rootKey, undefined, rootKey !== undefined)
+    undefined, rootKey, undefined, rootKey !== undefined || asker !== undefined, asker)
   // A wait ends the turn, and Codex drops every open card at turn end, so a
   // waiting ask never links one. Codex offers no subagent the card at all.
-  if (wait || rootKey !== undefined) return ordinary()
+  if (wait || rootKey !== undefined || asker !== undefined) return ordinary()
   if (!codexCardAsks(deps, sessionId) || built.questions.length > 10 || formsDisabledInProject(deps, sessionId)) return ordinary()
   if (built.questions.some(question => question.multi === true)) return ordinary()
   const local = currentCodexQuestionContext(readSessionState(sessionId, deps.env), sessionId, deps.env)
@@ -520,11 +528,11 @@ function codexCardAsks(deps: CommandDeps, sessionId: string): boolean {
   return owner !== null && codexCardToolOffered(readSessionState(sessionId, deps.env), owner, sessionId, deps.env)
 }
 
-const KEEP_SESSION_OPEN = 'Keep this Agent Session open while the question waits: closing, clearing or switching it ends the question, so never suggest that.'
+const KEEP_SESSION_OPEN = 'Your assignment is incomplete while your question waits: report it as waiting, never done. Closing, clearing or switching this Agent Session ends the question, so keep it open until you have done the work the answer unblocks.'
 
 const ROUTE_NEUTRAL = 'Never say where the answer must arrive; it returns by whatever route the harness supports.'
 
-const ON_ANSWER = 'Acknowledge it, then resume the committed work without asking the user to confirm again.'
+const ON_ANSWER = 'The answer comes back to this Agent Session, so you act on it: acknowledge it, then do the unblocked work yourself before reporting; reporting the answer is not that work. Do not ask the user to confirm again.'
 
 /**
  * The end-the-turn wait: this Agent Session has a proven return path, so the
@@ -540,11 +548,11 @@ const END_TURN = 'Ask it in the conversation, say what each answer will make you
  * it; it hands the question to its parent and ends its turn. Plain `ask`,
  * `ask --wait` and a duplicate all say the same.
  */
-const WORKER_ASK = 'You are a subagent: this question belongs to the root Agent Session that started you, and its answer arrives there, never to you. Do not ask it in your own conversation or wait for it. Tell your parent the question id and what each answer will change, then end your turn.'
+const WORKER_ASK = 'You are a subagent: this question belongs to the root Agent Session that started you, and its answer arrives there, never to you. Do not ask it in your own conversation or wait for it. Tell your parent the question id, what each answer will change, and that your assignment is waiting on it, not done; then end your turn.'
 
 const WORKER_KEEP_ROOT_OPEN = 'The root Agent Session must stay open while the question waits: closing, clearing or switching it ends the question, so never suggest that.'
 
-const WORKER_ON_ANSWER = 'The root Agent Session acknowledges the answer and resumes the work; you take no action on it.'
+const WORKER_ON_ANSWER = 'The root Agent Session receives the answer with your question and identity, acknowledges it, and passes it back to you if you can still take messages, so you finish the work; otherwise it does that work itself.'
 
 function workerAnsweredOutside(questionId: string): string {
   return `If the User answers in the conversation instead, the root retires the question with \`notifai close ${questionId}\`; include that in your report.`
@@ -713,6 +721,7 @@ function persistRegisteredQuestion(
   ownerKey?: string,
   nativeUnavailable?: NativeUnavailable,
   worker = false,
+  asker?: QuestionAsker,
 ): number {
   let registered: RegisteredQuestion
   const credential = deps.store.load()
@@ -736,6 +745,8 @@ function persistRegisteredQuestion(
         ...(draft.project !== undefined ? { project: draft.project } : {}),
         ...(draft.source !== undefined ? { source: draft.source } : {}),
         ...(draft.presentation.media !== undefined ? { media: draft.presentation.media } : {}),
+        ...(asker === undefined ? {} : { asked_by: asker }),
+        ...(built.resumes === undefined ? {} : { resumes: built.resumes }),
       },
       (deps.now ?? Date.now)(),
       nativeAdmission,
@@ -886,20 +897,20 @@ function persistRegisteredQuestion(
     if (entry.choices !== undefined) {
       for (const choice of entry.choices) {
         deps.io.out(
-          `- ${questionPrefix}If the answer is ${JSON.stringify(choice.label)}: state the concrete work you will resume.`,
+          `- ${questionPrefix}If the answer is ${JSON.stringify(choice.label)}: state the work you will do yourself.`,
         )
       }
       deps.io.out(
-        `- ${questionPrefix}For an unexpected typed answer: state how it will determine the concrete work you resume.`,
+        `- ${questionPrefix}For an unexpected typed answer: state how it determines the unblocked work you do yourself before reporting.`,
       )
     } else {
       deps.io.out(
-        `- ${questionPrefix}For the free-text answer: state how its content will determine the concrete work you resume.`,
+        `- ${questionPrefix}For the free-text answer: state how its content determines the unblocked work you do yourself before reporting.`,
       )
     }
   }
   deps.io.out(
-    'When the answer arrives, resume the matching work without asking the user to confirm again. Frame this as work you will resume, not as approval you receive.',
+    'The answer comes back to this Agent Session. Do the work it unblocks here before reporting; reporting the answer is not that work. Do not ask the user to confirm again.',
   )
   deps.io.out(
     'A Notifai answer cannot answer a harness permission prompt; leave those to the harness and user.',
@@ -935,6 +946,7 @@ async function uploadAskMedia(
   invocation: DraftInvocation,
   service: ServiceIdentity,
   rootKey?: string,
+  asker?: QuestionAsker,
 ): Promise<number> {
   const authed = authedClient(deps, config)
   if (!authed) {
@@ -978,7 +990,7 @@ async function uploadAskMedia(
   if (!ready.ok) {
     return askFailure(deps, flags, 'invalid_draft', 'draft', ready.error, 'fix the reported field and retry')
   }
-  return recordRegisteredQuestion(deps, sessionId, built, ready.draft, service, flags.json === true, flags.wait === true, rootKey)
+  return recordRegisteredQuestion(deps, sessionId, built, ready.draft, service, flags.json === true, flags.wait === true, rootKey, asker)
 }
 
 /**
@@ -1003,6 +1015,10 @@ export function askCommand(
   const built = buildQuestions(flags, question)
   if (!built.ok) {
     return askFailure(deps, flags, 'invalid_input', 'questions', built.error, 'fix the question input and retry')
+  }
+  if (flags.resumes !== undefined) {
+    if (flags.resumes.trim() === '' || flags.resumes.length > 2000) return askFailure(deps, flags, 'invalid_input', 'resumes', '--resumes must name the work in 1-2000 characters.', 'name the work this Agent Session will do')
+    built.resumes = flags.resumes.trim()
   }
   for (const note of built.notes ?? []) deps.io.err(note)
   const mediaInputError = validateMediaInputs(flags.image, flags.imageAlt)
@@ -1067,6 +1083,14 @@ export function askCommand(
   // `ask` is refused and `ask --wait` holds in this command; an OpenCode root
   // session's `ask --wait` hands back its `question` form instead.
   // Questions off keeps every route off the devices first.
+  if (explicitUseConfig.ask_notifications.value) {
+    const currency = currentCommandGuidance(deps, flags.guidanceToken)
+    if (currency !== null) {
+      if (flags.json) deps.io.out(JSON.stringify({ ok: false, registered: false, ...currency }))
+      else deps.io.err(`${currency.message}\n${currency.guidance}\n${currency.remedy}`)
+      return EXIT.usage
+    }
+  }
   const held = heldWaitRoute(active, contested, deps.hookPlatform ?? process.platform)
   if (held !== null) {
     if (!explicitUseConfig.ask_notifications.value) return questionsOff(deps, flags)
@@ -1254,8 +1278,12 @@ export function askCommand(
   // costs no media round trip; registration repeats it under the session lock.
   const open = findOpenEqualQuestion(readSessionState(sessionId, deps.env), built.questions)
   const rootKey = active!.harness === 'codex' ? active!.rootKey : undefined
+  // A subagent asks for its root Agent Session; the root is told which one
+  // asked when the answer arrives (`claude-subagent.ts`, `codex-subagent.ts`).
+  const asker = askingSubagent(deps, active!.harness, sessionId, rootKey, built)
   if (open !== undefined) {
-    return reportAlreadyOpen(deps, sessionId, built, open.question_id!, flags.json === true, flags.wait === true, rootKey !== undefined)
+    return reportAlreadyOpen(deps, sessionId, built, open.question_id!, flags.json === true, flags.wait === true,
+      rootKey !== undefined || asker !== undefined)
   }
   if ((flags.image?.length ?? 0) > 0) {
     return uploadAskMedia(
@@ -1267,8 +1295,25 @@ export function askCommand(
       source.invocation,
       { base_url: credential.baseUrl, machine_id: credential.machineId },
       rootKey,
+      asker,
     )
   }
   return recordRegisteredQuestion(deps, sessionId, built, preflight.draft,
-    { base_url: credential.baseUrl, machine_id: credential.machineId }, flags.json === true, flags.wait === true, rootKey)
+    { base_url: credential.baseUrl, machine_id: credential.machineId }, flags.json === true, flags.wait === true, rootKey, asker)
+}
+
+/** The subagent asking for this root Agent Session, when the harness's own records name it. */
+function askingSubagent(deps: CommandDeps, harness: string, sessionId: string, rootKey: string | undefined,
+  built: BuiltQuestions): QuestionAsker | undefined {
+  if (rootKey !== undefined) {
+    const thread = deps.env['CODEX_THREAD_ID']
+    return thread === undefined || thread === '' ? undefined : { agent_id: thread.slice(0, 64) }
+  }
+  if (harness !== 'claude-code') return undefined
+  try {
+    return claudeAskingSubagent(sessionId, deps.env, built.questions.map((question) => question.text))
+  } catch {
+    // Naming the asker is an enrichment; the question is the root's either way.
+    return undefined
+  }
 }

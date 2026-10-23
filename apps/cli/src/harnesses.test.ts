@@ -125,9 +125,12 @@ describe('harness contract', () => {
     for (const file of sources) {
       readFileSync(path.join(root, file), 'utf8').split('\n').forEach((line, index) => {
         const ownUpdate = /'update', '--resume'/.test(line) || /\.option\('--resume', /.test(line)
-        if (!/(['"])(?:--)?resume\1/.test(line) || ownUpdate) return
+        // A bare "resume" is also a hook's lifecycle source, not a launch.
+        const argvLiterals = line.match(/\[[^[\]]*\]/g) ?? []
+        if (ownUpdate || (!/(['"])--resume\1/.test(line) &&
+          !argvLiterals.some(argv => /(['"])resume\1/.test(argv)))) return
         // An argv literal that resumes and also runs headless: `exec` or `-p`.
-        const headless = (line.match(/\[[^[\]]*\]/g) ?? []).some((argv) =>
+        const headless = argvLiterals.some((argv) =>
           /(['"])(?:--)?resume\1/.test(argv) && /(['"])(?:exec|-p|--print)\1/.test(argv))
         if (headless || !resumers.has(file)) offenders.push(`${file}:${index + 1}: ${line.trim()}`)
       })

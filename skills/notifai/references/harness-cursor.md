@@ -13,9 +13,9 @@ always-applied rule, `~/.cursor/skills/notifai-activation/SKILL.md`, which
   which activates Notifai.
 - A host built on the Cursor SDK, such as T3 Code, drops hook context but loads
   the rule. So does a new editor chat whose SessionStart context arrives late.
-- The rule asks the CLI, never the conversation: run `notifai project status`
-  once when work first calls for a Notification Request, then
-  `notifai guidance` if it is enabled.
+- When work first calls for a Notification Request, run `notifai guidance check`; before each later one, run `notifai guidance check <token>` with the token it returned in this conversation. After compaction, run it without a token.
+- When it returns `context`, follow it, read `skill_file` when present, then run its `read_command`. Add its `request_flag` to `send` and `ask`.
+- If it returns `disabled: true`, work without Notifai in this conversation. Otherwise follow its output, including for Projectless and first-use requests.
 - Standalone `cursor-agent` 2026.10.01 does not load the rule; its SessionStart
   context covers it.
 - No activation reaches an SDK host that omits the `user` setting source, an
@@ -45,6 +45,6 @@ settings. Never change those yourself.
 ## After a Notifai update
 
 The hooks call the updated CLI, and refreshing the hooks also rewrites the
-activation rule; reread guidance in the current conversation. A changed hook command
-counts as loaded once a hook call in this conversation shows it. Changed
-SessionStart context and a changed rule load when a new conversation starts.
+activation rule. A loaded current rule checks currency only when work calls for a Notification
+Request, and asks for a reload when the installed text changes. A changed hook command
+counts as loaded once a hook call shows it. A conversation still holding the older rule learns the new flow from the refusal `send` or `ask` prints; follow its remedy.

@@ -29,12 +29,7 @@ not notify. A worker explicitly delegated Notification Requests in its prompt
 loads the skill and guidance as their owner. Notifai cannot read the prompt, so
 only that delegation decides whether a worker asks, as on Claude Code.
 
-A worker's `notifai ask` registers the question to the root Agent Session that
-started it, and the answer arrives there, never to the worker. `ask` never
-hands a worker the card, and `ask --wait` does not wait in a worker. Do what
-its output says: tell your parent the question id and what each answer will
-change, then end your turn. Where `ask` cannot place the worker inside its
-live root, as on Windows, it refuses, and the parent asks instead.
+A subagent's question registers on the root Agent Session, and its answer arrives there; follow what `ask` prints.
 
 ## Questions
 
@@ -173,7 +168,11 @@ running and check the new definition in a fresh session.
 
 ## After a Notifai update
 
-Existing hook owners and approvals carry over. A changed handler can need the
-User's `/hooks` approval. Follow the specific reload or stale-Stop remedy the
-update reports, then confirm real hook calls, including the tool-boundary call
-(`tool_boundary_notes` in [Updating Notifai](updates.md#local-integration-faults)).
+Existing hook owners and approvals carry over. When the guidance this Agent
+Session read has changed, Notifai says so once, at its next prompt or tool call,
+as it does after a compaction: load the skill again and run `notifai guidance`
+before the next Notification Request. A changed handler can need the User's
+`/hooks` approval. Follow the specific reload or stale-Stop remedy the update
+reports, then confirm real hook calls, including the tool-boundary call
+(`tool_boundary_notes` in [Updating
+Notifai](updates.md#local-integration-faults)).

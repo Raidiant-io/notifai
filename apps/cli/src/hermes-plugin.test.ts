@@ -262,7 +262,14 @@ elif case == "worker":
     rendered = render(main) + render(child)
 else:
     rendered = render(main)
-turns = [hooks["pre_llm_call"](session_id="main", platform="cli", parent_session_id="") for _ in range(2)]
+if case in ("compacted", "child-compacted"):
+    # Hermes keeps the system prompt through compression; the history shrinks.
+    turns = [hooks["pre_llm_call"](session_id="child" if case == "child-compacted" else "main",
+                                    platform="subagent" if case == "child-compacted" else "cli",
+                                    parent_session_id="main" if case == "child-compacted" else "", conversation_history=history)
+             for history in ([1, 2, 3], [1])]
+else:
+    turns = [hooks["pre_llm_call"](session_id="main", platform="cli", parent_session_id="") for _ in range(2)]
 print(json.dumps({"rendered": rendered, "turns": turns}))
 `
 
@@ -271,27 +278,35 @@ print(json.dumps({"rendered": rendered, "turns": turns}))
 const SECTIONS_CLI = String.raw`import json, os, sys
 envelope = json.loads(sys.stdin.read())
 with open(sys.argv[1], "a") as calls:
-    calls.write(json.dumps({"event": sys.argv[3], "sections": envelope.get("hermes_prompt_sections")}) + "\n")
+    calls.write(json.dumps({"event": sys.argv[3], "sections": envelope.get("hermes_prompt_sections"),
+                            **({"compacted": True} if envelope.get("compacted") else {}),
+                            **({"worker": True} if envelope.get("hermes_worker") else {})}) + "\n")
 event = sys.argv[3]
-if envelope.get("hermes_prompt_sections") == 2 and not os.environ.get("EARLIER_CLI"):
+if event == "guidance-check":
+    # Silent unless the session's guidance changed or it was compacted.
+    print("C" if envelope.get("compacted") else "N" if os.environ.get("GUIDANCE_CHANGED") else "")
+elif envelope.get("hermes_prompt_sections") == 2 and not os.environ.get("EARLIER_CLI"):
     print(json.dumps({"activation": "A" * 1500, "guidance": "G" * 1000} if event == "session-start"
                      else {"activation": "W" * 1000, "guidance": ""}))
 else:
     print(("O" if event == "session-start" else "W") * 2000)
 `
 
-interface SectionsRun { rendered: [string, string][]; turns: unknown[]; calls: { event: string; sections: number | null }[] }
+interface SectionsRun { rendered: [string, string][]; turns: unknown[]; calls: { event: string; sections: number | null; compacted?: boolean; worker?: boolean }[] }
+
+const TURN_CHECKS = [{ event: 'guidance-check', sections: null }, { event: 'guidance-check', sections: null }]
 
 function runSectionsCase(root: string, scenario: string, hermes: { version: string | null; base_version?: string } = { version: '0.21.5' },
-  earlierCli = false): SectionsRun {
+  earlierCli = false, changed = false): SectionsRun {
   const plugin = path.join(root, 'plugin.py'), cli = path.join(root, 'cli.py'), calls = path.join(root, `${scenario}.calls`)
   rmSync(calls, { force: true })
   writeFileSync(plugin, hermesPluginSource('/unused/adapter'))
   writeFileSync(cli, SECTIONS_CLI)
   const env = Object.fromEntries(Object.entries(process.env).filter(([key]) =>
-    !key.startsWith('HERMES_') && key !== 'TERMINAL_ENV' && key !== 'TERMINAL_CWD' && key !== 'EARLIER_CLI'))
+    !key.startsWith('HERMES_') && key !== 'TERMINAL_ENV' && key !== 'TERMINAL_CWD' && key !== 'EARLIER_CLI' && key !== 'GUIDANCE_CHANGED'))
   const run = spawnSync('python3', ['-c', SECTIONS_HARNESS, plugin, cli, calls, scenario, root, JSON.stringify(hermes)], {
-    encoding: 'utf8', timeout: 15_000, env: earlierCli ? { ...env, EARLIER_CLI: '1' } : env,
+    encoding: 'utf8', timeout: 15_000,
+    env: { ...env, ...(earlierCli ? { EARLIER_CLI: '1' } : {}), ...(changed ? { GUIDANCE_CHANGED: '1' } : {}) },
   })
   expect(run.error).toBeUndefined()
   expect(run.stderr).not.toMatch(/Traceback/)
@@ -306,17 +321,36 @@ it.skipIf(process.platform === 'win32')('renders activation and guidance as two 
   const root = mkdtempSync(path.join(os.tmpdir(), 'notifai-hermes-sections-')); roots.push(root)
   const fits = runSectionsCase(root, 'fits')
   expect(fits.rendered).toEqual([['notifai.1-activation', 'A'], ['notifai.2-guidance', 'G']])
-  expect(fits.calls).toEqual([{ event: 'session-start', sections: 2 }])
+  expect(fits.calls).toEqual([{ event: 'session-start', sections: 2 }, ...TURN_CHECKS])
   // A worker renders its own context, never the main session's.
   expect(runSectionsCase(root, 'worker').rendered).toEqual([['notifai.1-activation', 'A'], ['notifai.2-guidance', 'G'], ['notifai.1-activation', 'W']])
   // A Hermes that reports its release through version_info, not __version__.
-  expect(runSectionsCase(root, 'fits', { version: '0.0.0', base_version: '0.22.4' }).calls).toEqual([{ event: 'session-start', sections: 2 }])
+  expect(runSectionsCase(root, 'fits', { version: '0.0.0', base_version: '0.22.4' }).calls)
+    .toEqual([{ event: 'session-start', sections: 2 }, ...TURN_CHECKS])
+})
+
+it.skipIf(process.platform === 'win32')('hands in what a session must reload with the next turn, once the CLI says so', () => {
+  // Hermes keeps its system prompt, Notifai's sections included, for the
+  // whole session, so a change of guidance or a compaction reaches the model
+  // only through a turn. The CLI decides and says each once.
+  const root = mkdtempSync(path.join(os.tmpdir(), 'notifai-hermes-currency-')); roots.push(root)
+  expect(runSectionsCase(root, 'fits', undefined, false, true).turns).toEqual([{ context: 'N' }, { context: 'N' }])
+  const child = runSectionsCase(root, 'child-compacted')
+  expect(child.calls.filter(call => call.event === 'guidance-check')).toEqual([
+    { event: 'guidance-check', sections: null, worker: true },
+    { event: 'guidance-check', sections: null, worker: true, compacted: true },
+  ])
+  const compacted = runSectionsCase(root, 'compacted')
+  expect(compacted.turns).toEqual([null, { context: 'C' }])
+  expect(compacted.calls.filter((call) => call.event === 'guidance-check'))
+    .toEqual([{ event: 'guidance-check', sections: null }, { event: 'guidance-check', sections: null, compacted: true }])
 })
 
 it.skipIf(process.platform === 'win32')('renders whichever section fits on its own and adds nothing to later turns', () => {
   // Each section is safe alone (the CLI puts the trust text and topics in the
   // second), so the plugin neither watches for a left-out section nor hands
   // its text in with a turn, which Hermes would keep in history every turn.
+  // A turn carries only what the CLI says the session must reload, here nothing.
   const root = mkdtempSync(path.join(os.tmpdir(), 'notifai-hermes-skipped-')); roots.push(root)
   for (const [scenario, rendered] of [
     ['fits', [['notifai.1-activation', 'A'], ['notifai.2-guidance', 'G']]],
@@ -330,7 +364,7 @@ it.skipIf(process.platform === 'win32')('renders whichever section fits on its o
   }
   // Left out by the section count before Hermes asked: nothing rendered, so
   // no notice was claimed for it.
-  expect(runSectionsCase(root, 'count').calls).toEqual([])
+  expect(runSectionsCase(root, 'count').calls).toEqual(TURN_CHECKS)
 })
 
 it.skipIf(process.platform === 'win32')('keeps one section on a Hermes older than the split, an unidentified Hermes, or an earlier CLI', () => {
@@ -338,10 +372,10 @@ it.skipIf(process.platform === 'win32')('keeps one section on a Hermes older tha
   for (const hermes of [{ version: '0.20.6' }, { version: null }, { version: '0.0.0' }]) {
     const older = runSectionsCase(root, 'fits', hermes)
     expect(older.rendered, String(hermes.version)).toEqual([['notifai.1-activation', 'O']])
-    expect(older.calls, String(hermes.version)).toEqual([{ event: 'session-start', sections: null }])
+    expect(older.calls, String(hermes.version)).toEqual([{ event: 'session-start', sections: null }, ...TURN_CHECKS])
   }
   // An earlier CLI ignores the request and prints one context sized for one section.
   const earlier = runSectionsCase(root, 'fits', undefined, true)
   expect(earlier.rendered).toEqual([['notifai.1-activation', 'O']])
-  expect(earlier.calls).toEqual([{ event: 'session-start', sections: 2 }])
+  expect(earlier.calls).toEqual([{ event: 'session-start', sections: 2 }, ...TURN_CHECKS])
 })

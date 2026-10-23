@@ -15,7 +15,7 @@
     "check:boundary:self-test": "node scripts/check-boundary.mjs --self-test",
     "check:machine-paths": "node scripts/check-machine-paths.mjs",
     "check:commit": "commitlint --last --verbose",
-    "check:release": "node --test scripts/cross-platform.test.mjs scripts/scratch-root.test.mjs scripts/chmod-cli-bin.test.mjs scripts/check-secrets.test.mjs scripts/check-machine-paths.test.mjs scripts/plan-publish.test.mjs scripts/verify-npm-distribution.test.mjs scripts/check-npm-trusted-publishing.test.mjs scripts/check-public-provider-posture.test.mjs scripts/check-live-server-contract.test.mjs scripts/release-workflow-identity.test.mjs scripts/require-ci-evidence.test.mjs scripts/run-cli-tests.test.mjs scripts/verify-release-pr-metadata.test.mjs scripts/verify-published-windows.test.mjs scripts/npm-registry.test.mjs scripts/codex-card-canary.test.mjs && node scripts/check-release.mjs",
+    "check:release": "node --test scripts/guidance-changes.test.mjs scripts/cross-platform.test.mjs scripts/scratch-root.test.mjs scripts/chmod-cli-bin.test.mjs scripts/check-secrets.test.mjs scripts/check-machine-paths.test.mjs scripts/plan-publish.test.mjs scripts/verify-npm-distribution.test.mjs scripts/check-npm-trusted-publishing.test.mjs scripts/check-public-provider-posture.test.mjs scripts/check-live-server-contract.test.mjs scripts/release-workflow-identity.test.mjs scripts/require-ci-evidence.test.mjs scripts/run-cli-tests.test.mjs scripts/verify-release-pr-metadata.test.mjs scripts/verify-published-windows.test.mjs scripts/npm-registry.test.mjs scripts/codex-card-canary.test.mjs && node scripts/check-release.mjs && pnpm check:guidance-changes",
     "check:codex-card-canary": "node scripts/codex-card-canary.mjs",
     "check:packed": "node --test scripts/check-packed-boundary.test.mjs scripts/verify-packed-install.test.mjs scripts/verify-published.test.mjs scripts/run-external.test.mjs scripts/verify-packed-skill-install.test.mjs && node scripts/verify-packed-install.mjs",
     "check:packed-skill-smoke": "node scripts/verify-packed-skill-install.mjs",
@@ -24,7 +24,9 @@
     "check:agent-guidance:test": "node --test scripts/check-agent-guidance.test.mjs",
     "check:published": "node scripts/verify-published.mjs",
     "build:npm-adapter": "pnpm run build && node scripts/build-npm-adapter.mjs",
-    "test:npm-adapter": "pnpm run build && node --test apps/cli/npm/adapter.test.mjs apps/cli/npm/route.test.mjs scripts/npm-adapter-artifact.test.mjs scripts/build-npm-adapter.test.mjs"
+    "test:npm-adapter": "pnpm run build && node --test apps/cli/npm/adapter.test.mjs apps/cli/npm/route.test.mjs scripts/npm-adapter-artifact.test.mjs scripts/build-npm-adapter.test.mjs",
+    "check:guidance-changes": "node scripts/guidance-changes.mjs",
+    "guidance:note": "node scripts/guidance-changes.mjs"
   },
   "devDependencies": {
     "@commitlint/cli": "^21.2.2",

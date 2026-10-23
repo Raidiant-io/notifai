@@ -41,7 +41,7 @@ export function acknowledgementCommand(id: string, textRequired = true): string 
  */
 export function acknowledgementDemand(textRequired: boolean, cause: 'reply' | 'message' = 'reply'): string {
   return textRequired
-    ? ` with non-empty text saying what concrete work you will do because of the ${cause}; a bare acknowledgement is insufficient`
+    ? ` with non-empty text naming the concrete work this Agent Session will do itself because of the ${cause}; a bare acknowledgement is insufficient`
     : ' exactly as shown; this account turned acknowledgement text off, so the receipt carries no words'
 }
 
@@ -90,3 +90,6 @@ export function sessionMessageContext(message: AttendanceMessage): string {
     acknowledge
   )
 }
+
+/** The answer is local custody, even when the asking brief expects a report. */
+export const ANSWER_RESUMPTION_CONTEXT = 'Only this Agent Session received this answer, and a report sent instead of the work may never be read: do the work it unblocks here, then report.'

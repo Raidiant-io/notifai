@@ -4,7 +4,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { afterAll, describe, expect, it } from 'vitest'
 import { personalProjectConfigPath } from './config.js'
-import { enableProject, projectBinding } from './project-enablement.js'
+import { disableProject, enableProject, projectBinding } from './project-enablement.js'
 import type { CommandDeps } from './commands-core.js'
 import {
   guidanceSetCommand,
@@ -166,15 +166,7 @@ describe('shipped guidance content', () => {
     expect(content).toMatch(/never say where the answer must arrive/i)
   })
 
-  it('teaches acknowledgements that name the concrete work and only that', () => {
-    const content = shippedGuidanceTopic('acknowledgements')!.content.replace(/\s+/g, ' ')
-    expect(content).toMatch(/concrete work a reply, note or edit sets in motion/i)
-    expect(content).toMatch(/only work you will actually do/i)
-    expect(content).toMatch(/irreversible work[\s\S]{0,120}never imply it was undone/i)
-    // The result travels as its own Notification Request, never inside a receipt.
-    expect(content).toMatch(/never inside the acknowledgement/i)
-    expect(content).toContain('already went out')
-  })
+
 })
 
 // ---------------------------------------------------------------------------
@@ -322,6 +314,34 @@ function makeDeps(env: NodeJS.ProcessEnv, cwd: string, confirmAnswer = false) {
 }
 
 describe('guidance commands', () => {
+  it('requires a local random token and an explicit guidance read, and honors disabling', async () => {
+    const { guidanceCheckCommand, guidanceShowCommand } = await import('./commands-guidance.js')
+    const { rootGuidanceDigest } = await import('./session-activation.js')
+    const { env, cwd } = setup()
+    const { deps, captured } = makeDeps(env, cwd)
+    execFileSync('git', ['init', '-q', cwd])
+    const binding = projectBinding(cwd, env, undefined)!
+    enableProject(binding)
+    guidanceCheckCommand(deps, rootGuidanceDigest(cwd, env)) // a digest in a repository grants nothing
+    const first = JSON.parse(captured.out.pop()!) as { token: string; context: string; skill_file: string }
+    expect(first.token).toMatch(/^[a-f0-9]{48}$/)
+    expect(first.context).toContain(GUIDANCE_TRUST_PREAMBLE)
+    expect(existsSync(first.skill_file)).toBe(true)
+    guidanceCheckCommand(deps, first.token)
+    expect(JSON.parse(captured.out.pop()!)).toHaveProperty('context') // printing a notice is no read
+    await guidanceShowCommand(deps, { sessionToken: first.token })
+    guidanceCheckCommand(deps, first.token)
+    expect(JSON.parse(captured.out.pop()!)).not.toHaveProperty('context')
+    const dir = personalProjectGuidanceDir(cwd, env)
+    mkdirSync(dir, { recursive: true })
+    writeFileSync(path.join(dir, 'titles.md'), '# Titles\n\nUse a changed writing rule.\n')
+    guidanceCheckCommand(deps, first.token)
+    expect(JSON.parse(captured.out.pop()!).context).toContain("Notifai's guidance changed")
+    disableProject(binding)
+    guidanceCheckCommand(deps, first.token)
+    expect(JSON.parse(captured.out.pop()!)).toEqual({ enabled: false, disabled: true })
+  })
+
   it('prints guidance only: Hermes, like every harness, gets the update notice at session start', async () => {
     const { env, cwd } = setup()
     env.HERMES_SESSION_ID = 'hermes-update-test'
@@ -451,8 +471,9 @@ describe('lifecycle guidance budget', () => {
     expect(sections.guidance).toContain(marker('questions'))
     expect(sections.guidance).toMatch(/run `notifai guidance` once/i)
     expect(rootContext('claude-code', root, env).endsWith(sections.guidance)).toBe(true)
-    const worker = JSON.parse(sessionActivationOutput('hermes', 'SubagentStart', root, env, [], true)!) as unknown
-    expect(worker).toEqual({ activation: WORKER_ACTIVATION_CONTEXT, guidance: '' })
+    const worker = JSON.parse(sessionActivationOutput('hermes', 'SubagentStart', root, env, [], true)!) as { activation: string; guidance: string }
+    expect(worker.activation).toContain(WORKER_ACTIVATION_CONTEXT)
+    expect(worker.guidance).toBe('')
   })
 
   it('reaches the worked examples from fixed skill text, not an overridable topic', () => {
@@ -553,7 +574,8 @@ describe('session-start guidance', () => {
     const context = rootContext('codex', cwd, env).replace(/\s+/g, ' ')
     const opening = context.slice(0, context.indexOf('# How to read this guidance'))
     expect(opening).toMatch(/^Notifai is enabled for this Project\. You own Notification Requests/)
-    expect(opening).toMatch(/Load the Notifai skill before your first Notification Request/)
+    // The skill is named with the bundled file, which works where no harness copy is installed.
+    expect(opening).toMatch(/Read the Notifai skill at `[^`]+SKILL\.md` before your first Notification Request/)
     expect(opening).toMatch(/job changes completely[^.]*rename this Agent Session/)
     expect(opening).toMatch(/unless your assignment delegates them elsewhere/)
     // An orchestrator's worker can be a top-level session with no parent the

@@ -13,6 +13,7 @@ import { refreshAgentUpdateState } from './agent-update-notice.js'
 import { stateDir } from './config.js'
 import type { HookInstallableHarness } from './harnesses.js'
 import { pruneAbandonedSessions } from './hook-session-state.js'
+import { pruneGuidanceRecords } from './guidance-currency.js'
 import { launchSelf } from './launch-self.js'
 
 const MAINTENANCE_INTERVAL_MS = 24 * 60 * 60 * 1000
@@ -105,6 +106,7 @@ export async function runHookMaintenance(options: {
   fetchImpl?: typeof fetch
 }): Promise<{ pruned: number }> {
   const pruned = pruneAbandonedSessions(options.env)
+  pruneGuidanceRecords(options.env, options.now)
   await refreshAgentUpdateState({
     env: options.env,
     now: options.now,

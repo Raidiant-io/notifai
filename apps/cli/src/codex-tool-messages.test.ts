@@ -34,6 +34,8 @@ import { handOffSessionMessages } from './session-message-handoff.js'
 import { localIntegrationAssessment, refreshIntegrationHealth } from './integration-health.js'
 import { nativeQuestionTitle } from './codex-question-bindings.js'
 import { readNativeQuestionSnapshot } from './codex-native-turn.js'
+import { recordGuidanceGiven } from './guidance-currency.js'
+import { rootGuidanceDigest } from './session-activation.js'
 
 const roots: string[] = []
 afterEach(() => {
@@ -90,6 +92,7 @@ function setup() {
   installTrustedHooks(env)
   enableProject(projectBinding(root, env, undefined))
   const incarnation = beginSessionIncarnation(SESSION, env, { stamp: lifecycleStamp(), harnessProcess: owner })
+  recordGuidanceGiven(SESSION, env, rootGuidanceDigest(root, env))
   const lease = { incarnation: incarnation.incarnation, generation: 1 }
   acquireClaimFile(attendantClaimPath(SESSION, env), { incarnation: lease.incarnation }, Date.now())
   writeAttendantStatus(SESSION, env, { ...lease, phase: 'attending', activity: 'working', reason: null, accepts_messages: true, updated_at: Date.now() })

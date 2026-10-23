@@ -1,3 +1,5 @@
+import { guidanceSessionNeedsToken } from './command-guidance.js'
+import { guidanceCheckCommand, guidanceShowCommand as readCurrentGuidance } from './commands-guidance.js'
 import {
   CAPABILITIES_V1,
   NOTIFICATION_CONTRACT_FINGERPRINT,
@@ -166,7 +168,7 @@ it.each([
     })
   })
   try {
-    expect(await askCommand(deps, 'Continue?', { title: 'Decision', json })).toBe(EXIT.failed)
+    expect(await askAuthoredCommand(deps, 'Continue?', { title: 'Decision', json })).toBe(EXIT.failed)
     if (json) {
       expect(JSON.parse(io.outLines.join('\n'))).toMatchObject({
         ok: false, registered: false,
@@ -207,9 +209,15 @@ function sendCommand(
     baseUrl?: string
   },
 ) {
+  let token = flags.guidanceToken
+  if (token === undefined && guidanceSessionNeedsToken(deps)) {
+    guidanceCheckCommand({ ...deps, io: { ...deps.io, out: line => { token = (JSON.parse(line) as { token?: string }).token } } })
+  }
+  void readCurrentGuidance({ ...deps, io: { ...deps.io, out: () => undefined } }, { ...(token === undefined ? {} : { sessionToken: token }) })
   return sendAuthoredCommand(deps, {
     summary: flags.summary ?? flags.body ?? flags.title,
     ...flags,
+    ...(token === undefined ? {} : { guidanceToken: token }),
   })
 }
 
@@ -218,7 +226,12 @@ function askCommand(
   question: string | undefined,
   flags: AskFlags,
 ) {
-  return askAuthoredCommand({ spawnQuestionSettlement: () => undefined, ...deps }, question, flags)
+  let token = flags.guidanceToken
+  if (token === undefined && guidanceSessionNeedsToken(deps)) {
+    guidanceCheckCommand({ ...deps, io: { ...deps.io, out: line => { token = (JSON.parse(line) as { token?: string }).token } } })
+  }
+  void readCurrentGuidance({ ...deps, io: { ...deps.io, out: () => undefined } }, { ...(token === undefined ? {} : { sessionToken: token }) })
+  return askAuthoredCommand({ spawnQuestionSettlement: () => undefined, ...deps }, question, { ...flags, ...(token === undefined ? {} : { guidanceToken: token }) })
 }
 
 /**
@@ -3168,7 +3181,7 @@ describe('command contracts', () => {
       'User reply: "yes, after the migration"',
       expect.stringContaining('can never satisfy a harness permission prompt'),
       'Agent Acknowledgement required.',
-      `next: Run \`notifai acknowledge ${receipt.request_id} --text <text>\` with concrete text saying what you will do because of the reply.`,
+      `next: Run \`notifai acknowledge ${receipt.request_id} --text <text>\` with concrete text naming the work this Agent Session will do itself because of the reply.`,
     ])
     expect(readLogRecords(deps.env, { event: ['reply.received'] }).records).toHaveLength(1)
   })
@@ -3200,7 +3213,7 @@ describe('command contracts', () => {
       'User reply: "yes, after the migration"',
       expect.stringContaining('can never satisfy a harness permission prompt'),
       'Agent Acknowledgement required.',
-      `next: Run \`notifai acknowledge ${receipt.request_id} --text <text>\` with concrete text saying what you will do because of the reply.`,
+      `next: Run \`notifai acknowledge ${receipt.request_id} --text <text>\` with concrete text naming the work this Agent Session will do itself because of the reply.`,
     ])
   })
 
@@ -9077,7 +9090,8 @@ describe('a held ask --wait', () => {
     } as never)
     const env = { ...isolatedEnv(cwd), CURSOR_AGENT: '1' }
 
-    expect(await ask({ ...deps, cwd, env }, { json: true })).toBe(EXIT.ok)
+    expect(await ask({ ...deps, cwd, env }, { json: true, resumes: 'Write the selected headline to HEADLINE.txt' })).toBe(EXIT.ok)
+    expect(JSON.parse(io.outLines[0]!)).toMatchObject({ resumes: 'Write the selected headline to HEADLINE.txt', on_answer: expect.stringContaining('Only this Agent Session received this answer') })
     expect(submit.mock.calls[0]![0].draft.reply?.expires_in_seconds).toBe(590)
     expect(putAgentAcknowledgement).not.toHaveBeenCalled()
     expect(JSON.parse(io.outLines[0]!).acknowledgement_command).toContain(`notifai acknowledge ${receipt.request_id}`)
@@ -9641,7 +9655,7 @@ describe('asking before the hooks have ever run', () => {
         in_this_turn: expect.stringContaining('belongs to the root Agent Session that started you'),
         route_neutral: expect.any(String),
         keep_session_open: expect.stringContaining('The root Agent Session must stay open'),
-        on_answer: expect.stringContaining('you take no action on it'),
+        on_answer: expect.stringContaining('so you finish the work'),
         answered_outside_notifai: expect.stringContaining(`the root retires the question with \`notifai close ${questionId}\``),
       })
       expect(next['in_this_turn']).toContain('Tell your parent the question id')
@@ -9664,8 +9678,10 @@ describe('asking before the hooks have ever run', () => {
       expect(output.open_form).toBeUndefined()
       expect(h.compatibility).not.toHaveBeenCalled()
       expect(h.codexAnswerControl).not.toHaveBeenCalled()
-      // The root owns the question, under its current start, and its answer wakes the root.
-      expect(readSessionState(root, h.env).pending?.[0]).toMatchObject({ question_id: output.question_id, source: { session_id: root, harness: 'codex' } })
+      // The root owns the question, under its current start, and its answer wakes the root,
+      // which is told which subagent asked.
+      expect(readSessionState(root, h.env).pending?.[0]).toMatchObject({ question_id: output.question_id, source: { session_id: root, harness: 'codex' },
+        asked_by: { agent_id: child } })
       expect(readSessionState(child, h.env).pending).toBeUndefined()
       expect(h.spawn).toHaveBeenCalledWith(expect.objectContaining({ envelope: expect.objectContaining({ session_id: root }) }))
 
@@ -9896,6 +9912,24 @@ describe('asking before the hooks have ever run', () => {
           action: 'start_fresh_codex_session',
         },
       })
+  })
+
+  it('retains Codex activation proof when activation output is interrupted', async () => {
+    const cwd = scratchDir('notifai-codex-interrupted-activation-')
+    const io = new PlainInteractiveIo()
+    const env = { ...isolatedEnv(cwd), CODEX_THREAD_ID: 'codex-interrupted-activation' }
+    const deps = { ...makeDeps(io, {} as ApiClient), cwd, env, now: () => 42 }
+    writeProjectSettings(cwd, env, 'project = "interrupted-activation"\n')
+    enableProject(projectBinding(cwd, env, 'interrupted-activation')!)
+    expect(hooksInstallCommand(deps, { harness: 'codex', execPath, scriptPath })).toBe(EXIT.ok)
+    trustInstalledCodexHooks(cwd, env)
+    const fingerprint = codexStopDefinitionFingerprint(findInstallations(env))
+    expect(fingerprint).toBeDefined()
+    io.out = () => { throw new Error('activation output interrupted') }
+    await expect(hookRunCommand(deps, 'session-start', async () => JSON.stringify({
+      session_id: env.CODEX_THREAD_ID, cwd,
+    }), 'codex')).rejects.toThrow('activation output interrupted')
+    expect(readSessionState(env.CODEX_THREAD_ID, env).codex_stop_definition_fingerprint).toBe(fingerprint)
   })
 
   it('rejects a Codex session when the trusted Stop definition changes after SessionStart', async () => {
@@ -10249,7 +10283,7 @@ describe('asking before the hooks have ever run', () => {
       next: {
         end_turn: true,
         in_this_turn: expect.stringMatching(/^Ask it in the conversation, say what each answer will make you do, then end your turn\. The answer arrives as your next message\./),
-        keep_session_open: expect.stringMatching(/Keep this Agent Session open/),
+        keep_session_open: expect.stringMatching(/keep it open until you have done the work/),
       },
     })
     expect(readSessionState('claude-wait', env).pending).toHaveLength(1)
@@ -10271,6 +10305,43 @@ describe('asking before the hooks have ever run', () => {
     expect(await askCommand(deps, 'Which colour?', { title: 'Release colour', wait: true })).toBe(EXIT.ok)
     expect(io.outLines.at(-1)).toBe('Then end your turn: the answer arrives as your next message.')
     expect(io.outLines.join('\n')).not.toContain('Continue independent work')
+  })
+
+  it('gives a Claude Code subagent the root handoff and tells the root which subagent asked', async () => {
+    // Claude Code gives a subagent's shell the root's own session id, so its
+    // question is the root's; its transcript is what names it.
+    const cwd = scratchDir('notifai-claude-subagent-ask-')
+    const io = new CapturedIo()
+    const session = 'claude-root-session'
+    const env = { ...isolatedEnv(cwd), CLAUDECODE: '1', CLAUDE_CODE_SESSION_ID: session }
+    const client = { submit: vi.fn(), replies: vi.fn() } as unknown as ApiClient
+    const deps = { ...makeDeps(io, client), cwd, env, now: () => 42, spawnQuestionSettlement: vi.fn() }
+    expect(hooksInstallCommand(deps, { harness: 'claude-code', execPath, scriptPath })).toBe(EXIT.ok)
+    beginSessionIncarnation(session, env, { stamp: lifecycleStamp(), harnessProcess: currentProcessIdentity()! })
+    writeSessionState(session, env, { harness: 'claude-code', last_prompt_at: 42, last_stop_at: 41 })
+    writeProjectSession(cwd, env, session, 42, 'claude-code')
+    const subagents = path.join(env.CLAUDE_CONFIG_DIR!, 'projects', '-work', session, 'subagents')
+    mkdirSync(subagents, { recursive: true })
+    writeFileSync(path.join(subagents, 'agent-a1b2c3.meta.json'), JSON.stringify({ agentType: 'general-purpose', description: 'headline worker', finished: false }))
+    writeFileSync(path.join(subagents, 'agent-a1b2c3.jsonl'), `${JSON.stringify({ type: 'assistant', message: { role: 'assistant', content: [
+      { type: 'tool_use', id: 'toolu_ask', name: 'Bash', input: { command: 'notifai ask "Which headline should v2 use?" --choice A --choice B --json' } },
+    ] } })}\n`)
+    io.outLines = []
+    expect(await askCommand(deps, 'Which headline should v2 use?', { title: 'Release headline', choice: ['A', 'B'], json: true, wait: true })).toBe(EXIT.ok)
+    const output = JSON.parse(io.outLines.join('\n'))
+    expect(output.open_form).toBeUndefined()
+    expect(output.next).toMatchObject({ end_turn: true, in_this_turn: expect.stringContaining('belongs to the root Agent Session that started you'),
+      on_answer: expect.stringContaining('so you finish the work') })
+    expect(readSessionState(session, env).pending?.[0]).toMatchObject({ question_id: output.question_id,
+      asked_by: { agent_id: 'a1b2c3', agent_type: 'general-purpose', description: 'headline worker' } })
+
+    // The root's own question, with no subagent asking, keeps the ordinary output.
+    rmSync(subagents, { recursive: true, force: true })
+    io.outLines = []
+    expect(await askCommand(deps, 'Which name?', { title: 'Release name', json: true })).toBe(EXIT.ok)
+    const own = JSON.parse(io.outLines.join('\n'))
+    expect(own.next.on_answer).toEqual(expect.any(String))
+    expect(readSessionState(session, env).pending?.find((pending) => pending.question_id === own.question_id)?.asked_by).toBeUndefined()
   })
 
   it('hands back the picker for a closed `ask --wait` in Claude Code, and the same one for a repeat', async () => {
@@ -10910,37 +10981,7 @@ describe('asking before the hooks have ever run', () => {
       expect(said).toContain(`If the answer is "${answer}"`)
     }
     expect(said).toContain('unexpected typed answer')
-    expect(said).toContain('work you will resume')
-    expect(said).toContain('without asking the user to confirm again')
-    expect(said).toContain('not as approval')
     expect(said).toContain('cannot answer a harness permission prompt')
-  })
-
-  it('requires a concrete fallback for free-text answers before the turn ends', () => {
-    const cwd = scratchDir('notifai-ask-free-text-')
-    const io = new CapturedIo()
-    const env = {
-      XDG_CONFIG_HOME: path.join(cwd, 'config'),
-      XDG_STATE_HOME: path.join(cwd, 'state'),
-      HOME: path.join(cwd, 'home'),
-      CODEX_HOME: path.join(cwd, 'codex-home'),
-      CODEX_THREAD_ID: 'codex-free-text-thread',
-    }
-    const deps = { ...makeDeps(io, {} as ApiClient), cwd, env, now: () => 42 }
-
-    expect(hooksInstallCommand(deps, { harness: 'codex', execPath, scriptPath })).toBe(EXIT.ok)
-    trustInstalledCodexHooks(cwd, env)
-    writeCurrentCodexSessionState(cwd, env, 'codex-free-text-thread', {
-      last_prompt_at: 42,
-      last_stop_at: 41,
-    })
-    writeProjectSession(cwd, env, 'codex-free-text-thread', 42, 'codex')
-    io.outLines = []
-
-    expect(askCommand(deps, 'What rollout adjustment should I make?', { title: 'Decision' })).toBe(EXIT.ok)
-    expect(io.outLines.join('\n')).toContain(
-      'For the free-text answer: state how its content will determine the concrete work you resume.',
-    )
   })
 
   it('refuses a Codex question when the installed Stop definition is no longer trusted', async () => {
@@ -12550,5 +12591,79 @@ describe('Agent Session rename command', () => {
 
     expect(await agentSessionRenameCommand(deps, 'A new job')).toBe(EXIT.usage)
     expect(io.errLines.join('\n')).toMatch(/exact active Agent Session/i)
+  })
+})
+
+
+it.each(['send', 'ask'] as const)('refuses a stale %s before network or registration, and prints current writing guidance', async (command) => {
+  const cwd = mkdtempSync(path.join(os.tmpdir(), 'notifai-use-currency-'))
+  const env = { ...isolatedEnv(cwd), CODEX_THREAD_ID: 'use-currency-session' }
+  const io = new CapturedIo()
+  const submit = vi.fn()
+  const deps = { ...makeDeps(io, { submit } as unknown as ApiClient), cwd, env }
+  const code = command === 'send'
+    ? await sendAuthoredCommand(deps, { kind: 'done', title: 'Docs', summary: 'Finished.', json: true })
+    : await askAuthoredCommand(deps, 'Which headline?', { title: 'Headline', resumes: 'Write HEADLINE.txt', json: true })
+  expect(code).toBe(EXIT.usage)
+  expect(JSON.parse(io.outLines.at(-1)!)).toMatchObject({ code: 'guidance_required', guidance: expect.stringContaining('# Acknowledgements') })
+  expect(submit).not.toHaveBeenCalled()
+  expect(readSessionState(env.CODEX_THREAD_ID, env).pending).toBeUndefined()
+})
+
+
+describe('public guidance recovery sequence', () => {
+  it.each(['cursor', 'claude-code'] as const)('recovers first-use and Projectless sends in %s without minting a token in the helper', async harness => {
+    for (const projectless of [false, true]) {
+      const cwd = mkdtempSync(path.join(os.tmpdir(), 'notifai-guidance-recovery-'))
+      if (!projectless) execFileSync('git', ['init', '-q', cwd])
+      const env = { ...isolatedEnv(cwd), ...(harness === 'cursor' ? { CURSOR_AGENT: '1' } : { CLAUDECODE: '1', CLAUDE_CODE_SESSION_ID: 'root-with-history' }) }
+      if (harness === 'claude-code') {
+        const children = path.join(env.CLAUDE_CONFIG_DIR!, 'projects/p/root-with-history/subagents')
+        mkdirSync(children, { recursive: true })
+        writeFileSync(path.join(children, 'agent-worker.jsonl'), '')
+      }
+      const io = new CapturedIo()
+      const submit = vi.fn(async () => receipt)
+      const deps = { ...makeDeps(io, { submit } as unknown as ApiClient), cwd, env }
+      const flags = { kind: 'done', title: 'Recovery', summary: 'Finished.', projectless, json: true }
+      expect(await sendAuthoredCommand(deps, flags)).toBe(EXIT.usage)
+      expect(JSON.parse(io.outLines.at(-1)!).code).toBe('guidance_required')
+      expect(submit).not.toHaveBeenCalled()
+      expect(guidanceCheckCommand(deps)).toBe(EXIT.ok)
+      const check = JSON.parse(io.outLines.at(-1)!) as { enabled: boolean; token: string; read_command: string; request_flag: string }
+      expect(check.enabled).toBe(false)
+      const readToken = /--session-token ([a-f0-9]{48})$/.exec(check.read_command)?.[1]
+      const sendToken = /--guidance-token ([a-f0-9]{48})$/.exec(check.request_flag)?.[1]
+      expect(readToken).toBe(check.token)
+      expect(sendToken).toBe(check.token)
+      expect(await readCurrentGuidance(deps, { sessionToken: readToken })).toBe(EXIT.ok)
+      expect(await sendAuthoredCommand(deps, { ...flags, guidanceToken: sendToken })).toBe(EXIT.ok)
+      expect(submit).toHaveBeenCalledOnce()
+      expect(projectEnablementState(projectBinding(cwd, env))).toBe(projectless ? 'unset' : 'enabled')
+      if (!projectless) {
+        expect(projectDisableCommand(deps)).toBe(EXIT.ok)
+        expect(await sendAuthoredCommand(deps, { ...flags, guidanceToken: sendToken })).toBe(EXIT.usage)
+        expect(submit).toHaveBeenCalledOnce()
+        expect(io.errLines.join(' ')).toContain('project_disabled')
+      }
+    }
+  })
+
+  it('recovers a Projectless Cursor question through check, read and ask --wait', async () => {
+    const cwd = mkdtempSync(path.join(os.tmpdir(), 'notifai-question-recovery-'))
+    const env = { ...isolatedEnv(cwd), CURSOR_AGENT: '1' }
+    const io = new CapturedIo()
+    const submit = vi.fn(async () => receipt)
+    const client = { submit, replies: async () => replyResponse([reply]), closeReplies: async () => claimedReplyResponse([reply]), putAgentAcknowledgement: async () => ({}) } as unknown as ApiClient
+    const deps = { ...makeDeps(io, client), cwd, env }
+    const flags = { title: 'Shipping', resumes: 'Ship the selected version', wait: true, projectless: true, json: true }
+    expect(await askAuthoredCommand(deps, 'Ship it?', flags)).toBe(EXIT.usage)
+    expect(JSON.parse(io.outLines.at(-1)!).code).toBe('guidance_required')
+    expect(guidanceCheckCommand(deps)).toBe(EXIT.ok)
+    const check = JSON.parse(io.outLines.at(-1)!) as { token: string }
+    expect(await readCurrentGuidance(deps, { sessionToken: check.token })).toBe(EXIT.ok)
+    expect(await askAuthoredCommand(deps, 'Ship it?', { ...flags, guidanceToken: check.token })).toBe(EXIT.ok)
+    expect(submit).toHaveBeenCalledOnce()
+    expect(projectEnablementState(projectBinding(cwd, env))).toBe('unset')
   })
 })

@@ -56,6 +56,15 @@ export interface HookEnvelope {
   openclaw_request_ids?: string[]
   /** 2 from a Notifai Hermes plugin that renders its context as two prompt sections. */
   hermes_prompt_sections?: number
+  /** Hermes reports distinct child session ids at turn start. */
+  hermes_worker?: boolean
+  /**
+   * From a Notifai plugin whose harness compacted this conversation since its
+   * last activation (OpenCode's `session.compacted`, Hermes rebuilding its
+   * system prompt): the start of a compacted conversation, like Claude Code's
+   * and Codex's `source: compact`.
+   */
+  compacted?: boolean
   cwd?: string
   hook_event_name?: string
   /** How a harness lifecycle began: startup, resume, clear, compact, or fork. */
@@ -100,6 +109,8 @@ export interface HookEnvelope {
 export interface SessionState {
   /** Grok's model-visible guidance, re-armed on resume and compaction. */
   grok_activation_context?: string
+  /** Grok compacted this session since its activation was last sent. */
+  grok_compacted?: boolean
   /** Literal revision received from the loaded hook/module, scoped to this incarnation. */
   integration_observation?: { incarnation: string; revision: string }
   /** Immutable native builds serving live or resumable work in this session. */
@@ -386,9 +397,26 @@ export interface PendingSubmissionIntent {
   admitted_at?: number
 }
 
+/**
+ * A subagent that asked a question on its root Agent Session's behalf: the
+ * question is the root's, and its answer reaches the root, which acts on it.
+ */
+export interface QuestionAsker {
+  /** The harness's own id for the subagent: Claude Code's agent id, Codex's thread id. */
+  agent_id: string
+  /** Claude Code's agent type, when its transcript records one. */
+  agent_type?: string
+  /** The task description the parent gave the subagent, when recorded. */
+  description?: string
+}
+
 export interface PendingQuestion {
   /** Credential metadata frozen at registration; never contains the secret. */
   service_identity?: ServiceIdentity
+  /** Set when a subagent asked this for its root Agent Session. */
+  asked_by?: QuestionAsker
+  /** Local commitment supplied by the asker, replayed with the answer. */
+  resumes?: string
   /** Stable local identity across racing state writers and submit recovery. */
   question_id?: string
   /** One-line summary: the single question's text, or the set's first. */

@@ -15,6 +15,8 @@ An ordinary subagent receives worker context: it reports to its parent and does
 not notify. A worker explicitly delegated Notification Requests in its prompt
 loads the skill and guidance as their owner.
 
+A subagent's question registers on the root Agent Session, and its answer arrives there; follow what `ask` prints.
+
 ## What arrives and what to do
 
 Answers and notes come back on their own for the whole answer window. A busy
@@ -131,7 +133,9 @@ section writes it, including its inline Body heading rule. A leading
 
 ## After a Notifai update
 
-The hooks call the updated CLI on their next run; reread changed guidance
-yourself. A changed hook definition counts as loaded only once a natural hook
-call shows it. A definition Claude Code holds in memory may need a fresh Agent
-Session.
+The hooks call the updated CLI on their next run. When the guidance this Agent
+Session read has changed, Notifai says so once, at its next prompt, as it does
+after a compaction: load the skill again and run `notifai guidance` before the
+next Notification Request; if it says this shell cannot identify one conversation, run `notifai guidance check` and follow its output. A changed hook definition counts as loaded only once
+a natural hook call shows it. A definition Claude Code holds in memory may need
+a fresh Agent Session.

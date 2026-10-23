@@ -75,7 +75,7 @@ OpenCode only and still works there.
 ## After a Notifai update
 
 The loaded plugin calls the updated CLI on each event and reads guidance once
-per User prompt. OpenCode 1 loads changed plugin code only at startup, and
+per User prompt and after compaction. OpenCode 1 loads changed plugin code only at startup, and
 OpenCode 2 when the file changes: arrange a restart only when the update's
 diagnosis says that scope still needs one, then confirm a natural callback.
 
@@ -86,3 +86,4 @@ turn-end notification. Avoid rewriting the plugin in the middle of a turn
 when that notification matters. A native question executor that ignores abort
 gets at most three seconds to finish; then the device answer returns anyway,
 though that executor's native form may remain visible until OpenCode closes it.
+

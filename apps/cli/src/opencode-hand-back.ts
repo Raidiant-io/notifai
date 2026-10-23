@@ -108,6 +108,7 @@ async function handBackQuestion(
       summary: draft.presentation.summary,
       service_identity: authed.service,
       questions,
+      ...(input.built.resumes === undefined ? {} : { resumes: input.built.resumes }),
       ...(draft.presentation.body === undefined ? {} : { body: draft.presentation.body }),
       ...(draft.project === undefined ? {} : { project: draft.project }),
       ...(draft.source === undefined ? {} : { source: draft.source }),
