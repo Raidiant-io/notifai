@@ -341,22 +341,44 @@ describe('program argv parsing', () => {
     expect(help).toContain(`let Codex run the Notifai ${CODEX_COMMANDS_PROSE} commands outside its sandbox without a permission prompt`)
   })
 
-  it('takes an --form inline as JSON, so a form needs no file', async () => {
+  it('accepts inline forms only with --form-json', async () => {
     let seen: Record<string, unknown> | undefined
     const ask = (async (_deps, _question, flags) => ((seen = flags as Record<string, unknown>), 0)) as ProgramRunners['ask']
     const inline = '{"title":"Release","summary":"Release choices?","questions":[{"text":"Ship it?","choices":["Ship","Hold"]}]}'
-    expect((await parse(['ask', '--form', inline], { ask })).exitCode).toBe(0)
-    expect(seen).toEqual({ form: inline })
-    expect((await parse(['ask', '--form', `\n  ${inline}`], { ask })).exitCode).toBe(0)
-    expect(seen).toEqual({ form: `\n  ${inline}` })
+    for (const json of [inline, `\n  ${inline}`]) {
+      expect((await parse(['ask', '--form-json', json], { ask })).exitCode).toBe(0)
+      expect(seen).toEqual({ form: json })
+    }
+  })
 
+  it('keeps form file paths literal even when they start with braces or whitespace', async () => {
+    let seen: Record<string, unknown> | undefined
+    const ask = (async (_deps, _question, flags) => ((seen = flags as Record<string, unknown>), 0)) as ProgramRunners['ask']
+    const inline = '{"title":"Release","summary":"Release choices?","questions":[{"text":"Ship it?"}]}'
     const dir = mkdtempSync(path.join(os.tmpdir(), 'notifai-program-form-'))
-    const file = path.join(dir, 'form.json')
-    writeFileSync(file, inline)
-    expect((await parse(['ask', '--form', file], { ask })).exitCode).toBe(0)
-    expect(seen).toEqual({ form: inline })
-    const help = buildProgram(makeDeps(), { runners: {}, exit: () => {} }).commands.find((command) => command.name() === 'ask')!.helpInformation()
-    expect(help).toContain('--form <json|path>')
+    const oldCwd = process.cwd()
+    try {
+      process.chdir(dir)
+      for (const file of ['form.json', '{release}.json', '  {release}.json']) {
+        writeFileSync(file, inline)
+        expect((await parse(['ask', '--form', file], { ask })).exitCode).toBe(0)
+        expect(seen).toEqual({ form: inline })
+      }
+      const missing = await parse(['ask', '--form', '{missing}.json'], { ask })
+      expect(missing.exitCode).toBe(2)
+      expect(missing.deps.errLines.join('\n')).toContain('Could not read {missing}.json')
+    } finally {
+      process.chdir(oldCwd)
+    }
+  })
+
+  it('rejects ambiguous form inputs before dispatching the question', async () => {
+    const ask = vi.fn(async () => 0) as ProgramRunners['ask']
+    const inline = '{"title":"Release","questions":[]}'
+    const both = await parse(['ask', '--form', 'form.json', '--form-json', inline], { ask })
+    expect(both.exitCode).toBe(2)
+    expect(both.deps.errLines.join('\n')).toContain('either --form or --form-json')
+    expect(ask).not.toHaveBeenCalled()
   })
 
   it('reads --body-file and refuses it alongside --body', async () => {

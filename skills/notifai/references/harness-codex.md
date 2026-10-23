@@ -143,9 +143,14 @@ The rule has three limits, and readiness names each:
   waiting, because closing the session expires the question.
 - Only a literal `notifai …` argument list matches. Call `notifai` by name,
   never by absolute path or `node …/main.js`, with every value in plain single
-  quotes as the skill's Send section writes it. Never use redirection, a
-  heredoc, a pipe, `$()`, `VAR=…` or an escaped `'\''`: Codex cannot split such
-  a script, so nothing matches and the command stays in the sandbox.
+  quotes as the skill's Send section writes it. Redirection, a heredoc,
+  pipe, `VAR=…`, expansion or POSIX apostrophe escape can prevent matching,
+  leaving the command in the sandbox. For text with apostrophes, preserve
+  them with the lossless POSIX escape and let the harness ask for network
+  approval; no prompt-free inline route is proven. For a Body or form already
+  in a file, use `--body-file <path>` or `--form <path>`; preparing the file
+  has its own permission gate. On Windows, use the
+  [PowerShell rule and native argument limits](shell-quoting.md).
 - Rules are experimental, and the most restrictive rule wins. When readiness
   says the rule check fails, or that your organization forbids it, approve
   Notifai commands when Codex asks; hooks keep working.

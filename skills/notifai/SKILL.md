@@ -56,15 +56,27 @@ outside the repository), no flag writes this machine, and `--yes` skips the
 CLI's confirmation once the User approved the value and layer:
 
 ```bash
-notifai guidance set when-to-notify 'Only when you’re blocked or CI-length work finishes' --local --yes
+notifai guidance set when-to-notify 'Only when you'\''re blocked or CI-length work finishes' --local --yes
 ```
 
 ## Send
 
-Quote every text value in single quotes. The shell expands nothing inside
-them, no `$` and no backtick, and the command stays one plain `notifai …`
-command, which is what harness approval rules match. Inside them, write an
-apostrophe as ’.
+Preserve text exactly, including the User's guidance. Quote every text value
+for the shell running the tool, including questions, choices and JSON:
+
+- **bash/zsh** (macOS, Linux, WSL or Git Bash): single-quote the value;
+  nothing expands. For each ASCII apostrophe, close the quotes, write `\'`,
+  and reopen them: `'SELECT '\''ready'\'';'` passes `SELECT 'ready';`.
+- **PowerShell**: single-quote the value;
+  nothing expands. Double each single-quote character inside it: `'`, `’`,
+  `‘`, `‚` and `‛`. For example, `'It''s ‘‘ready’’.'` passes `It's ‘ready’.`.
+  See [shell details](references/shell-quoting.md) for native Windows
+  argument handling and file transport.
+
+Keep `notifai` as one plain command for harness approval rules. If lossless
+quoting or a file write needs approval, use that route and let the harness
+ask; never replace characters to avoid it. See
+[shell and harness limits](references/shell-quoting.md#harness-shells-and-approvals).
 
 ```bash
 notifai send --kind done \
@@ -95,7 +107,8 @@ guidance, with worked examples in [Writing examples](references/writing-examples
   Summary, never both. Omit it when the Summary suffices.
 
 Pass the Body inline as `--body '…'`, with real line breaks inside the quotes;
-it needs no file. Images (`--image`, referenced in the Body as
+use the lossless file route in [shell details](references/shell-quoting.md)
+when needed. Images (`--image`, referenced in the Body as
 `![alt](media:1)`), grouping, replacement and the User-owned `--sound`,
 `--level` and `--device`: [Sending details](references/send-details.md).
 
@@ -156,7 +169,7 @@ followed by its `--choice-description` when the label alone does not say what
 it does. Companion Apps show a description on its choice, so
 never restate the choices in the Body. The User can always type an answer
 instead. Add `--body '…'` for standalone Markdown reasoning, `--image` for
-evidence, `--multi` when several choices may combine, or `--form '{…}'` with
+evidence, `--multi` when several choices may combine, or `--form-json '{…}'` with
 the form's JSON for up to 10 questions decided together
 ([format](references/send-details.md)).
 Register independent questions separately, and never register an open

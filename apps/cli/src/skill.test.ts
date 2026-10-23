@@ -255,29 +255,6 @@ describe('Notifai agent skill', () => {
     expect(loose(send)).toMatch(/real line breaks inside the quotes/i)
   })
 
-  it('teaches single quotes for every text value once, at the top of Send', () => {
-    const send = loose(section('## Send'))
-    const rule = send.search(/Quote every text value in single quotes/)
-    expect(rule).toBeGreaterThan(-1)
-    expect(rule).toBeLessThan(send.indexOf('`--kind` is required'))
-    expect(send).toMatch(/the shell expands nothing inside them/i)
-    expect(send).toMatch(/approval rules match/i)
-    // A straight apostrophe would end the quotes, so the skill names the replacement.
-    expect(send).toContain('’')
-    // No shell example models double quotes, a heredoc or a variable prefix.
-    for (const example of shellExamples) {
-      const unquoted = example.replace(/'[^']*'/g, 'q')
-      expect(unquoted, example).not.toMatch(/"|<<|(^|\s)[A-Z_]+=/)
-    }
-  })
-
-  it('passes a question Body and a form inline, so asking writes no file', () => {
-    const ask = loose(section('## Ask a question'))
-    expect(ask).toContain("--body '")
-    expect(ask).toContain("--form '{")
-    expect(ask).not.toMatch(/--form <path>|--body-file/)
-  })
-
   it('reserves NOTIFAI_NO_INPUT for scripts and CI, never an agent prefix', () => {
     const settings = loose(harnessSetupReference)
     expect(settings).toMatch(/`NOTIFAI_NO_INPUT=1` is for scripts and CI/)

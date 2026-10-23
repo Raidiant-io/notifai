@@ -800,7 +800,8 @@ export function buildProgram(deps: CommandDeps, options: BuildProgramOptions = {
       '--literal-backslash-n',
       'allow the two-character sequence \\n in --body instead of treating it as a mistaken escaped newline',
     )
-    .option('--form <json|path>', 'ask several questions as one form: its JSON inline (starting with {), or a JSON file (use - for stdin), with "title", "summary" and "questions", each question carrying its own "title" when there are several')
+    .option('--form <path>', 'ask several questions from a JSON file (use - for stdin), with "title", "summary" and "questions", each question carrying its own "title" when there are several')
+    .option('--form-json <json>', 'ask several questions from inline JSON; use --form for a file or stdin')
     .option(
       '--image <path|url|media_id>',
       'upload or attach an image; show it in Body as ![description](media:N), N in --image order (repeatable, maximum 8)',
@@ -829,6 +830,7 @@ export function buildProgram(deps: CommandDeps, options: BuildProgramOptions = {
       bodyFile?: string
       literalBackslashN?: boolean
       form?: string
+      formJson?: string
       image?: string[]
       imageAlt?: string[]
       project?: string
@@ -854,10 +856,15 @@ export function buildProgram(deps: CommandDeps, options: BuildProgramOptions = {
         }
         body = read.text
       }
-      let form: string | undefined
-if (typeof opts.form === 'string' && opts.form.trimStart().startsWith('{')) {
-        form = opts.form
-      } else if (typeof opts.form === 'string') {
+      if (opts.form !== undefined && opts.formJson !== undefined) {
+        return exit(reportAskFailure(deps, opts, {
+          code: 'invalid_input', check_id: 'form', exit_code: 2,
+          remedy: 'pass either --form or --form-json, then retry',
+          message: 'Pass either --form or --form-json, not both.',
+        }))
+      }
+      let form = opts.formJson
+      if (typeof opts.form === 'string') {
         const read = readInputFile(deps, opts.form, '--form')
         if (!read.ok) {
           return exit(reportAskFailure(deps, opts, {

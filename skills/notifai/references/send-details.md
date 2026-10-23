@@ -13,8 +13,10 @@ or a position with no `--image` is an error.
 User asked for it on this send. `--sound` takes a shipped name or a custom
 name/id from `notifai sounds`.
 
-`ask --form '{…}'` asks up to 10 questions decided together, answered as one
-reply. Pass the form's JSON inline in single quotes, line breaks and all:
+`ask --form-json '{…}'` asks up to 10 questions decided together, answered as one
+reply. Quote inline JSON for your shell as the skill's Send section explains,
+line breaks and all. `--form <path>` reads a JSON file, and `--form -` reads
+stdin; paths are always paths, even when their names start with `{`.
 
 ```json
 {
