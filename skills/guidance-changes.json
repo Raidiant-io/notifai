@@ -1,5 +1,5 @@
 {
-  "current": "56d4c082fddcdcd40a0bb7d0d2303abfdf8d86af17aead60649b91dcd420e0f4",
+  "current": "2fd65ead37431ae936192dfdf0e1c2ac5096870d56718a13e0e0bcd015237414",
   "releases": [
     {
       "digest": "3e47b01bc6bbfb43e910c660b9964fab6459d75148c3c02dcbcd0be64cfb2963",
@@ -16,6 +16,10 @@
     {
       "digest": "56d4c082fddcdcd40a0bb7d0d2303abfdf8d86af17aead60649b91dcd420e0f4",
       "note": "A delegated worker keeps its assignment until it does the work its answer unblocks, before reporting. Describe that work in `ask --resumes`; reporting the answer is not that work."
+    },
+    {
+      "digest": "2fd65ead37431ae936192dfdf0e1c2ac5096870d56718a13e0e0bcd015237414",
+      "note": "A worker delegated Notification Requests owns the work its answer unblocks. Keep the assignment waiting until that work is done, and name the work this Agent Session does in ask --resumes."
     }
   ]
 }

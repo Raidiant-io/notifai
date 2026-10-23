@@ -18,10 +18,7 @@ For update/integration notices or channel changes, read
 Parent owns by default. An agent that started your Agent Session with a task
 brief is your parent, even when the harness shows no parent. Ordinary workers
 report Agent Events to their parent and do not load or send. Explicit
-delegation makes a worker the owner. A delegated worker that asks keeps the
-assignment while its question is pending and until it does the work the answer
-unblocks, before reporting; reporting the answer is not acting on it. Follow
-what `ask` prints: it says which Agent Session receives the answer.
+delegation makes a worker the owner. A delegated worker that asks still owns the work its answer unblocks: until it has done that work, report it as waiting, never done. Follow what `ask` prints: it says which Agent Session receives the answer.
 
 Owner session context carries the `when-to-notify` and `questions` guidance.
 Before your first Notification Request or acknowledgement, or when that
@@ -136,9 +133,6 @@ prove the exact session.
 
 ## Ask a question
 
-Pass `--resumes '<unblocked work this Agent Session does itself>'`; reporting
-the answer is not that work. Notifai replays it with the answer.
-
 When work you own or coordinate needs a User response, use `notifai ask` in
 the same turn you ask it in the conversation, even during other work or after
 recent User activity: conversation alone misses an away User. Ask for safe
@@ -174,6 +168,8 @@ instead. Add `--body '…'` for standalone Markdown reasoning, `--image` for
 evidence, `--multi` when several choices may combine, or `--form-json '{…}'` with
 the form's JSON for up to 10 questions decided together
 ([format](references/send-details.md)).
+
+Name the work the answer unblocks, which this Agent Session does itself, in `--resumes`; Notifai replays it with the answer.
 Register independent questions separately; never register an open question again.
 
 When `ask` hands back a question form, open it unchanged: the question is

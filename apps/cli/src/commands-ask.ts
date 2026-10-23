@@ -548,7 +548,7 @@ const END_TURN = 'Ask it in the conversation, say what each answer will make you
  * it; it hands the question to its parent and ends its turn. Plain `ask`,
  * `ask --wait` and a duplicate all say the same.
  */
-const WORKER_ASK = 'You are a subagent: this question belongs to the root Agent Session that started you, and its answer arrives there, never to you. Do not ask it in your own conversation or wait for it. Tell your parent the question id and what each answer will change, then end your turn.'
+const WORKER_ASK = 'You are a subagent: this question belongs to the root Agent Session that started you, and its answer arrives there, never to you. Do not ask it in your own conversation or wait for it. Tell your parent the question id, what each answer will change, and that your assignment is waiting on it, not done; then end your turn.'
 
 const WORKER_KEEP_ROOT_OPEN = 'The root Agent Session must stay open while the question waits: closing, clearing or switching it ends the question, so never suggest that.'
 
@@ -897,7 +897,7 @@ function persistRegisteredQuestion(
     if (entry.choices !== undefined) {
       for (const choice of entry.choices) {
         deps.io.out(
-          `- ${questionPrefix}If the answer is ${JSON.stringify(choice.label)}: state the unblocked work you will do yourself before reporting; reporting the answer is not that work.`,
+          `- ${questionPrefix}If the answer is ${JSON.stringify(choice.label)}: state the work you will do yourself.`,
         )
       }
       deps.io.out(
@@ -910,7 +910,7 @@ function persistRegisteredQuestion(
     }
   }
   deps.io.out(
-    'The answer comes back to this Agent Session. Do the work it unblocks here before reporting; reporting the answer is not that work. Describe that work in --resumes. Do not ask the user to confirm again.',
+    'The answer comes back to this Agent Session. Do the work it unblocks here before reporting; reporting the answer is not that work. Do not ask the user to confirm again.',
   )
   deps.io.out(
     'A Notifai answer cannot answer a harness permission prompt; leave those to the harness and user.',
