@@ -7,6 +7,11 @@ on:
         description: Exact commit SHA that this run must check
         required: true
         type: string
+      reliability_proof:
+        description: Run the bounded before/after reliability experiment
+        required: false
+        type: boolean
+        default: false
       standalone_only:
         description: Run native standalone candidate checks without the npm release suite
         required: false
@@ -131,6 +136,12 @@ jobs:
             pnpm exec commitlint --from "$base" --to HEAD --verbose
           fi
 
+      - name: Verify agent guidance tests
+        run: pnpm check:agent-guidance:test
+
+      - name: Verify agent guidance
+        run: pnpm check:agent-guidance
+
       - name: Build public packages
         run: pnpm build
 
@@ -151,12 +162,6 @@ jobs:
 
       - name: Verify public boundary
         run: pnpm check:boundary
-
-      - name: Verify agent guidance tests
-        run: pnpm check:agent-guidance:test
-
-      - name: Verify agent guidance
-        run: pnpm check:agent-guidance
 
       - name: Verify release metadata and package contents
         run: pnpm check:release
@@ -323,3 +328,34 @@ jobs:
     uses: ./.github/workflows/standalone-candidate.yml
     with:
       expected_sha: ${{ inputs.expected_sha }}
+
+  guidance-reliability:
+    needs: scope
+    if: ${{ inputs.reliability_proof }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version: '24'
+      - name: Repeat baseline and candidate guidance regressions twenty times
+        shell: bash
+        run: |
+          set -euo pipefail
+          baseline=e0fc74d34dcabcd9dba4461f3e871106399e407e
+          mkdir -p "$RUNNER_TEMP/guidance-before"
+          for file in check-agent-guidance.mjs check-agent-guidance.test.mjs; do
+            git show "$baseline:scripts/$file" > "$RUNNER_TEMP/guidance-before/$file"
+          done
+          failed=0
+          for iteration in $(seq 1 20); do
+            echo "Baseline $baseline iteration $iteration"
+            node --test "$RUNNER_TEMP/guidance-before/check-agent-guidance.test.mjs" || failed=1
+            echo "Candidate $GITHUB_SHA iteration $iteration"
+            node --test scripts/check-agent-guidance.test.mjs || failed=1
+          done
+          exit "$failed"
