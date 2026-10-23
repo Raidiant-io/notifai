@@ -9372,3 +9372,16 @@ describe('guidance compaction and write boundaries', () => {
     } finally { write.mockRestore() }
   })
 })
+
+
+it.each([
+  ['claude-code', 'session-start'], ['codex', 'session-start'], ['opencode', 'session-start'],
+  ['hermes', 'session-start'], ['hermes', 'guidance-check'],
+] as const)('invalidates explicit-use reads at %s/%s compaction with lifecycle guidance unset', async (carrier, event) => {
+  const h = harness()
+  rmSync(projectBinding(h.deps.cwd, h.env)!.markerPath, { force: true })
+  recordGuidanceRead('projectless-reader', h.env, 'same-guidance')
+  await hookRunCommand(h.deps, event, stdin({ session_id: 'projectless-reader', source: 'compact', compacted: true }), carrier)
+  expect(guidanceRead('projectless-reader', h.env)).toBeUndefined()
+  expect(h.io.outLines).toEqual([])
+})

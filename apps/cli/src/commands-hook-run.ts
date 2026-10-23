@@ -608,12 +608,12 @@ export async function hookRunCommand(
     start({ cwd })
     let notice: string | undefined
     try {
-      if (harness !== undefined && envelope.session_id !== undefined && lifecycleEnabled()) {
-        const digest = rootGuidanceDigest(cwd, deps.env)
-        if (envelope.hermes_worker === true) {
+      if (harness !== undefined && envelope.session_id !== undefined) {
+        const enabled = lifecycleEnabled()
+        if (envelope.hermes_worker === true || !enabled) {
           if (envelope.compacted === true) invalidateGuidanceRead(envelope.session_id, deps.env)
         } else {
-          notice = claimGuidanceChange(envelope.session_id, deps.env, digest,
+          notice = claimGuidanceChange(envelope.session_id, deps.env, rootGuidanceDigest(cwd, deps.env),
             readSessionIncarnation(envelope.session_id, deps.env) !== null, { compacted: envelope.compacted === true })
         }
       }
@@ -821,7 +821,7 @@ export async function hookRunCommand(
       if (!owner) return true
       return recordGuidanceGiven(currencyKey, deps.env, guidanceOn ? digest ?? GUIDANCE_NOT_GIVEN : GUIDANCE_NOT_GIVEN)
     }
-    if (!owner && (envelope.source === 'compact' || envelope.compacted === true) && currencyKey !== '') {
+    if ((!owner || !guidanceOn) && (envelope.source === 'compact' || envelope.compacted === true) && currencyKey !== '') {
       invalidateGuidanceRead(currencyKey, deps.env)
       // Claude children inherit the root's shell identity. A child compaction
       // must also expire conversation tokens bound to that shared identity.
