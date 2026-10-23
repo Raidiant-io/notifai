@@ -116,9 +116,8 @@ Images (`--image`, referenced in the Body as
 
 Project and Agent Session are inferred; never pass `--session-id`. Outside a
 Project, or on a Projectless request, pass `--projectless`; it stops cwd or
-config from supplying Project identity. If the User disabled the Project you
-are working in, `send` and `ask` refuse even with `--projectless`; nothing
-from that Project reaches their devices until they enable it again.
+config from supplying Project identity. A User-disabled Project refuses
+`send` and `ask`, even with `--projectless`, until the User enables it.
 
 ### Name the Agent Session
 
@@ -298,23 +297,20 @@ Ordinary sends are silent on success; `--json` gives a receipt.
 Acceptance proves the provider took it and a Companion Receipt that the app
 got it; neither proves the User read it, and `unknown` is not failure.
 
-When something did not happen and you cannot see why, most of all after `ask`,
-`notifai logs` is the only account: its `hook.gate` records carry a fixed
-reason. Read [Diagnosing what happened](references/diagnostics.md) for
-filters, the reasons, and sign-in versus plan problems. The log never leaves
-the machine and holds the User's answers: treat it as private.
+For unexplained failures, especially after `ask`, read `notifai logs` and its
+`hook.gate` reasons: [Diagnosing what happened](references/diagnostics.md).
+The log holds the User's answers and never leaves the machine.
 
 | exit | meaning | what to do |
 | --- | --- | --- |
 | 0 | it worked | carry on |
-| 1 | failed; inspect stderr and any JSON result | fix it; a bare retry fails again |
-| 2 | usage *or* setup; `ask --json` reports code and remedy on stdout, other commands explain on stderr | follow the fix |
-| 3 | command-specific: a held `ask --wait` ended unanswered and withdrew the question; `replies` found no reply in this read or bounded wait; legacy `send --reply` ended its wait without a reply | follow the command's state; `replies` does not withdraw the question |
+| 1 | failed | inspect stderr and any JSON result; fix before retrying |
+| 2 | usage or setup | follow the printed remedy |
+| 3 | no answer or reply | follow the [command-specific state](references/send-details.md#reading-command-results) |
 | 4 | this machine is not signed in | see [Set Notifai up](#set-notifai-up) |
 | 5 | network | for `send`, rerun the exact command with `--retry`; for `ask --wait`, follow its output |
 
-After an interrupted or killed `send`, do not correlate redacted logs by title
-or time. Recover only by re-running the exact semantic send with `--retry`;
-the CLI reuses one opaque matching attempt or refuses ambiguity. A refusal
-requires checking a known request id with `status` or asking the User before
-creating a new send. Never remove `--retry` just to bypass the refusal.
+After an interrupted or killed `send`, recover with the exact semantic send
+and `--retry`: it reuses one opaque matching attempt or refuses ambiguity.
+Never correlate redacted logs by title or time, or remove `--retry` to bypass
+a refusal; check a known request id with `status` or ask the User before a new send.

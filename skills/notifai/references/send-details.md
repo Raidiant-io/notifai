@@ -48,6 +48,10 @@ are explained on stderr and do not promise a JSON error object. `ask --json`
 refusals instead return an object on stdout with `ok: false`, `code`, and
 `remedy`.
 
+Exit 3 depends on the command: a held `ask --wait` ended unanswered and withdrew
+the question; `replies` found no reply in this read or bounded wait without
+withdrawing anything; legacy `send --reply` ended its wait without a reply.
+
 `replies --pending --json` keeps its shipped result shapes: no pushed question
 returns `session_id`, `pending` and an empty `replies`; one pushed question
 returns a `reply_result`; several return an array of `reply_result` objects. Check the shape
