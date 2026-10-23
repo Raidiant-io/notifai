@@ -1418,7 +1418,7 @@ describe('hub end confirmation and writers', () => {
     // Back to it: its SessionStart finds the child still serving it and only hints.
     describeHost(env, terminal)
     await requestHub(env, { type: 'hint', session_id: SESSION, hook_event: 'SessionStart', harness_pid: terminal.pid }, { role: 'hint' })
-    await until(() => hub.sessions.get(SESSION)?.harnessProcess.pid === restarted.pid)
+    await until(() => hub.sessions.get(SESSION)?.endCandidate === null)
     service.release()
     expect(ended(service)).toBe(false)
     expect(readSessionEndMarker(SESSION, env)).toBeNull()
