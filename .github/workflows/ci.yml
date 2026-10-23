@@ -362,6 +362,8 @@ jobs:
 
   materials-reliability:
     needs: scope
+    # Baseline failures are evidence, not candidate admission failures.
+    continue-on-error: ${{ matrix.revision == 'before' }}
     if: ${{ inputs.reliability_proof }}
     strategy:
       fail-fast: false

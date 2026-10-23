@@ -94,11 +94,11 @@ jobs:
           EXPECTED_SHA: ${{ inputs.expected_sha }}
         run: |
           set -euo pipefail
-          node scripts/ci-phase.mjs protocol-build 120000 pnpm --filter @raidiant/notifai-protocol build
-          node scripts/ci-phase.mjs cli-build 120000 pnpm --filter @raidiant/notifai build
-          node scripts/ci-phase.mjs adapter-build 60000 node scripts/build-npm-adapter.mjs --source-revision "$EXPECTED_SHA"
-          node scripts/ci-phase.mjs adapter-artifact 120000 node --test scripts/npm-adapter-artifact.test.mjs
-          node scripts/ci-phase.mjs bootstrap-platform 120000 node scripts/check-npm-bootstrap-platform.mjs "$TARGET"
+          pnpm run ci:phase protocol-build 120000 pnpm --filter @raidiant/notifai-protocol build
+          pnpm run ci:phase cli-build 120000 pnpm --filter @raidiant/notifai build
+          pnpm run ci:phase adapter-build 60000 node scripts/build-npm-adapter.mjs --source-revision "$EXPECTED_SHA"
+          pnpm run ci:phase adapter-artifact 120000 node --test scripts/npm-adapter-artifact.test.mjs
+          pnpm run ci:phase bootstrap-platform 120000 node scripts/check-npm-bootstrap-platform.mjs "$TARGET"
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         if: matrix.target == 'bun-linux-x64'
         with:
