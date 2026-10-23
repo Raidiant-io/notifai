@@ -157,7 +157,7 @@ const PROMPT_CONTEXT_REACHES_MODEL: ReadonlySet<HookHarness> = new Set(['claude-
 
 /** Keep diagnostic context in the same document as an answer or Session Note. */
 function appendIntegrationContext(output: string | undefined, notice: string | undefined,
-  harness: HookHarness | undefined, event: 'UserPromptSubmit' | 'PostToolUse'): string {
+  harness: HookHarness | undefined, event: 'UserPromptSubmit' | 'PreToolUse' | 'PostToolUse'): string {
   if (notice === undefined) return output ?? ''
   if (harness === 'opencode' || harness === 'openclaw') return [output, notice].filter(Boolean).join('\n\n')
   if (output === undefined) {
@@ -556,11 +556,14 @@ export async function hookRunCommand(
         else grokQuestionFormGate(deps, envelope, cwd)
       }
       if (harness === 'grok' && !lifecycleEnabled()) grokQuestionFormGate(deps, envelope, cwd)
-      if (harness === 'codex') await codexPreToolUse(deps, envelope, logger)
       const changed = lifecycleEnabled() ? guidanceChangeFor(deps, harness, envelope, cwd) : undefined
-      if (changed !== undefined) deps.io.out(JSON.stringify({ hookSpecificOutput: {
-        hookEventName: 'PreToolUse', additionalContext: changed,
-      } }))
+      let wrote = false
+      const io = { ...deps.io, out: (line: string) => {
+        wrote = true
+        deps.io.out(appendIntegrationContext(line, changed, harness, 'PreToolUse'))
+      } }
+      if (harness === 'codex') await codexPreToolUse({ ...deps, io }, envelope, logger)
+      if (!wrote && changed !== undefined) deps.io.out(appendIntegrationContext(undefined, changed, harness, 'PreToolUse'))
       logger.info('hook.end', { hook: event, outcome: 'checked', decided: false })
     } catch (err) {
       logger.error('hook.end', { hook: event, outcome: 'ignored', ...failureData(err) })

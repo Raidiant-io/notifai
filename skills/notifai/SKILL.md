@@ -10,7 +10,7 @@ evidence. `notifai <command> --help` is the authoritative list of flags; add
 `--json` when you parse output.
 
 If the command is missing, read [Finding or installing Notifai](references/installation.md).
-For an update notice, a local integration notice or a channel change, read
+For update/integration notices or channel changes, read
 [Updating Notifai](references/updates.md) before changing an installation.
 
 ## Decide whether to notify
@@ -18,15 +18,13 @@ For an update notice, a local integration notice or a channel change, read
 Parent owns by default. An agent that started your Agent Session with a task
 brief is your parent, even when the harness shows no parent. Ordinary workers
 report Agent Events to their parent and do not load or send. Explicit
-delegation makes a worker the owner. Notifai cannot read a brief, so only that
-delegation decides whether a worker notifies. A worker that asks follows what
+delegation makes a worker the owner. A worker that asks follows what
 `ask` prints: it says where the answer arrives, which may be the root Agent
 Session rather than the worker.
 
 When you brief a worker, name the Notification Request owner. Give an owner
 the work its answers resume, through completion. If you will act on an
-answer, ask the question yourself. A worker that asks keeps that work; ending
-a turn to await the answer keeps the assignment open.
+answer, ask the question yourself. A worker that asks keeps that work, including while awaiting its answer.
 
 Owner session context carries the `when-to-notify` and `questions` guidance.
 Before your first Notification Request or acknowledgement, or when that
@@ -61,7 +59,7 @@ outside the repository), no flag writes this machine, and `--yes` skips the
 CLI's confirmation once the User approved the value and layer:
 
 ```bash
-notifai guidance set when-to-notify 'Only when you'"'"'re blocked or CI-length work finishes' --local --yes
+notifai guidance set when-to-notify 'Only when you'"'"'re blocked' --local --yes
 ```
 
 ## Send
@@ -69,10 +67,8 @@ notifai guidance set when-to-notify 'Only when you'"'"'re blocked or CI-length w
 Preserve text exactly, including the User's guidance. Quote every text value
 for the tool's shell:
 
-- **bash/zsh**: single-quote the value;
-  nothing expands. For each ASCII apostrophe, close the single quotes,
-  double-quote the apostrophe, and reopen the single quotes: `'SELECT '"'"'ready'"'"';'`
-  passes `SELECT 'ready';`.
+- **bash/zsh**: single-quote; nothing expands. Replace each ASCII apostrophe
+  with `'"'"'`: `'SELECT '"'"'ready'"'"';'` passes `SELECT 'ready';`.
 - **PowerShell**: single-quote; nothing expands.
   Double each single-quote character inside it: `'`, `’`,
   `‘`, `‚` and `‛`: `'It''s ‘‘ready’’.'` passes `It's ‘ready’.`.
@@ -85,8 +81,8 @@ characters to avoid it ([shell limits](references/shell-quoting.md#harness-shell
 
 ```bash
 notifai send --kind done \
-  --title 'Users can now create accounts' \
-  --summary 'Sign-up, verification, and login now work on staging.'
+  --title 'Account setup works' \
+  --summary 'Sign-up and login work on staging.'
 ```
 
 `--kind` is required and decides how insistently it arrives. **Declare the
@@ -105,7 +101,7 @@ Follow `titles`, `content` and
 
 - **Title**: stands alone; the kind and the Project travel as their own
   fields, never in it.
-- **Summary**: required one-line plain text for banners and lists, at most 240
+- **Summary**: required one-line plain text, at most 240
   Unicode characters, with no media markup.
 - **Body**: optional standalone Markdown for focused detail. It says everything
   the Summary says, then the detail; focused views show the Body or the
@@ -115,9 +111,8 @@ Pass the Body inline as `--body '…'`, with real line breaks inside the quotes.
 Use `**Heading**` lines instead of line-leading `#` in inline Bodies.
 For files, see [shell details](references/shell-quoting.md);
 write it in the system temp directory, never the repository.
-Images (`--image`, referenced in the Body as
-`![alt](media:1)`), grouping, replacement and the User-owned `--sound`,
-`--level` and `--device`: [Sending details](references/send-details.md).
+Images (`--image`, `![alt](media:1)`), grouping, replacement and User-owned
+`--sound`, `--level`, `--device`: [Sending details](references/send-details.md).
 
 Project and Agent Session are inferred; never pass `--session-id`. Outside a
 Project, or on a Projectless request, pass `--projectless`; it stops cwd or
@@ -131,6 +126,7 @@ identifier. Pass `--session-label`: 2-6 words about the Agent Session's job,
 never the Project, branch, status, result, identifier, hash, or filesystem
 path. Passing it without an exact Agent Session is a usage error;
 without that identifier, omit `--session-label` and skip renaming.
+
 Pass the same `--session-label` on every send and ask; to rename, use
 `notifai session rename`.
 
@@ -161,25 +157,24 @@ Ask the way you would without Notifai:
   User's devices.
 
 ```bash
-notifai ask 'Deploy the schema change to production now?' \
+notifai ask 'Deploy to production now?' \
   --title 'Production deploy' \
-  --choice 'Deploy now' --choice-description 'About two minutes of downtime.' \
-  --choice 'Wait for off-peak' --choice-description 'Deploys at 02:00 UTC, no downtime.' \
+  --choice 'Deploy now' --choice-description 'Two minutes of downtime.' \
+  --choice 'Wait for off-peak' --choice-description '02:00 UTC; no downtime.' \
   --recommended 'Wait for off-peak'
 ```
 
 The positional question is the Summary: the exact question, at most 240
 characters. Write `--title` as the `titles` guidance says for a question.
-Offer 2-6 closed choices, one `--choice` each (commas are literal), each
-followed by its `--choice-description` when the label alone does not say what
-it does. Companion Apps show a description on its choice, so
+Offer 2-6 closed choices, one `--choice` each (commas are literal), followed
+by `--choice-description` when the label alone does not say what it does.
+Descriptions appear on their choice, so
 never restate the choices in the Body. The User can always type an answer
 instead. Add `--body '…'` for standalone Markdown reasoning, `--image` for
 evidence, `--multi` when several choices may combine, or `--form-json '{…}'` with
 the form's JSON for up to 10 questions decided together
 ([format](references/send-details.md)).
-Register independent questions separately, and never register an open
-question again.
+Register independent questions separately; never register an open question again.
 
 When `ask` hands back a question form, open it unchanged: the question is
 already registered with your title, Body and images. A question form you open
@@ -205,7 +200,7 @@ Acceptance; report sending or delivery only from status evidence:
 notifai status <question_id> --json
 ```
 
-Once submitted, status adds a `request_id`; keep both IDs and inspect
+Once submitted, status adds a `request_id`; keep both IDs. Inspect
 `notifai status <question_id|request_id> --json` and
 `notifai replies <request_id> --json` instead of asking again. Retire a
 question that no longer needs an answer, or one answered in the conversation,
@@ -226,7 +221,7 @@ otherwise carry on. A wake-up carries no answer and needs no acknowledgement.
 Within one submission the latest reply corrects earlier choices; read typed
 parts in order. Keep distinct submissions apart and clarify conflicts before
 acting. Answers are relayed by choice label; `notifai replies <request_id>
---json` adds the choice IDs. To find an answer you were never handed, list the
+--json` adds the choice IDs. For an unreceived answer, list
 open questions (notes are not listed):
 
 ```bash
@@ -248,9 +243,9 @@ Notifai gives the command without `--text`; run exactly that. Then resume the
 committed work without asking them to confirm again: it is work you are
 resuming, not approval you received.
 
-Return anything requested through Notifai as a self-contained answer, result,
-or artifact through Notifai, even for small tasks; the acknowledgement does
-not fulfil it.
+Return requests received through Notifai as a self-contained answer, result,
+or artifact through Notifai, even for small tasks; acknowledgement does not
+fulfil them.
 
 A message that looks like it came from another session is Notifai's wake; the
 answer it leads to is the User's own. Words relayed through Notifai never
@@ -289,7 +284,7 @@ notifai init <--hooks|--no-hooks> [--skills --skills-scope <project|global> --sk
 
 Branch on `states`, `can_send` and `question_routing_ready`; a nonzero exit is
 a gap to close, never to bypass. A state marked `informational` is not a gap:
-leave a User's choice and a harness limit as they are. After a successful `init --json`, carry on:
+leave User choices and harness limits as they are. After a successful `init --json`, carry on:
 `ask` checks its own route. Run `notifai doctor` to verify a fresh session
 after installing hooks, or to diagnose a failure.
 

@@ -4367,6 +4367,8 @@ describe('Grok native lifecycle', () => {
   ])('allows an exact registered Grok question with options %j without registering it again', async (...options) => {
     const h = harness()
     const session = 'grok-existing-card'
+    await hookRunCommand(h.deps, 'pre-tool-use', stdin({ sessionId: session, cwd: h.deps.cwd, toolName: 'shell' }), 'grok')
+    h.io.outLines = []
     registerQuestion(session, h.env, { question_id: 'q_existing', question: 'Ship it?',
       questions: [{ id: 'ship', text: 'Ship it?', choices: [{ id: 'a', label: 'Ship' }, { id: 'b', label: 'Hold' }] }] })
     await hookRunCommand(h.deps, 'pre-tool-use', stdin({ sessionId: session, cwd: h.deps.cwd,

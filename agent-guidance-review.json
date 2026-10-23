@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "behavior_digest": "sha256:396ff4b4159fe298112b36492e8dc1585be7a4e9aee1b9b3d48f95fc084f913e",
+  "behavior_digest": "sha256:bd5f7da81c141df634bf263673b193f1dc55ad03aa4af40cf923586f7da87d05",
   "outcome": "guidance-updated",
   "surfaces_reviewed": [
     "lifecycle-hooks",
@@ -9,5 +9,5 @@
     "cli-readiness",
     "domain-terms"
   ],
-  "reason": "Reviewed lifecycle activation, the complete bundled skill and harness references, effective guidance topics, question registration output, answer/note/edit injection, setup/readiness and domain terms. Content receipts refresh running owners after updates and compaction, child receipts are distinct, Cursor has a conversation-held receipt fallback, and Grok loads guidance before its first tool. Owner briefs retain the work an answer resumes; answers routed to root name the asking child and offered questions/choices, and acknowledgements name work started now. Focused renderer, hook, adapter, receipt and answer-context tests cover the structural carriers. Real Claude Code and Codex evaluations are recorded with the companion integration audit; native coverage for other harnesses remains explicitly unverified."
+  "reason": "Reviewed lifecycle activation, the complete bundled skill and harness references, effective topics, question registration and answer/note/edit context, setup/readiness and domain terms after rebasing on the current command, trust and question surfaces. Current receipts refresh root and worker guidance; child answer context and assignment retention remain intact. Disabled-Project checks, prompt-free shell quoting and --form-json are preserved. Grok activates before its first tool and still gates question cards; Codex returns guidance refresh and card decisions in one JSON document. Trimmed repeated skill prose and examples within the existing context budget without removing rules. Focused tests cover receipts, ownership, decision composition and compaction through the launcher. Native qualification beyond the recorded Claude Code/Codex evaluations remains unverified."
 }
