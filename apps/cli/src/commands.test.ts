@@ -9097,21 +9097,6 @@ describe('a held ask --wait', () => {
     expect(JSON.parse(io.outLines[0]!).acknowledgement_command).toContain(`notifai acknowledge ${receipt.request_id}`)
   })
 
-  it('holds a headless Claude wait without a question form for 110 s and returns the resumed work here', async () => {
-    const cwd = mkdtempSync(path.join(os.tmpdir(), 'notifai-held-headless-'))
-    const io = new CapturedIo()
-    const submit = vi.fn(async (_body: SubmitNotificationRequestT) => receipt)
-    const { deps } = scriptDeps(io, {
-      submit, replies: async () => replyResponse([reply]), closeReplies: async () => claimedReplyResponse([reply]),
-      claimDeliveryAttempt: async () => ({ attempt_id: 'headless-handoff' }),
-    } as never)
-    const env = { ...isolatedEnv(cwd), CLAUDECODE: '1', CLAUDE_CODE_SESSION_ID: 'headless-wait', CLAUDE_CODE_ENTRYPOINT: 'sdk-cli' }
-    expect(await ask({ ...deps, cwd, env }, { json: true, resumes: 'Write HEADLINE.txt' })).toBe(EXIT.ok)
-    expect(submit.mock.calls[0]![0].draft.reply?.expires_in_seconds).toBe(110)
-    expect(JSON.parse(io.outLines[0]!)).toMatchObject({ resumes: 'Write HEADLINE.txt', on_answer: expect.stringContaining('do the work the answer unblocks here first, then report') })
-    expect(io.outLines.join('\n')).not.toContain('end your turn')
-  })
-
   it('skips the terminal-first delay: nobody can answer it in the terminal', async () => {
     const cwd = mkdtempSync(path.join(os.tmpdir(), 'notifai-held-grace-'))
     execFileSync('git', ['init', '--quiet', cwd])

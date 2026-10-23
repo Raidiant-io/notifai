@@ -20,6 +20,22 @@ export interface SkillManifest {
   skill: 'notifai'
   digest: string
   files: SkillManifestFile[]
+  guidance?: { current: string; releases: Array<{ digest: string; note: string }> }
+}
+
+/** Bounded release-authored catalog; no receipt can supply these strings. */
+export function isGuidanceCatalog(value: unknown): value is NonNullable<SkillManifest['guidance']> {
+  if (value === null || typeof value !== 'object') return false
+  const catalog = value as NonNullable<SkillManifest['guidance']>
+  if (!/^[a-f0-9]{64}$/.test(catalog.current) || !Array.isArray(catalog.releases) ||
+    catalog.releases.length === 0 || catalog.releases.length > 4096) return false
+  const seen = new Set<string>()
+  return catalog.releases.every(release => {
+    if (release === null || typeof release !== 'object' || !/^[a-f0-9]{64}$/.test(release.digest) ||
+      seen.has(release.digest) || typeof release.note !== 'string' || !release.note.trim() || Buffer.byteLength(release.note) > 16000) return false
+    seen.add(release.digest)
+    return true
+  }) && catalog.releases.at(-1)?.digest === catalog.current
 }
 
 export interface VerifiedSkillBundle {
@@ -86,6 +102,7 @@ export function createSkillManifest(skillRoot: string, packageVersion: string, b
     skill: 'notifai',
     digest: `sha256:${digest.digest('hex')}`,
     files: manifestFiles,
+    ...(existsSync(path.join(skillRoot, '../guidance-changes.json')) ? { guidance: JSON.parse(readFileSync(path.join(skillRoot, '../guidance-changes.json'), 'utf8')) as NonNullable<SkillManifest['guidance']> } : {}),
   }
 }
 
@@ -107,6 +124,7 @@ function isSkillManifest(value: unknown): value is SkillManifest {
     typeof candidate.package_version === 'string' &&
     candidate.skill === 'notifai' &&
     typeof candidate.digest === 'string' &&
+    (candidate.guidance === undefined || isGuidanceCatalog(candidate.guidance)) &&
     Array.isArray(candidate.files) &&
     candidate.files.every(
       (file) =>

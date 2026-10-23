@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "behavior_digest": "sha256:884523ba3c2b7bcd61c03b197ee8e6b2ee208f9dc997987784eb462a878e5716",
+  "behavior_digest": "sha256:38a220f88b3d4dee24510d98016808dd983fe442e8ed51363cf8f38f5aeb02a4",
   "outcome": "guidance-updated",
   "surfaces_reviewed": [
     "lifecycle-hooks",
@@ -9,5 +9,5 @@
     "cli-readiness",
     "domain-terms"
   ],
-  "reason": "Reviewed lifecycle hooks, skill, setup, readiness and domain terms. Sessions retain trusted shipped content with their digest; notices deliver an 800-byte bounded addition/removal summary before the verified installed skill pointer, and the CLI repeats it before topics until read. Native skills are the first reload route. Missing start receipts recover full activation rather than claiming a change; compaction still invalidates reads. Direct answers and held waits tell the asking session to do unblocked work before reporting. Session activation, the shared skill, ask output and --resumes help define that work and retain pending assignments. Headless SDK Claude waiting asks use the 110-second held route. Existing subagent root routing remains unchanged. The skill budget shrinks by five bytes; Hermes sections remain within 3900 bytes."
+  "reason": "Reviewed lifecycle, skill, setup, readiness and domain surfaces. Receipts store only validated bounded digests and generations. Change text comes from manifest-verified ordered release notes and freshly resolved escaped User topics, bounded to 800 UTF-8 bytes with full-history and topic pointers. Generation fencing rejects stale claims and reads. Release tooling requires an authored note for the exact shipped guidance digest, including reorders. Waiting question routing is restored to main; no headless exception is added. Answer custody, work-before-reporting, --resumes and the shared skill lifetime rule remain. The skill and Hermes budgets are unchanged."
 }

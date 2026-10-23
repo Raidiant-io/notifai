@@ -614,7 +614,7 @@ export async function hookRunCommand(
           if (envelope.compacted === true) invalidateGuidanceRead(envelope.session_id, deps.env)
         } else {
           notice = claimGuidanceChange(envelope.session_id, deps.env, rootGuidanceDigest(cwd, deps.env),
-            readSessionIncarnation(envelope.session_id, deps.env) !== null, { ...rootGuidanceDelivery(cwd, deps.env, harness), compacted: envelope.compacted === true })
+            readSessionIncarnation(envelope.session_id, deps.env) !== null, { ...rootGuidanceDelivery(cwd, deps.env, harness, envelope.session_id), compacted: envelope.compacted === true })
         }
       }
     } catch (err) {
@@ -812,14 +812,15 @@ export async function hookRunCommand(
     const currencyFor = (compacted: boolean): string | undefined => {
       if (digest === undefined) return undefined
       try {
-        return startingCurrency({ sessionId: currencyKey, env: deps.env, digest, source: envelope.source, compacted, delivery: rootGuidanceDelivery(cwd, deps.env, harness) })
+        return startingCurrency({ sessionId: currencyKey, env: deps.env, digest, source: envelope.source, compacted, delivery: rootGuidanceDelivery(cwd, deps.env, harness, envelope.session_id) })
       } catch {
         return undefined
       }
     }
     const recordGiven = (): boolean => {
       if (!owner) return true
-      return recordGuidanceGiven(currencyKey, deps.env, guidanceOn ? digest ?? GUIDANCE_NOT_GIVEN : GUIDANCE_NOT_GIVEN, guidanceOn ? rootGuidanceDelivery(cwd, deps.env, harness).text : undefined)
+      const delivery = rootGuidanceDelivery(cwd, deps.env, harness, currencyKey)
+      return recordGuidanceGiven(currencyKey, deps.env, guidanceOn ? delivery.digest : GUIDANCE_NOT_GIVEN, undefined, delivery.generation)
     }
     if ((!owner || !guidanceOn) && (envelope.source === 'compact' || envelope.compacted === true) && currencyKey !== '') {
       invalidateGuidanceRead(currencyKey, deps.env)
@@ -867,7 +868,7 @@ export async function hookRunCommand(
           // the prompt's messages): then it is activated again.
           const reactivate = generation.activationPrinted === true && envelope.compacted === true
           if (generation.activationPrinted && !reactivate) {
-            const changed = owner && digest !== undefined ? claimGuidanceChange(sessionKey, deps.env, digest, true, rootGuidanceDelivery(cwd, deps.env, harness)) : undefined
+            const changed = owner && digest !== undefined ? claimGuidanceChange(sessionKey, deps.env, digest, true, rootGuidanceDelivery(cwd, deps.env, harness, envelope.session_id)) : undefined
             if (changed === undefined) return 'already-activated'
             deps.io.out(changed)
             return 'guidance-changed'
@@ -1494,7 +1495,7 @@ function guidanceChangeFor(deps: CommandDeps, harness: HookHarness | undefined, 
   if ((harness !== 'claude-code' && harness !== 'codex') || envelope.session_id === undefined || envelope.agent_id !== undefined) return undefined
   try {
     return claimGuidanceChange(guidanceSessionKey(envelope.session_id, envelope.agent_id), deps.env, rootGuidanceDigest(cwd, deps.env),
-      readSessionIncarnation(envelope.session_id, deps.env) !== null, rootGuidanceDelivery(cwd, deps.env, harness))
+      readSessionIncarnation(envelope.session_id, deps.env) !== null, rootGuidanceDelivery(cwd, deps.env, harness, envelope.session_id))
   } catch {
     // Guidance currency never fails a hook.
     return undefined

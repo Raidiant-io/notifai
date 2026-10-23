@@ -13,12 +13,23 @@ import { renderGuidance } from './guidance-render.js'
 import { projectBinding, projectEnablementState } from './project-enablement.js'
 import { loadConfig } from './config.js'
 import { rootGuidanceDigest, requestGuidanceContext } from './session-activation.js'
+import { shippedSkillSourceRoot, verifySkillBundle } from './skill-integrity.js'
+import { markerSafe } from './guidance-render.js'
 import { conversationToken, guidanceChangedNotice, guidanceRead, installedSkill } from './guidance-currency.js'
 import { commandGuidanceChanges, commandGuidanceOwner, recordCommandGuidanceRead } from './command-guidance.js'
 
 // ---------------------------------------------------------------------------
 // guidance show / set / unset
 // ---------------------------------------------------------------------------
+
+/** Full notes are release-authored bundle content, never local receipts. */
+export function guidanceChangesCommand(deps: CommandDeps): number {
+  const bundle = verifySkillBundle(shippedSkillSourceRoot())
+  if (!bundle.ok) { deps.io.err(bundle.error); return EXIT.failed }
+  deps.io.out((bundle.bundle.manifest.guidance?.releases ?? []).map(release =>
+    `Release guidance ${release.digest}\n${markerSafe(release.note)}`).join('\n\n'))
+  return EXIT.ok
+}
 
 /** A conversation-held receipt for hosts that discard hook context and expose
  * no exact session identity to tools. Never guesses an identity from cwd. */

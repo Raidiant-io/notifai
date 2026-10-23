@@ -8,7 +8,6 @@ import {
   type Platform,
   type QuestionT,
 } from '@raidiant/notifai-protocol'
-import { claudePlaceOf, claudePlaceSignals } from './session-place.js'
 import { currentCommandGuidance } from './command-guidance.js'
 import { EXIT, authedClient, log, makeClient, type CommandDeps } from './commands-core.js'
 import type { ServiceIdentity } from './credentials.js'
@@ -1092,11 +1091,7 @@ export function askCommand(
       return EXIT.usage
     }
   }
-  const held = flags.wait === true && active?.harness === 'claude-code' && contested.length <= 1 &&
-    claudePlaceOf(claudePlaceSignals(deps.env)) === 'headless'
-    ? { harnesses: ['claude-code'], active, code: 'question_routing_unavailable' as const, checkId: 'hook_contract' as const,
-      reason: 'Headless Claude Code has no native question form; this command holds the answer instead.' }
-    : heldWaitRoute(active, contested, deps.hookPlatform ?? process.platform)
+  const held = heldWaitRoute(active, contested, deps.hookPlatform ?? process.platform)
   if (held !== null) {
     if (!explicitUseConfig.ask_notifications.value) return questionsOff(deps, flags)
     if (flags.wait !== true) {

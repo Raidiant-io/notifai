@@ -556,3 +556,15 @@ writers to finish. No update stops an agent to establish compatibility.
 Changing this declaration requires evidence for the affected shared readers and
 writers, including retained-owner commands and interrupted activation recovery.
 A version number or a broad platform exemption does not establish compatibility.
+
+## Author shipped guidance changes
+
+After editing the skill or CLI guidance, write a release change note in a UTF-8
+file and run `pnpm guidance:note --file <note-file>`. Describe the changed
+behavior an agent must follow. The append-only catalog keeps the ordered notes
+for earlier digests; retain those entries when authoring the next release.
+The CLI bundles the catalog beside the skill and includes it in the verified
+manifest. `pnpm check:guidance-changes`, builds, and `pnpm check:release` reject
+changed shipped guidance without a matching note, including instruction reorders.
+Notices show notes since the session's last read, capped at 800 UTF-8 bytes;
+`notifai guidance changes` prints the complete release-authored history.

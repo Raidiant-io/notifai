@@ -1,0 +1,9 @@
+{
+  "current": "3e47b01bc6bbfb43e910c660b9964fab6459d75148c3c02dcbcd0be64cfb2963",
+  "releases": [
+    {
+      "digest": "3e47b01bc6bbfb43e910c660b9964fab6459d75148c3c02dcbcd0be64cfb2963",
+      "note": "Delegating Notification Requests delegates the work their answers unblock: keep the assignment pending, do that work before reporting, and use --resumes to name it. Reload the full skill and run notifai guidance after a guidance change or compaction. Change notices now use release-authored notes and fresh User topics; local receipts never supply instruction text. ask --wait keeps its existing routing."
+    }
+  ]
+}

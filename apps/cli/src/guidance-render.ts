@@ -10,7 +10,7 @@ const AUTHORITY_LABEL: Record<GuidanceAuthority, string> = {
 
 const MARKER_TOKEN = 'notifai:guidance'
 
-function markerSafe(content: string): string {
+export function markerSafe(content: string): string {
   return content.replaceAll(MARKER_TOKEN, `${MARKER_TOKEN.replace(':', '-')} [not a provenance marker]`)
 }
 

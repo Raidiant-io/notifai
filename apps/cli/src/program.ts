@@ -23,6 +23,7 @@ import {
   doctorCommand,
   guidanceSetCommand,
   guidanceShowCommand,
+  guidanceChangesCommand,
   guidanceCheckCommand,
   guidanceUnsetCommand,
   hookDefersDiagnosticsUntilAfterCleanup,
@@ -150,6 +151,7 @@ const defaultRunners = {
   configSet: configSetCommand,
   configUnset: configUnsetCommand,
   guidanceShow: guidanceShowCommand,
+  guidanceChanges: guidanceChangesCommand,
   guidanceCheck: guidanceCheckCommand,
   guidanceSet: guidanceSetCommand,
   guidanceUnset: guidanceUnsetCommand,
@@ -1094,6 +1096,9 @@ export function buildProgram(deps: CommandDeps, options: BuildProgramOptions = {
     .description('How notifications are written: the shipped guidance and your overrides, per topic')
     .summary('Show or change how notifications are written')
     .helpGroup(GROUP.daily)
+  guidance.command('changes')
+    .description('Print the complete release-authored guidance change notes in order')
+    .action(() => { exit(runners.guidanceChanges(deps)) })
   guidance.command('check [token]')
     .description('Check the guidance receipt held by this conversation; return current context when it changed or is absent')
     .action((token?: string) => { exit(runners.guidanceCheck(deps, token)) })

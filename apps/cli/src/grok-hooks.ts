@@ -63,8 +63,9 @@ export function claimGrokActivation(envelope: HookEnvelope, cwd: string, env: No
   updateSessionState(sessionId, env, current => {
     if (current.grok_activation_context === digest) return current
     if (guidance !== undefined) {
-      currency = claimGuidanceChange(sessionId, env, guidance, false, { ...rootGuidanceDelivery(cwd, env), compacted: current.grok_compacted === true })
-      if (!recordGuidanceGiven(sessionId, env, guidance, rootGuidanceDelivery(cwd, env).text)) return current
+      const delivery = rootGuidanceDelivery(cwd, env, 'grok', sessionId)
+      currency = claimGuidanceChange(sessionId, env, delivery.digest, false, { ...delivery, compacted: current.grok_compacted === true })
+      if (currency === undefined && !recordGuidanceGiven(sessionId, env, delivery.digest, undefined, delivery.generation)) return current
     }
     claimed = true
     const next = { ...current, grok_activation_context: digest }

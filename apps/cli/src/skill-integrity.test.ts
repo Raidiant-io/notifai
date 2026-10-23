@@ -45,6 +45,23 @@ describe('packaged skill integrity', () => {
     })
   })
 
+  it('binds release notes to the shipped manifest and rejects a malformed catalog', () => {
+    const { sourceRoot, skillRoot } = fixtureBundle()
+    const catalog = { current: 'a'.repeat(64), releases: [{ digest: 'a'.repeat(64), note: 'Read updated guidance.' }] }
+    const file = path.join(sourceRoot, 'guidance-changes.json')
+    writeFileSync(file, JSON.stringify(catalog))
+    const manifestFile = path.join(sourceRoot, 'manifest.json')
+    writeFileSync(manifestFile, JSON.stringify(createSkillManifest(skillRoot, '8.0.0')))
+    expect(verifySkillBundle(sourceRoot).ok).toBe(true)
+    catalog.releases[0]!.note = 'A substituted note.'
+    writeFileSync(file, JSON.stringify(catalog))
+    expect(verifySkillBundle(sourceRoot).ok).toBe(false)
+    catalog.current = 'invalid'
+    writeFileSync(file, JSON.stringify(catalog))
+    writeFileSync(manifestFile, JSON.stringify(createSkillManifest(skillRoot, '8.0.0')))
+    expect(verifySkillBundle(sourceRoot).ok).toBe(false)
+  })
+
   it('rejects CRLF-transformed bytes instead of silently changing reviewed guidance', () => {
     const fixture = fixtureBundle()
     writeFileSync(path.join(fixture.skillRoot, 'SKILL.md'), '# Notifai\r\n')
