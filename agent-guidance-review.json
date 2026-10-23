@@ -1,7 +1,7 @@
 {
   "version": 1,
-  "behavior_digest": "sha256:69ce20b0a693e7b1fa30f75cee5df2c964fcb7eb395bb97e7f856cace7b4af40",
-  "outcome": "guidance-updated",
+  "behavior_digest": "sha256:b3742f441d4ea1dcbe9e59328c3852a51e76525ec27ebcdea14477feb6009b1d",
+  "outcome": "reviewed-no-impact",
   "surfaces_reviewed": [
     "lifecycle-hooks",
     "notifai-skill",
@@ -9,5 +9,5 @@
     "cli-readiness",
     "domain-terms"
   ],
-  "reason": "Reviewed lifecycle, skill, harness recovery, CLI guidance and domain terms. The aggregate read digest remains authoritative with bounded optional topic history. Claude session lookup uses its cwd project with an uncapped cheap fallback, never folder count as child evidence. Reload notices select the token remedy where needed. Ownership and acknowledgement wording names work the receiving Agent Session does itself; ordinary answer ownership appears once per injection. Cursor recovery and superseded-read diagnostics are explicit. No headless special route or parent handle is added. Retained the session-start work-before-reporting sentence after a real delegated-worker evaluation acknowledged and only reported the answer instead of doing its work. Answer resumption restores the reason to act before reporting without assuming any briefer; its once-per-injection delivery and all other surfaces remain unchanged. Restored the earlier delegated-worker and --resumes wording and its placement, keeping the answer injection unchanged. Codex activation now records the loaded Stop definition before maintenance and guidance output, so interruption cannot erase its admission proof. Existing stale or nonsingular definition refusals remain enforced. Restored the reviewed delegated-worker, ask output and resume placement to the selected wording while retaining the activation ordering repair and answer-injection sentence. Reviewed additive optional AgentSessionView.harness display metadata and existing exact-session detection tests; no agent instruction or command behavior changes."
+  "reason": "Reviewed lifecycle hooks, shipped Notifai skill and Claude reference, harness setup, CLI readiness and domain terms for presence recovery. Independent review: parent-provided Claude Opus 5.5 Round 3 review of public #423 (4197ea4) and core #134 (85e50f4b), verifying server probes P1-P9 and requesting C1-C3 before merge. Implemented those requested safeguards: only terminal/IDE REPL exit reasons confirm closure, unknown SDK host evidence stays unknown, and failed final capability discovery retains a legacy end report. These runtime corrections preserve the existing agent-facing ownership, waiting-work and answer-return instructions; no skill, setup command, readiness requirement or domain term changes are needed. Release-authored runtime change notes remain supplied separately. Focused regression tests cover the changed lifecycle behavior. This records the supplied independent review and our follow-up review, not a new independent approval of the final head."
 }

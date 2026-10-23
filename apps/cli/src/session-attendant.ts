@@ -622,8 +622,11 @@ export async function runSessionAttendant(options: SessionAttendantOptions): Pro
       const bound = new AbortController()
       const timer = setTimeout(() => bound.abort(), ATTENDANT_FINAL_REPORT_MS)
       try {
-        const confirmed = final === 'ended' && (reason === 'session-replaced' || decided === 'ended') &&
-          (await abortable(client.compatibility(), bound.signal)).server_capabilities.includes('session_confirmed_end')
+        let confirmed = false
+        if (final === 'ended' && (reason === 'session-replaced' || decided === 'ended')) {
+          try { confirmed = (await abortable(client.compatibility(), AbortSignal.any([bound.signal, AbortSignal.timeout(500)]))).server_capabilities.includes('session_confirmed_end') }
+          catch { /* Discovery failure retains the legacy final report. */ }
+        }
         await client.attend(
           options.sessionId,
           {

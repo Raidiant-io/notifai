@@ -2649,7 +2649,7 @@ describe('hub: conversations stopped by their app or the machine', () => {
     await stopHub(hub, service, done)
   })
 
-  it.each(['prompt_input_exit', 'logout'])('confirms a T3-hosted Claude close only for %s', async (reason) => {
+  it.each(['terminal', 'claude-ide', 't3', 'unknown'])('limits explicit Claude close reasons to REPL places (%s)', async (place) => {
     const env = hubEnv()
     recordSessionNotified(SESSION, env, Date.now())
     const host = await standIn()
@@ -2657,17 +2657,22 @@ describe('hub: conversations stopped by their app or the machine', () => {
     const service = fakeService({ capabilities: ['session_attendance', 'session_attendance_batch', 'session_confirmed_end'] })
     const peers = new Map<number, PeerCredentials>()
     const { hub, done } = startHub(env, service, peers, memoryStore(), 100, { endConfirmMs: 150 },
-      { claudeHostName: () => 'T3 Code (Nightly)', powerWatch: false, runHook: noHook })
+      { claudeHostName: () => place === 'unknown' ? null : 'T3 Code (Nightly)', powerWatch: false, runHook: noHook })
     await hubListening(env)
-    const child = await writerChild(env, peers, 900422, host, { entrypoint: 'sdk-ts', transcript_path: transcript(env) })
-    expect(hub.sessions.get(SESSION)?.registration.place).toBe('t3')
+    const child = await writerChild(env, peers, 900422, host, { entrypoint: place === 'terminal' ? 'cli' : place === 'claude-ide' ? 'claude-vscode' : 'sdk-ts', transcript_path: transcript(env) })
+    expect(hub.sessions.get(SESSION)?.registration.place).toBe(place)
     await until(() => renewals(service) >= 1)
     question(env)
     await requestHub(env, { type: 'session-end-candidate', session_id: SESSION, harness_pid: host.pid })
-    await requestHub(env, { type: 'session-end-candidate', session_id: SESSION, harness_pid: host.pid, close_reason: reason })
-    await until(() => ended(service))
-    expect(service.batches.flatMap(batch => batch.body.sessions).find(entry => entry.state === 'ended'))
-      .toMatchObject({ end_reason: 'closed' })
+    await requestHub(env, { type: 'session-end-candidate', session_id: SESSION, harness_pid: host.pid, close_reason: 'prompt_input_exit' })
+    await requestHub(env, { type: 'session-end-candidate', session_id: SESSION, harness_pid: host.pid, close_reason: 'logout' })
+    if (place === 'terminal' || place === 'claude-ide') {
+      await until(() => ended(service))
+      expect(service.batches.flatMap(batch => batch.body.sessions).find(entry => entry.state === 'ended')).toMatchObject({ end_reason: 'closed' })
+    } else {
+      expect(ended(service)).toBe(false)
+      expect(hub.sessions.get(SESSION)?.endCandidate).not.toBeNull()
+    }
     child.socket.destroy()
     host.process.kill('SIGKILL')
     await stopHub(hub, service, done)

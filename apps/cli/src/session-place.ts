@@ -47,7 +47,10 @@ export function claudePlaceOf(signals: ClaudePlaceSignals): ClaudePlace {
   if (entrypoint === 'claude-vscode') return 'claude-ide'
   if (entrypoint === 'cli') return signals.sessionKind === 'bg' ? 'claude-background' : 'terminal'
   if (entrypoint.startsWith('sdk-') && /^T3 Code(?: \(Nightly\))?(?:\.exe)?$/.test(signals.hostName ?? '')) return 't3'
-  if (entrypoint.startsWith('sdk-')) return signals.orcaStructured === true ? 'orca-chat' : 'headless'
+  if (entrypoint.startsWith('sdk-')) {
+    if (signals.orcaStructured === true) return 'orca-chat'
+    return signals.hostName == null ? 'unknown' : 'headless'
+  }
   return 'unknown'
 }
 

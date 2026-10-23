@@ -1015,7 +1015,7 @@ export async function hookRunCommand(
       // and an app unloads conversations it still lists. The hub that attends
       // it decides after the end confirmation, and cleans up only for a close.
       start({ cwd, stop_hook_active: envelope.stop_hook_active ?? null })
-      logger.info('hook.end', { hook: event, decided: false, outcome: 'held-for-confirmation' })
+      logger.info('hook.end', { hook: event, session_end_reason: envelope.reason ?? null, decided: false, outcome: 'held-for-confirmation' })
       return EXIT.ok
     }
     if (sessionEnd && (harness === 'claude-code' || harness === 'codex') && envelope.session_id !== undefined &&
@@ -1023,12 +1023,12 @@ export async function hookRunCommand(
       // The machine is going down and its hub may already be gone: the next
       // hub decides (stopped by the machine, or closed), never this hook.
       start({ cwd, stop_hook_active: envelope.stop_hook_active ?? null })
-      logger.info('hook.end', { hook: event, decided: false, outcome: 'held-for-shutdown' })
+      logger.info('hook.end', { hook: event, session_end_reason: envelope.reason ?? null, decided: false, outcome: 'held-for-shutdown' })
       return EXIT.ok
     }
     if (sessionEnd && (harness === 'claude-code' || harness === 'codex') && envelope.session_id !== undefined &&
         deps.spawnEndConfirmation !== undefined &&
-        !(harness === 'claude-code' && (envelope.reason === 'prompt_input_exit' || envelope.reason === 'logout'))) {
+        !(harness === 'claude-code' && ['terminal', 'claude-ide'].includes(claudePlaceOf(claudePlaceSignals(deps.env, claudeHookSourcePid(deps.env, deps.hookPlatform ?? process.platform)))) && (envelope.reason === 'prompt_input_exit' || envelope.reason === 'logout'))) {
       const spawnEndConfirmation = deps.spawnEndConfirmation
       const sessionHarness = harness
       if (awaitEndConfirmation(deps.env, {
@@ -1043,7 +1043,7 @@ export async function hookRunCommand(
         // drop answers: a detached process waits out the end confirmation and
         // ends the session only if the same conversation has not come back.
         start({ cwd, stop_hook_active: envelope.stop_hook_active ?? null })
-        logger.info('hook.end', { hook: event, decided: false, outcome: 'awaiting-end-confirmation' })
+        logger.info('hook.end', { hook: event, session_end_reason: envelope.reason ?? null, decided: false, outcome: 'awaiting-end-confirmation' })
         return EXIT.ok
       }
     }
@@ -1078,7 +1078,7 @@ export async function hookRunCommand(
         : handleSessionEnd(deps.env, envelope, now())
       start({ cwd, stop_hook_active: envelope.stop_hook_active ?? null })
       if (config !== null) logConfigResolved(logger, config)
-      const data = { hook: event, decided: false, ...outcome.log }
+      const data = { hook: event, decided: false, ...outcome.log, session_end_reason: envelope.reason ?? null }
       if (configFailure === undefined) logger.info('hook.end', data)
       else {
         logger.error('hook.end', {

@@ -1996,7 +1996,7 @@ export class Hub {
    * terminal host.
    */
   private placeOf(registration: Registration, frame: Record<string, unknown>, harnessPid: number): void {
-    if (registration.harness === 'claude-code' && registration.place === 'headless') {
+    if (registration.harness === 'claude-code' && (registration.place === 'headless' || registration.place === 'unknown')) {
       registration.place = claudePlaceOf({ entrypoint: typeof frame['entrypoint'] === 'string' ? frame['entrypoint'] : null,
         hostName: (this.options.claudeHostName ?? claudeHostName)(harnessPid) })
     }
@@ -2322,7 +2322,7 @@ export class Hub {
         return
       }
     }
-    if (session.harness === 'claude-code' && (closeReason === 'prompt_input_exit' || closeReason === 'logout')) {
+    if (session.harness === 'claude-code' && (session.registration.place === 'terminal' || session.registration.place === 'claude-ide') && (closeReason === 'prompt_input_exit' || closeReason === 'logout')) {
       this.endSession(session, 'confirmed-close')
       return
     }

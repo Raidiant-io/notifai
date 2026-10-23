@@ -83,6 +83,7 @@ class FakeService {
   compatibilityCalls = 0
   supports = true
   confirmedEnds = false
+  failDiscovery = false
   /** When set, discovery waits for the test to call this. */
   holdCompatibility: { release?: () => void } | null = null
 
@@ -110,6 +111,7 @@ class FakeService {
       compatibility: async () => {
         // Answered on a later turn, so a test can configure the service first.
         await new Promise((resolve) => setImmediate(resolve))
+        if (this.failDiscovery) throw new Error('discovery unavailable')
         this.compatibilityCalls += 1
         const hold = this.holdCompatibility
         if (hold !== null) await new Promise<void>((resolve) => (hold.release = resolve))
@@ -272,6 +274,21 @@ describe('Session Attendant', () => {
     await flush()
     const final = h.service.last()
     expect(final.body).toEqual({ incarnation: 'inc_aaaaaaaaaaaa', generation: 2, state: 'ended', ...(supported ? { end_reason: 'closed' } : {}) })
+    final.respond({ status: 'withdrawn' })
+    expect(await h.result).toEqual({ reason: 'session-replaced', reported: 'ended' })
+  })
+
+  it('still reports a legacy end when final capability discovery fails', async () => {
+    const h = startAttendant()
+    await h.clock.advance(1)
+    h.service.last().respond(h.service.attending(2))
+    await h.clock.advance(1)
+    h.service.failDiscovery = true
+    h.probe = { state: 'ended', reason: 'session-replaced' }
+    await h.clock.advance(2_000)
+    await flush()
+    const final = h.service.last()
+    expect(final.body).toEqual({ incarnation: 'inc_aaaaaaaaaaaa', generation: 2, state: 'ended' })
     final.respond({ status: 'withdrawn' })
     expect(await h.result).toEqual({ reason: 'session-replaced', reported: 'ended' })
   })
