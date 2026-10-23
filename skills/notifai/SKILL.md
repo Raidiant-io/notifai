@@ -18,8 +18,8 @@ For update/integration notices or channel changes, read
 Parent owns by default. An agent that started your Agent Session with a task
 brief is your parent, even when the harness shows no parent. Ordinary workers
 report Agent Events to their parent and do not load or send. Explicit
-delegation makes a worker the owner. A worker that asks follows what
-`ask` prints: it says where the answer arrives, which may be the root Agent
+delegation makes a worker the owner. A delegated worker that asks keeps the
+assignment until it has acted on the answer. Follow what `ask` prints: it says where the answer arrives, which may be the root Agent
 Session rather than the worker.
 
 Owner session context carries the `when-to-notify` and `questions` guidance.

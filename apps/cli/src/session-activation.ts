@@ -29,7 +29,7 @@ export function rootGuidanceDigest(cwd: string, env: NodeJS.ProcessEnv): string 
 }
 
 export const WORKER_ACTIVATION_CONTEXT =
-  'Notifai worker context: report Agent Events (work finished, failed, blocked, or needing the User) to your parent, which decides what reaches the User. Send no Notification Request yourself unless your assignment delegates them to you; then load the Notifai skill and run `notifai guidance` before your first one. A delegated worker that asks keeps the assignment until it has acted on the answer. Follow what `ask` prints.'
+  'Notifai worker context: report Agent Events (work finished, failed, blocked, or needing the User) to your parent, which decides what reaches the User. Send no Notification Request yourself unless your assignment delegates them to you; then load the Notifai skill and run `notifai guidance` before your first one. If you ask, follow what `ask` prints.'
 
 function workerActivationContext(_currency?: string): string {
   return WORKER_ACTIVATION_CONTEXT
