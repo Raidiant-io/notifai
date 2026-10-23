@@ -41,7 +41,7 @@ import { CODEX_ATTACH_CHECKS } from './codex-attach-canary.js'
 import { codexHostKind } from './codex-session-end.js'
 import { assessCodexCommandRules } from './codex-command-rules.js'
 import { openclawGatewayReady } from './openclaw-gateway-readiness.js'
-import { OPENCODE_PLUGIN_LOAD_REMEDY, opencodeLoadsPlugin, opencodePluginLoadWarning, opencodeVersionFor } from './opencode-version.js'
+import { opencodePluginLine, opencodePluginLineFault, opencodeSupport, opencodeVersionFor } from './opencode-version.js'
 import {
   NON_ROUTING_BLOCKING_STOP_TIMEOUT_SECONDS,
   QUESTION_STOP_TIMEOUT_SECONDS,
@@ -1412,20 +1412,26 @@ function hookChecks(deps: CommandDeps): HookCheck[] {
     })
   }
 
-  // OpenCode 2 does not run OpenCode 1 plugins, so its sessions get none of
-  // Notifai's OpenCode wiring; see opencode-version.ts.
-  if (installations.some((installation) => installation.harness === 'opencode')) {
+  // OpenCode 1 and 2 each load only their own plugin API, and Notifai's
+  // OpenCode 2 plugin starts at 2.1; see opencode-version.ts.
+  const opencode = installations.find((installation) => installation.harness === 'opencode')
+  if (opencode !== undefined) {
     const version = opencodeVersionFor(deps)
-    const loads = opencodeLoadsPlugin(version)
+    const installed = opencode.opencodeLine ?? null
+    const expected = opencodePluginLine(version, installed ?? undefined)
+    const support = opencodeSupport(version)
+    const mismatch = installed === null ? null : opencodePluginLineFault(version, installed)
     checks.push({
       name: 'hooks (opencode plugin)',
       harnesses: ['opencode'],
-      ok: loads,
-      detail: opencodePluginLoadWarning(version) ?? (version === null
-        ? 'the OpenCode version could not be read (`opencode --version` did not answer); OpenCode 1 loads the Notifai plugin'
-        : `OpenCode ${version} loads the Notifai plugin`),
-      technical: { opencode_version: version, opencode_loads_plugin: loads },
-      ...(loads ? {} : { remedy: { by: 'user-elsewhere' as const, summary: OPENCODE_PLUGIN_LOAD_REMEDY } }),
+      ok: support.supported && mismatch === null,
+      detail: support.problem ?? mismatch ?? (version === null
+        ? `the OpenCode version could not be read (\`opencode --version\` did not answer); the installed plugin is for OpenCode ${installed ?? expected}`
+        : `OpenCode ${version} loads the installed Notifai plugin for OpenCode ${expected}`),
+      technical: { opencode_version: version, opencode_plugin_line: installed, opencode_expected_line: expected },
+      ...(!support.supported ? { remedy: { by: 'user-elsewhere' as const, summary: support.remedy } }
+        : mismatch !== null ? { remedy: { summary: `write the plugin OpenCode ${version} loads`, command: 'notifai hooks install --harness opencode' } }
+          : {}),
     })
   }
 

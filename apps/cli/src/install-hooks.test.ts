@@ -1496,11 +1496,13 @@ describe('the OpenCode adapter', () => {
     expect(opencodePluginTarget(source)).toEqual({
       adapter: ADAPTER,
       current: true,
+      line: 1,
       timeoutSeconds: 240,
     })
     expect(opencodePluginTarget(source.replace(/^const ADAPTER_VERSION = .*\n/m, ''))).toEqual({
       adapter: ADAPTER,
       current: false,
+      line: 1,
       timeoutSeconds: 240,
     })
     expect(opencodePluginTarget('export const SomeoneElse = () => ({})')).toBeNull()
@@ -1995,6 +1997,7 @@ describe('Windows hook commands and discovery', () => {
     expect(opencodePluginTarget(source)).toEqual({
       adapter: winAdapter,
       current: true,
+      line: 1,
       timeoutSeconds: 240,
       nodePath: winNode,
     })

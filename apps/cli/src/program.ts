@@ -938,6 +938,11 @@ export function buildProgram(deps: CommandDeps, options: BuildProgramOptions = {
         exit(await hermesAttendCommand(deps, process.stdin, process.stdout))
         return
       }
+      if (event === 'opencode-session' && opts.harness === 'opencode') {
+        const { opencodeSessionCommand } = await import('./opencode-shell-session.js')
+        exit(opencodeSessionCommand(deps, await readStdinWithTimeout()))
+        return
+      }
       if (event === 'opencode-question' && opts.harness === 'opencode') {
         const { opencodeQuestionCommand } = await import('./opencode-question.js')
         exit(await opencodeQuestionCommand(deps, process.stdin, process.stdout))

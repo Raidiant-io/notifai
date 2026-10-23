@@ -133,6 +133,31 @@ destination. The upload request refuses redirects rather than replaying those
 headers at another origin. There is no repository-controlled exception for
 authenticated API or signed-upload redirects.
 
+## Agent Session identity in OpenCode 2 shells
+
+A command run from an agent's shell attributes its question or notification to
+the Agent Session that shell belongs to. OpenCode 2 gives Notifai's plugin no
+way to name that session in the shell, so Notifai reads `OPENCODE_SESSION_ID`,
+which OpenCode itself sets for every agent command. Anything that runs in the
+shell, including a repository script, can set that variable to another value,
+so the value alone proves nothing. The CLI believes it only when all of these
+hold:
+
+- Notifai's plugin recorded that exact session as one it serves, through a hook
+  started by the OpenCode process that hosts the session. The record keeps that
+  process by PID and start time, plus whether the session is a worker and its
+  title; the shell supplies neither.
+- The session has not ended, and the recorded OpenCode process still runs.
+- Where the process tree can be read (macOS and Linux), that OpenCode process
+  is an ancestor of the command.
+
+A value that fails any check names no session: the command behaves as in a
+shell OpenCode did not identify, and a root session's `notifai ask --wait`
+then holds in the command instead of handing back a form. A command inside the
+same OpenCode process can still name another live session that process hosts;
+that is no more than OpenCode 1's plugin markers allowed, which any shell
+command could also overwrite.
+
 ## Guidance authority
 
 `notifai guidance` resolves two authorities:

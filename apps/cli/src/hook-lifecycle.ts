@@ -129,6 +129,7 @@ import {
   QUESTION_WAITER_CEILING_SECONDS,
 } from './question-timing.js'
 import { buildDraft, UNTITLED_FORM_TITLE } from './send.js'
+import { forgetOpencodeSession } from './opencode-shell-session.js'
 
 /**
  * The wire contract's shortest reply window. A question submitted with less
@@ -2642,6 +2643,7 @@ export function handleSessionEnd(
   const ending = candidate === undefined ? markSessionEnded(sessionId, env, now) : concludeEndCandidate(sessionId, env, candidate, now)
   if (ending === null) return { notes, log: { outcome: 'preserved', reason: 'end-superseded' } }
   if (envelope.cwd !== undefined) clearMatchingProjectSession(envelope.cwd, env, sessionId)
+  forgetOpencodeSession(env, sessionId)
 
   const state = readSessionState(sessionId, env)
   let stateWithHistory = state

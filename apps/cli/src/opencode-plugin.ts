@@ -53,6 +53,12 @@ export const OPENCODE_PLUGIN_FILENAME = 'notifai.js'
 /** Bump when an installed generated file must be rewritten to remain functional. */
 const OPENCODE_ADAPTER_VERSION = 15
 
+/** The same for the OpenCode 2 module (`opencode2-plugin.ts`), which counts on its own. */
+export const OPENCODE2_ADAPTER_VERSION = 1
+
+/** The OpenCode major lines Notifai generates a plugin for. */
+export type OpencodePluginLine = 1 | 2
+
 /**
  * The JSON schema OpenCode offers models for its `question` tool. Its own
  * definition carries an Effect schema a plugin cannot convert, so the
@@ -723,18 +729,21 @@ export function isOurOpencodePlugin(contents: string): boolean {
  */
 export function opencodePluginTarget(
   contents: string,
-): { adapter: string; current: boolean; timeoutSeconds?: number; nodePath?: string } | null {
+): { adapter: string; current: boolean; line: OpencodePluginLine; timeoutSeconds?: number; nodePath?: string } | null {
   if (!isOurOpencodePlugin(contents)) return null
   const adapter = /^const ADAPTER = (".*")$/m.exec(contents)?.[1]
   const legacyScript = /^const SCRIPT = (".*")$/m.exec(contents)?.[1]
   const node = /^const NODE = (".*")$/m.exec(contents)?.[1]
   const version = Number(/^const ADAPTER_VERSION = (\d+)$/m.exec(contents)?.[1] ?? 1)
   const timeoutMs = Number(/^const TIMEOUT_MS = (\d+)$/m.exec(contents)?.[1] ?? Number.NaN)
+  // Only the OpenCode 2 module names its line; every OpenCode 1 file predates it.
+  const line: OpencodePluginLine = /^const OPENCODE_MAJOR = 2$/m.test(contents) ? 2 : 1
   if (adapter === undefined && legacyScript === undefined) return null
   try {
     return {
       adapter: JSON.parse(adapter ?? legacyScript!) as string,
-      current: version === OPENCODE_ADAPTER_VERSION,
+      current: version === (line === 2 ? OPENCODE2_ADAPTER_VERSION : OPENCODE_ADAPTER_VERSION),
+      line,
       ...(Number.isFinite(timeoutMs) ? { timeoutSeconds: timeoutMs / 1000 } : {}),
       ...(node === undefined ? {} : { nodePath: JSON.parse(node) as string }),
     }

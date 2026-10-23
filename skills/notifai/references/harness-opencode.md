@@ -3,15 +3,19 @@
 Read with [Harness setup and recovery](harness-setup.md), which holds what every
 harness shares.
 
-This covers OpenCode 1. OpenCode 2 does not load Notifai's plugin yet, so its
-sessions get no Notifai guidance and its question forms stay in OpenCode;
-`notifai doctor` reports it.
+This covers OpenCode 1, and OpenCode 2.1 and later. The two lines load
+different plugins, so Notifai writes the one for the OpenCode it finds. After
+switching between them, run `notifai hooks install --harness opencode`;
+`notifai update` does it too. `notifai doctor` reports a plugin for the other
+line, and OpenCode 2.0, which is unsupported: upgrade it.
 
 ## Activation
 
-Restart OpenCode after installation, because plugins load at startup. Then
-start one fresh Agent Session, send one prompt, and run `notifai doctor`.
-Notifai owns its generated plugin file and will not overwrite a foreign one.
+Restart OpenCode after installation, because plugins load at startup; on
+OpenCode 2, `opencode service restart` restarts the background service its
+terminals share. Then start one fresh Agent Session, send one prompt, and run
+`notifai doctor`. Notifai owns its generated plugin file and will not
+overwrite a foreign one.
 
 A session with a parent is a worker: it reports to its parent and does not
 notify. When the plugin cannot tell, it treats the session as a worker. A
@@ -37,6 +41,8 @@ at most one recommended choice per question; its label ends in
 `(Recommended)`. Several recommendations within one question are refused by
 Notifai's protocol before any form opens; offer one recommendation instead.
 
+Session Notes and Answer Edits are not supported yet.
+
 ## Question form
 
 A `question` form you open yourself reaches the User's devices by itself;
@@ -60,6 +66,6 @@ OpenCode only and still works there.
 ## After a Notifai update
 
 The loaded plugin calls the updated CLI on each event and reads guidance once
-per User prompt. Changed plugin code loads only at startup: arrange a restart
-only when the update's diagnosis says that scope still needs one, then confirm
-a natural callback.
+per User prompt. OpenCode 1 loads changed plugin code only at startup, and
+OpenCode 2 when the file changes: arrange a restart only when the update's
+diagnosis says that scope still needs one, then confirm a natural callback.

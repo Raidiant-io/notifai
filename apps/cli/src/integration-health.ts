@@ -14,6 +14,7 @@ import { SOURCE_CONTEXT_HARNESSES, type HookInstallableHarness } from './harness
 import { HOOK_EVENTS, requiredHookEvents } from './hook-events.js'
 import { hookAdapterTargetsArtifact, inspectHookAdapter, isNpxAdapterTarget, resolveHookAdapterHome } from './hook-adapter.js'
 import { codexTrustProblems, findInstallations, handlerEvent, type Installation } from './install-hooks.js'
+import { opencodePluginLineFault, opencodeVersionFor } from './opencode-version.js'
 import { inspectSkillCopies, skillDestination } from './native-skills.js'
 import { currentRuntimeBuild } from './launch-self.js'
 import { canonicalPath } from './local-path.js'
@@ -24,10 +25,11 @@ import { packageVersion } from './release.js'
 import { type SkillInspectionBudget } from './skill-integrity.js'
 
 export function installationFaults(installation: Installation, platform?: NodeJS.Platform,
-  claude?: { env: NodeJS.ProcessEnv; claudeCodeVersion?: () => string | null }): string[] {
+  host?: { env: NodeJS.ProcessEnv; claudeCodeVersion?: () => string | null; opencodeVersion?: () => string | null }): string[] {
   const events = installation.handlers.map(handler => handlerEvent(handler.command))
   return [
-    ...(claude === undefined ? [] : claudeFormFaults(installation, platform, claude)),
+    ...(host === undefined ? [] : claudeFormFaults(installation, platform, host)),
+    ...(host === undefined ? [] : opencodeLineFaults(installation, host)),
     ...(installation.problems ?? []),
     ...requiredHookEvents(installation.harness).filter(event => !events.includes(event))
       .map(event => `missing ${event}`),
@@ -51,6 +53,18 @@ export function claudeFormFaults(installation: Installation, platform: NodeJS.Pl
   if (decision.form === 'exec' && !exec) return [`shell-form hooks, but Claude Code ${decision.version} runs exec-form hooks`]
   if (decision.form === 'shell' && exec) return [`exec-form hooks, but Claude Code ${decision.version} predates them`]
   return []
+}
+
+/**
+ * An OpenCode plugin written for the other major than the one installed:
+ * OpenCode 1 and 2 each load only their own plugin API. Reinstalling writes
+ * the right one, which `notifai update` does for any installation with a fault.
+ */
+export function opencodeLineFaults(installation: Installation,
+  deps: { env: NodeJS.ProcessEnv; opencodeVersion?: () => string | null }): string[] {
+  if (installation.harness !== 'opencode' || installation.opencodeLine === undefined) return []
+  const fault = opencodePluginLineFault(opencodeVersionFor(deps), installation.opencodeLine)
+  return fault === null ? [] : [fault]
 }
 
 /** The selected home and Codex's source home; never enumerate other accounts. */
