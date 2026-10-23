@@ -1,7 +1,7 @@
 {
   "version": 1,
-  "behavior_digest": "sha256:b3742f441d4ea1dcbe9e59328c3852a51e76525ec27ebcdea14477feb6009b1d",
-  "outcome": "reviewed-no-impact",
+  "behavior_digest": "sha256:5ce5f61477be6632932677617968a78d1dd6233fc602417a3787678162787e86",
+  "outcome": "guidance-updated",
   "surfaces_reviewed": [
     "lifecycle-hooks",
     "notifai-skill",
@@ -9,5 +9,5 @@
     "cli-readiness",
     "domain-terms"
   ],
-  "reason": "Reviewed lifecycle hooks, shipped Notifai skill and Claude reference, harness setup, CLI readiness and domain terms for presence recovery. Independent review: parent-provided Claude Opus 5.5 Round 3 review of public #423 (4197ea4) and core #134 (85e50f4b), verifying server probes P1-P9 and requesting C1-C3 before merge. Implemented those requested safeguards: only terminal/IDE REPL exit reasons confirm closure, unknown SDK host evidence stays unknown, and failed final capability discovery retains a legacy end report. These runtime corrections preserve the existing agent-facing ownership, waiting-work and answer-return instructions; no skill, setup command, readiness requirement or domain term changes are needed. Release-authored runtime change notes remain supplied separately. Focused regression tests cover the changed lifecycle behavior. This records the supplied independent review and our follow-up review, not a new independent approval of the final head."
+  "reason": "Reviewed lifecycle guidance rendering, the shipped skill and question references, harness setup, CLI readiness, and domain terms. The shared questions topic and the top of Ask a question now name --choice-description and --recommended explicitly. All question input paths share trailing-marker normalization; descriptions stay attached by position. Setup, routing, readiness, and domain terms are unchanged. The release-authored note records the flag contract and compatibility normalization. This records implementation review, not independent approval."
 }

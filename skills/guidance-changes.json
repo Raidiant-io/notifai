@@ -1,5 +1,5 @@
 {
-  "current": "cd2d590203a850613168b3deede2c9e0a1da45e46fbd18f9b6ee1582ebc9f739",
+  "current": "3901a5e6a965f197ec9f0236a09c85fe463230ca78a34551c792e0d651d595b9",
   "releases": [
     {
       "digest": "3e47b01bc6bbfb43e910c660b9964fab6459d75148c3c02dcbcd0be64cfb2963",
@@ -40,6 +40,10 @@
     {
       "digest": "cd2d590203a850613168b3deede2c9e0a1da45e46fbd18f9b6ee1582ebc9f739",
       "note": "Session observation failures now preserve waiting work instead of treating the conversation as closed. Explicit closure evidence remains required; existing agent guidance is unchanged."
+    },
+    {
+      "digest": "3901a5e6a965f197ec9f0236a09c85fe463230ca78a34551c792e0d651d595b9",
+      "note": "Use --choice-description when a choice label alone does not explain its effect, and --recommended <label> for the recommended choice. Keep recommendation markers out of labels. The CLI now converts a trailing (recommended) or [recommended] into recommendation metadata and refuses conflicting recommendations."
     }
   ]
 }

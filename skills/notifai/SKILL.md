@@ -133,6 +133,8 @@ prove the exact session.
 
 ## Ask a question
 
+Use `--choice-description` for choice details and `--recommended '<label>'` for your recommendation; never put "recommended" in a label.
+
 When work you own or coordinate needs a User response, use `notifai ask` in
 the same turn you ask it in the conversation, even during other work or after
 recent User activity: conversation alone misses an away User. Ask for safe

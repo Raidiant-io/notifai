@@ -492,7 +492,14 @@ export function parseChoices(
     if (recommended.length > 0) return { ok: false, error: '--recommended names a --choice; add the choices.' }
     return { ok: true, choices: null }
   }
-  const labels = value.map((part) => part.trim())
+  // Normalize exactly one trailing recommendation token, not free prose.
+  const marker = /\s*(?:\(\s*recommended\s*\)|\[\s*recommended\s*\])\s*$/iu
+  const marked = value.flatMap((label, index) => marker.test(label) ? [index] : [])
+  if (marked.length > 1) return { ok: false, error: 'Recommend at most one choice: multiple labels have recommendation markers.' }
+  const labels = value.map((part) => part.replace(marker, '').trim())
+  if (marked.some((index) => labels[index] === '')) {
+    return { ok: false, error: 'A recommendation marker needs a non-empty choice label.' }
+  }
   if (labels.some((label) => label.length === 0) || labels.length < 2 || labels.length > 6) {
     return { ok: false, error: CHOICE_USAGE }
   }
@@ -515,12 +522,17 @@ export function parseChoices(
 
   if (recommended.length > 1) return { ok: false, error: 'Recommend at most one choice: pass --recommended once.' }
   if (recommended.length === 1) {
-    const choice = choices.find((entry) => entry.label === recommended[0]!.trim())
+    const index = choices.findIndex((entry, i) => entry.label === recommended[0]!.trim() || value[i]!.trim() === recommended[0]!.trim())
+    const choice = choices[index]
     if (choice === undefined) {
       return { ok: false, error: `--recommended ${JSON.stringify(recommended[0])} must repeat one --choice label exactly.` }
     }
+    if (marked.length === 1 && marked[0] !== index) {
+      return { ok: false, error: '--recommended conflicts with the recommendation marker on another choice.' }
+    }
     choice.recommended = true
   }
+  if (marked.length === 1) choices[marked[0]!]!.recommended = true
   return { ok: true, choices }
 }
 
