@@ -9,16 +9,16 @@
  * CLI therefore reads such a file only as itself:
  *
  * - the file is never a symbolic link, and every folder on its path is a real
- *   folder, except a link the system owns (macOS's `/tmp` and `/var`), which a
- *   repository cannot create;
- * - it is a regular file within a size limit; and
+ *   folder, except the exact root-owned macOS `/tmp`, `/var` and `/etc` aliases;
+ * - it is a regular file with one hard link, within a size limit; and
  * - an image's bytes are the JPEG, PNG or GIF its name says, so nothing else
  *   leaves under an image name.
  *
- * The descriptor that was checked is the one read, so the file cannot be
- * swapped for a link in between. `docs/TRUST.md` states the policy.
+ * The opened descriptor must match the checked file, and the path is
+ * rechecked before reading. Changed paths or files are refused.
+ * `docs/TRUST.md` states the policy.
  */
-import { closeSync, constants, fstatSync, lstatSync, openSync, readFileSync, realpathSync } from 'node:fs'
+import { closeSync, constants, fstatSync, lstatSync, openSync, readlinkSync, readSync, realpathSync, type BigIntStats } from 'node:fs'
 import path from 'node:path'
 import { NOTIFICATION_IMAGE_MAX_BYTES } from '@raidiant/notifai-protocol'
 
@@ -36,25 +36,81 @@ const IMAGE_TYPES: Record<string, LocalImageType> = {
 
 type Refused = { ok: false; error: string }
 
-/** The first link on the path a repository could have planted, if any. */
-function plantedLink(absolute: string): string | undefined {
+type PathEntry = { file: string; stat: BigIntStats }
+
+const MACOS_ALIASES: Readonly<Record<string, string>> = {
+  '/tmp': 'private/tmp',
+  '/var': 'private/var',
+  '/etc': 'private/etc',
+}
+
+/** Ownership alone proves nothing in a root-owned checkout or container. */
+function systemAlias(file: string, stat: BigIntStats): boolean {
+  const alias = file.toLowerCase()
+  const target = MACOS_ALIASES[alias]
+  if (process.platform !== 'darwin' || target === undefined || stat.uid !== 0n) return false
+  if (readlinkSync(file) !== target || !sameIdentity(stat, lstatSync(alias, { bigint: true }))) return false
+  // These exact aliases are rooted outside the repository. Do not require
+  // the target to be unwritable: /private/tmp intentionally has mode 01777.
+  return ['/', '/private', `/${target}`].every(folder => {
+    const entry = lstatSync(folder, { bigint: true })
+    return entry.isDirectory() && entry.uid === 0n
+  })
+}
+
+/** Record every component, including the leaf, without following planted links. */
+function checkedPath(absolute: string): { ok: true; entries: PathEntry[] } | { ok: false; link: string } {
   const { root } = path.parse(absolute)
-  const parts = absolute.slice(root.length).split(path.sep).filter((part) => part !== '')
+  const parts = absolute.slice(root.length).split(path.sep).filter(part => part !== '')
+  const entries: PathEntry[] = [{ file: root, stat: lstatSync(root, { bigint: true }) }]
   let current = root
   for (const [index, part] of parts.entries()) {
     current = path.join(current, part)
-    let stat
-    try { stat = lstatSync(current) } catch { return undefined }
-    if (!stat.isSymbolicLink()) continue
-    // The file itself is never followed; a folder link only when the system
-    // owns it. Windows reports every owner as 0, so there no link passes.
-    const last = index === parts.length - 1
-    if (last || process.platform === 'win32' || stat.uid !== 0) return current
+    const stat = lstatSync(current, { bigint: true })
+    if (stat.isSymbolicLink() && (index === parts.length - 1 || !systemAlias(current, stat))) {
+      return { ok: false, link: current }
+    }
+    entries.push({ file: current, stat })
   }
-  return undefined
+  return { ok: true, entries }
+}
+
+function sameIdentity(left: BigIntStats, right: BigIntStats): boolean {
+  // A filesystem that does not expose file identity cannot establish this proof.
+  return left.ino !== 0n && left.dev === right.dev && left.ino === right.ino && left.mode === right.mode
+}
+
+/** Recheck children before parents, including parent change times for ABA swaps. */
+function unchangedPath(entries: PathEntry[]): boolean {
+  return entries.toReversed().every(({ file, stat }) => {
+    const now = lstatSync(file, { bigint: true })
+    if (!sameIdentity(stat, now)) return false
+    if (now.isSymbolicLink() && !systemAlias(file, now)) return false
+    return stat.ctimeNs === now.ctimeNs
+  })
+}
+
+/** Identity is pinned across retries; only directory change times may refresh. */
+function samePath(before: PathEntry[], after: PathEntry[]): boolean {
+  return before.length === after.length && before.every((entry, index) => {
+    const next = after[index]!
+    return entry.file === next.file && sameIdentity(entry.stat, next.stat)
+      && (entry.stat.isDirectory() || entry.stat.ctimeNs === next.stat.ctimeNs)
+  })
 }
 
 function readChecked(cwd: string, file: string, name: string, maxBytes: number): { ok: true; path: string; bytes: Buffer } | Refused {
+  let anchor: PathEntry[] | undefined
+  for (let attempt = 0; attempt < 3; attempt++) {
+    const result = readAttempt(cwd, file, name, maxBytes, anchor)
+    if (!('retry' in result)) return result
+    anchor = result.retry
+    if (attempt === 2) return { ok: false, error: result.error }
+  }
+  return { ok: false, error: `${name} "${file}" cannot be checked.` }
+}
+
+function readAttempt(cwd: string, file: string, name: string, maxBytes: number, anchor?: PathEntry[]): { ok: true; path: string; bytes: Buffer } | Refused | (Refused & { retry: PathEntry[] }) {
   // A relative path starts from where the working folder really is, so a
   // working folder reached through the User's own link still reads.
   const absolute = path.resolve(cwd, file)
@@ -62,27 +118,64 @@ function readChecked(cwd: string, file: string, name: string, maxBytes: number):
   if (!path.isAbsolute(file)) {
     try { real = path.resolve(realpathSync(cwd), file) } catch { /* a missing cwd resolves as written */ }
   }
-  const link = plantedLink(real)
-  if (link === real) return { ok: false, error: `${name} "${file}" is a symbolic link; Notifai reads only the file itself.` }
-  if (link !== undefined) {
-    return { ok: false, error: `${name} "${file}" goes through the symbolic link ${link}; Notifai reads files only through real folders.` }
-  }
+  let entries: PathEntry[]
   try {
-    if (!lstatSync(real).isFile()) return { ok: false, error: `${name} "${file}" is not a regular file.` }
-  } catch {
-    return { ok: false, error: `${name} "${file}" does not exist.` }
+    const checked = checkedPath(real)
+    if (!checked.ok) {
+      return { ok: false, error: checked.link === real
+        ? `${name} "${file}" is a symbolic link; Notifai reads only the file itself.`
+        : `${name} "${file}" goes through the symbolic link ${checked.link}; Notifai reads files only through real folders.` }
+    }
+    entries = checked.entries
+    if (anchor !== undefined && !samePath(anchor, entries)) {
+      return { ok: false, error: `${name} "${file}" changed while its path was being checked; write a new file and try again.` }
+    }
+    const leaf = entries[entries.length - 1]!.stat
+    if (!leaf.isFile()) return { ok: false, error: `${name} "${file}" is not a regular file.` }
+    if (leaf.nlink > 1n) return { ok: false, error: `${name} "${file}" has more than one hard link; Notifai reads only files with a single name.` }
+  } catch (error) {
+    return { ok: false, error: (error as NodeJS.ErrnoException).code === 'ENOENT'
+      ? `${name} "${file}" does not exist.`
+      : `${name} "${file}" cannot be checked.` }
   }
   let fd: number
   try {
-    fd = openSync(real, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0))
+    fd = openSync(real, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0) | (constants.O_NONBLOCK ?? 0))
   } catch {
     return { ok: false, error: `${name} "${file}" cannot be read.` }
   }
   try {
-    const stat = fstatSync(fd)
+    const stat = fstatSync(fd, { bigint: true })
+    const changed = (): Refused => ({ ok: false, error: `${name} "${file}" changed while its path was being checked; write a new file and try again.` })
+    // O_NOFOLLOW protects only the basename and is unavailable on Windows.
+    // Bind the descriptor to the original leaf before reading any bytes; a
+    // post-open walk alone would miss a parent restored immediately after open.
+    const pathChanged = (): Refused | (Refused & { retry: PathEntry[] }) => {
+      const current = checkedPath(real)
+      // A busy shared temp directory can change for an unrelated file. Retry
+      // only with all original identities and the leaf's metadata still pinned.
+      // A substituted file or folder never becomes a newly trusted input.
+      return current.ok && samePath(entries, current.entries)
+        ? { ...changed(), retry: anchor ?? entries }
+        : changed()
+    }
+    if (!sameIdentity(entries[entries.length - 1]!.stat, stat)) return changed()
+    if (!unchangedPath(entries)) return pathChanged()
     if (!stat.isFile()) return { ok: false, error: `${name} "${file}" is not a regular file.` }
-    if (stat.size > maxBytes) return { ok: false, error: `${name} "${file}" is larger than ${maxBytes} bytes.` }
-    const bytes = readFileSync(fd)
+    if (stat.nlink > 1n) return { ok: false, error: `${name} "${file}" has more than one hard link; Notifai reads only files with a single name.` }
+    if (stat.size > BigInt(maxBytes)) return { ok: false, error: `${name} "${file}" is larger than ${maxBytes} bytes.` }
+    // Bound allocation even if another process grows the file during the read.
+    const buffer = Buffer.alloc(maxBytes + 1)
+    let length = 0
+    while (length < buffer.length) {
+      const count = readSync(fd, buffer, length, buffer.length - length, null)
+      if (count === 0) break
+      length += count
+    }
+    const bytes = buffer.subarray(0, length)
+    const after = fstatSync(fd, { bigint: true })
+    if (!sameIdentity(stat, after) || after.nlink > 1n || after.ctimeNs !== stat.ctimeNs) return changed()
+    if (!unchangedPath(entries)) return pathChanged()
     if (bytes.byteLength > maxBytes) return { ok: false, error: `${name} "${file}" is larger than ${maxBytes} bytes.` }
     return { ok: true, path: absolute, bytes }
   } catch {

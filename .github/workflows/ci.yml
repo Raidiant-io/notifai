@@ -190,7 +190,7 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - run: pnpm --filter @raidiant/notifai-protocol build
       - name: Verify the macOS wake boundary
-        run: pnpm --filter @raidiant/notifai test -- src/codex-wake.test.ts
+        run: pnpm --filter @raidiant/notifai test -- src/codex-wake.test.ts src/local-input.test.ts
 
   platform-windows-x64:
     name: platform (windows-2025)
@@ -229,7 +229,7 @@ jobs:
         run: |
           pnpm --filter @raidiant/notifai-protocol test
           pnpm --filter @raidiant/notifai test -- \
-            src/platform.test.ts src/credentials.test.ts src/ui/config-view.test.ts
+            src/platform.test.ts src/credentials.test.ts src/ui/config-view.test.ts src/local-input.test.ts
           pnpm --filter @raidiant/notifai test -- \
             src/hook-adapter.test.ts src/install-hooks.test.ts \
             --testNamePattern Windows
@@ -296,7 +296,7 @@ jobs:
         run: |
           pnpm --filter @raidiant/notifai-protocol test
           pnpm --filter @raidiant/notifai test -- \
-            src/platform.test.ts src/credentials.test.ts src/ui/config-view.test.ts
+            src/platform.test.ts src/credentials.test.ts src/ui/config-view.test.ts src/local-input.test.ts
           pnpm --filter @raidiant/notifai test -- \
             src/hook-adapter.test.ts src/install-hooks.test.ts \
             --testNamePattern Windows
