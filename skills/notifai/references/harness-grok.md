@@ -19,26 +19,28 @@ markers from another harness are ambiguous: follow the admission remedy rather
 than choosing a session from history. Remote tools need the CLI, credentials,
 and hooks on the execution host; local installation does not prove that setup.
 
-If `/hooks` shows Cursor import errors, inspect `grok inspect --json`. Grok's
-Cursor compatibility loader rejects Cursor's flat hook replies. With the User's
-authorization, set `hooks = false` under `[compat.cursor]` in Grok's user config
-(or `GROK_CURSOR_HOOKS_ENABLED=false` for one launch). This leaves Cursor's own
-hooks intact. Native Notifai hooks do not need imported Claude or Cursor copies.
-Keep unrelated hooks and trust decisions with their owner.
+Cursor import errors in `/hooks` come from Grok's Cursor compatibility loader,
+which rejects Cursor's flat hook replies; Notifai's native hooks work without
+imported Claude or Cursor copies. Leave the User's config as it is. Only when
+the User asks to silence the errors, set `hooks = false` under
+`[compat.cursor]` in Grok's user config (or `GROK_CURSOR_HOOKS_ENABLED=false`
+for one launch); Cursor's own hooks stay intact. Keep unrelated hooks and trust
+decisions with their owner.
 
 ## Questions and replies
 
 `notifai ask` schedules submission while independent work continues. After
 `notifai ask --wait`, end your turn; Grok's Stop hook keeps the session
-waiting and continues it with the answer. Start
-Grok with `--leader` for ongoing device conversations: on Grok's shared leader
-the answer arrives in the exact running session, however many questions
-follow.
+waiting and continues it with the answer. On Grok's shared leader, which the
+User chooses by starting Grok with `--leader` (a running session cannot
+switch), the answer arrives in the exact running session, however many
+questions follow.
 
-Without a leader, including headless runs, the answer returns when the turn
-ends, as a Stop continuation. Grok permits eight of those per turn; after that,
-a pending question needs another User turn, and Notifai keeps it rather than
-opening another session. An explicitly delegated subagent waits at its own
+Without a leader, including headless runs, the Stop hook holds the session at
+the end of the turn until the answer arrives, after `ask` as after
+`ask --wait`, and continues it with the answer. Grok permits eight such
+continuations per turn; after that, tell the User the remaining answers wait
+for their next prompt. An explicitly delegated subagent waits at its own
 SubagentStop. A long answer arrives as a `notifai replies <request_id> --json`
 instruction: read the complete result and run its `acknowledgement_command`
 before acting.
@@ -46,22 +48,18 @@ before acting.
 Keep the Grok process running while a question is pending: closing the Agent
 Session ends its questions, and an answer that arrives later is dropped. A
 cancelled turn can interrupt the wait; a later turn recovers the answer.
-
-Grok's own question card is not linked to Notifai, so an away User never sees
-it: ask with `notifai ask` and in plain conversation instead. Harness
-permission prompts stay in Grok.
+Harness permission prompts stay in Grok.
 
 ## Session Notes and Answer Edits
 
 Only a live session on Grok's shared leader receives Session Notes and
-post-delivery Answer Edits; start Grok with `--leader` for them. An idle
-session starts a turn and a busy one receives a steer. Acknowledge each message
+post-delivery Answer Edits. An idle session starts a turn and a busy one receives a steer. Acknowledge each message
 after reading it. Closing the session stops delivery.
 
 Ordinary local sessions, headless sessions and hidden subagents get answers
 through Stop but no Notes or Edits. Notifai never starts a leader or reopens
 saved history to deliver a message. Remote execution needs a local installation
-on that host. On Windows the leader route is unverified. If the leader is
+on that host. Notifai cannot use the leader on Windows. If the leader is
 unavailable or its protocol changes, message delivery stops rather than guess
 another session.
 

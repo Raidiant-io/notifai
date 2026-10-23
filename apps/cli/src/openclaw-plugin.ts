@@ -45,7 +45,7 @@ export const OPENCLAW_PLUGIN_FILENAME = 'index.js'
 export const OPENCLAW_PLUGIN_MANIFEST = 'openclaw.plugin.json'
 export const OPENCLAW_PLUGIN_PACKAGE = 'package.json'
 
-const OPENCLAW_ADAPTER_VERSION = 8
+const OPENCLAW_ADAPTER_VERSION = 9
 
 export function openclawStateDir(
   env: NodeJS.ProcessEnv = process.env,
@@ -600,8 +600,8 @@ async function inspectSubmission(target, record) {
 function pointerMessage(record) {
   return "A Notifai reply is waiting for this session. " +
     record.request_ids.map((id) => "Run notifai replies " + id +
-      " --json, then notifai acknowledge " + id +
-      " with the concrete work you will do.").join(" ")
+      " --json and read the reply. Before the work it causes, run its acknowledgement_command exactly as shown," +
+      " giving any --text the concrete work you will do; null means it is already acknowledged.").join(" ")
 }
 
 function messagePointer(record) {

@@ -12,8 +12,8 @@ successfully reports another version, `notifai doctor` reports a limit with
 nothing for Notifai to repair, so leave the User's Hermes as it is. If the
 version cannot be read, follow doctor's diagnostic and remedy; it still checks
 whether the plugin is enabled. Start a fresh local classic CLI Agent Session after
-installation. Install the Notifai skill through
-the built-in Notifai skill installer; the Hermes plugin does not include a copy.
+installation. The Hermes plugin carries no copy of the Notifai skill: install
+it with `notifai init --skills --skills-scope <project|global> --skills-harness hermes --json`.
 
 The plugin checks Project Enablement and gives root or worker guidance, the
 same session guidance other harnesses receive, in two system prompt sections:
@@ -28,9 +28,9 @@ terminal backends and Windows are not.
 
 ## Questions, notes and edits
 
-A classic CLI session receives an `ask` answer back into the same live session,
-and `notifai ask --wait` tells you to end your turn for it. On other Hermes
-surfaces `ask` refuses: use `notifai ask --wait`, which waits in the command.
+A classic CLI session receives an `ask` answer back into the same live session
+as its next input, after the asking turn ends; `notifai ask --wait` tells you to
+end your turn for it. On other Hermes surfaces `ask` refuses: use `notifai ask --wait`, which waits in the command.
 Keep Hermes running for the answer window: closing the session ends its
 questions, and an answer that arrives after the process exits is not
 delivered.

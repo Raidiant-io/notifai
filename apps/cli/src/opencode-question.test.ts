@@ -21,6 +21,7 @@ import {
   recommendedFirst,
   opencodeDeviceAnswers,
   opencodeNativeAnswers,
+  opencodeOwedAcknowledgement,
   opencodePickerQuestions,
   opencodeQuestionCommand,
   opencodeQuestionRequest,
@@ -218,6 +219,10 @@ describe('opencode-question command', () => {
     expect(await t.frame('answer')).toEqual({
       type: 'answer', request_id: 'req_opencode', answers: [['Production'], ['Lint']],
       acknowledgement: 'notifai acknowledge req_opencode --text <text>',
+      acknowledgement_context: 'Notifai: the answer to your question came from the user\'s device, for request req_opencode. ' +
+        'Before the work it causes, run `notifai acknowledge req_opencode --text <text>` with non-empty text saying what concrete ' +
+        'work you will do because of the reply; a bare acknowledgement is insufficient. Once a request reports recorded or ' +
+        'replayed, its acknowledgement is complete; do not repeat it for a later turn or unrelated event.',
     })
     t.send({ type: 'applied' })
     expect(await t.frame('done')).toEqual({ type: 'done', outcome: 'device-answer-delivered' })
@@ -562,3 +567,9 @@ describe('form images', () => {
 function t0Env(root: string): NodeJS.ProcessEnv {
   return { HOME: path.join(root, 'home'), XDG_CONFIG_HOME: path.join(root, 'config'), XDG_STATE_HOME: path.join(root, 'state') }
 }
+
+it('owes a text-off acknowledgement exactly as shown, never asking for words', () => {
+  const owed = opencodeOwedAcknowledgement('req_quiet', 'notifai acknowledge req_quiet', false)
+  expect(owed).toContain('run `notifai acknowledge req_quiet` exactly as shown; this account turned acknowledgement text off')
+  expect(owed).not.toMatch(/saying what/)
+})

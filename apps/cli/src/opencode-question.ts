@@ -73,6 +73,7 @@ import { readLocalImage } from './local-input.js'
 import { loadConfig, stateDir, type CliConfig } from './config.js'
 import { QuestionRegistrationChanged, registerQuestion } from './hook-lifecycle.js'
 import { dropPendingQuestion } from './hook-question-state.js'
+import { ACKNOWLEDGEMENT_SCOPE, acknowledgementDemand } from './injection-render.js'
 import { pendingList, readSessionState, recordSessionNotified, updateSessionState } from './hook-session-state.js'
 import type { OpencodeFormInput, PendingQuestion, QuestionTerminalState, SessionState } from './hook-types.js'
 import type { Logger } from './logging.js'
@@ -83,6 +84,12 @@ import { buildDraft, UNTITLED_FORM_TITLE, type DraftInvocation } from './send.js
 
 /** What OpenCode's devices-facing acknowledgement says for an answer given in OpenCode. */
 export const OPENCODE_NATIVE_ACKNOWLEDGEMENT = 'Answered in OpenCode.'
+
+/** The acknowledgement a device answer returned through OpenCode's form owes, said as every harness says it. */
+export function opencodeOwedAcknowledgement(requestId: string, command: string, textRequired: boolean): string {
+  return `Notifai: the answer to your question came from the user's device, for request ${requestId}. ` +
+    `Before the work it causes, run \`${command}\`${acknowledgementDemand(textRequired)}.${ACKNOWLEDGEMENT_SCOPE}`
+}
 
 /** The tool error for a form Notifai cannot carry, in a session where forms reach the devices. */
 export const OPENCODE_FORM_UNCARRIABLE =
@@ -155,7 +162,7 @@ export type OpencodeQuestionOutbound =
   | { type: 'refused'; message: string }
   | { type: 'terminal'; reason: string }
   | { type: 'registered'; request_id: string }
-  | { type: 'answer'; request_id: string; answers: string[][]; acknowledgement: string }
+  | { type: 'answer'; request_id: string; answers: string[][]; acknowledgement: string; acknowledgement_context?: string }
   | { type: 'expired'; context: string }
   | { type: 'done'; outcome: string }
 
@@ -1081,6 +1088,10 @@ async function runForm(deps: CommandDeps, pipe: PluginPipe): Promise<number> {
       pipe.send({
         type: 'answer', request_id: registration.requestId, answers,
         acknowledgement: acknowledgement === null ? '' : acknowledgement,
+        ...(acknowledgement === null ? {} : {
+          acknowledgement_context: opencodeOwedAcknowledgement(registration.requestId, acknowledgement,
+            closed.agent_acknowledgement_text_required),
+        }),
       })
       const verdict = await frame
       if (verdict?.type === 'applied') outcome = 'device-answer-delivered'

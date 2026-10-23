@@ -178,10 +178,10 @@ until turn end; queue acceptance does not prove model consumption.
 
 If tools complete without proof, read `tool_boundary_notes.recovery`. Codex can
 retain old hooks in memory while `/hooks` shows current files active and
-trusted. Within authorized repair, toggle only the already-trusted Notifai
-PostToolUse handler off and back on in that session's `/hooks` to refresh
-configuration, then verify a real callback. Preserve approvals, pending input
-and the Agent Session; missing proof does not authorize new trust or a restart.
+trusted. Within authorized repair, ask the User to toggle only the
+already-trusted Notifai PostToolUse handler off and back on in that session's
+`/hooks`; hook files stay as installed. Then verify a real callback. Preserve
+approvals, pending input and the Agent Session; missing proof does not authorize new trust or a restart.
 
 ### Harness differences
 

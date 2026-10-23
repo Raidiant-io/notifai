@@ -57,8 +57,8 @@ process.stdin.on("data", (chunk) => {
       asked = true
       process.stdout.write(JSON.stringify({ type: "registered", request_id: "req_1" }) + "\\n")
       if (process.env.FAKE_MODE === "device" || process.env.FAKE_MODE === "device-exit") {
-        process.stdout.write(JSON.stringify({ type: "answer", request_id: "req_1", answers: [["Production"]],
-          acknowledgement: "notifai acknowledge req_1 --text <text>" }) + "\\n")
+        process.stdout.write(JSON.stringify({ type: "answer", request_id: "req_" + frame.request.id, answers: [["Production"]],
+          acknowledgement: "notifai acknowledge req_1 --text <text>", acknowledgement_context: "OWED ACKNOWLEDGEMENT for " + frame.request.id }) + "\\n")
       }
       if (process.env.FAKE_MODE === "device-exit") process.exit(0)
     } else if (frame.type !== "ask") {
@@ -97,7 +97,7 @@ async function load(mode: 'device' | 'device-exit' | 'wait' | 'expire', options:
     post: async ({ url, path: params, body }: { url: string; path: { requestID: string }; body: { answers: unknown } }) => {
       if (url !== '/question/{requestID}/reply') return { error: 'not found' }
       replies.push({ requestID: params.requestID, answers: body.answers })
-      pending.splice(0)
+      pending.splice(pending.findIndex(request => request.id === params.requestID), 1)
       return { data: true, response: { ok: true } }
     },
   }
@@ -128,10 +128,24 @@ describe.skipIf(process.platform === 'win32')('the generated OpenCode plugin', (
     expect(t.records().filter(record => record.frame !== undefined).map(record => record.frame!.type)).toEqual(['ask', 'applied'])
     const first = { system: [] as string[] }
     await t.plugin['experimental.chat.system.transform']({ sessionID: 'ses_parent' }, first)
-    expect(first.system.join('\n')).toContain('notifai acknowledge req_1 --text <text>')
+    expect(first.system.join('\n')).toContain('OWED ACKNOWLEDGEMENT')
     const second = { system: [] as string[] }
     await t.plugin['experimental.chat.system.transform']({ sessionID: 'ses_parent' }, second)
-    expect(second.system.join('\n')).not.toContain('notifai acknowledge req_1')
+    expect(second.system.join('\n')).not.toContain('OWED ACKNOWLEDGEMENT')
+  })
+
+  it('owes each parallel form its own acknowledgement', async () => {
+    const t = await load('device')
+    const second = { ...REQUEST, id: 'que_2' }
+    t.pending.push(second)
+    await t.plugin.event({ event: { type: 'question.asked', properties: REQUEST } })
+    await t.plugin.event({ event: { type: 'question.asked', properties: second } })
+    await t.until(() => t.records().filter(record => record.frame?.type === 'applied').length === 2)
+    const turn = { system: [] as string[] }
+    await t.plugin['experimental.chat.system.transform']({ sessionID: 'ses_parent' }, turn)
+    const context = turn.system.join('\n')
+    expect(context).toContain('OWED ACKNOWLEDGEMENT for que_1')
+    expect(context).toContain('OWED ACKNOWLEDGEMENT for que_2')
   })
 
   it('survives a command that ends before the plugin writes to it', async () => {

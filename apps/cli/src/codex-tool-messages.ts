@@ -41,7 +41,7 @@ export function codexToolHookReady(
     (turn === null || proof.root_observed.turn_id === turn)
 }
 
-export const CODEX_TOOL_HOOK_RECOVERY = 'Wait for a real tool callback in this turn. If tools complete but this remains unverified, Codex may retain an older hook configuration in memory even when /hooks lists trusted, active definitions. In the existing session, open /hooks and toggle only the already-trusted Notifai PostToolUse handler off and back on to refresh it, then verify the next callback. Do not change approvals or end the Agent Session. The ordinary queue can wait until the active turn finishes; queue acceptance does not prove busy delivery.'
+export const CODEX_TOOL_HOOK_RECOVERY = 'Wait for a real tool callback in this turn. If tools complete but this remains unverified, Codex may retain an older hook configuration in memory even when /hooks lists trusted, active definitions. Only the User can refresh it: ask them to open /hooks in the existing session and toggle only the already-trusted Notifai PostToolUse handler off and back on, leaving hook files as installed, then verify the next callback. Keep approvals and the Agent Session as they are. The ordinary queue can wait until the active turn finishes; queue acceptance does not prove busy delivery.'
 
 /** Notes and answers share one bounded stdout document at the trusted boundary. */
 export async function deliverCodexToolMessage(

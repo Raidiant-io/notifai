@@ -615,6 +615,25 @@ describe('command contracts', () => {
     expect(projectEnabled(projectBinding(cwd, env))).toBe(true)
   })
 
+  it('tells a Cursor agent its Agent Session has no name to rename', async () => {
+    const cwd = mkdtempSync(path.join(os.tmpdir(), 'notifai-cursor-rename-'))
+    const io = new CapturedIo()
+    const deps = { ...makeDeps(io, {} as ApiClient), cwd, env: { ...isolatedEnv(cwd), CURSOR_AGENT: '1' } }
+    expect(await agentSessionRenameCommand(deps, 'Repair search indexing')).toBe(EXIT.usage)
+    expect(io.errLines.join('\n')).toBe(
+      'Cursor does not identify its Agent Session to Notifai, so this session has no name to rename. Omit --session-label and keep working.',
+    )
+  })
+
+  it('reports an untouched Project as off, never as disabled by the User', () => {
+    const cwd = mkdtempSync(path.join(os.tmpdir(), 'notifai-untouched-status-'))
+    execFileSync('git', ['init', '--quiet', cwd])
+    const io = new CapturedIo()
+    const deps = { ...makeDeps(io, {} as ApiClient), cwd, env: isolatedEnv(cwd) }
+    expect(projectStatusCommand(deps)).toBe(EXIT.ok)
+    expect(io.outLines.at(-1)).toMatch(/^Project ".+": lifecycle behavior off; the User has neither enabled nor disabled Notifai here\. When they ask for Notifai here, run `notifai project enable`\.$/)
+  })
+
   it.each([false, true])('sends nothing from a Project the User disabled until they enable it again (projectless: %s)', async (projectless) => {
     const cwd = mkdtempSync(path.join(os.tmpdir(), 'notifai-disabled-send-'))
     execFileSync('git', ['init', '--quiet', cwd])
@@ -9431,7 +9450,7 @@ describe('asking before the hooks have ever run', () => {
     const refusal = JSON.parse(io.outLines.at(-1)!)
     expect(refusal).toMatchObject({
       code: 'openclaw_generation_stale', registered: false,
-      remedy: 'run the question from a current OpenClaw turn after the Notifai plugin has recorded it',
+      remedy: 'run the same notifai ask from a current OpenClaw turn after the Notifai plugin has recorded it; if it is refused again, ask in the conversation',
     })
     // An OpenClaw ask enables a Project with no decision, like any other ask.
     expect(projectEnabled(binding!)).toBe(true)
@@ -12402,6 +12421,35 @@ describe('a second device that disagrees', () => {
 })
 
 describe('Agent Session rename command', () => {
+  it('sends with the harness title and explains why an invalid label was ignored', async () => {
+    const cwd = mkdtempSync(path.join(os.tmpdir(), 'notifai-session-label-invalid-'))
+    const io = new CapturedIo()
+    const submitted: SubmitNotificationRequestT[] = []
+    const client = {
+      submit: async (body: SubmitNotificationRequestT) => {
+        submitted.push(body)
+        return receipt
+      },
+    } as unknown as ApiClient
+    const deps = {
+      ...makeDeps(io, client), cwd,
+      env: { ...isolatedEnv(cwd), CODEX_THREAD_ID: 'invalid-label-session' },
+      codexSessionTitle: () => 'Native Codex title',
+    }
+
+    expect(await sendCommand(deps, {
+      title: 'Work update',
+      summary: 'The requested work is progressing.',
+      kind: 'update',
+      sessionLabel: '/private/path-that-must-not-win',
+    })).toBe(EXIT.ok)
+    expect(submitted.at(-1)?.draft.source?.session_label).toBe('Native Codex title')
+    const notices = io.errLines.filter((line) => line.includes('Ignored the supplied label'))
+    expect(notices).toEqual([
+      'Heads up (source.session_label): Ignored the supplied label: --session-label (or NOTIFAI_SESSION_LABEL) must not contain a session identifier, hash, or filesystem path. Named this Agent Session "Native Codex title" from the harness title instead.',
+    ])
+  })
+
   it('explains an ignored label change and keeps the renamed label on later sends', async () => {
     const cwd = mkdtempSync(path.join(os.tmpdir(), 'notifai-session-label-change-'))
     const io = new CapturedIo()

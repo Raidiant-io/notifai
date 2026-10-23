@@ -23,8 +23,14 @@ inspection, `domain: "local-classic-cli"`,
 for independently identified host writers. Capture `start` while each process
 exists with `LC_ALL=C TZ=UTC ps -o lstart= -p <pid>`, trim it and collapse whitespace
 to single spaces (for example `Sat Oct 10 18:27:00 2026`). An observation timestamp
-or a PID alone is insufficient. Resume with the same token plus
-`--quiescence <observation.json> --confirm <digest>`. The CLI independently
+or a PID alone is insufficient. Release with the same token, passing the
+inspection's `confirmation` as the digest:
+
+```bash
+notifai install --recover-integration <token> --quiescence <observation.json> --confirm <confirmation> --json
+```
+
+The CLI independently
 rechecks the original caller and supplied writers; these checks supplement
 your observation, not prove absence of unidentified descendants.
 

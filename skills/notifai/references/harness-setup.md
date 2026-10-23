@@ -21,10 +21,10 @@ shown.
 
 Only when the User chooses an approval notification, ask for their Account
 email; never infer it from other services or files. Run `notifai init --approval notification --approval-email <email>
---json`. Requested delivery is not confirmed delivery. For the browser
-alternative use `--approval browser`; it opens no browser by default. Every
-route resumes the same pending approval. When the User says it is approved,
-run setup again. If it reports a new code, relay that code. A timeout or closed
+--json`. Requested delivery is not confirmed delivery. `--approval browser`
+opens the approval page in this machine's browser: use it when the User is at
+this machine. Every route resumes the same pending approval. When the User
+says it is approved, run setup again. If it reports a new code, relay that code. A timeout or closed
 shell does not strand an approval already given.
 
 `--name <name>` sets the Machine name; the hostname is the default.
@@ -75,13 +75,8 @@ recovery owns the answer, and `null` when nothing assessed it.
 `exit_code` and `remedy` instead of running doctor first. It never guesses an
 Agent Session and has no `--session-id` override.
 
-Notifai never writes trust approvals. If its diagnosis and Codex disagree,
-`/hooks` is authoritative.
-
-The prepared User message for this human-only action is:
-
-> Open `/hooks` in Codex, approve or enable the Notifai handlers, then tell me
-> when it is done. I will finish setup and verify a fresh session.
+Notifai never writes trust approvals: the User grants them in the harness,
+whose own trust view is authoritative over Notifai's diagnosis.
 
 ### Your harness
 
@@ -97,6 +92,9 @@ Codex, Cursor and Grok each say how they approve Notifai commands.
 - [OpenClaw](harness-openclaw.md)
 - [Hermes](harness-hermes.md)
 - [Grok](harness-grok.md)
+
+Output from an older Notifai that contains `native_question`:
+[Native questions](native-questions.md).
 
 Do not infer Question Routing from managed installation. `notifai doctor`
 reports each harness's supported route separately.

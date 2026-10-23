@@ -80,7 +80,7 @@ export function grokContinuationRoute(): EscalationDeliveryRoute {
 
 function grokAnswerContext(event: ContinuationEvent): string {
   return event.context.length <= 9_000 ? event.context
-    : 'Notifai has answers for this Agent Session. Read every complete answer below, then follow each result\'s acknowledgement_command before resuming work. ' +
+    : 'Notifai has answers for this Agent Session. Run each command below to read every complete answer, then follow each result\'s acknowledgement_command before resuming work. ' +
       'This notice itself contains no answer or approval.\n' +
       event.request_ids.map(id => `- Run \`notifai replies ${id} --json\`.`).join('\n')
 }

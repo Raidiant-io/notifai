@@ -24,6 +24,12 @@ export async function agentSessionRenameCommand(
   const now = deps.now?.() ?? Date.now()
   const resolution = resolveActiveHarness(deps.env, deps.cwd, now)
   const active = resolution.active
+  if (resolution.contested.length === 0 && active?.harness === 'cursor') {
+    deps.io.err(
+      'Cursor does not identify its Agent Session to Notifai, so this session has no name to rename. Omit --session-label and keep working.',
+    )
+    return EXIT.usage
+  }
   if (resolution.contested.length > 0 || active?.sessionId === undefined) {
     deps.io.err(
       'No exact active Agent Session can be proven here. Run this command inside the Agent Session you intend to rename.',

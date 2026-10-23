@@ -58,9 +58,7 @@ describe('semantic session labels', () => {
     ).toEqual({ ok: true, label: 'Semantic session names', source: 'explicit' })
   })
 
-  it('prefers the environment-supplied title over an explicit label, making the flag safe everywhere', () => {
-    // An agent must never need to know which environments name their own
-    // sessions: where one does, the explicit label is simply not used.
+  it('prefers an explicit label over the environment-supplied title', () => {
     const { env, now } = fixture()
     expect(
       resolveSessionLabel({
@@ -71,10 +69,13 @@ describe('semantic session labels', () => {
         harnessLabel: 'NotifAI question lifecycle',
         explicitLabel: 'Agent-chosen name',
       }),
-    ).toEqual({ ok: true, label: 'NotifAI question lifecycle', source: 'harness' })
+    ).toEqual({ ok: true, label: 'Agent-chosen name', source: 'explicit' })
   })
 
-  it('ignores an invalid repeated explicit label when a trusted harness title is available', () => {
+  const pathError =
+    '--session-label (or NOTIFAI_SESSION_LABEL) must not contain a session identifier, hash, or filesystem path.'
+
+  it('sets an invalid explicit label aside for a trusted harness title, as older releases did', () => {
     const { env, now } = fixture()
     expect(
       resolveSessionLabel({
@@ -85,10 +86,63 @@ describe('semantic session labels', () => {
         harnessLabel: 'Native Codex title',
         explicitLabel: '/private/path-that-must-not-win',
       }),
-    ).toEqual({ ok: true, label: 'Native Codex title', source: 'harness' })
+    ).toEqual({
+      ok: true,
+      label: 'Native Codex title',
+      source: 'harness',
+      rejectedExplicitLabel: pathError,
+    })
   })
 
-  it('upgrades a frozen fallback to the environment title even when an explicit label rides along', () => {
+  it('upgrades a frozen fallback to the harness title when the explicit label is invalid', () => {
+    const { env, now } = fixture()
+    expect(resolveSessionLabel({ env, now, sessionId: 'late-title-bad-flag' }))
+      .toMatchObject({ ok: true, source: 'fallback' })
+    expect(
+      resolveSessionLabel({
+        env,
+        now: now + 1,
+        sessionId: 'late-title-bad-flag',
+        harness: 'opencode',
+        harnessLabel: 'Worktree semantic title',
+        explicitLabel: '/private/path-that-must-not-win',
+      }),
+    ).toEqual({
+      ok: true,
+      label: 'Worktree semantic title',
+      source: 'harness',
+      previousSource: 'fallback',
+      rejectedExplicitLabel: pathError,
+    })
+  })
+
+  it('keeps an invalid explicit label a usage error when no harness title could name the session', () => {
+    const { env, now } = fixture()
+    expect(
+      resolveSessionLabel({
+        env, now, sessionId: 'no-title-bad-flag', explicitLabel: '/private/path-that-must-not-win',
+      }),
+    ).toEqual({ ok: false, error: pathError })
+    expect(resolveSessionLabel({ env, now, sessionId: 'frozen-no-title' }))
+      .toMatchObject({ ok: true, source: 'fallback' })
+    expect(
+      resolveSessionLabel({
+        env, now: now + 1, sessionId: 'frozen-no-title', explicitLabel: '/private/path-that-must-not-win',
+      }),
+    ).toEqual({ ok: false, error: pathError })
+    expect(
+      resolveSessionLabel({
+        env,
+        now,
+        sessionId: 'pending-title-bad-flag',
+        harness: 'opencode',
+        harnessLabelPending: true,
+        explicitLabel: '/private/path-that-must-not-win',
+      }),
+    ).toEqual({ ok: false, error: pathError })
+  })
+
+  it('upgrades a frozen fallback to the explicit label before the environment title', () => {
     const { env, now } = fixture()
     const frozen = resolveSessionLabel({ env, now, sessionId: 'late-title' })
     expect(frozen).toMatchObject({ ok: true, source: 'fallback' })
@@ -103,8 +157,8 @@ describe('semantic session labels', () => {
       }),
     ).toEqual({
       ok: true,
-      label: 'Worktree semantic title',
-      source: 'harness',
+      label: 'Agent-chosen name',
+      source: 'explicit',
       previousSource: 'fallback',
     })
   })

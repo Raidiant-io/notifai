@@ -29,11 +29,12 @@ hook never ran. Question outcomes (`ask.registered`, `hook.gate`, `hook.pushed`,
 slower-rotating file, so `notifai logs --event hook.gate --since 2d` still
 finds them days later.
 
-`hook.gate` records carry a fixed `reason` — `question-notifications-off`,
-`claimed-elsewhere`, `no-question`, `no-session`, `answered`,
-`acknowledgement-required`, `acknowledgement-abandoned`, `harness-cannot-continue`,
-`delivery-limit`, `proceeding` —
-so filter on that, never on the wording of a message. A Claude Code picker or
+`hook.gate` records carry a fixed `reason`, and picker, card and form records
+also a fixed `stage`, so filter on those, never on the wording of a message.
+Queued-question records (`stage` `queued`) use exactly these reasons:
+`question-notifications-off`, `claimed-elsewhere`, `no-question`, `no-session`,
+`answered`, `acknowledgement-required`, `acknowledgement-abandoned`,
+`harness-cannot-continue`, `delivery-limit` and `proceeding`. A Claude Code picker or
 OpenCode form that stayed in the terminal logs the stage `picker-terminal-only`
 or `form-terminal-only` with a `reason` of its own, such as `not-signed-in`;
 an OpenCode form refused before it opened logs `form-refused`, or

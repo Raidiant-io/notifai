@@ -8,10 +8,10 @@ harness shares.
 Installation applies a changed plugin to a running Gateway through
 `openclaw plugins reload notifai` and names the applied generation; with no
 Gateway running it loads at the next start. If it says the previous generation
-kept serving, run `openclaw plugins reload notifai --wait` (or restart the
-Gateway). Then start one fresh Agent Session, send one prompt, and run
-`notifai doctor`. Notifai owns its generated Gateway plugin and will not
-overwrite a foreign one.
+kept serving, run `openclaw plugins reload notifai --wait`; a reload keeps
+waiting questions, while a Gateway restart expires them ([Questions](#questions)).
+Then start one fresh Agent Session, send one prompt, and run `notifai doctor`.
+Notifai owns its generated Gateway plugin and will not overwrite a foreign one.
 
 The Agent Session is the OpenClaw `sessionKey`. Each conversation is activated
 on its first prompt, and again after `/new`, `/reset` or a daily or idle
@@ -25,8 +25,8 @@ their owner.
 
 On macOS, an asynchronous `notifai ask` answer comes back into the same Agent
 Session after the asking turn ends, as a followup turn carrying a pointer. Run
-`notifai replies <id>` from that session to read the answer and
-`notifai acknowledge <id>` before acting on it. This needs a local Gateway that
+`notifai replies <id> --json` from that session to read the answer, then its
+`acknowledgement_command` before acting on it. This needs a local Gateway that
 has loaded the currently installed plugin and runs a matching CLI version.
 `notifai ask --wait` tells you to end your turn for the answer. Off macOS,
 `ask` refuses: use `notifai ask --wait`, which waits in the command.
@@ -34,7 +34,7 @@ has loaded the currently installed plugin and runs a matching CLI version.
 Stopping the Gateway, or disabling or uninstalling the Notifai plugin while it
 runs, ends the Gateway's sessions for Notifai: their questions expire and a
 later answer is dropped. Never suggest either while a question waits. A plugin
-reload keeps them open. Do not treat `/stop` as turn-end.
+reload keeps them open.
 
 ## Notes and edits
 
@@ -43,9 +43,9 @@ followup turns. Each turn starts with a pointer naming the message, and the
 full note or edit context arrives with it once; a plugin reload keeps a message
 that is still waiting. Acknowledge each `sm_` message after reading it.
 
-If the full context is absent, say the message is missing and do not
-acknowledge it; the User may send a new message. This happens when a Gateway
-crash replays the pointer after its context was used, or when the conversation
+If the full context is absent, tell the User in the conversation that a
+Notifai message did not arrive, and leave it unacknowledged; they can send it
+again. This happens when a Gateway crash replays the pointer after its context was used, or when the conversation
 changed (`/new`, `/reset`, rollover) or the Gateway restarted before the turn
 ran.
 
