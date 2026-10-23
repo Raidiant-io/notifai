@@ -2,6 +2,9 @@ import { mkdtempSync } from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { describe, expect, it } from 'vitest'
+import { buildDraft } from './send.js'
+import { loadConfig } from './config.js'
+import { SOURCE_CONTEXT_HARNESSES } from './harnesses.js'
 import {
   buildSourceContext,
   inferInvocationContext,
@@ -399,5 +402,33 @@ describe('buildSourceContext', () => {
       ok: false,
       error: '--session-label (or NOTIFAI_SESSION_LABEL) names an Agent Session only where the harness identifies it, and none does here: omit it.',
     })
+  })
+})
+
+
+describe('detected harness on requests and questions', () => {
+  it.each(SOURCE_CONTEXT_HARNESSES)('carries %s only for its exact session, independently of authored text', (harness) => {
+    const env = stateEnv()
+    const source = buildSourceContext({ env, invocation: { project: null },
+      activeHarness: { harness, sessionId: 'exact-session' }, sessionLabel: 'Grok in a repository title' })
+    if (!source.ok) throw new Error(source.error)
+    const config = loadConfig({ cwd: env.XDG_STATE_HOME!, env })
+    for (const reply of [false, true]) {
+      const result = buildDraft(config, { title: 'Claude Code', summary: 'Codex', reply }, { source: source.source })
+      if (!result.ok) throw new Error(result.error)
+      expect(result.draft.source?.harness).toBe(harness)
+      expect(result.draft.reply !== undefined).toBe(reply)
+    }
+    const other = buildSourceContext({ env, invocation: { project: null }, sessionId: 'different-session',
+      activeHarness: { harness, sessionId: 'exact-session' } })
+    expect(other).toMatchObject({ ok: true, source: { session_id: 'different-session' } })
+    if (other.ok) expect(other.source).not.toHaveProperty('harness')
+  })
+
+  it('does not infer a harness from a label, repository, or user-authored environment value', () => {
+    const source = buildSourceContext({ env: stateEnv({ NOTIFAI_HARNESS: 'codex' }),
+      invocation: { project: 'claude-code' }, sessionId: 'unidentified', sessionLabel: 'Codex' })
+    expect(source).toMatchObject({ ok: true })
+    if (source.ok) expect(source.source).not.toHaveProperty('harness')
   })
 })

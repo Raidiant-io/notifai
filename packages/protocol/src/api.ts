@@ -966,6 +966,8 @@ export const PutAgentSessionLabelRequest = Type.Object(
 export type PutAgentSessionLabelRequestT = Static<typeof PutAgentSessionLabelRequest>
 
 export interface AgentSessionView {
+  /** Informational CLI-detected harness; omitted by older services or when unknown. */
+  harness?: string
   session_id: string
   label: string
   renamed_by: 'user' | 'agent'
