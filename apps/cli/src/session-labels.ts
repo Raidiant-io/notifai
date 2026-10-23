@@ -72,6 +72,11 @@ export type SessionLabelResolution =
       previousSource?: 'fallback'
       /** An ordinary send cannot rename an existing semantic label. */
       ignoredExplicitLabel?: true
+      /**
+       * Why an invalid explicit label was set aside for a trusted harness
+       * title. Older releases accepted that send, so it stays accepted.
+       */
+      rejectedExplicitLabel?: string
     }
   | { ok: false; error: string }
 
@@ -359,6 +364,11 @@ function uniqueLabel(
  * semantic candidate to arrive later — explicit first, then a trusted harness
  * title — replaces it once. Semantic names then stay frozen even when their
  * branch, worktree, title candidate, or notification changes.
+ *
+ * An invalid explicit label is a usage error only when nothing else could
+ * name the session. Beside a trusted harness title it is set aside and
+ * reported, as older releases accepted that send; an already named session
+ * ignores it.
  */
 export function resolveSessionLabel(input: SessionLabelInput): SessionLabelResolution {
   const now = input.now ?? Date.now()
@@ -376,13 +386,13 @@ export function resolveSessionLabel(input: SessionLabelInput): SessionLabelResol
             .map(([, record]) => collisionKey(record.label)),
         )
         if (existing.source === 'fallback') {
-          const explicit = explicitCandidate(input.explicitLabel, input)
-          if (explicit !== null && 'error' in explicit) {
-            return { ok: false, error: explicit.error }
-          }
-          const upgrade = explicit ?? (harnessLabelIsPending(input.harnessLabel, input)
+          const proposed = explicitCandidate(input.explicitLabel, input)
+          const native = harnessLabelIsPending(input.harnessLabel, input)
             ? null
-            : harnessCandidate(input.harnessLabel, input))
+            : harnessCandidate(input.harnessLabel, input)
+          const rejected = proposed !== null && 'error' in proposed ? proposed.error : undefined
+          if (rejected !== undefined && native === null) return { ok: false, error: rejected }
+          const upgrade = (proposed === null || 'error' in proposed ? null : proposed) ?? native
           if (upgrade !== null) {
             const label = uniqueLabel(upgrade.label, upgrade.source, input.harness, now, used)
             store.sessions[key] = {
@@ -397,7 +407,13 @@ export function resolveSessionLabel(input: SessionLabelInput): SessionLabelResol
                 : { harness: input.harness }),
             }
             writeStore(file, store)
-            return { ok: true, label, source: upgrade.source, previousSource: 'fallback' }
+            return {
+              ok: true,
+              label,
+              source: upgrade.source,
+              previousSource: 'fallback',
+              ...(rejected === undefined ? {} : { rejectedExplicitLabel: rejected }),
+            }
           }
         }
         if (!isLegacyDateFallback(existing)) {
@@ -427,11 +443,13 @@ export function resolveSessionLabel(input: SessionLabelInput): SessionLabelResol
         return { ok: true, label, source: existing.source }
       }
 
-      const explicit = explicitCandidate(input.explicitLabel, input)
-      if (explicit !== null && 'error' in explicit) {
-        return { ok: false, error: explicit.error }
-      }
-      if (explicit === null && harnessLabelIsPending(input.harnessLabel, input)) {
+      const proposed = explicitCandidate(input.explicitLabel, input)
+      const nativePending = harnessLabelIsPending(input.harnessLabel, input)
+      const native = nativePending ? null : harnessCandidate(input.harnessLabel, input)
+      const rejected = proposed !== null && 'error' in proposed ? proposed.error : undefined
+      if (rejected !== undefined && native === null) return { ok: false, error: rejected }
+      const explicit = proposed === null || 'error' in proposed ? null : proposed
+      if (explicit === null && nativePending) {
         return {
           ok: false,
           error:
@@ -439,7 +457,7 @@ export function resolveSessionLabel(input: SessionLabelInput): SessionLabelResol
         }
       }
       const candidate: SessionLabelCandidate =
-        explicit ?? harnessCandidate(input.harnessLabel, input) ?? fallbackCandidate(input.sessionId)
+        explicit ?? native ?? fallbackCandidate(input.sessionId)
       const used = new Set(
         Object.values(store.sessions).map((record) => collisionKey(record.label)),
       )
@@ -451,7 +469,12 @@ export function resolveSessionLabel(input: SessionLabelInput): SessionLabelResol
         ...(input.harness === undefined ? {} : { harness: input.harness }),
       }
       writeStore(file, store)
-      return { ok: true, label, source: candidate.source }
+      return {
+        ok: true,
+        label,
+        source: candidate.source,
+        ...(rejected === undefined ? {} : { rejectedExplicitLabel: rejected }),
+      }
     })
   } catch (err) {
     return {

@@ -72,7 +72,10 @@ describe('semantic session labels', () => {
     ).toEqual({ ok: true, label: 'Agent-chosen name', source: 'explicit' })
   })
 
-  it('rejects an invalid explicit label even when a trusted harness title is available', () => {
+  const pathError =
+    '--session-label (or NOTIFAI_SESSION_LABEL) must not contain a session identifier, hash, or filesystem path.'
+
+  it('sets an invalid explicit label aside for a trusted harness title, as older releases did', () => {
     const { env, now } = fixture()
     expect(
       resolveSessionLabel({
@@ -84,9 +87,59 @@ describe('semantic session labels', () => {
         explicitLabel: '/private/path-that-must-not-win',
       }),
     ).toEqual({
-      ok: false,
-      error: '--session-label (or NOTIFAI_SESSION_LABEL) must not contain a session identifier, hash, or filesystem path.',
+      ok: true,
+      label: 'Native Codex title',
+      source: 'harness',
+      rejectedExplicitLabel: pathError,
     })
+  })
+
+  it('upgrades a frozen fallback to the harness title when the explicit label is invalid', () => {
+    const { env, now } = fixture()
+    expect(resolveSessionLabel({ env, now, sessionId: 'late-title-bad-flag' }))
+      .toMatchObject({ ok: true, source: 'fallback' })
+    expect(
+      resolveSessionLabel({
+        env,
+        now: now + 1,
+        sessionId: 'late-title-bad-flag',
+        harness: 'opencode',
+        harnessLabel: 'Worktree semantic title',
+        explicitLabel: '/private/path-that-must-not-win',
+      }),
+    ).toEqual({
+      ok: true,
+      label: 'Worktree semantic title',
+      source: 'harness',
+      previousSource: 'fallback',
+      rejectedExplicitLabel: pathError,
+    })
+  })
+
+  it('keeps an invalid explicit label a usage error when no harness title could name the session', () => {
+    const { env, now } = fixture()
+    expect(
+      resolveSessionLabel({
+        env, now, sessionId: 'no-title-bad-flag', explicitLabel: '/private/path-that-must-not-win',
+      }),
+    ).toEqual({ ok: false, error: pathError })
+    expect(resolveSessionLabel({ env, now, sessionId: 'frozen-no-title' }))
+      .toMatchObject({ ok: true, source: 'fallback' })
+    expect(
+      resolveSessionLabel({
+        env, now: now + 1, sessionId: 'frozen-no-title', explicitLabel: '/private/path-that-must-not-win',
+      }),
+    ).toEqual({ ok: false, error: pathError })
+    expect(
+      resolveSessionLabel({
+        env,
+        now,
+        sessionId: 'pending-title-bad-flag',
+        harness: 'opencode',
+        harnessLabelPending: true,
+        explicitLabel: '/private/path-that-must-not-win',
+      }),
+    ).toEqual({ ok: false, error: pathError })
   })
 
   it('upgrades a frozen fallback to the explicit label before the environment title', () => {

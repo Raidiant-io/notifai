@@ -12421,6 +12421,35 @@ describe('a second device that disagrees', () => {
 })
 
 describe('Agent Session rename command', () => {
+  it('sends with the harness title and explains why an invalid label was ignored', async () => {
+    const cwd = mkdtempSync(path.join(os.tmpdir(), 'notifai-session-label-invalid-'))
+    const io = new CapturedIo()
+    const submitted: SubmitNotificationRequestT[] = []
+    const client = {
+      submit: async (body: SubmitNotificationRequestT) => {
+        submitted.push(body)
+        return receipt
+      },
+    } as unknown as ApiClient
+    const deps = {
+      ...makeDeps(io, client), cwd,
+      env: { ...isolatedEnv(cwd), CODEX_THREAD_ID: 'invalid-label-session' },
+      codexSessionTitle: () => 'Native Codex title',
+    }
+
+    expect(await sendCommand(deps, {
+      title: 'Work update',
+      summary: 'The requested work is progressing.',
+      kind: 'update',
+      sessionLabel: '/private/path-that-must-not-win',
+    })).toBe(EXIT.ok)
+    expect(submitted.at(-1)?.draft.source?.session_label).toBe('Native Codex title')
+    const notices = io.errLines.filter((line) => line.includes('Ignored the supplied label'))
+    expect(notices).toEqual([
+      'Heads up (source.session_label): Ignored the supplied label: --session-label (or NOTIFAI_SESSION_LABEL) must not contain a session identifier, hash, or filesystem path. Named this Agent Session "Native Codex title" from the harness title instead.',
+    ])
+  })
+
   it('explains an ignored label change and keeps the renamed label on later sends', async () => {
     const cwd = mkdtempSync(path.join(os.tmpdir(), 'notifai-session-label-change-'))
     const io = new CapturedIo()
