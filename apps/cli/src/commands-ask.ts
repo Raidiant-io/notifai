@@ -546,7 +546,7 @@ const WORKER_ASK = 'You are a subagent: this question belongs to the root Agent 
 
 const WORKER_KEEP_ROOT_OPEN = 'The root Agent Session must stay open while the question waits: closing, clearing or switching it ends the question, so never suggest that.'
 
-const WORKER_ON_ANSWER = 'The root Agent Session acknowledges the answer and resumes the work; you take no action on it.'
+const WORKER_ON_ANSWER = 'The root Agent Session receives the answer with your question and identity. It passes the answer back to you if you can still take messages, so you finish the work; otherwise it acknowledges and does that work itself.'
 
 function workerAnsweredOutside(questionId: string): string {
   return `If the User answers in the conversation instead, the root retires the question with \`notifai close ${questionId}\`; include that in your report.`

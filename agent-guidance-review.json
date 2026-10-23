@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "behavior_digest": "sha256:0dd07c84538a6d2cb80c5961375cf10178cad82f3272cafef49b58bed75906a2",
+  "behavior_digest": "sha256:396ff4b4159fe298112b36492e8dc1585be7a4e9aee1b9b3d48f95fc084f913e",
   "outcome": "guidance-updated",
   "surfaces_reviewed": [
     "lifecycle-hooks",

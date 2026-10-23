@@ -35,6 +35,9 @@ hands a worker the card, and `ask --wait` does not wait in a worker. Do what
 its output says: tell your parent the question id and what each answer will
 change, then end your turn. Where `ask` cannot place the worker inside its
 live root, as on Windows, it refuses, and the parent asks instead.
+The answer tells the root which subagent asked and what choices it offered.
+The root sends it back to a worker that can still take messages before
+acknowledging, or does the work itself.
 
 ## Questions
 

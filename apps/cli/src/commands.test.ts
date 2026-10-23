@@ -9641,7 +9641,7 @@ describe('asking before the hooks have ever run', () => {
         in_this_turn: expect.stringContaining('belongs to the root Agent Session that started you'),
         route_neutral: expect.any(String),
         keep_session_open: expect.stringContaining('The root Agent Session must stay open'),
-        on_answer: expect.stringContaining('you take no action on it'),
+        on_answer: expect.stringContaining('so you finish the work'),
         answered_outside_notifai: expect.stringContaining(`the root retires the question with \`notifai close ${questionId}\``),
       })
       expect(next['in_this_turn']).toContain('Tell your parent the question id')
@@ -10299,7 +10299,7 @@ describe('asking before the hooks have ever run', () => {
     const output = JSON.parse(io.outLines.join('\n'))
     expect(output.open_form).toBeUndefined()
     expect(output.next).toMatchObject({ end_turn: true, in_this_turn: expect.stringContaining('belongs to the root Agent Session that started you'),
-      on_answer: expect.stringContaining('you take no action on it') })
+      on_answer: expect.stringContaining('so you finish the work') })
     expect(readSessionState(session, env).pending?.[0]).toMatchObject({ question_id: output.question_id,
       asked_by: { agent_id: 'a1b2c3', agent_type: 'general-purpose', description: 'headline worker' } })
 
