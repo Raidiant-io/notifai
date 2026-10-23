@@ -1,6 +1,6 @@
 {
   "name": "@raidiant/notifai",
-  "version": "14.1.0",
+  "version": "14.1.1",
   "type": "module",
   "description": "Notifications and questions from your coding agents to your phone. Your answer goes back to the exact session that asked. Claude Code, Codex, Cursor, OpenCode, OpenClaw, Hermes and Grok.",
   "bin": {
@@ -19,7 +19,7 @@
   },
   "dependencies": {
     "@clack/prompts": "^1.7.0",
-    "@raidiant/notifai-protocol": "9.1.0",
+    "@raidiant/notifai-protocol": "9.1.1",
     "@zip.js/zip.js": "2.23.0",
     "commander": "^14.0.0",
     "jsonc-parser": "^3.3.1",

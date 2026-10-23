@@ -8,6 +8,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 This project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 and [Conventional Commits](https://www.conventionalcommits.org/en/v1.0.0/).
 
+## [14.1.1](https://github.com/Raidiant-io/notifai/compare/v14.1.0...v14.1.1) (2026-10-23)
+
+
+### Bug Fixes
+
+* **cli:** normalize recommended choice markers ([#425](https://github.com/Raidiant-io/notifai/issues/425)) ([80c7f43](https://github.com/Raidiant-io/notifai/commit/80c7f43db2c21aef4035641bd8ade1cb54b8cc21))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * @raidiant/notifai-protocol bumped from 9.1.0 to 9.1.1
+
 ## [14.1.0](https://github.com/Raidiant-io/notifai/compare/v14.0.0...v14.1.0) (2026-10-23)
 
 
