@@ -784,6 +784,20 @@ export async function hookRunCommand(
   // checked anew on every run so disabling takes effect without reinstalling.
   if (event === 'session-start' || event === 'subagent-start') {
     start({ cwd, source: envelope.source ?? null })
+    if (event === 'session-start' && harness === 'codex' && envelope.session_id !== undefined) {
+      // Capture the definition this runtime loaded before maintenance or
+      // guidance work can exhaust SessionStart's budget. Later prompt hooks
+      // cannot reconstruct that activation proof from a possibly changed file.
+      try {
+        recordSessionStart(envelope.session_id, deps.env, harness, cwd,
+          codexStopDefinitionFingerprint(findInstallations(deps.env, deps.hookAdapterHome, deps.hookPlatform)), invokedAt)
+      } catch (err) {
+        logger.error('hook.end', {
+          hook: event, outcome: 'record-failed', reason: 'session-state-failed', ...failureData(err),
+        })
+        return EXIT.ok
+      }
+    }
     if (event === 'session-start') startDueMaintenance()
     const guidanceOn = lifecycleEnabled()
     // Both notices are read from records written off the prompt path: the
@@ -910,12 +924,7 @@ export async function hookRunCommand(
     let settlementRecovery: Record<string, unknown> = {}
     if (event === 'session-start' && envelope.session_id !== undefined) {
       try {
-        const stopFingerprint = harness === 'codex'
-          ? codexStopDefinitionFingerprint(
-              findInstallations(deps.env, deps.hookAdapterHome, deps.hookPlatform),
-            )
-          : undefined
-        recordSessionStart(envelope.session_id, deps.env, harness, cwd, stopFingerprint, invokedAt)
+        if (harness !== 'codex') recordSessionStart(envelope.session_id, deps.env, harness, cwd, undefined, invokedAt)
         if (harness === 'grok') {
           resetGrokActivation(envelope.session_id, deps.env)
           startGrokAttendant(envelope, cwd, deps.env)

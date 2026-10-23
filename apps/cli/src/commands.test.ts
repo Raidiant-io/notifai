@@ -9914,6 +9914,24 @@ describe('asking before the hooks have ever run', () => {
       })
   })
 
+  it('retains Codex activation proof when activation output is interrupted', async () => {
+    const cwd = scratchDir('notifai-codex-interrupted-activation-')
+    const io = new PlainInteractiveIo()
+    const env = { ...isolatedEnv(cwd), CODEX_THREAD_ID: 'codex-interrupted-activation' }
+    const deps = { ...makeDeps(io, {} as ApiClient), cwd, env, now: () => 42 }
+    writeProjectSettings(cwd, env, 'project = "interrupted-activation"\n')
+    enableProject(projectBinding(cwd, env, 'interrupted-activation')!)
+    expect(hooksInstallCommand(deps, { harness: 'codex', execPath, scriptPath })).toBe(EXIT.ok)
+    trustInstalledCodexHooks(cwd, env)
+    const fingerprint = codexStopDefinitionFingerprint(findInstallations(env))
+    expect(fingerprint).toBeDefined()
+    io.out = () => { throw new Error('activation output interrupted') }
+    await expect(hookRunCommand(deps, 'session-start', async () => JSON.stringify({
+      session_id: env.CODEX_THREAD_ID, cwd,
+    }), 'codex')).rejects.toThrow('activation output interrupted')
+    expect(readSessionState(env.CODEX_THREAD_ID, env).codex_stop_definition_fingerprint).toBe(fingerprint)
+  })
+
   it('rejects a Codex session when the trusted Stop definition changes after SessionStart', async () => {
     const cwd = scratchDir('notifai-codex-changed-stop-definition-')
     const io = new PlainInteractiveIo()

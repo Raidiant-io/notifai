@@ -1,5 +1,5 @@
 {
-  "current": "1871665280bc6ea83df87e55ff9e7874ce5de84ea4412f71a81e7286825f704c",
+  "current": "56d4c082fddcdcd40a0bb7d0d2303abfdf8d86af17aead60649b91dcd420e0f4",
   "releases": [
     {
       "digest": "3e47b01bc6bbfb43e910c660b9964fab6459d75148c3c02dcbcd0be64cfb2963",
@@ -12,6 +12,10 @@
     {
       "digest": "1871665280bc6ea83df87e55ff9e7874ce5de84ea4412f71a81e7286825f704c",
       "note": "An answer returns to its asking Agent Session. Do the work it unblocks there before reporting: a report sent in place of that work may never be read."
+    },
+    {
+      "digest": "56d4c082fddcdcd40a0bb7d0d2303abfdf8d86af17aead60649b91dcd420e0f4",
+      "note": "A delegated worker keeps its assignment until it does the work its answer unblocks, before reporting. Describe that work in `ask --resumes`; reporting the answer is not that work."
     }
   ]
 }
