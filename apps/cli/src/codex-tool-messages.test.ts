@@ -239,6 +239,31 @@ describe('exact native answer presentation', () => {
     expect(h.closed()).toBe(1)
   })
 
+  it('does not repeat a recovered wake fault on the next prompt after native answer delivery', async () => {
+    const h = nativeDelivery()
+    const later = { ...h.answer, pending: { ...h.answer.pending, question_id: 'q_later', request_id: 'req_later' } }
+    const now = Date.now()
+    updateSessionState(SESSION, h.env, state => ({ ...state,
+      input_wake_fault: { kind: 'transport', attempts: 1, first_at: now - 2_000,
+        last_at: now - 2_000, retry_at: now - 1_000, recovered_at: now - 1_000 },
+      waiting_answers: [h.answer, later],
+      acknowledgement_due: [...state.acknowledgement_due!, { request_id: 'req_later', recorded_at: now, text_required: true }],
+    }))
+
+    expect(await h.drain()).toBe(true)
+    expect(h.native).toHaveLength(1)
+    expect(h.output).toEqual([])
+    expect(readSessionState(SESSION, h.env).waiting_answers).toEqual([later])
+
+    // Leave input waiting so the next prompt cannot hide the fault merely
+    // because native delivery emptied the answer queue.
+    await hookRunCommand(h.deps, 'user-prompt-submit', async () => JSON.stringify({
+      session_id: SESSION, cwd: h.deps.cwd, hook_event_name: 'UserPromptSubmit', turn_id: 'turn-2', prompt: 'Continue',
+    }), 'codex')
+    expect(h.output.join('\n')).toContain('req_later')
+    expect(h.output.join('\n')).not.toContain('could not wake this Agent Session')
+  })
+
   it('claims ordinary prefix, native answer, then suffix in separate ordered handoffs', async () => {
     const h = nativeDelivery()
     const first = { ...h.answer, pending: { ...h.answer.pending, question_id: 'q_first', request_id: 'req_first' } }
