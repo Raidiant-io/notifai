@@ -1,5 +1,5 @@
 {
-  "current": "84fcfc8bbfbdf730f9cf98e9ff10d0e09d979499e85fc59d223014ddc09f509b",
+  "current": "3fe1090c23bc05eceb10c84ce1d70cd23c42cbe2df4bd44c0e3a54f67629d5c9",
   "releases": [
     {
       "digest": "3e47b01bc6bbfb43e910c660b9964fab6459d75148c3c02dcbcd0be64cfb2963",
@@ -27,6 +27,10 @@
     },
     {
       "digest": "84fcfc8bbfbdf730f9cf98e9ff10d0e09d979499e85fc59d223014ddc09f509b",
+      "note": "Session observation failures now preserve waiting work instead of treating the conversation as closed. Explicit closure evidence remains required; existing agent guidance is unchanged."
+    },
+    {
+      "digest": "3fe1090c23bc05eceb10c84ce1d70cd23c42cbe2df4bd44c0e3a54f67629d5c9",
       "note": "Session observation failures now preserve waiting work instead of treating the conversation as closed. Explicit closure evidence remains required; existing agent guidance is unchanged."
     }
   ]

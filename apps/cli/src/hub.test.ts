@@ -2661,6 +2661,7 @@ describe('hub: conversations stopped by their app or the machine', () => {
     expect(hub.sessions.get(SESSION)?.registration.place).toBe('t3')
     await until(() => renewals(service) >= 1)
     question(env)
+    await requestHub(env, { type: 'session-end-candidate', session_id: SESSION, harness_pid: host.pid })
     await requestHub(env, { type: 'session-end-candidate', session_id: SESSION, harness_pid: host.pid, close_reason: reason })
     await until(() => ended(service))
     expect(service.batches.flatMap(batch => batch.body.sessions).find(entry => entry.state === 'ended'))

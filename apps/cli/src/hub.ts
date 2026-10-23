@@ -2322,11 +2322,11 @@ export class Hub {
         return
       }
     }
-    if (session.endCandidate !== null) return
     if (session.harness === 'claude-code' && (closeReason === 'prompt_input_exit' || closeReason === 'logout')) {
       this.endSession(session, 'confirmed-close')
       return
     }
+    if (session.endCandidate !== null) return
     this.holdEnd(session, 'session-end-hook', transcriptPath)
   }
 
