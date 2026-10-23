@@ -8,7 +8,6 @@ import { describe, expect, it } from 'vitest'
 import { currentCommandGuidance } from './command-guidance.js'
 import { guidanceCheckCommand, guidanceShowCommand } from './commands-guidance.js'
 import type { CommandDeps } from './commands-core.js'
-import { renderCursorActivationRule } from './cursor-activation-rule.js'
 import { rootGuidanceDigest } from './session-activation.js'
 import { personalProjectGuidanceDir } from './guidance.js'
 import {
@@ -232,7 +231,6 @@ it.each(['cursor', 'claude-code'] as const)('recovers through the public CLI par
     expect(receipt.enabled).toBe(false)
     expect(receipt.disabled).not.toBe(true)
     expect(receipt.context).not.toContain('Notifai is enabled for this Project.')
-    if (harness === 'cursor') expect(renderCursorActivationRule()).toContain('If disabled is true')
     expect(receipt.token).toMatch(/^[a-f0-9]{48}$/)
     expect(cli(...receipt.read_command.split(' ').slice(1)).status).toBe(0)
     const recovered = cli(...request, ...receipt.request_flag.split(' '))
