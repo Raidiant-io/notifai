@@ -122,7 +122,7 @@ describe('when the behaviour check runs', () => {
     expect(codexAttachCheckDue(result('failed', now - CODEX_ATTACH_RETRY_MS), now)).toBe(true)
   })
 
-  it('retries an inability to start the check within seconds, without trusting the failed check', async () => {
+  it.skipIf(process.platform === 'win32')('retries an inability to start the check within seconds, without trusting the failed check', async () => {
     const home = root()
     const codex = path.join(home, 'codex')
     writeFileSync(codex, '#!/bin/sh\nif [ "$1" = "--version" ]; then echo "codex 0.163.0"; exit 0; fi\necho "No space left on device" >&2\nexit 1\n', { mode: 0o755 })
