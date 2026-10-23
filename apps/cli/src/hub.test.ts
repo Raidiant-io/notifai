@@ -1425,8 +1425,10 @@ describe('hub end confirmation and writers', () => {
     expect(hub.sessions.get(SESSION)?.endCandidate).toBeNull()
     expect(readSessionState(SESSION, env).pending).toHaveLength(1)
     child.socket.destroy()
+    let exited = false
+    void done.then(() => { exited = true })
     hub.requestExit('test')
-    service.release()
+    await until(() => { service.release(); return exited })
     await done
   })
 
