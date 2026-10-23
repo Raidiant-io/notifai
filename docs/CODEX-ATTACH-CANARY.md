@@ -49,7 +49,10 @@ update at any time. Instead of a version gate, the hub runs
 server, identified by its real path, size and modification time, and caches
 the result in `<state>/notifai/codex-attach-canary.json`. It runs in the
 background the first time a shared-server session needs it, again for each
-new binary, and at most once a day after a failure. Until a binary passes,
+new binary, and at most once a day after a behavioural failure. A check that
+cannot start (step 0, including a failed private-server launch or disk error)
+retries after 5 seconds, doubling the delay up to 5 minutes. Its consecutive
+startup failures and retry timing survive a Hub restart. Until a binary passes,
 nothing on that server is woken while idle (answers wait for the next prompt)
 and nothing is ended by the watch.
 
@@ -77,3 +80,14 @@ shared server on the no-idle-wake behaviour. `notifai doctor --json` names the
 step under the wake route's `shared_server_check`; the human line only says
 that answers arrive at the next turn. A Codex change the eight steps do not exercise would go
 unnoticed; the steps are the shapes the signal relies on.
+
+Wake failures preserve answers and notes in their existing durable input queue.
+Transport failures retry with the same 5-second exponential backoff, capped at
+5 minutes; the next prompt or trusted tool callback can consume input while a
+wake is unavailable. A failed wake never proves the conversation closed and
+never marks the answer delivered. The session records a `wake_fault` in
+`notifai doctor --json`, and its next foreground turn receives a diagnostic
+alongside the retained input. A fault is recovered only when a wake is observed
+or input is handed in, not when a queue merely accepts it. Uncertain native
+queue writes keep their existing identity-based reconciliation before retry,
+so retrying cannot bypass an earlier possibly accepted write.

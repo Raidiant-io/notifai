@@ -2009,7 +2009,14 @@ function hookChecks(deps: CommandDeps): HookCheck[] {
   })
 
   const wakeRoute = wakeRouteCheck(deps, active, activeInstallations)
-  if (wakeRoute !== null) checks.push(wakeRoute)
+  const wakeFault = active?.sessionId === undefined ? undefined : readSessionState(active.sessionId, deps.env).input_wake_fault
+  if (wakeRoute !== null) checks.push(wakeFault === undefined ? wakeRoute : {
+    ...wakeRoute, ok: wakeFault.recovered_at !== undefined, reportOnly: true,
+    detail: wakeFault.recovered_at === undefined
+      ? 'Notifai could not wake this Agent Session. User input stays queued for retry or its next prompt or tool callback; queue acceptance does not prove it was read'
+      : 'An earlier wake failed; User input has since reached this Agent Session',
+    technical: { route: wakeRoute.technical ?? null, wake_fault: wakeFault },
+  })
 
   return checks
 }
@@ -2112,7 +2119,9 @@ export function sharedServerWakeRoute(result: CodexAttachCanaryResult | null): H
     ? 'Codex\'s shared server: an answer starts a turn while a terminal shows this conversation. Closing the terminal ends its questions'
     : result === null
       ? 'Codex\'s shared server: answers arrive at this session\'s next turn. Notifai is still checking this Codex version'
-      : 'Codex\'s shared server: answers arrive at this session\'s next turn, because this Codex version didn\'t pass Notifai\'s check. Notifai checks again within a day'
+      : result.step === 0
+        ? 'Codex\'s shared server: the wake check could not start. Answers stay queued for the next turn while Notifai retries with bounded backoff'
+        : 'Codex\'s shared server: answers arrive at this session\'s next turn, because this Codex version didn\'t pass Notifai\'s check. Notifai checks again within a day'
   return { name: 'hooks (wake route)', ok: true, reportOnly: true, technical, detail }
 }
 

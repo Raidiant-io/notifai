@@ -86,6 +86,44 @@ function clearUnansweredWakes(state: SessionState): SessionState {
   return next
 }
 
+/** Failed transport attempts are paced independently of wakes the agent saw. */
+export function inputWakeRetryDeferred(state: SessionState, now: number): boolean {
+  const fault = state.input_wake_fault
+  return fault !== undefined && fault.recovered_at === undefined && now >= fault.last_at && now < fault.retry_at
+}
+
+export function recordInputWakeFailure(sessionId: string, env: NodeJS.ProcessEnv,
+  kind: NonNullable<SessionState['input_wake_fault']>['kind'], now = Date.now(), retryMs?: number): void {
+  updateSessionState(sessionId, env, state => {
+    const previous = state.input_wake_fault
+    // A cached check observed later must not move the fault backwards or
+    // count its original failure twice.
+    if (previous !== undefined && previous.last_at >= now) return state
+    if (previous?.kind === kind && inputWakeRetryDeferred(state, now)) return state
+    const continuing = previous?.kind === kind && previous.recovered_at === undefined
+    const attempts = Math.min(32, continuing ? previous.attempts + 1 : 1)
+    return { ...state, input_wake_fault: { kind, attempts, first_at: continuing ? previous.first_at : now,
+      last_at: now, retry_at: now + (retryMs ?? inputWakeBackoffMs(attempts)) } }
+  })
+}
+
+function recoverInputWakeFault(state: SessionState, now: number): SessionState {
+  return state.input_wake_fault === undefined || state.input_wake_fault.recovered_at !== undefined ? state
+    : { ...state, input_wake_fault: { ...state.input_wake_fault, recovered_at: now } }
+}
+
+/** Agent-facing diagnostic, repeated only after a new failed attempt. */
+export function inputWakeFaultContext(state: SessionState): string | null {
+  const fault = state.input_wake_fault
+  if (fault === undefined || (fault.reported_at ?? -1) >= fault.last_at) return null
+  return 'Notifai could not wake this Agent Session for waiting User input. The input was kept for this turn; use any input supplied here, or run `notifai receive` once if none was supplied. Check `notifai doctor` for the delivery fault. Queue acceptance alone does not mean the agent read the answer.'
+}
+
+export function markInputWakeFaultReported(sessionId: string, env: NodeJS.ProcessEnv, lastAt: number, now = Date.now()): void {
+  updateSessionState(sessionId, env, state => state.input_wake_fault?.last_at === lastAt
+    ? { ...state, input_wake_fault: { ...state.input_wake_fault, reported_at: now } } : state)
+}
+
 /** Atomically coalesce native wakes until one actually reaches its consumer. */
 export async function wakeSessionInputs(
   sessionId: string, env: NodeJS.ProcessEnv, send: (text: string) => Promise<boolean>, log?: Logger,
@@ -105,6 +143,7 @@ export async function wakeSessionInputs(
     if (lease !== null && state.input_delivery_fenced?.incarnation === lease.incarnation &&
         state.input_delivery_fenced.generation === lease.generation) return state
     if (inputWakeDeferred(state, now())) { unanswered = state.input_wake_unanswered; return state }
+    if (inputWakeRetryDeferred(state, now())) return state
     if (state.input_wake?.incarnation === incarnation) {
       const lost = inputWakeOverdue(state, now()) && options.replaceLost?.() === true
       if (!lost && (state.input_wake.queued || processIdentityLiveness(state.input_wake.writer) !== 'gone')) return state
@@ -126,7 +165,12 @@ export async function wakeSessionInputs(
       ...(replacement ? { replacement } : {}) })
     if (sent) updateSessionState(sessionId, env, (state) => state.input_wake?.token === token
       ? { ...state, input_wake: { ...state.input_wake, queued: true, queued_at: now() } } : state)
+  } catch {
+    // Only the content-free wake failed. Preserve User input for retry and
+    // the next foreground callback; never report it delivered here.
+    log?.info('delivery.handoff', { route: 'input-wake', stage: 'failed', session: sessionId })
   } finally {
+    if (!sent) recordInputWakeFailure(sessionId, env, 'transport', now())
     if (!sent) updateSessionState(sessionId, env, (state) => {
       if (state.input_wake?.token !== token) return state
       const next = { ...state }
@@ -162,7 +206,7 @@ export function observeSessionInputWake(sessionId: string, env: NodeJS.ProcessEn
       // arriving late must not clear the one still outstanding.
       else if (inputWakeToken(prompt) === null) return
       updateSessionState(sessionId, env, (state) => {
-        const next = { ...state, input_wake_unanswered: { count: (state.input_wake_unanswered?.count ?? 0) + 1, presented_at: now } }
+        const next = { ...recoverInputWakeFault(state, now), input_wake_unanswered: { count: (state.input_wake_unanswered?.count ?? 0) + 1, presented_at: now } }
         if (state.input_wake?.token === matched[1]) delete next.input_wake
         return next
       })
@@ -171,7 +215,7 @@ export function observeSessionInputWake(sessionId: string, env: NodeJS.ProcessEn
   }
   if (prompt !== sessionInputWake()) return
   updateSessionState(sessionId, env, (state) => {
-    const next = { ...state, input_wake_unanswered: { count: (state.input_wake_unanswered?.count ?? 0) + 1, presented_at: now } }
+    const next = { ...recoverInputWakeFault(state, now), input_wake_unanswered: { count: (state.input_wake_unanswered?.count ?? 0) + 1, presented_at: now } }
     delete next.input_wake
     return next
   })
@@ -352,6 +396,9 @@ export async function wakeCodexSessionInputs(input: {
         return control.add(token, text)
       },
     } })
+    if (elected !== null && readInputWakes(input).some(attempt => attempt.token === elected.token && ['unknown', 'cancelled'].includes(attempt.phase))) {
+      recordInputWakeFailure(input.sessionId, input.env, 'transport')
+    }
     return true
   } finally { control.close() }
 }
@@ -559,7 +606,11 @@ async function drainSessionInputsOnce(input: {
       return false
     }
     outputAttempted = true
-    if (prepared === null) input.write(text)
+    const fault = inputWakeFaultContext(current)
+    if (prepared === null) {
+      input.write(fault === null ? text : `${fault}\n\n${text}`)
+      if (fault !== null) markInputWakeFaultReported(deps.sessionId, deps.env, current.input_wake_fault!.last_at, deps.wall())
+    }
     else await prepared.write(() => input.mayWrite() && handOff.writable())
     await handOff.finish('written')
     deps.log?.info('delivery.handoff', {
@@ -584,7 +635,8 @@ export async function drainSessionInputs(input: Parameters<typeof drainSessionIn
   try {
     const presented = await drainSessionInputsOnce(input)
     // Input reached the agent: what remains is woken for promptly again.
-    if (presented) updateSessionState(input.sequencer.sessionId, input.sequencer.env, clearUnansweredWakes)
+    if (presented) updateSessionState(input.sequencer.sessionId, input.sequencer.env, state =>
+      recoverInputWakeFault(clearUnansweredWakes(state), input.sequencer.wall()))
     return presented
   } finally {
     // Delivery bookkeeping has released its sequencer before native cleanup.

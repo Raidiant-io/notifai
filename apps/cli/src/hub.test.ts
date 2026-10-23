@@ -1865,7 +1865,9 @@ describe('hub and Codex SessionEnd', () => {
 
     /** A note for an idle CLI thread on the shared server; `state` answers the checks. */
     async function sharedServer(options: {
-      verified?: boolean
+      verified?: boolean | (() => boolean)
+      checkBuild?: NonNullable<HubOptions['codexAttach']>['checkBuild']
+      clock?: HubOptions['clock']
       state?: (input: AttachInput) => Promise<Attach> | Attach
       watchMs?: number
     }) {
@@ -1887,11 +1889,12 @@ describe('hub and Codex SessionEnd', () => {
       const peers = new Map<number, PeerCredentials>()
       const { hub, done } = startHub(env, service, peers, memoryStore(), 100, { codexHostKind: () => 'shared-server', wake }, {
         codexAttach: {
-          verified: () => options.verified ?? true,
+          verified: () => typeof options.verified === 'function' ? options.verified() : options.verified ?? true,
           state: async (input) => { asked.push(input); return await (options.state?.(input) ?? { state: 'unknown', confirmed: false, reason: 'test' }) },
-          checkBuild: async (host) => { builds.push(host.pid); return null },
+          checkBuild: async (host) => { builds.push(host.pid); return await options.checkBuild?.(host) ?? null },
           watchMs: options.watchMs ?? 60_000,
         },
+        ...(options.clock === undefined ? {} : { clock: options.clock }),
       })
       await hubListening(env)
       const child = await codexSession(env, service, peers, 900120, transcript)
@@ -1959,6 +1962,35 @@ describe('hub and Codex SessionEnd', () => {
       } finally {
         await run.stop()
       }
+    })
+
+    it('recovers a failed daemon-start check without waking an unverified conversation or losing queued input', async () => {
+      let verified = false
+      let checks = 0
+      let offset = 0
+      const run = await sharedServer({ verified: () => verified,
+        clock: { wall: () => Date.now() + offset, monotonic: () => performance.now() + offset },
+        checkBuild: async () => {
+          checks += 1
+          if (checks === 1) return { outcome: 'failed', step: 0, detail: 'No space left on device', codexVersion: '0.163.0' }
+          verified = true
+          return { outcome: 'passed', codexVersion: '0.163.0' }
+        },
+        state: () => ({ state: 'attached', confirmed: true, reason: 'terminal-live+joined' }),
+      })
+      try {
+        await run.deliverNote(3)
+        expect(run.pending()).toBe(true)
+        expect(run.queued).toEqual([])
+        expect(run.asked).toEqual([])
+        expect(checks).toBe(1)
+        expect(readSessionState(SESSION, run.env).input_wake_fault).toMatchObject({ kind: 'codex-check' })
+        offset += 5_000
+        await run.deliverNote()
+        expect(checks).toBe(2)
+        expect({ queued: run.queued, asked: run.asked.length, fault: readSessionState(SESSION, run.env).input_wake_fault, wake: readSessionState(SESSION, run.env).input_wake }).toMatchObject({ queued: [SESSION] })
+        expect(reportedEnd(run.service)).toBe(false)
+      } finally { await run.stop() }
     })
 
     it('watches an open question\'s conversation and expires its questions once no terminal shows it, ignoring the SessionEnd its own request causes', async () => {

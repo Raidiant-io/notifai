@@ -43,6 +43,34 @@ afterEach(() => {
 const SESSION = '019ff69d-a07f-7161-ab6e-bd06b3b93c8e'
 const note = (id: string): AttendanceMessage => ({ message_id: id, kind: 'note', body: `Read ${id}`, created_at: new Date().toISOString(), agent_acknowledgement_text_required: true })
 
+it('delivers queued input and its durable wake fault on the next tool callback after a restart', async () => {
+  const h = setup()
+  h.stage([note('sm_recovery')])
+  await wakeSessionInputs(SESSION, h.env, async () => { throw new Error('ENOSPC') })
+  // Invoke the real hook from disk-backed state, with no wake or closure state.
+  await h.hook()
+  expect(h.output).toHaveLength(1)
+  expect(h.output[0]).toContain('Read sm_recovery')
+  expect(h.output[0]).toContain('could not wake this Agent Session')
+  expect(h.output[0]).toContain('notifai doctor')
+  expect(readSessionState(SESSION, h.env).input_wake_fault?.recovered_at).toBeTypeOf('number')
+  await h.hook()
+  expect(h.output).toHaveLength(1)
+})
+
+it('reports a wake fault on the next prompt even before the queued input can be claimed', async () => {
+  const h = setup()
+  await wakeSessionInputs(SESSION, h.env, async () => { throw new Error('daemon start failed') })
+  const prompt = () => hookRunCommand(h.deps, 'user-prompt-submit', async () => JSON.stringify({
+    session_id: SESSION, cwd: h.deps.cwd, hook_event_name: 'UserPromptSubmit', prompt: 'Continue', turn_id: 'turn-2',
+  }), 'codex')
+  await prompt()
+  expect(h.output.join('\n')).toContain('could not wake this Agent Session')
+  const before = h.output.join('\n').split('could not wake this Agent Session').length
+  await prompt()
+  expect(h.output.join('\n').split('could not wake this Agent Session')).toHaveLength(before)
+})
+
 function installTrustedHooks(env: NodeJS.ProcessEnv): void {
   const home = env['CODEX_HOME']!
   mkdirSync(home, { recursive: true })
@@ -768,12 +796,17 @@ describe('Codex tool-boundary Session Messages', () => {
   it('retries a failed wake without losing input and coalesces the successful wake', async () => {
     const h = setup()
     h.stage([note('sm_waiting')])
-    await expect(wakeSessionInputs(SESSION, h.env, async () => { throw new Error('queue unavailable') })).rejects.toThrow('queue unavailable')
+    let now = Date.now()
+    const options = { now: () => now }
+    await wakeSessionInputs(SESSION, h.env, async () => { throw new Error('queue unavailable') }, undefined, options)
     expect(readSessionState(SESSION, h.env).input_wake).toBeUndefined()
     let wakes = 0
     const send = async () => { wakes += 1; return true }
-    await wakeSessionInputs(SESSION, h.env, send)
-    await wakeSessionInputs(SESSION, h.env, send)
+    await wakeSessionInputs(SESSION, h.env, send, undefined, options)
+    expect(wakes).toBe(0)
+    now += 5_000
+    await wakeSessionInputs(SESSION, h.env, send, undefined, options)
+    await wakeSessionInputs(SESSION, h.env, send, undefined, options)
     expect(wakes).toBe(1)
     expect(readSessionMessages(SESSION, h.env, h.lease)).toHaveLength(1)
   })

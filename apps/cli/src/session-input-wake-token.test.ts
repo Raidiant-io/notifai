@@ -11,6 +11,7 @@ import {
   observeSessionInputWake,
   sessionInputWake,
   wakeSessionInputs,
+  recordInputWakeFailure,
 } from './session-inputs.js'
 
 const SESSION = 'claude-wake-token'
@@ -104,5 +105,45 @@ describe('Claude input wakes', () => {
     h.advance(10 * LOST_WAKE_MS)
     await h.wake({ replaceLost: () => false })
     expect(h.sent).toHaveLength(1)
+  })
+
+  it.each(['ENOSPC', 'daemon start failed', 'socket closed'])('retains a %s wake failure and retries with bounded backoff', async (message) => {
+    const h = setup()
+    let attempts = 0
+    let failing = true
+    const wake = () => wakeSessionInputs(SESSION, h.env, async () => {
+      attempts += 1
+      if (failing) throw new Error(message)
+      return true
+    }, undefined, { now: h.clock })
+    await expect(wake()).resolves.toBeUndefined()
+    expect(readSessionState(SESSION, h.env).input_wake_fault).toMatchObject({ attempts: 1, kind: 'transport' })
+    expect(readSessionState(SESSION, h.env).input_wake).toBeUndefined()
+    await wake()
+    expect(attempts).toBe(1)
+    h.advance(5_000)
+    await wake()
+    expect(attempts).toBe(2)
+    h.advance(5_000)
+    await wake()
+    expect(attempts).toBe(2)
+    failing = false
+    h.advance(5_000)
+    await wake()
+    expect(attempts).toBe(3)
+    expect(readSessionState(SESSION, h.env).input_wake).toMatchObject({ queued: true })
+    // Queue acceptance alone does not clear the fault: presentation does.
+    expect(readSessionState(SESSION, h.env).input_wake_fault?.recovered_at).toBeUndefined()
+    observeSessionInputWake(SESSION, h.env, sessionInputWake(), h.clock())
+    expect(readSessionState(SESSION, h.env).input_wake_fault?.recovered_at).toBe(h.clock())
+  })
+
+  it('does not let a cached failed check replace a newer transport fault', async () => {
+    const h = setup()
+    await wakeSessionInputs(SESSION, h.env, async () => { throw new Error('socket closed') }, undefined, { now: h.clock })
+    const fault = readSessionState(SESSION, h.env).input_wake_fault
+    recordInputWakeFailure(SESSION, h.env, 'codex-check', h.clock() - 100)
+    recordInputWakeFailure(SESSION, h.env, 'transport', h.clock())
+    expect(readSessionState(SESSION, h.env).input_wake_fault).toEqual(fault)
   })
 })

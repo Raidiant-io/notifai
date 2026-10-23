@@ -88,6 +88,8 @@ import { listPendingOpenclawSessions } from './openclaw-pending.js'
 import { readDeliveryJournal } from './session-delivery.js'
 import {
   hasSessionInputs,
+  inputWakeFaultContext,
+  markInputWakeFaultReported,
   inputWakeToken,
   isSessionInputWake,
   observeSessionInputWake,
@@ -1210,6 +1212,22 @@ export async function hookRunCommand(
       deps.io.out(JSON.stringify({ decision: 'block', reason: runElsewhere ? CODEX_ELSEWHERE_WAKE_REASON : CODEX_EMPTY_WAKE_REASON }))
       logger.info('hook.gate', { stage: 'codex-wake', outcome: 'blocked', reason: runElsewhere ? 'scripted-run' : 'nothing-waiting' })
       return EXIT.ok
+    }
+    if (!inputWritten && event === 'user-prompt-submit' && !runElsewhere && envelope.session_id !== undefined &&
+        !sessionHasEnded(envelope.session_id, deps.env) && (harness === 'codex' || harness === 'claude-code') &&
+        readSessionIncarnation(envelope.session_id, deps.env)?.harness_process?.pid ===
+          (harness === 'claude-code' ? claudeHookSourcePid(deps.env, deps.hookPlatform ?? process.platform) : declaredHookSourcePid(deps))) {
+      const state = readSessionState(envelope.session_id, deps.env)
+      const fault = inputWakeFaultContext(state)
+      if (fault !== null) {
+        outcome.stdout = appendIntegrationContext(outcome.stdout, fault, harness, 'UserPromptSubmit')
+        const after = outcome.afterOutput
+        const lastAt = state.input_wake_fault!.last_at
+        outcome.afterOutput = async () => {
+          markInputWakeFaultReported(envelope.session_id!, deps.env, lastAt)
+          await after?.()
+        }
+      }
     }
     if (!inputWritten && outcome.stdout !== undefined) {
       // No work, await, or diagnostic may sit between this cross-process

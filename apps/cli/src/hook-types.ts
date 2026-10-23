@@ -238,6 +238,16 @@ export interface SessionState {
    * last one (see `inputWakeDeferred`). A handed-in input or a new one clears it.
    */
   input_wake_unanswered?: { count: number; presented_at: number }
+  /** Durable diagnostic; answer text stays in the ordinary fenced input queue. */
+  input_wake_fault?: {
+    kind: 'transport' | 'codex-check' | 'codex-attach'
+    attempts: number
+    first_at: number
+    last_at: number
+    retry_at: number
+    recovered_at?: number
+    reported_at?: number
+  }
   /** Refused delivery waits for fresh attendance before scheduling another wake. */
   input_delivery_fenced?: { incarnation: string; generation: number }
   /** Exact Codex wake ownership, including detached reconciliation records. */

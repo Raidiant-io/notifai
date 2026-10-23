@@ -8,6 +8,7 @@ import {
   cleanUp,
   codexAttachCheckDue,
   CODEX_ATTACH_RETRY_MS,
+  runCodexAttachCanary,
   privateServerSocket,
   sweepStaleHomes,
 } from './codex-attach-canary.js'
@@ -121,6 +122,20 @@ describe('when the behaviour check runs', () => {
     expect(codexAttachCheckDue(result('failed', now - CODEX_ATTACH_RETRY_MS), now)).toBe(true)
   })
 
+  it('retries an inability to start the check within seconds, without trusting the failed check', async () => {
+    const home = root()
+    const codex = path.join(home, 'codex')
+    writeFileSync(codex, '#!/bin/sh\nif [ "$1" = "--version" ]; then echo "codex 0.163.0"; exit 0; fi\necho "No space left on device" >&2\nexit 1\n', { mode: 0o755 })
+    const env = { XDG_STATE_HOME: path.join(home, 'state') }
+    const binary = codexBinaryIdentity(codex)!
+    const failed = await checkCodexBinary(env, binary, 10_000, options => runCodexAttachCanary({ ...options, root: home }))
+    expect(failed).toMatchObject({ outcome: 'failed', step: 0 })
+    expect(failed.detail).toContain('No space left on device')
+    expect(codexAttachCheckDue(failed, 10_001)).toBe(false)
+    expect(codexAttachCheckDue(failed, 15_000)).toBe(true)
+    expect(codexAttachResultFor(env, binary)?.outcome).toBe('failed')
+  })
+
   it('records the outcome for that binary, unless the binary changed while it ran', async () => {
     const home = root()
     const env = { XDG_STATE_HOME: path.join(home, 'state') }
@@ -138,5 +153,25 @@ describe('when the behaviour check runs', () => {
     expect(updated.outcome).toBe('passed')
     // Not recorded: the earlier failure stands for the old binary, and the new one is checked on its own.
     expect(codexAttachResultFor(env, binary)).toMatchObject({ outcome: 'failed', checkedAt: 5 })
+  })
+
+  it('bounds repeated startup failures and records a thrown check for restart recovery', async () => {
+    const home = root()
+    const env = { XDG_STATE_HOME: path.join(home, 'state') }
+    const executable = path.join(home, 'codex')
+    writeFileSync(executable, 'test executable identity')
+    const binary = codexBinaryIdentity(executable)!
+    let now = 1_000
+    for (const delay of [5_000, 10_000, 20_000, 40_000, 80_000, 160_000, 300_000, 300_000]) {
+      await checkCodexBinary(env, binary, now, async () => { throw new Error('daemon start failed') })
+      const persisted = codexAttachResultFor({ ...env }, binary)!
+      expect(persisted).toMatchObject({ outcome: 'failed', step: 0, detail: 'daemon start failed' })
+      expect(codexAttachCheckDue(persisted, now + delay - 1)).toBe(false)
+      expect(codexAttachCheckDue(persisted, now + delay)).toBe(true)
+      now += delay
+    }
+    await checkCodexBinary(env, binary, now, async () => ({ outcome: 'passed', codexVersion: '0.163.0', leftovers: 0 }))
+    expect(codexAttachResultFor(env, binary)?.outcome).toBe('passed')
+    expect(codexAttachCheckDue(codexAttachResultFor(env, binary), now + 86_400_000)).toBe(false)
   })
 })

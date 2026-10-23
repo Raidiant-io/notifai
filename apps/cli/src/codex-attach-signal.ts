@@ -259,6 +259,8 @@ export interface CodexAttachCanaryResult {
   step?: number
   detail?: string
   checkedAt: number
+  /** Consecutive failures to run the check, rather than failed behaviour. */
+  startFailures?: number
 }
 
 const RESULTS_FILE = 'codex-attach-canary.json'
