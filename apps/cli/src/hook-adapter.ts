@@ -10,7 +10,7 @@ import {
 import path from 'node:path'
 import { osAccountHome } from './os-account-home.js'
 import { atomicWriteFileSync } from './atomic-file.js'
-import { withTargetFileLock } from './file-lock.js'
+import { withTargetFileLock, type FileLockObservation } from './file-lock.js'
 import { sameLocalPath } from './local-path.js'
 import { nativeInstallationIdentity } from './native-installation-identity.js'
 import { isWindowsAbsolute } from './platform.js'
@@ -129,6 +129,7 @@ export function installHookAdapter(
   homeDir?: string,
   platform: NodeJS.Platform | HookHostPlatform = process.platform,
   env: NodeJS.ProcessEnv = process.env,
+  observeLock?: (observation: FileLockObservation) => void,
 ): { path: string; changed: boolean } {
   const host = hookHostPlatform(platform)
   const resolvedHome = resolveHookAdapterHome(homeDir, env, platform)
@@ -157,7 +158,7 @@ export function installHookAdapter(
       })
     }
     return { path: file, changed }
-  })
+  }, observeLock === undefined ? {} : { observe: observeLock })
 }
 
 function assertUsableTarget(target: Exclude<HookAdapterTarget, HookAdapterNativeTarget>, host: HookHostPlatform): void {

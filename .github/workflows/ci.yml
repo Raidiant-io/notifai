@@ -7,8 +7,12 @@ on:
         description: Exact commit SHA that this run must check
         required: true
         type: string
+      reproduce_process_baseline:
+        description: Diagnose the old process-test baseline (may deliberately fail)
+        type: boolean
+        default: false
       reliability_proof:
-        description: Run the bounded before/after reliability experiment
+        description: Run bounded candidate reliability checks
         required: false
         type: boolean
         default: false
@@ -234,7 +238,7 @@ jobs:
         run: |
           pnpm --filter @raidiant/notifai-protocol test
           pnpm --filter @raidiant/notifai test -- \
-            src/platform.test.ts src/credentials.test.ts src/ui/config-view.test.ts src/local-input.test.ts src/shell-quoting.test.ts
+            src/platform.test.ts src/credentials.test.ts src/ui/config-view.test.ts src/local-input.test.ts
           pnpm --filter @raidiant/notifai test -- \
             src/hook-adapter.test.ts src/install-hooks.test.ts \
             --testNamePattern Windows
@@ -245,6 +249,20 @@ jobs:
             --testNamePattern "Windows Claude"
           pnpm --filter @raidiant/notifai test -- \
             src/process-identity.test.ts src/claude-wake.test.ts src/windows-hook-source.test.ts
+      - name: Prepare pinned shell runtime and crash collection
+        shell: powershell
+        run: ./scripts/prepare-test-powershell.ps1
+      - name: Verify shell transport in isolation
+        shell: bash
+        run: pnpm --filter @raidiant/notifai test -- src/shell-quoting.test.ts --maxWorkers=1
+      - name: Retain shell crash dumps
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: shell-crash-dumps-${{ runner.arch }}
+          path: ${{ runner.temp }}/shell-crash-dumps
+          if-no-files-found: ignore
+          retention-days: 7
       - name: Configure the native Windows access-check compiler
         uses: ilammy/msvc-dev-cmd@0b201ec74fa43914dc39ae48a89fd1d8cb592756 # v1
         with:
@@ -303,12 +321,26 @@ jobs:
         run: |
           pnpm --filter @raidiant/notifai-protocol test
           pnpm --filter @raidiant/notifai test -- \
-            src/platform.test.ts src/credentials.test.ts src/ui/config-view.test.ts src/local-input.test.ts src/shell-quoting.test.ts
+            src/platform.test.ts src/credentials.test.ts src/ui/config-view.test.ts src/local-input.test.ts
           pnpm --filter @raidiant/notifai test -- \
             src/hook-adapter.test.ts src/install-hooks.test.ts \
             --testNamePattern Windows
           pnpm --filter @raidiant/notifai test -- \
             src/opencode-version.test.ts --testNamePattern "native npm cmd shim"
+      - name: Prepare pinned shell runtime and crash collection
+        shell: powershell
+        run: ./scripts/prepare-test-powershell.ps1
+      - name: Verify shell transport in isolation
+        shell: bash
+        run: pnpm --filter @raidiant/notifai test -- src/shell-quoting.test.ts --maxWorkers=1
+      - name: Retain shell crash dumps
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: shell-crash-dumps-${{ runner.arch }}
+          path: ${{ runner.temp }}/shell-crash-dumps
+          if-no-files-found: ignore
+          retention-days: 7
       - name: Configure the native Windows access-check compiler
         uses: ilammy/msvc-dev-cmd@0b201ec74fa43914dc39ae48a89fd1d8cb592756 # v1
         with:
@@ -359,3 +391,52 @@ jobs:
             node --test scripts/check-agent-guidance.test.mjs || failed=1
           done
           exit "$failed"
+
+  process-reliability:
+    needs: scope
+    # Baseline failures are retained as evidence; only the candidate gates CI.
+    continue-on-error: ${{ matrix.revision == 'before' }}
+    if: ${{ inputs.reliability_proof || inputs.reproduce_process_baseline }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-2025, windows-11-arm]
+        revision: ${{ fromJSON(inputs.reproduce_process_baseline && '["before", "after"]' || '["after"]') }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ matrix.revision == 'before' && 'e0fc74d34dcabcd9dba4461f3e871106399e407e' || github.sha }}
+          persist-credentials: false
+      - uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320
+        with:
+          version: 10.34.5
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version: '24'
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm build
+      - name: Prepare pinned shell runtime and crash collection
+        if: runner.os == 'Windows' && matrix.revision == 'after'
+        shell: powershell
+        run: ./scripts/prepare-test-powershell.ps1
+      - name: Repeat genuine contention and lifecycle regressions twenty times
+        shell: bash
+        run: |
+          failed=0
+          git rev-parse HEAD
+          for iteration in $(seq 1 20); do
+            echo "Iteration $iteration at two Vitest workers"
+            node scripts/run-cli-tests.mjs src/session-child.test.ts src/hub.test.ts src/session-attendant-lifecycle.test.ts src/hook-adapter.test.ts src/shell-quoting.test.ts --maxWorkers=2 --testNamePattern 'adopts the harness through a shell|hub exchange driver|becomes the attendant despite|concurrent Windows installers|lossless shell transport' || failed=1
+          done
+          exit "$failed"
+      - name: Retain repetition shell crash dumps
+        if: always() && runner.os == 'Windows'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: shell-crash-dumps-repetition-${{ runner.arch }}-${{ matrix.revision }}
+          path: ${{ runner.temp }}/shell-crash-dumps
+          if-no-files-found: ignore
+          retention-days: 7

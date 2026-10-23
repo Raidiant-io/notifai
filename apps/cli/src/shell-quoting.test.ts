@@ -10,7 +10,8 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 const root = mkdtempSync(path.join(os.tmpdir(), 'notifai-shell-'))
 const driver = path.join(root, 'cli.cjs')
 const shells = ['bash', 'zsh', 'pwsh', ...(process.platform === 'win32' ? ['powershell.exe'] : [])]
-const probeShell = (shell: string) => spawnSync(shell,
+const shellExecutable = (shell: string): string => shell === 'pwsh' ? (process.env['NOTIFAI_TEST_PWSH'] ?? shell) : shell
+const probeShell = (shell: string) => spawnSync(shellExecutable(shell),
   /^(pwsh|powershell)/.test(shell) ? ['-NoProfile', '-NonInteractive', '-Command', 'exit 0'] : ['-c', 'exit 0'],
   { encoding: 'utf8', timeout: 30_000 },
 )
@@ -56,7 +57,7 @@ for (const shell of shells) {
       const command = `${powershell ? '& ' : ''}${quote(process.execPath)} ${quote(driver)} ${args.map(quote).join(' ')}`
       // A BOM makes Windows PowerShell read script source as UTF-8.
       writeFileSync(script, `${powershell ? '\ufeff' : ''}${command}\n`)
-      const result = spawnSync(shell, powershell ? ['-NoProfile', '-NonInteractive', '-File', script] : ['-f', script], {
+      const result = spawnSync(shellExecutable(shell), powershell ? ['-NoProfile', '-NonInteractive', '-File', script] : ['-f', script], {
         cwd: root, encoding: 'utf8', timeout: 25_000,
       })
       expect(result.error).toBeUndefined()
