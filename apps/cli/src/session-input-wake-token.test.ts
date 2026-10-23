@@ -146,4 +146,53 @@ describe('Claude input wakes', () => {
     recordInputWakeFailure(SESSION, h.env, 'transport', h.clock())
     expect(readSessionState(SESSION, h.env).input_wake_fault).toEqual(fault)
   })
+
+  it('recovers a stuck wake reservation while its writer still runs, and fences its late failure', async () => {
+    const h = setup()
+    let finish!: (accepted: boolean) => void
+    const stuck = wakeSessionInputs(SESSION, h.env, async () => new Promise<boolean>(resolve => { finish = resolve }), undefined, { now: h.clock })
+    await h.wake()
+    expect(h.sent).toHaveLength(0)
+    h.advance(60_000)
+    await h.wake()
+    expect(h.sent).toHaveLength(1)
+    expect(readSessionState(SESSION, h.env).input_wake_fault).toMatchObject({ kind: 'transport', attempts: 1 })
+    finish(false)
+    await stuck
+    expect(readSessionState(SESSION, h.env).input_wake).toMatchObject({ queued: true })
+    expect(readSessionState(SESSION, h.env).input_wake_fault?.attempts).toBe(1)
+  })
+
+  it('times out a stalled transport, retains a fault, and ignores its late acceptance', async () => {
+    const h = setup()
+    let finish!: (accepted: boolean) => void
+    let signal: AbortSignal | undefined
+    const stuck = wakeSessionInputs(SESSION, h.env, async (_text, abort) => {
+      signal = abort
+      return new Promise<boolean>(resolve => { finish = resolve })
+    }, undefined, { now: h.clock, sendTimeoutMs: 10 })
+    let deadline: ReturnType<typeof setTimeout> | undefined
+    try {
+      const settled = await Promise.race([
+        stuck.then(() => true),
+        new Promise<boolean>(resolve => { deadline = setTimeout(() => resolve(false), 500) }),
+      ])
+      expect(settled).toBe(true)
+      expect(signal?.aborted).toBe(true)
+      expect(readSessionState(SESSION, h.env).input_wake).toBeUndefined()
+      expect(readSessionState(SESSION, h.env).input_wake_fault).toMatchObject({ kind: 'transport', attempts: 1 })
+      h.advance(5_000)
+      await h.wake()
+      const replacement = readSessionState(SESSION, h.env).input_wake
+      finish(true)
+      await stuck
+      expect(readSessionState(SESSION, h.env).input_wake).toEqual(replacement)
+      expect(h.sent).toHaveLength(1)
+    } finally {
+      if (deadline !== undefined) clearTimeout(deadline)
+      finish(false)
+      await stuck
+    }
+  })
+
 })

@@ -33,6 +33,7 @@ export function sessionInputWake(token?: string): string {
 
 /** How long an accepted wake may sit unpresented in an idle session before it counts as lost. */
 export const LOST_WAKE_MS = 60_000
+export const WAKE_SEND_TIMEOUT_MS = 30_000
 
 export interface WakeOptions {
   /**
@@ -48,6 +49,8 @@ export interface WakeOptions {
   replaceLost?: () => boolean
   /** Wall clock, milliseconds. */
   now?: () => number
+  /** Internal transport deadline; callers never hold a delivery loop indefinitely. */
+  sendTimeoutMs?: number
 }
 
 /** An accepted wake that has waited long enough to be replaced once. */
@@ -94,17 +97,19 @@ export function inputWakeRetryDeferred(state: SessionState, now: number): boolea
 
 export function recordInputWakeFailure(sessionId: string, env: NodeJS.ProcessEnv,
   kind: NonNullable<SessionState['input_wake_fault']>['kind'], now = Date.now(), retryMs?: number): void {
-  updateSessionState(sessionId, env, state => {
-    const previous = state.input_wake_fault
-    // A cached check observed later must not move the fault backwards or
-    // count its original failure twice.
-    if (previous !== undefined && previous.last_at >= now) return state
-    if (previous?.kind === kind && inputWakeRetryDeferred(state, now)) return state
-    const continuing = previous?.kind === kind && previous.recovered_at === undefined
-    const attempts = Math.min(32, continuing ? previous.attempts + 1 : 1)
-    return { ...state, input_wake_fault: { kind, attempts, first_at: continuing ? previous.first_at : now,
-      last_at: now, retry_at: now + (retryMs ?? inputWakeBackoffMs(attempts)) } }
-  })
+  updateSessionState(sessionId, env, state => withInputWakeFailure(state, kind, now, retryMs))
+}
+
+function withInputWakeFailure(state: SessionState, kind: NonNullable<SessionState['input_wake_fault']>['kind'], now: number, retryMs?: number): SessionState {
+  const previous = state.input_wake_fault
+  // A cached check observed later must not move the fault backwards or
+  // count its original failure twice.
+  if (previous !== undefined && previous.last_at >= now) return state
+  if (previous?.kind === kind && inputWakeRetryDeferred(state, now)) return state
+  const continuing = previous?.kind === kind && previous.recovered_at === undefined
+  const attempts = Math.min(32, continuing ? previous.attempts + 1 : 1)
+  return { ...state, input_wake_fault: { kind, attempts, first_at: continuing ? previous.first_at : now,
+    last_at: now, retry_at: now + (retryMs ?? inputWakeBackoffMs(attempts)) } }
 }
 
 function recoverInputWakeFault(state: SessionState, now: number): SessionState {
@@ -126,7 +131,7 @@ export function markInputWakeFaultReported(sessionId: string, env: NodeJS.Proces
 
 /** Atomically coalesce native wakes until one actually reaches its consumer. */
 export async function wakeSessionInputs(
-  sessionId: string, env: NodeJS.ProcessEnv, send: (text: string) => Promise<boolean>, log?: Logger,
+  sessionId: string, env: NodeJS.ProcessEnv, send: (text: string, signal: AbortSignal) => Promise<boolean>, log?: Logger,
   options: WakeOptions = {},
 ): Promise<void> {
   const incarnation = readSessionIncarnation(sessionId, env)?.incarnation ?? `session:${sessionId}`
@@ -146,11 +151,14 @@ export async function wakeSessionInputs(
     if (inputWakeRetryDeferred(state, now())) return state
     if (state.input_wake?.incarnation === incarnation) {
       const lost = inputWakeOverdue(state, now()) && options.replaceLost?.() === true
-      if (!lost && (state.input_wake.queued || processIdentityLiveness(state.input_wake.writer) !== 'gone')) return state
+      const unfinished = !state.input_wake.queued && state.input_wake.started_at !== undefined &&
+        now() - state.input_wake.started_at >= LOST_WAKE_MS
+      if (!lost && !unfinished && (state.input_wake.queued || processIdentityLiveness(state.input_wake.writer) !== 'gone')) return state
+      if (!state.input_wake.queued) state = withInputWakeFailure(state, 'transport', now())
       replacement = lost
     }
     elected = true
-    return { ...state, input_wake: { incarnation, token, queued: false, writer, ...(replacement ? { replacement } : {}) } }
+    return { ...state, input_wake: { incarnation, token, queued: false, writer, started_at: now(), ...(replacement ? { replacement } : {}) } }
   })
   if (!elected) {
     log?.debug('delivery.handoff', { route: 'input-wake', stage: unanswered === undefined ? 'coalesced' : 'backoff', session: sessionId,
@@ -159,8 +167,13 @@ export async function wakeSessionInputs(
     return
   }
   let sent = false
+  const abort = new AbortController()
+  let timer: ReturnType<typeof setTimeout> | undefined
   try {
-    sent = await send(options.unique === true ? sessionInputWake(token) : sessionInputWake())
+    sent = await Promise.race([
+      send(options.unique === true ? sessionInputWake(token) : sessionInputWake(), abort.signal),
+      new Promise<boolean>(resolve => { timer = setTimeout(() => { abort.abort(); resolve(false) }, options.sendTimeoutMs ?? WAKE_SEND_TIMEOUT_MS) }),
+    ])
     log?.info('delivery.handoff', { route: 'input-wake', stage: sent ? 'queued' : 'deferred', session: sessionId,
       ...(replacement ? { replacement } : {}) })
     if (sent) updateSessionState(sessionId, env, (state) => state.input_wake?.token === token
@@ -170,10 +183,11 @@ export async function wakeSessionInputs(
     // the next foreground callback; never report it delivered here.
     log?.info('delivery.handoff', { route: 'input-wake', stage: 'failed', session: sessionId })
   } finally {
-    if (!sent) recordInputWakeFailure(sessionId, env, 'transport', now())
+    if (timer !== undefined) clearTimeout(timer)
+    abort.abort()
     if (!sent) updateSessionState(sessionId, env, (state) => {
       if (state.input_wake?.token !== token) return state
-      const next = { ...state }
+      const next = { ...withInputWakeFailure(state, 'transport', now()) }
       delete next.input_wake
       return next
     })
@@ -260,10 +274,11 @@ export function sessionInputRoute(sessionId: string, env: NodeJS.ProcessEnv, rou
       const lease = readAttendantLease(sessionId, env)
       if (owner !== null && lease?.incarnation === owner.incarnation) return
     }
-    await wakeSessionInputs(sessionId, env, async (text) => {
+    await wakeSessionInputs(sessionId, env, async (text, signal) => {
       const result = await route.deliver({
         context: text, answers: 0, remaining: 0, request_ids: [], journal_recorded_at: accepted.recorded_at,
-        commitDelivery: () => !sessionHasEnded(sessionId, env),
+        commitDelivery: () => !signal.aborted && !sessionHasEnded(sessionId, env),
+        writeGuard: { writable: () => !signal.aborted && !sessionHasEnded(sessionId, env), remainingMs: () => WAKE_SEND_TIMEOUT_MS },
       })
       return result.acknowledgement === 'delivered'
     }, log, wake)
@@ -357,7 +372,10 @@ export async function wakeCodexSessionInputs(input: {
   if (owner === null || owner.incarnation !== input.lease.incarnation || !input.mayWrite()) return true
   const state = readSessionState(input.sessionId, input.env)
   const generic = state.input_wake
-  if (generic?.incarnation === owner.incarnation && (generic.queued || processIdentityLiveness(generic.writer) !== 'gone')) return true
+  if (generic?.incarnation === owner.incarnation) {
+    if (!generic.queued && generic.started_at !== undefined && Date.now() - generic.started_at >= LOST_WAKE_MS) return false
+    if (generic.queued || processIdentityLiveness(generic.writer) !== 'gone') return true
+  }
   // A wake shown without its input handed in holds the queue wake as well.
   if (inputWakeDeferred(state, Date.now())) return true
   const initial = pendingInputRevisionIds(input.sessionId, input.env, input.lease)

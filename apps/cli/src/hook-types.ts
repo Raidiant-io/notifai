@@ -227,6 +227,8 @@ export interface SessionState {
   /** A content-free native wake is outstanding for this incarnation. */
   input_wake?: {
     incarnation: string; token: string; queued: boolean; writer: ProcessIdentity
+    /** Bounds an unfinished reservation even if cleanup failed while the writer lived. */
+    started_at?: number
     /** Wall-clock milliseconds when the harness accepted the wake. */
     queued_at?: number
     /** This wake already replaced one the harness accepted but never presented. */
