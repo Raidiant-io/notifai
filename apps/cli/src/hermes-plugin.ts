@@ -426,13 +426,26 @@ function hermesCommand(args: string[], env: NodeJS.ProcessEnv): string {
 /** The one Hermes release whose plugin activation path was proven; install refuses any other. */
 export const HERMES_SUPPORTED_VERSION = '0.21.5'
 
-/** The version `hermes --version` reports, or null when it cannot be read. */
-export function hermesVersion(env: NodeJS.ProcessEnv = process.env): string | null {
+/** A failed probe is not evidence that the installed release is unsupported. */
+export function probeHermesVersion(env: NodeJS.ProcessEnv = process.env):
+  { version: string; error: null } | { version: null; error: string } {
   const result = spawnSync('hermes', ['--version'], {
     env, encoding: 'utf8', timeout: 10_000, maxBuffer: 64 * 1024,
   })
-  if (result.status !== 0) return null
-  return /^Hermes Agent v(\d+\.\d+\.\d+)\b/m.exec(result.stdout)?.[1] ?? null
+  if (result.error || result.status !== 0) {
+    const cause = result.error?.message || result.stderr?.trim() || result.stdout?.trim() ||
+      (result.signal ? `terminated by ${result.signal}` : `exit status ${result.status}`)
+    return { version: null, error: `hermes --version failed: ${cause}` }
+  }
+  const version = /^Hermes Agent v(\d+\.\d+\.\d+)\b/m.exec(result.stdout)?.[1]
+  return version === undefined
+    ? { version: null, error: 'could not parse the version reported by hermes --version' }
+    : { version, error: null }
+}
+
+/** The version `hermes --version` reports, or null when it cannot be read. */
+export function hermesVersion(env: NodeJS.ProcessEnv = process.env): string | null {
+  return probeHermesVersion(env).version
 }
 
 export function hermesVersionSupported(env: NodeJS.ProcessEnv = process.env): boolean {

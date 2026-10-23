@@ -106,6 +106,7 @@ import {
   settingsFile,
 } from './install-hooks.js'
 import { opencodePluginSource } from './opencode-plugin.js'
+import { hermesPluginSource } from './hermes-plugin.js'
 import { writeProjectSession } from './hook-project-sessions.js'
 import { inspectQuestionState } from './hook-question-state.js'
 import { beginSessionIncarnation, lifecycleStamp, markSessionEnded, readSessionState, updateSessionState, writeSessionState } from './hook-session-state.js'
@@ -8588,6 +8589,40 @@ describe('init', () => {
       expect(init.report).toMatchObject({ question_routing_ready: true })
     })
 
+    describe.each([
+      ['cursor', 'darwin', { CURSOR_AGENT: '1' }],
+      ['opencode', 'darwin', { NOTIFAI_ACTIVE_HARNESS: 'opencode', NOTIFAI_ACTIVE_SESSION_ID: 'limited-session' }],
+      ['openclaw', 'linux', { NOTIFAI_ACTIVE_HARNESS: 'openclaw', NOTIFAI_ACTIVE_SESSION_ID: 'limited-session' }],
+    ] as const)('%s on %s needs delivery readiness', (harness, hookPlatform, markers) => {
+      it.each(['signed out', 'rejected credentials', 'no active devices'] as const)('keeps Question Routing unready with %s', async (failure) => {
+        const cwd = project(`notifai-delivery-${harness}-`)
+        const base = setupReadyDeps(new CapturedIo(), cwd, inertSkills, { submit: 0 })
+        const deps = { ...base, env: { ...base.env, ...markers }, hookPlatform }
+        expect(hooksInstallCommand(deps, { harness, execPath: process.execPath, scriptPath: fileURLToPath(import.meta.url) })).toBe(EXIT.ok)
+        expect((await initJson(deps)).exit).toBe(EXIT.ok)
+        const now = Date.now()
+        writeProjectSession(cwd, deps.env, 'limited-session', now, harness)
+        writeSessionState('limited-session', deps.env, { harness, last_prompt_at: now })
+        expect((await doctorJson(deps)).report).toMatchObject({ can_send: true, question_routing_ready: true })
+
+        const clientFactory = deps.clientFactory!
+        const broken: CommandDeps = failure === 'signed out'
+          ? { ...deps, store: { ...deps.store, load: () => null } }
+          : { ...deps, clientFactory: (...args) => {
+              const client = clientFactory(...args)
+              client.listDevices = async () => {
+                if (failure === 'rejected credentials') throw new ApiCallError(401, 'machine_revoked', 'This machine was revoked.')
+                return { devices: [] }
+              }
+              return client
+            } }
+        const { report } = await doctorJson(broken)
+        expect(stateOf(report, failure === 'signed out' ? 'credential' : failure === 'rejected credentials' ? 'auth' : 'devices'))
+          .toMatchObject({ status: 'gap' })
+        expect(report).toMatchObject({ can_send: false, question_routing_ready: false })
+      })
+    })
+
     it('keeps a repairable problem a gap on a harness without answer continuation', async () => {
       const cwd = project('notifai-limit-repairable-')
       const base = setupReadyDeps(new CapturedIo(), cwd, inertSkills, { submit: 0 })
@@ -8602,6 +8637,45 @@ describe('init', () => {
       expect(admission).toMatchObject({ status: 'gap', informational: null, remedy: expect.objectContaining({ command: expect.stringContaining('hooks install') }) })
       expect(String(admission?.['detail'])).toContain('obsolete OpenCode event wiring')
       expect(String(admission?.['detail'])).not.toContain('no proven answer continuation')
+    })
+
+    it.skipIf(process.platform === 'win32').each([
+      ['missing', null, /ENOENT/],
+      ['failing', "console.error('version database unavailable'); process.exit(2)", /version database unavailable/],
+      ['unparseable', "console.log('unknown Hermes build')", /could not parse/i],
+    ] as const)('keeps a %s Hermes version probe actionable and checks plugin enablement', async (_failure, versionCommand, diagnostic) => {
+      const cwd = project('notifai-hermes-probe-')
+      const bin = path.join(cwd, 'bin')
+      mkdirSync(bin)
+      const host = path.join(bin, 'hermes')
+      const calls = path.join(cwd, 'hermes-calls')
+      const base = setupReadyDeps(new CapturedIo(), cwd, inertSkills, { submit: 0 })
+      const deps = { ...base, env: { ...base.env, HERMES_HOME: path.join(cwd, 'hermes'), PATH: bin } }
+      // Real installation discovery, isolated from any installed Hermes binary.
+      const plugin = path.join(deps.env.HERMES_HOME, 'plugins', 'notifai')
+      mkdirSync(plugin, { recursive: true })
+      writeFileSync(path.join(plugin, 'plugin.yaml'), 'name: notifai\n')
+      writeFileSync(path.join(plugin, '__init__.py'), hermesPluginSource('/unused/adapter'))
+      if (versionCommand !== null) writeFileSync(host, `#!${process.execPath}
+const fs = require('node:fs');
+fs.appendFileSync(${JSON.stringify(calls)}, process.argv.slice(2).join(' ') + '\\n');
+if (process.argv[2] === '--version') { ${versionCommand} }
+else console.log('enabled local 1.0.0 notifai');
+`, { mode: 0o700 })
+
+      const { exit, report } = await doctorJson(deps)
+      expect(exit).toBe(EXIT.failed)
+      const state = stateOf(report, 'hooks-hermes-plugin')
+      expect(state).toMatchObject({ status: 'gap', informational: null,
+        remedy: expect.objectContaining({ command: 'hermes --version' }),
+        technical: expect.objectContaining({ hermes_version: null, version_error: expect.stringMatching(diagnostic) }) })
+      expect(String(state?.['detail'])).toMatch(diagnostic)
+      if (versionCommand !== null) {
+        expect(readFileSync(calls, 'utf8')).toContain('plugins list --plain --no-bundled')
+        expect(state).toMatchObject({ technical: expect.objectContaining({ plugin_enabled: true }) })
+      } else {
+        expect(state).toMatchObject({ technical: expect.objectContaining({ plugin_enabled: false, plugin_error: expect.stringContaining('ENOENT') }) })
+      }
     })
 
     it.skipIf(process.platform === 'win32')('reports a Hermes version the plugin does not support without a remedy that cannot help', async () => {
@@ -9630,8 +9704,9 @@ describe('asking before the hooks have ever run', () => {
     expect(fired?.detail).toMatch(/UserPromptSubmit.*ready for this turn's Stop/i)
     expect(readiness.states.find((state) => state.id === 'hooks-native-activity'))
       .toMatchObject({ status: 'optional-gap' })
-    expect((readinessJson(readiness) as { question_routing_ready: boolean })
-      .question_routing_ready).toBe(true)
+    // Local registration and working hooks do not prove delivery: this
+    // fixture has no reachable service or active Companion App.
+    expect(readinessJson(readiness)).toMatchObject({ can_send: false, question_routing_ready: false })
 
     io.outLines = []
     expect(askCommand(deps, 'Wait?', { title: 'Decision', json: true })).toBe(EXIT.ok)

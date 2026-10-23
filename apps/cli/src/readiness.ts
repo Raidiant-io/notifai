@@ -189,7 +189,7 @@ export function canSend(readiness: Readiness): boolean {
 }
 
 /**
- * This exact invocation has a fully evidenced exact-session question route.
+ * This invocation can deliver questions and has an evidenced harness route.
  *
  * A wake route marked `direct_wake_optional` is excluded deliberately: on those
  * harnesses an unavailable direct wake costs latency, not delivery. Claude on
@@ -206,7 +206,7 @@ export function canSend(readiness: Readiness): boolean {
  * excluded: then no question reaches a device, and this stays false.
  */
 export function questionRoutingReady(readiness: Readiness): boolean {
-  if (projectDisabledHere(readiness)) return false
+  if (!canSend(readiness)) return false
   const relevant = readiness.states.filter(
     (state) =>
       appliesHere(readiness, state) &&

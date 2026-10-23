@@ -1,6 +1,9 @@
 import { describe, expect, it } from 'vitest'
 import { asInformation, firstBlocker, isReady, readinessJson, refreshAfterMenuAction } from './readiness.js'
 
+const deliveryReady = ['cli-bin', 'credential', 'server', 'contract', 'auth', 'devices']
+  .map((id) => ({ id, title: id, status: 'ready' as const, detail: 'ready' }))
+
 describe('refreshAfterMenuAction', () => {
   it('does not re-assess after doctor, a test send, or a device list', () => {
     expect(refreshAfterMenuAction('doctor', true)).toBeNull()
@@ -37,6 +40,7 @@ describe('Question Routing readiness', () => {
     const ready = (id: string) => ({ id, title: id, status: 'ready' as const, detail: 'ready' })
     const result = readinessJson({
       states: [
+        ...deliveryReady,
         ready('question-routing-settings'),
         ready('hooks'),
         ready('hooks-active-harness'),
@@ -64,6 +68,7 @@ describe('Question Routing readiness', () => {
     const ready = (id: string) => ({ id, title: id, status: 'ready' as const, detail: 'ready' })
     const result = readinessJson({
       states: [
+        ...deliveryReady,
         ready('question-routing-settings'),
         ready('hooks'),
         ready('hooks-active-harness'),
@@ -89,7 +94,7 @@ describe('Question Routing readiness', () => {
 
 describe('harness-scoped verdicts', () => {
   const ready = (id: string) => ({ id, title: id, status: 'ready' as const, detail: 'ready' })
-  const routed = [ready('question-routing-settings'), ready('hooks'), ready('hooks-active-session'), ready('hooks-fired')]
+  const routed = [...deliveryReady, ready('question-routing-settings'), ready('hooks'), ready('hooks-active-session'), ready('hooks-fired')]
   type Verdict = { ok: boolean; question_routing_ready: boolean; states: Array<{ id: string; applies_here: boolean }> }
   const verdict = (readiness: Parameters<typeof readinessJson>[0]): Verdict =>
     ({ ...readinessJson(readiness), ok: firstBlocker(readiness) === null }) as Verdict
@@ -118,7 +123,7 @@ describe('information that is not a gap', () => {
   const ready = (id: string) => ({ id, title: id, status: 'ready' as const, detail: 'ready' })
   const gap = (id: string) => ({ id, title: id, status: 'gap' as const, detail: 'unmet',
     remedy: { by: 'cli' as const, summary: 'undo it', command: 'notifai hooks install' } })
-  const routed = [ready('question-routing-settings'), ready('hooks'), ready('hooks-fired')]
+  const routed = [...deliveryReady, ready('question-routing-settings'), ready('hooks'), ready('hooks-fired')]
 
   it('carries no remedy and never blocks doctor or init', () => {
     const limit = asInformation(gap('hooks-answer-continuation'), 'harness-capability')
@@ -144,7 +149,7 @@ describe('information that is not a gap', () => {
 
   it('keeps questions the User turned off out of Question Routing', () => {
     const off = asInformation(gap('question-routing-settings'), 'user-choice')
-    const readiness = { states: [off, ready('hooks'), ready('hooks-fired')], harness: 'claude-code' }
+    const readiness = { states: [...deliveryReady, off, ready('hooks'), ready('hooks-fired')], harness: 'claude-code' }
     expect(firstBlocker(readiness)).toBeNull()
     expect(readinessJson(readiness)).toMatchObject({ question_routing_ready: false })
   })

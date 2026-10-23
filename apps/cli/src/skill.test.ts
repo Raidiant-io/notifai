@@ -702,7 +702,6 @@ describe('Notifai agent skill', () => {
     expect(loose(skill)).toMatch(/read it when you are\s+installing hooks or diagnosing routing/i)
     expect(harnessReference).toMatch(/exact `HERMES_SESSION_ID`/i)
     expect(loose(harnessFile('hermes'))).toMatch(/Notifai's native plugin supports Hermes v0\.21\.5 only\. There, `notifai hooks install --harness hermes` installs and enables it/)
-    expect(loose(harnessFile('hermes'))).toMatch(/`notifai doctor` reports another Hermes version as a limit with nothing for Notifai to repair/)
     expect(loose(harnessFile('hermes'))).toMatch(/On other Hermes surfaces `ask` refuses: use `notifai ask --wait`, which waits in the command/)
     expect(loose(harnessFile('hermes'))).toMatch(/in two system prompt sections: the activation and notices, then the trust text, terms and topics/)
     // Install refuses any other Hermes, so no older-Hermes state is taught.

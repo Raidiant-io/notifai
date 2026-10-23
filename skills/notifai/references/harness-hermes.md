@@ -7,9 +7,11 @@ harness shares.
 
 Notifai's native plugin supports Hermes v0.21.5 only. There,
 `notifai hooks install --harness hermes` installs and enables it through
-`hermes plugins`; it refuses any other version. `notifai doctor` reports another
-Hermes version as a limit with nothing for Notifai to repair, so leave the
-User's Hermes as it is. Start a fresh local classic CLI Agent Session after
+`hermes plugins`; it refuses any other version. When `hermes --version`
+successfully reports another version, `notifai doctor` reports a limit with
+nothing for Notifai to repair, so leave the User's Hermes as it is. If the
+version cannot be read, follow doctor's diagnostic and remedy; it still checks
+whether the plugin is enabled. Start a fresh local classic CLI Agent Session after
 installation. Install the Notifai skill through
 the built-in Notifai skill installer; the Hermes plugin does not include a copy.
 

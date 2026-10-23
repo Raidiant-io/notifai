@@ -11,7 +11,7 @@ import {
   type RoutableDevice,
 } from '@raidiant/notifai-protocol'
 import { existsSync } from 'node:fs'
-import { HERMES_SUPPORTED_VERSION, hermesPluginListed, hermesVersion } from './hermes-plugin.js'
+import { HERMES_SUPPORTED_VERSION, hermesPluginListed, probeHermesVersion } from './hermes-plugin.js'
 import { inspectClaudeInbox, systemClaudeWakeAdapters } from './claude-wake.js'
 import { ApiCallError, NetworkError, type ApiClient } from './client.js'
 import { codexHome as codexQueueHomeDirectory, inspectCodexQueue } from './codex-wake.js'
@@ -1430,8 +1430,8 @@ function hookChecks(deps: CommandDeps): HookCheck[] {
   }
 
   if (installations.some((installation) => installation.harness === 'hermes')) {
-    const version = hermesVersion(deps.env)
-    if (version !== HERMES_SUPPORTED_VERSION) {
+    const { version, error: versionError } = probeHermesVersion(deps.env)
+    if (version !== null && version !== HERMES_SUPPORTED_VERSION) {
       // Which Hermes is installed is the User's business, and enabling the
       // plugin cannot make another version supported, so this is a limit.
       checks.push({
@@ -1439,20 +1439,32 @@ function hookChecks(deps: CommandDeps): HookCheck[] {
         harnesses: ['hermes'],
         ok: false,
         informational: 'harness-capability',
-        detail: `${version === null ? 'the Hermes version could not be read' : `Hermes v${version} is installed`}; Notifai's Hermes plugin supports Hermes v${HERMES_SUPPORTED_VERSION} only, so Notifai cannot vouch for its activation or Question Routing in this Hermes and has nothing to repair`,
+        detail: `Hermes v${version} is installed; Notifai's Hermes plugin supports Hermes v${HERMES_SUPPORTED_VERSION} only, so Notifai cannot vouch for its activation or Question Routing in this Hermes and has nothing to repair`,
         technical: { hermes_version: version, supported_version: HERMES_SUPPORTED_VERSION },
       })
     } else {
       let enabled = false
-      try { enabled = hermesPluginListed(deps.env) } catch { /* CLI unavailable is a gap. */ }
+      let pluginError: string | null = null
+      try { enabled = hermesPluginListed(deps.env) } catch (error) {
+        pluginError = error instanceof Error ? error.message : String(error)
+      }
+      const pluginDetail = pluginError ?? (enabled
+        ? 'Hermes lists the Notifai plugin as enabled; an enabled local classic CLI session starts the writer for Questions, Notes, and Answer Edits'
+        : 'Hermes does not list the Notifai plugin as enabled')
       checks.push({
         name: 'hooks (hermes plugin)',
         harnesses: ['hermes'],
-        ok: enabled,
-        detail: enabled
-          ? 'Hermes lists the Notifai plugin as enabled; an enabled local classic CLI session starts the writer for Questions, Notes, and Answer Edits'
-          : 'Hermes does not list the Notifai plugin as enabled',
-        ...(enabled ? {} : {
+        ok: versionError === null && enabled,
+        detail: versionError === null ? pluginDetail : `${versionError}; ${pluginDetail}`,
+        technical: { hermes_version: version, supported_version: HERMES_SUPPORTED_VERSION,
+          version_error: versionError, plugin_enabled: enabled, plugin_error: pluginError },
+        ...(versionError !== null ? {
+          remedy: {
+            by: 'user-here' as const,
+            summary: 'repair the Hermes executable so its version can be read, then run doctor again',
+            command: 'hermes --version',
+          },
+        } : enabled ? {} : {
           remedy: {
             by: 'user-here' as const,
             summary: 'enable the Notifai plugin through Hermes',
