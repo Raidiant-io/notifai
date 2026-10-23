@@ -126,8 +126,8 @@ that to the User and do not retry. `dontAsk` refuses the setup command itself:
 give it to the User to run in a terminal.
 
 The rules match one plain `notifai …` command written as the skill's Send
-section writes it. A leading `VAR=value`, or a file written for the command,
-gets its own approval.
+section writes it, including its inline Body heading rule. A leading
+`VAR=value`, or a file written for the command, gets its own approval.
 
 ## After a Notifai update
 

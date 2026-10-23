@@ -17,6 +17,7 @@ name/id from `notifai sounds`.
 reply. Quote inline JSON for your shell as the skill's Send section explains,
 line breaks and all. `--form <path>` reads a JSON file, and `--form -` reads
 stdin; paths are always paths, even when their names start with `{`.
+When creating a form file, write it in the system temp directory, never the repository.
 
 ```json
 {

@@ -62,21 +62,21 @@ notifai guidance set when-to-notify 'Only when you'"'"'re blocked or CI-length w
 ## Send
 
 Preserve text exactly, including the User's guidance. Quote every text value
-for the shell running the tool:
+for the tool's shell:
 
 - **bash/zsh**: single-quote the value;
   nothing expands. For each ASCII apostrophe, close the single quotes,
   double-quote the apostrophe, and reopen the single quotes: `'SELECT '"'"'ready'"'"';'`
   passes `SELECT 'ready';`.
-- **PowerShell**: single-quote the value;
-  nothing expands. Double each single-quote character inside it: `'`, `’`,
-  `‘`, `‚` and `‛`. For example, `'It''s ‘‘ready’’.'` passes `It's ‘ready’.`.
-  Read [shell details](references/shell-quoting.md) for native Windows arguments.
+- **PowerShell**: single-quote; nothing expands.
+  Double each single-quote character inside it: `'`, `’`,
+  `‘`, `‚` and `‛`: `'It''s ‘‘ready’’.'` passes `It's ‘ready’.`.
+  Windows PowerShell 5.1/Legacy: [use files](references/shell-quoting.md)
+  for empty values, trailing backslashes or double quotes.
 
-Keep `notifai` as one plain command for harness approval rules. If lossless
-quoting or a file write needs approval, use that route and let the harness
-ask; never replace characters to avoid it. Read
-[shell limits](references/shell-quoting.md#harness-shells-and-approvals) when needed.
+Keep `notifai` as one plain command for approval rules. When quoting or a file
+write needs approval, let the harness ask; never replace
+characters to avoid it ([shell limits](references/shell-quoting.md#harness-shells-and-approvals)).
 
 ```bash
 notifai send --kind done \
@@ -95,8 +95,8 @@ kind that is true.**
 | `blocked` | waiting, and no User reply would resume the work; otherwise [ask](#ask-a-question) | attention tone |
 | `question` | set by `notifai ask`; never pass it | attention tone |
 
-Each field has a fixed shape; how to write it is the `titles` and `content`
-guidance, with worked examples in [Writing examples](references/writing-examples.md):
+Follow `titles`, `content` and
+[Writing examples](references/writing-examples.md). Field shapes:
 
 - **Title**: stands alone; the kind and the Project travel as their own
   fields, never in it.
@@ -106,9 +106,11 @@ guidance, with worked examples in [Writing examples](references/writing-examples
   the Summary says, then the detail; focused views show the Body or the
   Summary, never both. Omit it when the Summary suffices.
 
-Pass the Body inline as `--body '…'`, with real line breaks inside the quotes;
-use the lossless file route in [shell details](references/shell-quoting.md)
-when needed. Images (`--image`, referenced in the Body as
+Pass the Body inline as `--body '…'`, with real line breaks inside the quotes.
+Use `**Heading**` lines instead of line-leading `#` in inline Bodies.
+For files, see [shell details](references/shell-quoting.md);
+write it in the system temp directory, never the repository.
+Images (`--image`, referenced in the Body as
 `![alt](media:1)`), grouping, replacement and the User-owned `--sound`,
 `--level` and `--device`: [Sending details](references/send-details.md).
 

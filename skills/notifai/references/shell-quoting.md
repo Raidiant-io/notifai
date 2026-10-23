@@ -7,11 +7,13 @@ the original bytes to the CLI.
 
 ## Native Windows arguments
 
-Windows PowerShell 5.1 and PowerShell's Legacy native argument mode strip
-embedded double quotes when passing arguments to executables. Use UTF-8 files
-for text containing double quotes and for forms: `--body-file <path>`,
+Windows PowerShell 5.1 and PowerShell's Legacy native argument mode can lose
+empty values, trailing backslashes and embedded double quotes when passing
+arguments to executables. Use UTF-8 files for those values and for forms:
+`--body-file <path>`,
 `ask --form <path>` or `guidance set <topic> --file <path>`. Quote paths for
-the shell too. Write UTF-8 without a BOM and preserve line endings exactly,
+the shell too. Write it in the system temp directory, never the repository;
+use UTF-8 without a BOM and preserve line endings exactly,
 using the harness's file tool, which may need approval. Existing files need
 no write. For text flags without a file option, use the lossless POSIX route
 in an available Bash tool; its approval may be required.

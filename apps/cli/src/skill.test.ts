@@ -251,8 +251,20 @@ describe('Notifai agent skill', () => {
     // A Body goes inline in single quotes, real line breaks included: a file
     // write would wait at its own approval, and one plain command is what
     // the approval rules match.
-    expect(send).not.toMatch(/temp directory/i)
     expect(loose(send)).toMatch(/real line breaks inside the quotes/i)
+  })
+
+  it('keeps line-leading comments out of every shipped inline Body example', () => {
+    const documents = [skill, ...readdirSync(referencesDir)
+      .filter((name) => name.endsWith('.md'))
+      .map((name) => readFileSync(new URL(name, referencesDir), 'utf8'))]
+    const bodies = documents.flatMap((document) =>
+      [...document.matchAll(/--body(?:\s+|=)((?:'[^']*'|"(?:\\.|[^"\\])*")+)/g)]
+        .map((match) => match[1]!.replace(/'([^']*)'|"((?:\\.|[^"\\])*)"/g,
+          (_, single: string | undefined, double: string | undefined) => single ?? double ?? '')),
+    )
+    expect(bodies.length).toBeGreaterThan(0)
+    for (const body of bodies) expect(body, body).not.toMatch(/^\s*#/m)
   })
 
   it('reserves NOTIFAI_NO_INPUT for scripts and CI, never an agent prefix', () => {

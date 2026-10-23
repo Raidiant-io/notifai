@@ -78,6 +78,22 @@ for (const shell of shells) {
       expect(run(['guidance', 'set', 'when-to-notify', '--file', 'body.md', '--local', '--yes']))
         .toEqual({ topic: 'when-to-notify', text: body })
     })
+    it.each(['Saved to C:\\out\\', ''])('preserves a legacy-unsafe value through files: %j', (value) => {
+      writeFileSync(path.join(root, 'value.txt'), value)
+      const summary = 'p --device x q'
+      const form = JSON.stringify({ title: value, summary, questions: [{ text: value }] })
+      writeFileSync(path.join(root, 'value.json'), form)
+      expect(run(['send', '--kind', 'done', '--title', 'Review', '--summary', summary, '--body-file', 'value.txt']))
+        .toEqual({ kind: 'done', title: 'Review', summary, body: value })
+      expect(run(['ask', '--form', 'value.json'])).toEqual({ form })
+      expect(run(['guidance', 'set', 'when-to-notify', '--file', 'value.txt', '--local', '--yes']))
+        .toEqual({ topic: 'when-to-notify', text: value })
+    })
+    it.skipIf(shell === 'powershell.exe').each(['Saved to C:\\out\\', ''])('preserves a trailing backslash or empty inline value in modern shells: %j', (value) => {
+      const summary = 'p --device x q'
+      expect(run(['send', '--kind', 'done', '--title', value, '--summary', summary, '--body', value]))
+        .toEqual({ kind: 'done', title: value, summary, body: value })
+    })
     // Legacy Windows PowerShell strips embedded double quotes on native argv.
     // Its documented file route is exercised above; pwsh 7.3+ preserves quotes.
     it.skipIf(shell === 'powershell.exe')('passes inline form JSON intact', () => {

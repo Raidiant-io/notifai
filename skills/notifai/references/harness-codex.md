@@ -149,7 +149,8 @@ The rule has three limits, and readiness names each:
   The backslash variant `'it'\''s'` is lossless in the shell but prevents
   matching. Redirection, a heredoc, pipe, `VAR=…` or expansion can also leave
   the command in the sandbox. For a Body or form already in a file, use
-  `--body-file <path>` or `--form <path>`; preparing the file has its own
+  `--body-file <path>` or `--form <path>`; write it in the system temp directory,
+  never the repository. Preparing the file has its own
   permission gate. On Windows, use the
   [PowerShell rule and native argument limits](shell-quoting.md); matching
   the Windows harness's command rules has not been verified.
