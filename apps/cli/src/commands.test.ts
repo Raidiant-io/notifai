@@ -9082,7 +9082,8 @@ describe('a held ask --wait', () => {
     } as never)
     const env = { ...isolatedEnv(cwd), CURSOR_AGENT: '1' }
 
-    expect(await ask({ ...deps, cwd, env }, { json: true })).toBe(EXIT.ok)
+    expect(await ask({ ...deps, cwd, env }, { json: true, resumes: 'Write the selected headline to HEADLINE.txt' })).toBe(EXIT.ok)
+    expect(JSON.parse(io.outLines[0]!)).toMatchObject({ resumes: 'Write the selected headline to HEADLINE.txt', on_answer: expect.stringContaining('Only this Agent Session received') })
     expect(submit.mock.calls[0]![0].draft.reply?.expires_in_seconds).toBe(590)
     expect(putAgentAcknowledgement).not.toHaveBeenCalled()
     expect(JSON.parse(io.outLines[0]!).acknowledgement_command).toContain(`notifai acknowledge ${receipt.request_id}`)
