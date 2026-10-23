@@ -8,6 +8,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 This project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 and [Conventional Commits](https://www.conventionalcommits.org/en/v1.0.0/).
 
+## [9.1.0](https://github.com/Raidiant-io/notifai/compare/protocol-v9.0.0...protocol-v9.1.0) (2026-10-23)
+
+
+### Features
+
+* **protocol:** expose detected session harness metadata ([#421](https://github.com/Raidiant-io/notifai/issues/421)) ([5067ae2](https://github.com/Raidiant-io/notifai/commit/5067ae287f7240d6b5665451efb309a09b61a474))
+
+
+### Bug Fixes
+
+* **cli:** preserve sessions through unconfirmed stops ([#423](https://github.com/Raidiant-io/notifai/issues/423)) ([d1f462e](https://github.com/Raidiant-io/notifai/commit/d1f462e7905483a1ae2de94f8459d99a7e832dd4))
+
 ## [9.0.0](https://github.com/Raidiant-io/notifai/compare/protocol-v8.5.0...protocol-v9.0.0) (2026-10-22)
 
 
