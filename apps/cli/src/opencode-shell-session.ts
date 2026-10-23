@@ -6,8 +6,7 @@
  * OpenCode sets `OPENCODE_SESSION_ID` in the command's environment after the
  * hooks run (anomalyco/opencode v2.1.3, `packages/core/src/tool/plugin/shell.ts`).
  * That value is a plain environment variable, so a command can also set it to
- * any other value. It is believed only for a session the plugin itself
- * recorded as live:
+ * any other value. It counts only for a locally recorded live session:
  *
  * - The plugin records every session it serves through `notifai hook
  *   opencode-session`, from the OpenCode process that hosts the session. The
@@ -18,8 +17,10 @@
  *   read, that host is an ancestor of the asking process.
  *
  * Whether the session is a worker, and its title, come from the record, never
- * from the shell. A value that fails any check names no session: the command
- * then behaves as in a shell OpenCode did not identify.
+ * from the shell markers. These checks catch inherited or mistaken values,
+ * not hostile same-user scripts: those can write records or remove the 2.x
+ * marker. OpenCode 2's shared service is an ancestor of all its sessions,
+ * including sessions in other directories. See docs/TRUST.md.
  */
 import { lstatSync, readFileSync, readdirSync, rmSync } from 'node:fs'
 import path from 'node:path'

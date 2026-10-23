@@ -143,10 +143,10 @@ shell, including a repository script, can set that variable to another value,
 so the value alone proves nothing. The CLI believes it only when all of these
 hold:
 
-- Notifai's plugin recorded that exact session as one it serves, through a hook
-  started by the OpenCode process that hosts the session. The record keeps that
-  process by PID and start time, plus whether the session is a worker and its
-  title; the shell supplies neither.
+- A local record for that session exists, written through
+  `notifai hook opencode-session`. It keeps the declared host's PID and start
+  time, worker classification and title. Reading the shell's session ID uses
+  those recorded values; it does not authenticate who wrote them.
 - The session has not ended, and the recorded OpenCode process still runs.
 - Where the process tree can be read (macOS and Linux), that OpenCode process
   is an ancestor of the command.

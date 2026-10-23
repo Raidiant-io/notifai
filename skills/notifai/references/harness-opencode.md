@@ -47,7 +47,10 @@ at most one recommended choice per question; its label ends in
 `(Recommended)`. Several recommendations within one question are refused by
 Notifai's protocol before any form opens; offer one recommendation instead.
 
-Session Notes and Answer Edits are not supported yet.
+Session Notes and Answer Edits are not supported yet. OpenCode 2 shell
+attribution requires readable process ancestry (currently macOS and Linux).
+On Windows, version probing supports npm command shims, but agent shells
+remain unidentified and `ask --wait` uses the held-command fallback.
 
 ## Question form
 
