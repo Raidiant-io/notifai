@@ -1,5 +1,8 @@
 import { describe, expect, it } from 'vitest'
-import { firstBlocker, readinessJson, refreshAfterMenuAction } from './readiness.js'
+import { asInformation, firstBlocker, isReady, readinessJson, refreshAfterMenuAction } from './readiness.js'
+
+const deliveryReady = ['cli-bin', 'credential', 'server', 'contract', 'auth', 'devices']
+  .map((id) => ({ id, title: id, status: 'ready' as const, detail: 'ready' }))
 
 describe('refreshAfterMenuAction', () => {
   it('does not re-assess after doctor, a test send, or a device list', () => {
@@ -37,6 +40,7 @@ describe('Question Routing readiness', () => {
     const ready = (id: string) => ({ id, title: id, status: 'ready' as const, detail: 'ready' })
     const result = readinessJson({
       states: [
+        ...deliveryReady,
         ready('question-routing-settings'),
         ready('hooks'),
         ready('hooks-active-harness'),
@@ -64,6 +68,7 @@ describe('Question Routing readiness', () => {
     const ready = (id: string) => ({ id, title: id, status: 'ready' as const, detail: 'ready' })
     const result = readinessJson({
       states: [
+        ...deliveryReady,
         ready('question-routing-settings'),
         ready('hooks'),
         ready('hooks-active-harness'),
@@ -89,7 +94,7 @@ describe('Question Routing readiness', () => {
 
 describe('harness-scoped verdicts', () => {
   const ready = (id: string) => ({ id, title: id, status: 'ready' as const, detail: 'ready' })
-  const routed = [ready('question-routing-settings'), ready('hooks'), ready('hooks-active-session'), ready('hooks-fired')]
+  const routed = [...deliveryReady, ready('question-routing-settings'), ready('hooks'), ready('hooks-active-session'), ready('hooks-fired')]
   type Verdict = { ok: boolean; question_routing_ready: boolean; states: Array<{ id: string; applies_here: boolean }> }
   const verdict = (readiness: Parameters<typeof readinessJson>[0]): Verdict =>
     ({ ...readinessJson(readiness), ok: firstBlocker(readiness) === null }) as Verdict
@@ -99,7 +104,7 @@ describe('harness-scoped verdicts', () => {
     const codexTrust = { id: 'hooks-trust', title: 'trust', status: 'gap' as const, detail: 'unapproved', harnesses: ['codex'] }
     const states = [...routed, grokSkill, codexTrust]
     expect(verdict({ states, harness: 'claude-code' })).toMatchObject({ ok: true, question_routing_ready: true,
-      states: expect.arrayContaining([{ ...grokSkill, applies_here: false, technical: null, remedy: null },
+      states: expect.arrayContaining([{ ...grokSkill, applies_here: false, technical: null, remedy: null, informational: null },
         expect.objectContaining({ id: 'hooks-trust', applies_here: false })]) })
     expect(verdict({ states, harness: 'codex' })).toMatchObject({ ok: false, question_routing_ready: false })
     // With no harness to judge for, the whole machine is the subject.
@@ -111,5 +116,45 @@ describe('harness-scoped verdicts', () => {
       detail: 'no shared Codex app-server', harnesses: ['codex'] }]
     expect(verdict({ states, harness: 'codex' }).question_routing_ready).toBe(true)
     expect(verdict({ states, harness: 'claude-code' }).question_routing_ready).toBe(true)
+  })
+})
+
+describe('information that is not a gap', () => {
+  const ready = (id: string) => ({ id, title: id, status: 'ready' as const, detail: 'ready' })
+  const gap = (id: string) => ({ id, title: id, status: 'gap' as const, detail: 'unmet',
+    remedy: { by: 'cli' as const, summary: 'undo it', command: 'notifai hooks install' } })
+  const routed = [...deliveryReady, ready('question-routing-settings'), ready('hooks'), ready('hooks-fired')]
+
+  it('carries no remedy and never blocks doctor or init', () => {
+    const limit = asInformation(gap('hooks-answer-continuation'), 'harness-capability')
+    expect(limit).toMatchObject({ status: 'optional-gap', informational: 'harness-capability' })
+    expect(limit).not.toHaveProperty('remedy')
+    const readiness = { states: [...routed, limit], harness: 'cursor' }
+    expect(firstBlocker(readiness)).toBeNull()
+    expect(isReady(readiness)).toBe(true)
+    expect(readinessJson(readiness)).toMatchObject({
+      states: expect.arrayContaining([expect.objectContaining({ id: 'hooks-answer-continuation', informational: 'harness-capability', remedy: null })]),
+    })
+  })
+
+  it('judges Question Routing by what the harness can do, not by a route it lacks by design', () => {
+    const limits = ['hooks-question-admission', 'hooks-answer-continuation']
+      .map((id) => asInformation(gap(id), 'harness-capability'))
+    expect(readinessJson({ states: [...routed, ...limits], harness: 'cursor' })).toMatchObject({ question_routing_ready: true })
+    // The routes the harness does have still have to be ready.
+    expect(readinessJson({ states: [...routed, ...limits, gap('hooks-stale')], harness: 'cursor' }))
+      .toMatchObject({ question_routing_ready: false })
+    expect(readinessJson({ states: limits, harness: 'cursor' })).toMatchObject({ question_routing_ready: false })
+  })
+
+  it('keeps questions the User turned off out of Question Routing', () => {
+    const off = asInformation(gap('question-routing-settings'), 'user-choice')
+    const readiness = { states: [...deliveryReady, off, ready('hooks'), ready('hooks-fired')], harness: 'claude-code' }
+    expect(firstBlocker(readiness)).toBeNull()
+    expect(readinessJson(readiness)).toMatchObject({ question_routing_ready: false })
+  })
+
+  it('serializes an ordinary state with informational null', () => {
+    expect(readinessJson({ states: [ready('hooks')] })).toMatchObject({ states: [expect.objectContaining({ informational: null })] })
   })
 })

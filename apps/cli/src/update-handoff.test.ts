@@ -4,6 +4,7 @@ import path from 'node:path'
 import { afterEach, expect, it } from 'vitest'
 import { HARNESS_UPDATE_EFFECTS, installedChangelog, releaseNotesUrl, updateSessionEffects } from './update-handoff.js'
 import { SOURCE_CONTEXT_HARNESSES } from './harnesses.js'
+import { asInformation } from './readiness.js'
 
 const roots: string[] = []
 afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }) })
@@ -70,20 +71,16 @@ it("does not ask a session to attend to another harness's gap after an update", 
   expect(updateSessionEffects('grok', states).assessment).toBe('needs_attention')
 })
 
-it.each([
-  ['cursor', 'darwin', false], ['opencode', 'linux', false], ['openclaw', 'linux', false], ['hermes', 'win32', false],
-  ['openclaw', 'darwin', true], ['hermes', 'darwin', true], ['claude-code', 'linux', true],
-] as const)('treats a %s question-route gap on %s as repairable only where async ask is supported', (harness, platform, supported) => {
+it('acts on a question-route gap after an update and only reports a harness limit', () => {
+  const hooks = { id: 'hooks', title: 'Hooks', status: 'ready' as const, detail: 'current' }
   const gap = { id: 'hooks-answer-continuation', title: 'How an answer returns', status: 'gap' as const, detail: 'not attending',
     remedy: { by: 'user-here' as const, summary: 'repair', command: 'notifai hooks install' } }
-  const effects = updateSessionEffects(harness, [{ id: 'hooks', title: 'Hooks', status: 'ready', detail: 'current' }, gap], undefined, platform)
-  const continuation = effects.diagnostics.find(state => state.id === gap.id)!
-  if (supported) {
-    expect(continuation).toMatchObject({ status: 'gap', remedy: gap.remedy })
-    expect(effects.assessment).toBe('needs_attention')
-  } else {
-    expect(continuation.status).toBe('optional-gap')
-    expect(continuation).not.toHaveProperty('remedy')
-    expect(effects.assessment).toBe('continue')
-  }
+  const repairable = updateSessionEffects('openclaw', [hooks, gap])
+  expect(repairable.diagnostics.find(state => state.id === gap.id)).toMatchObject({ status: 'gap', remedy: gap.remedy })
+  expect(repairable.assessment).toBe('needs_attention')
+  // Doctor classifies a limit once; the hand-off reports it and moves on.
+  const limit = asInformation(gap, 'harness-capability')
+  const limited = updateSessionEffects('cursor', [hooks, limit, asInformation({ ...gap, id: 'hooks-active-session' }, 'harness-capability')])
+  expect(limited.diagnostics.find(state => state.id === gap.id)).not.toHaveProperty('remedy')
+  expect(limited).toMatchObject({ assessment: 'continue', restart_required: false })
 })

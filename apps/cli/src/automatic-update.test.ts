@@ -319,7 +319,7 @@ describe('automatic updates', () => {
     expect(heldAutomaticUpdate(f.env, NOW + 7 * DAY - 1)).toBeNull()
     expect(heldAutomaticUpdate(f.env, NOW + 7 * DAY)).toMatchObject({ version: '1.1.0', reason: 'starved' })
     expect(cachedAgentUpdateNotice({ env: f.env, now: NOW + 7 * DAY, updateCommand: 'notifai update', automaticRunsHere: true }))
-      .toContain('kept it waiting on this machine for a week')
+      .toMatch(/staged on this machine for a week without activating/)
   })
 
   it('reports nothing to update outside a managed installation', async () => {

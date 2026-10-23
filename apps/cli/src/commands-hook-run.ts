@@ -3,7 +3,7 @@ import { observeCodexTerminalAnswers, reportCodexTerminalAnswers, takeCodexTermi
 import { observeLoadedIntegration } from './integration-revision.js'
 /** Fail-open CLI adapter from harness input to hook lifecycle handlers. */
 import { pendingAgentUpdateNotice } from './agent-update-notice.js'
-import type { PendingNotice } from './pending-notice.js'
+import { claimNow, type PendingNotice } from './pending-notice.js'
 import { cachedIntegrationFaultNotice, pendingIntegrationFaultNotice, refreshIntegrationHealth } from './integration-health.js'
 import { claudeWakeRoute } from './claude-wake.js'
 import { ApiCallError, NetworkError, type ApiClient } from './client.js'
@@ -35,7 +35,7 @@ import { loadConfig, type CliConfig } from './config.js'
 import { withFileLock } from './file-lock.js'
 import { questionRoutingCapability, type HookInstallableHarness } from './harnesses.js'
 import { HOOK_EVENTS } from './hook-events.js'
-import { claimGrokActivation, grokQuestionRoute, grokHookEnvelope, resetGrokActivation } from './grok-hooks.js'
+import { claimGrokActivation, grokQuestionRoute, grokHookEnvelope, grokWorker, resetGrokActivation } from './grok-hooks.js'
 import {
   drainClosedSessionRetirements,
   handleSessionEnd,
@@ -141,6 +141,15 @@ function lazyClient(resolve: () => ApiClient): ApiClient {
     },
   })
 }
+
+/**
+ * Harnesses whose prompt-time hook output reaches the model. Cursor's
+ * `beforeSubmitPrompt` accepts only `continue` and `user_message`; OpenCode's
+ * `chat.message` and OpenClaw's `message_received` discard what the hook
+ * prints; Grok's prompt hook is passive. A notice claimed there would be
+ * spent unseen, so it stays due for the next activation that is shown.
+ */
+const PROMPT_CONTEXT_REACHES_MODEL: ReadonlySet<HookHarness> = new Set(['claude-code', 'codex'])
 
 /** Keep diagnostic context in the same document as an answer or Session Note. */
 function appendIntegrationContext(output: string | undefined, notice: string | undefined,
@@ -570,12 +579,23 @@ export async function hookRunCommand(
       logger.error('hook.gate', { stage: 'hub-handover', outcome: 'ignored', ...failureData(err) })
     }
   }
+  // Grok's startup and prompt output never reaches the model, so the notices
+  // other harnesses get at SessionStart ride on its activation instead, and a
+  // later fault on the next tool result. Each is claimed only if printed.
+  const grokNotices = (): { update: PendingNotice | undefined; fault: PendingNotice | undefined } => ({
+    update: pendingAgentUpdateNotice({ env: deps.env, now: now(), updateCommand: updateCliCommand(deps) }),
+    fault: pendingIntegrationFaultNotice({ ...deps, cwd }, 'grok'),
+  })
   if (harness === 'grok' && (event === 'post-tool-use' || event === 'post-compact')) {
     start({ cwd })
     let context: string | undefined
     try {
       if (event === 'post-compact') resetGrokActivation(envelope.session_id!, deps.env)
-      else if (lifecycleEnabled()) context = claimGrokActivation(envelope, cwd, deps.env)
+      else if (lifecycleEnabled()) {
+        const { update, fault } = grokNotices()
+        context = claimGrokActivation(envelope, cwd, deps.env, [update, fault].filter((notice): notice is PendingNotice => notice !== undefined))
+        if (context === undefined && !grokWorker(envelope)) context = claimNow(fault)
+      }
       if (event === 'post-tool-use') {
         const form = unlinkedQuestionFormContext(deps, envelope, harness, cwd)
         if (form !== undefined) context = [context, form].filter(Boolean).join('\n\n')
@@ -601,7 +621,9 @@ export async function hookRunCommand(
       const state = readSessionState(envelope.session_id!, deps.env)
       const hasQuestion = (state.pending?.length ?? 0) > 0 || state.accepted !== undefined ||
         (state.acknowledgement_due?.length ?? 0) > 0
-      const context = hasQuestion ? undefined : claimGrokActivation(envelope, cwd, deps.env)
+      const { update, fault } = grokNotices()
+      const context = hasQuestion ? undefined
+        : claimGrokActivation(envelope, cwd, deps.env, [update, fault].filter((notice): notice is PendingNotice => notice !== undefined))
       if (context !== undefined) {
         start({ cwd })
         deps.io.out(JSON.stringify({ decision: 'block', reason: context }))
@@ -1089,7 +1111,7 @@ export async function hookRunCommand(
     let runElsewhere = false
     if (event === 'user-prompt-submit') {
       if (envelope.session_id !== undefined) observeSessionInputWake(envelope.session_id, deps.env, envelope.prompt, (deps.now ?? Date.now)())
-      const notice = lifecycleEnabled() && harness !== undefined && harness !== 'grok'
+      const notice = lifecycleEnabled() && harness !== undefined && PROMPT_CONTEXT_REACHES_MODEL.has(harness)
         ? cachedIntegrationFaultNotice({ ...deps, cwd }, harness) : undefined
       // A scripted run (`claude -p`, an SDK script, `codex exec`) of a conversation
       // another process hosts is not where the User is: nothing held for it is handed in here.
@@ -1203,8 +1225,9 @@ export async function hookRunCommand(
       }
     }
     // Turn end, not the prompt path, refreshes the integration assessment the
-    // next prompt reads. It scans at most once per check interval.
-    if (event === 'stop' && harness !== undefined && harness !== 'grok') refreshIntegrationHealth({ ...deps, cwd }, harness)
+    // next prompt, activation or Grok tool result reads. It scans at most once
+    // per check interval.
+    if (event === 'stop' && harness !== undefined) refreshIntegrationHealth({ ...deps, cwd }, harness)
     return EXIT.ok
   } catch (err) {
     // SessionEnd defers its start record until after cleanup; if cleanup itself

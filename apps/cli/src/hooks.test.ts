@@ -19,6 +19,8 @@ import { fileURLToPath } from 'node:url'
 import { PassThrough } from 'node:stream'
 import * as sessionStateModule from './hook-session-state.js'
 import * as fileLockModule from './file-lock.js'
+import * as integrationHealthModule from './integration-health.js'
+import * as agentUpdateNoticeModule from './agent-update-notice.js'
 import {
   type ListRepliesResponse,
   type ReplyView,
@@ -4239,6 +4241,88 @@ describe('Grok native lifecycle', () => {
     await hookRunCommand(h.deps, 'post-compact', stdin(input), 'grok')
     await hookRunCommand(h.deps, 'post-tool-use', stdin({ ...input, promptId: 'prompt-three' }), 'grok')
     expect(h.io.outLines).toHaveLength(2)
+  })
+
+  it('carries due update and fault notices in Grok activation within its budget, claiming only what it prints', async () => {
+    const h = harness()
+    const due = (text: string) => ({ text, claim: vi.fn(() => true) })
+    const update = due('UPDATE-NOTICE-MARKER'), fault = due('FAULT-NOTICE-MARKER')
+    const updates = vi.spyOn(agentUpdateNoticeModule, 'pendingAgentUpdateNotice').mockReturnValue(update)
+    const faults = vi.spyOn(integrationHealthModule, 'pendingIntegrationFaultNotice').mockReturnValue(fault)
+    try {
+      const input = { sessionId: 'grok-notices', cwd: h.deps.cwd, promptId: 'prompt-one' }
+      // Grok's startup output never reaches the model, so nothing is spent there.
+      await hookRunCommand(h.deps, 'session-start', stdin(input), 'grok')
+      expect(update.claim).not.toHaveBeenCalled()
+      expect(fault.claim).not.toHaveBeenCalled()
+      await hookRunCommand(h.deps, 'post-tool-use', stdin(input), 'grok')
+      const context = JSON.parse(h.io.outLines[0] ?? '{}').hookSpecificOutput.additionalContext as string
+      expect(context).toContain('You own Notification Requests')
+      expect(context).toContain('UPDATE-NOTICE-MARKER')
+      expect(context).toContain('FAULT-NOTICE-MARKER')
+      expect(Buffer.byteLength(context, 'utf8')).toBeLessThanOrEqual(9_000)
+      expect(update.claim).toHaveBeenCalledTimes(1)
+      expect(fault.claim).toHaveBeenCalledTimes(1)
+
+      // Unchanged guidance is not repeated, but a newly due fault still reaches the next tool result.
+      const later = due('LATER-FAULT-MARKER')
+      updates.mockReturnValue(undefined)
+      faults.mockReturnValue(later)
+      await hookRunCommand(h.deps, 'post-tool-use', stdin(input), 'grok')
+      expect(JSON.parse(h.io.outLines[1] ?? '{}').hookSpecificOutput.additionalContext).toBe('LATER-FAULT-MARKER')
+      expect(later.claim).toHaveBeenCalledTimes(1)
+      faults.mockReturnValue(undefined)
+      await hookRunCommand(h.deps, 'post-tool-use', stdin(input), 'grok')
+      expect(h.io.outLines).toHaveLength(2)
+    } finally {
+      updates.mockRestore()
+      faults.mockRestore()
+    }
+  })
+
+  it('refreshes the Grok integration assessment at turn end, so a fault can become due', async () => {
+    const h = harness()
+    const refresh = vi.spyOn(integrationHealthModule, 'refreshIntegrationHealth').mockImplementation(() => {})
+    try {
+      const input = { sessionId: 'grok-refresh', cwd: h.deps.cwd, promptId: 'prompt-one', reason: 'end_turn' }
+      await hookRunCommand(h.deps, 'session-start', stdin(input), 'grok')
+      // The first Stop activates a tool-free turn; the next is an ordinary turn end.
+      await hookRunCommand(h.deps, 'stop', stdin(input), 'grok')
+      await hookRunCommand(h.deps, 'stop', stdin({ ...input, stopHookActive: true }), 'grok')
+      expect(refresh).toHaveBeenCalledWith(expect.anything(), 'grok')
+    } finally {
+      refresh.mockRestore()
+    }
+  })
+
+  it('leaves a Grok notice due when the activation has no room for it', async () => {
+    const h = harness()
+    const big = { text: `BIG-NOTICE ${'x'.repeat(9_000)}`, claim: vi.fn(() => true) }
+    const faults = vi.spyOn(integrationHealthModule, 'pendingIntegrationFaultNotice').mockReturnValue(big)
+    try {
+      await hookRunCommand(h.deps, 'post-tool-use', stdin({ sessionId: 'grok-full', cwd: h.deps.cwd, promptId: 'p' }), 'grok')
+      const context = JSON.parse(h.io.outLines[0] ?? '{}').hookSpecificOutput.additionalContext as string
+      expect(context).toContain('You own Notification Requests')
+      expect(context).not.toContain('BIG-NOTICE')
+      expect(big.claim).not.toHaveBeenCalled()
+    } finally {
+      faults.mockRestore()
+    }
+  })
+
+  it('carries due notices when Grok activates a tool-free turn at Stop', async () => {
+    const h = harness()
+    const fault = { text: 'STOP-FAULT-MARKER', claim: vi.fn(() => true) }
+    const faults = vi.spyOn(integrationHealthModule, 'pendingIntegrationFaultNotice').mockReturnValue(fault)
+    try {
+      const input = { sessionId: 'grok-stop-notice', cwd: h.deps.cwd, promptId: 'prompt-one', reason: 'end_turn' }
+      await hookRunCommand(h.deps, 'session-start', stdin(input), 'grok')
+      await hookRunCommand(h.deps, 'stop', stdin(input), 'grok')
+      expect(JSON.parse(h.io.outLines[0] ?? '{}')).toMatchObject({ decision: 'block', reason: expect.stringContaining('STOP-FAULT-MARKER') })
+      expect(fault.claim).toHaveBeenCalledTimes(1)
+    } finally {
+      faults.mockRestore()
+    }
   })
 
   it('activates a tool-free turn once at genuine Stop without blocking teardown', async () => {
@@ -9022,5 +9106,33 @@ describe('Hermes session start at the CLI boundary', () => {
     const sections = JSON.parse(h.io.outLines.at(-1)!) as { activation: string; guidance: string }
     expect(sections.activation).toMatch(/^Notifai is enabled for this Project/)
     expect(sections.guidance).toMatch(/^# How to read this guidance/)
+  })
+})
+
+describe('prompt-time fault notices', () => {
+  it.each(['cursor', 'opencode', 'openclaw'] as const)('leaves a fault notice due at a %s prompt, whose hook output no model sees', async (harnessName) => {
+    const h = harness()
+    const cached = vi.spyOn(integrationHealthModule, 'cachedIntegrationFaultNotice').mockReturnValue('PROMPT-FAULT-MARKER')
+    try {
+      await hookRunCommand(h.deps, 'user-prompt-submit',
+        stdin({ session_id: `prompt-${harnessName}`, conversation_id: `prompt-${harnessName}`, cwd: h.deps.cwd, prompt: 'hi' }), harnessName)
+      expect(cached).not.toHaveBeenCalled()
+      expect(h.io.outLines.join('\n')).not.toContain('PROMPT-FAULT-MARKER')
+    } finally {
+      cached.mockRestore()
+    }
+  })
+
+  it.each(['claude-code', 'codex'] as const)('hands a due fault notice to the model at a %s prompt', async (harnessName) => {
+    const h = harness()
+    const cached = vi.spyOn(integrationHealthModule, 'cachedIntegrationFaultNotice').mockReturnValue('PROMPT-FAULT-MARKER')
+    try {
+      await hookRunCommand(h.deps, 'user-prompt-submit',
+        stdin({ session_id: `prompt-${harnessName}`, cwd: h.deps.cwd, prompt: 'hi' }), harnessName)
+      expect(cached).toHaveBeenCalledTimes(1)
+      expect(h.io.outLines.join('\n')).toContain('PROMPT-FAULT-MARKER')
+    } finally {
+      cached.mockRestore()
+    }
   })
 })

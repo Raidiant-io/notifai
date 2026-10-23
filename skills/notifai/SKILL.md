@@ -262,7 +262,8 @@ notifai init <--hooks|--no-hooks> [--skills --skills-scope <project|global> --sk
 ```
 
 Branch on `states`, `can_send` and `question_routing_ready`; a nonzero exit is
-a gap to close, never to bypass. After a successful `init --json`, carry on:
+a gap to close, never to bypass. A state marked `informational` is not a gap:
+leave a User's choice and a harness limit as they are. After a successful `init --json`, carry on:
 `ask` checks its own route. Run `notifai doctor` to verify a fresh session
 after installing hooks, or to diagnose a failure.
 

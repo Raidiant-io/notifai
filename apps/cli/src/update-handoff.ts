@@ -2,7 +2,7 @@ import { readFileSync } from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { compareReleasePrecedence, isSemVer } from './version.js'
-import { questionRoutingCapability, type SourceContextHarness } from './harnesses.js'
+import type { SourceContextHarness } from './harnesses.js'
 import { appliesHere, type ReadinessState } from './readiness.js'
 import { buildIdentity } from './distribution.js'
 
@@ -48,22 +48,16 @@ export const HARNESS_UPDATE_EFFECTS: Record<SourceContextHarness, string> = {
   grok: 'Existing native Grok hooks use the updated adapter on their next invocation. Reread changed guidance in this Agent Session. A newly installed Stop definition needs a fresh Agent Session.',
 }
 
-export function updateSessionEffects(harness: SourceContextHarness | null, states: ReadinessState[], restartReason?: string,
-  platform: NodeJS.Platform = process.platform) {
-  // Unsupported asynchronous routing is a capability limit, not damage caused
-  // by updating. Keep that information without prescribing reinstall loops.
-  // Where asynchronous ask is supported, its gaps stay repairable.
-  const blockingOnly = harness !== null && questionRoutingCapability(harness, platform).stopContinuation === 'unsupported'
+export function updateSessionEffects(harness: SourceContextHarness | null, states: ReadinessState[], restartReason?: string) {
   // Another harness's condition is not this session's to act on after an update.
   const diagnostics = states.filter(state => (state.id.startsWith('hooks') || state.id === 'skill') &&
-    appliesHere({ states, harness }, state)).map(state => {
-    if (!blockingOnly || !['hooks-question-admission', 'hooks-answer-continuation'].includes(state.id)) return state
-    const informational = { ...state, status: 'optional-gap' as const }
-    delete informational.remedy
-    return informational
-  })
+    appliesHere({ states, harness }, state))
+  // A harness capability limit was classified once, by the readiness
+  // assessment: it is information, never damage caused by updating, so it
+  // prescribes no reinstall loop. Everything else stays repairable.
   const gaps = diagnostics.filter(state => state.status === 'gap' || state.status === 'unknown' ||
-    (['hooks-active-session', 'hooks-fired', 'hooks-native-activity'].includes(state.id) && state.status !== 'ready'))
+    (['hooks-active-session', 'hooks-fired', 'hooks-native-activity'].includes(state.id) && state.status !== 'ready' &&
+      state.informational === undefined))
   const currentNativeProofMissing = harness === 'codex' &&
     !diagnostics.some(state => state.id === 'hooks-native-activity' && state.status === 'ready')
   const inspected = harness === 'hermes' || diagnostics.some(state => state.id === 'hooks')

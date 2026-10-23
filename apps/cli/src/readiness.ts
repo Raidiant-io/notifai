@@ -58,6 +58,16 @@ export type StateStatus =
   /** A prerequisite is missing, so this was never evaluated. */
   | 'unknown'
 
+/**
+ * Why an unmet state is reported but never fixed.
+ *
+ * `user-choice`: the User turned it off, so a remedy would reverse their
+ * decision. `harness-capability`: the harness cannot do it by design, so no
+ * command closes it and re-checking only loops. Either way the state is an
+ * `optional-gap` with no remedy: it never fails `doctor` or stops `init`.
+ */
+export type Informational = 'user-choice' | 'harness-capability'
+
 export interface ReadinessState {
   id: string
   /** Human words for what this is, not the field name. */
@@ -68,6 +78,8 @@ export interface ReadinessState {
   /** Structured diagnostics emitted only by --json / non-human surfaces. */
   technical?: unknown
   remedy?: Remedy
+  /** Set when the state is information, not a gap; see `Informational`. */
+  informational?: Informational
   /**
    * The harnesses this state is about. Absent means the machine as a whole:
    * the credential, the service, the shared adapter, every harness at once.
@@ -83,6 +95,13 @@ export interface Readiness {
    * leftovers are reported to it, never held against it.
    */
   harness?: string | null
+}
+
+/** The one way a state becomes information: unmet, reported, and with nothing to run. */
+export function asInformation(state: ReadinessState, why: Informational): ReadinessState {
+  const information: ReadinessState = { ...state, status: 'optional-gap', informational: why }
+  delete information.remedy
+  return information
 }
 
 /** Whether a state bears on this invocation's verdict. */
@@ -170,7 +189,7 @@ export function canSend(readiness: Readiness): boolean {
 }
 
 /**
- * This exact invocation has a fully evidenced exact-session question route.
+ * This invocation can deliver questions and has an evidenced harness route.
  *
  * A wake route marked `direct_wake_optional` is excluded deliberately: on those
  * harnesses an unavailable direct wake costs latency, not delivery. Claude on
@@ -179,12 +198,19 @@ export function canSend(readiness: Readiness): boolean {
  * failure would report a working question route as broken. The Codex shared
  * app-server is excluded for the same reason: without it a device answer still
  * reaches the agent, and only the terminal's question form stays open.
+ *
+ * A harness capability limit is excluded the same way. Cursor, OpenCode and
+ * OpenClaw off macOS have no later answer route by design; their questions
+ * come back through `ask --wait` in the command (and OpenCode's own form), so
+ * this judges the routes they do have. Questions the User turned off are not
+ * excluded: then no question reaches a device, and this stays false.
  */
 export function questionRoutingReady(readiness: Readiness): boolean {
-  if (projectDisabledHere(readiness)) return false
+  if (!canSend(readiness)) return false
   const relevant = readiness.states.filter(
     (state) =>
       appliesHere(readiness, state) &&
+      state.informational !== 'harness-capability' &&
       (state.id === 'question-routing-settings' ||
       (state.id === 'hooks' || state.id.startsWith('hooks-')) &&
         state.id !== 'hooks-detected' &&
@@ -223,6 +249,7 @@ export function readinessJson(readiness: Readiness): object {
       detail: state.detail,
       technical: state.technical ?? null,
       remedy: state.remedy ?? null,
+      informational: state.informational ?? null,
       harnesses: state.harnesses ?? null,
       applies_here: appliesHere(readiness, state),
     })),
