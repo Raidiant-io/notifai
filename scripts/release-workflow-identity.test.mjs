@@ -354,3 +354,24 @@ test('a deliberately retired package needs no release, while active package bump
     after: { 'apps/cli': '12.0.0' },
   }), /reported no release/)
 })
+
+// GitHub propagates skipped ancestors unless downstream job conditions contain
+// an explicit status function. Legacy admission is intentionally skipped here.
+test('release acceptance cannot silently skip after the legacy admission branch', () => {
+  for (const name of ['adapter-acceptance', 'promote-npm', 'promote-native']) {
+    const job = publishWorkflow.jobs[name]
+    assert.match(job.if, /always\(\)/)
+    assert.ok(job.if.includes(`needs.${job.needs}.result == 'success'`))
+  }
+  const gate = publishWorkflow.jobs['release-result']
+  assert.match(gate.if, /always\(\)/)
+  assert.ok(gate.needs.includes('adapter-acceptance'))
+  const script = gate.steps[0].run.split("node <<'NODE'\n")[1].split('\nNODE')[0]
+  const base = Object.fromEntries(gate.needs.map(name => [name, {result:'success'}]))
+  const run = results => spawnSync(process.execPath, ['-e', script.replace("fs.writeFileSync('release-record.json', JSON.stringify(record, null, 2));", '')],
+    {env:{...process.env,RESULTS:JSON.stringify(results),CHANNEL:'none'},encoding:'utf8'})
+  assert.equal(run(base).status, 0)
+  for (const result of ['skipped','failure','cancelled']) {
+    assert.notEqual(run({...base,'adapter-acceptance':{result}}).status, 0)
+  }
+})
