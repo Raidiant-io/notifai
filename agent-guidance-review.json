@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "behavior_digest": "sha256:38257796c9c246b6bd85a171dce1511d5c025c6024570a638bcddb31aab87860",
+  "behavior_digest": "sha256:d015e28f55b7b6f900cb5c97b9fc6516901c83f2e2ea654a9ccfa2a37f0604d6",
   "outcome": "reviewed-no-impact",
   "surfaces_reviewed": [
     "lifecycle-hooks",
@@ -9,5 +9,5 @@
     "cli-readiness",
     "domain-terms"
   ],
-  "reason": "Reviewed CLI readiness after one more no-plan change: while the auth gap carries plan_required, the devices state is ready for any registered app with authorized or provisional notification permission, because a desktop app cannot hold its delivery stream before a plan is active. The auth gap's relayed message is unchanged. Readiness ids, lifecycle hooks, the skill and domain terms are unchanged."
+  "reason": "Reviewed a README-only change: three Companion App screenshots with descriptive alt text were added under the intro. No README text an agent follows changed: setup prompt, installer commands, links and terms are unchanged. Lifecycle hooks, the skill, harness setup, CLI readiness and domain terms are unaffected."
 }

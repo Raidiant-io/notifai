@@ -7,6 +7,12 @@ Claude Code, Codex, Cursor, OpenCode, OpenClaw, Hermes or Grok.
 Know which one needs you. Notifications name the Project and Agent Session
 they come from, so several agents at once never blur into one generic bell.
 
+<p align="center">
+  <img src="docs/images/companion-answer-from-anywhere.jpg" width="250" alt="Notifai iPhone app: an agent asks whether to merge the moon mission, and the reply 'Wait for my playtest' is delivered to the session that asked">
+  <img src="docs/images/companion-pick-answers.jpg" width="250" alt="Notifai iPhone app: a multiple-choice question from the agent, with two final checks picked before sending">
+  <img src="docs/images/companion-say-it-your-way.jpg" width="250" alt="Notifai iPhone app: a question carrying three game screenshots, answered with a typed reply instead of the offered choices">
+</p>
+
 Your agent sets it up. Paste this into any agent:
 
 ```text
