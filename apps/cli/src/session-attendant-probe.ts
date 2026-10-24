@@ -52,6 +52,12 @@ export function attendantSupport(
       ? { supported: true }
       : { supported: false, reason: `codex-${platform}-unproven` }
   }
+  if (harness === 'cursor') {
+    // Only a held native Stop owns a writer; the ordinary attend command is
+    // not installed. macOS is the live-proven Cursor TUI surface.
+    return platform === 'darwin' ? { supported: true }
+      : { supported: false, reason: `cursor-${platform}-unproven` }
+  }
   if (harness === 'openclaw') {
     return platform === 'darwin'
       ? { supported: true }

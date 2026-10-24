@@ -1,3 +1,4 @@
+import { CURSOR_STOP_TIMEOUT_SECONDS } from './hook-events.js'
 import { encodeWindowsCodexCommand, decodeWindowsCodexCommand } from './windows-codex-command.js'
 import type { ClaudeHookFormName } from './claude-hook-form.js'
 import { sourceIntegrationRevision, stampHookDefinition } from './integration-revision.js'
@@ -455,7 +456,7 @@ export function buildCursorHookConfig(options: BuildOptions): CursorHookConfig {
     const handler: CursorHookHandler = {
       command: hookCommand(options.adapterPath, row.notifai, 'cursor', commandOptions),
       timeout:
-        row.notifai === 'stop' ? NON_ROUTING_BLOCKING_STOP_TIMEOUT_SECONDS : row.timeoutSeconds,
+        row.notifai === 'stop' ? CURSOR_STOP_TIMEOUT_SECONDS : row.timeoutSeconds,
     }
     if ('cursorLoopLimit' in row) handler.loop_limit = row.cursorLoopLimit
     hooks[row.cursor] = [...(hooks[row.cursor] ?? []), handler]

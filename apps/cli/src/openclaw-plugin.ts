@@ -46,7 +46,7 @@ export const OPENCLAW_PLUGIN_FILENAME = 'index.js'
 export const OPENCLAW_PLUGIN_MANIFEST = 'openclaw.plugin.json'
 export const OPENCLAW_PLUGIN_PACKAGE = 'package.json'
 
-const OPENCLAW_ADAPTER_VERSION = 9
+const OPENCLAW_ADAPTER_VERSION = 10
 
 export function openclawStateDir(
   env: NodeJS.ProcessEnv = process.env,
@@ -614,6 +614,10 @@ function messagePointer(record) {
 }
 
 /** Attach private text only to the admitted pointer turn of its native generation. */
+// Prompt construction may repeat within one native admission. Keep context in
+// memory for that admission only; the durable one-shot marker still fences a
+// later request with identical text and every replacement Gateway.
+const admittedMessageContexts = new Map()
 async function messageContextForPointer(api, event, ctx, sessionKey, nativeRevision) {
   if (MESSAGE_JOURNAL_DIR === null || JOURNAL_DIR === null || nativeRevision === null) return null
   const prompt = typeof event?.currentUserMessage === "string"
@@ -635,13 +639,22 @@ async function messageContextForPointer(api, event, ctx, sessionKey, nativeRevis
         record.native_revision !== nativeRevision ||
         record.openclaw_session_id !== sessionIdOf(event, ctx) ||
         record.boot_id !== readiness?.boot_id ||
-        typeof record.text !== "string" ||
         (record.phase !== "submitting" && record.phase !== "admitted" &&
           record.phase !== "transcript") ||
         prompt !== messagePointer(record) ||
-        existsSync(messageContextMarkerPath(deliveryId)) ||
         nativeSessionRevision(api, sessionKey, sessionIdOf(event, ctx)) !== nativeRevision) return null
+    const admissionId = typeof event?.currentUserMessageId === "string" && event.currentUserMessageId !== ""
+      ? event.currentUserMessageId : null
+    if (existsSync(messageContextMarkerPath(deliveryId))) {
+      const admitted = admittedMessageContexts.get(deliveryId)
+      return admissionId !== null && admitted?.admissionId === admissionId ? admitted.text : null
+    }
+    if (typeof record.text !== "string") return null
     ctx?.hookInvocation?.assertActive?.()
+    if (admissionId !== null) {
+      admittedMessageContexts.set(deliveryId, { admissionId, text: record.text })
+      if (admittedMessageContexts.size > 128) admittedMessageContexts.delete(admittedMessageContexts.keys().next().value)
+    }
     writeFileSync(messageContextMarkerPath(deliveryId), "used\\n", { mode: 0o600, flag: "wx" })
     ownHostFile(messageContextMarkerPath(record.delivery_id))
     saveMessageJournal(record)
@@ -1299,6 +1312,27 @@ function onIfSupported(api, name, handler) {
 ${openclawContinuationServiceSource()}
 
 function register(api) {
+  // The native Codex shell bypasses resolve_exec_env. The runtime event names
+  // both owners; the awaited tool callback records that exact binding before
+  // the shell starts. Never infer it from cwd or the most recent conversation.
+  const nativeRuns = new Map()
+  api.runtime?.events?.onAgentEvent?.((event) => {
+    if (event.stream === "codex_app_server.lifecycle" && event.data?.phase === "thread_ready" &&
+        typeof event.runId === "string" && typeof event.sessionKey === "string" &&
+        typeof event.data.threadId === "string") {
+      nativeRuns.set(event.runId, { sessionKey: event.sessionKey, threadId: event.data.threadId })
+    }
+    if (event.stream === "lifecycle" && ["end", "error"].includes(event.data?.phase)) nativeRuns.delete(event.runId)
+  })
+  api.on("before_tool_call", async (event, ctx) => {
+    const binding = nativeRuns.get(ctx?.runId ?? event?.runId)
+    const sessionKey = sessionKeyOf(event, ctx)
+    if (!binding || binding.sessionKey !== sessionKey) return
+    await runHook("openclaw-native-session", {
+      ...envelopeFor(sessionKey, event, ctx, "BeforeToolCall"),
+      openclaw_native_thread_id: binding.threadId,
+    })
+  })
   try {
     const stateDir = api.runtime?.state?.resolveStateDir?.()
     if (typeof stateDir === "string" && path.isAbsolute(stateDir)) {

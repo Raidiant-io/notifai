@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "behavior_digest": "sha256:bc669df3ef9e1e102428a9cba56e56d51862a31b8fe98a473335f2879a35a72e",
+  "behavior_digest": "sha256:58e0e5684f9b7475adb0686026584405567e383a9d36d175a9d6cd5fe343a1e9",
   "outcome": "guidance-updated",
   "surfaces_reviewed": [
     "lifecycle-hooks",
@@ -9,5 +9,5 @@
     "cli-readiness",
     "domain-terms"
   ],
-  "reason": "Reviewed lifecycle hooks, the shipped Cursor reference, harness setup, CLI capability wording, and domain terms. Native Cursor conversation identity now supports sends and session labels. Guidance explicitly retains the unimplemented presence, notes, and asynchronous answer boundaries; hooks, routing, and other harnesses are unchanged. This is implementation review, not independent approval."
+  "reason": "Reviewed lifecycle hooks, skill setup, capability boundaries and domain terms. Cursor notes and presence use the held native Stop only; the reference states the one-hour and working-turn boundary and retains ask --wait. OpenClaw native Codex tool attribution and note acknowledgements share exact generation ownership, and note context survives only the same native admission rebuild. Live staging proof covers macOS Cursor TUI and local OpenClaw Codex runtime. This is implementation review, not independent approval."
 }

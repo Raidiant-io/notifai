@@ -32,8 +32,16 @@ Current Cursor shells identify their conversation through
 `--session-label` can name it. Older shells without that marker remain
 detection-only: omit `--session-label` there.
 
-Session Presence and Session Notes are not implemented for Cursor. Exact
-identity alone does not provide an attended asynchronous answer route. Ask
+On the macOS Cursor TUI, a completed turn holds its native Stop hook open for
+up to one hour. After this conversation has sent a Notification Request, that
+hook holds Session Presence and accepts Session Notes. A note resumes the same
+conversation through Cursor's native follow-up message; acknowledge it as the
+message instructs. Presence is withdrawn when that hook closes, including while
+the next turn works, and returns at the next completed Stop. No synthetic turns
+keep it alive. Print mode, ACP and other unverified surfaces have no promised
+note continuation.
+
+Asynchronous questions and native question forms remain unsupported. Ask
 with `notifai ask --wait` in the foreground, and let it run until it returns
 with the answer or says the question ended.
 `notifai doctor` reports that as a Cursor limit, not a fault to repair.

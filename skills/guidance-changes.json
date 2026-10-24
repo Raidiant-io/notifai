@@ -1,5 +1,5 @@
 {
-  "current": "4e11f4bd52cdd1933f595280daa6d76b366b54dbd163f2bb2bb09127f8424cbb",
+  "current": "c25ef6695bcbc7c0f7f657077d4a0346c38366d3cacc512f88b7dddf97a0bf5c",
   "releases": [
     {
       "digest": "3e47b01bc6bbfb43e910c660b9964fab6459d75148c3c02dcbcd0be64cfb2963",
@@ -48,6 +48,10 @@
     {
       "digest": "4e11f4bd52cdd1933f595280daa6d76b366b54dbd163f2bb2bb09127f8424cbb",
       "note": "Cursor sends now use its native conversation identifier when available. Older Cursor shells remain detection-only; asynchronous questions and notes still require a proven continuation route."
+    },
+    {
+      "digest": "c25ef6695bcbc7c0f7f657077d4a0346c38366d3cacc512f88b7dddf97a0bf5c",
+      "note": "Cursor can receive Session Notes through a held native Stop continuation. OpenClaw native Codex shells retain their OpenClaw session identity."
     }
   ]
 }

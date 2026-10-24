@@ -1,3 +1,5 @@
+import { attendCursorStop } from './cursor-attendant.js'
+import { recordOpenclawNativeSession } from './openclaw-native-session.js'
 import { stopAnswerOutput } from './hook-acknowledgements.js'
 import { observeCodexTerminalAnswers, reportCodexTerminalAnswers, takeCodexTerminalConflictContext } from './codex-terminal-answers.js'
 import { observeLoadedIntegration } from './integration-revision.js'
@@ -114,7 +116,7 @@ import {
 const INTERNAL_HOOK_EVENTS = [
   'question-submission', 'question-settlement', 'openclaw-lifecycle', 'openclaw-generation',
   'openclaw-turn-start', 'openclaw-turn-end', 'openclaw-list-pending',
-  'openclaw-attendance-ready', 'openclaw-settlement',
+  'openclaw-native-session', 'openclaw-attendance-ready', 'openclaw-settlement',
   'openclaw-verify-prepared', 'maintenance', 'retirement', 'hub-handover',
   'end-confirmation', 'guidance-check',
 ] as const
@@ -720,6 +722,24 @@ export async function hookRunCommand(
       logger.info('hook.end', { hook: event, outcome: 'checked', decided: false })
     } catch (err) {
       logger.error('hook.end', { hook: event, outcome: 'ignored', ...failureData(err) })
+    }
+    return EXIT.ok
+  }
+  // Cursor resume may emit a prompt without SessionStart. The exact native
+  // callback can establish an unseen conversation, but never revive an ended one.
+  if (event === 'user-prompt-submit' && harness === 'cursor' && envelope.session_id !== undefined &&
+      readSessionIncarnation(envelope.session_id, deps.env) === null && !sessionHasEnded(envelope.session_id, deps.env)) {
+    recordSessionStart(envelope.session_id, deps.env, harness, cwd, undefined, invokedAt)
+  }
+  if (event === 'stop' && harness === 'cursor') {
+    try { await attendCursorStop(deps, envelope, logger, processDeadlineAt) }
+    catch (err) { logger.error('hook.end', { hook: event, outcome: 'ignored', ...failureData(err) }) }
+    return EXIT.ok
+  }
+  if (event === 'openclaw-native-session') {
+    const generation = currentOpenclawOwner()
+    if (generation !== null && envelope.session_id !== undefined) {
+      recordOpenclawNativeSession(deps.env, envelope.openclaw_native_thread_id, envelope.session_id, generation)
     }
     return EXIT.ok
   }

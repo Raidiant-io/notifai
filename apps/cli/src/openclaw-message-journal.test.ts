@@ -91,6 +91,17 @@ const result = await hook({ prompt }, ctx)
 assert.equal(result?.prependContext?.includes(base.text), true)
 assert.equal(readMessageJournal(deliveryId).text, undefined)
 assert.equal(!!(await hook({ prompt }, ctx))?.prependContext?.includes(base.text), false)
+const rebuildId = 'sm_rebuild'
+const rebuilt = { ...base, delivery_id: createHash('sha256').update(generation + '\\0' + rebuildId)
+  .digest('hex').slice(0, 32), message_id: rebuildId }
+saveMessageJournal(rebuilt)
+const admitted = { prompt: messagePointer(rebuilt), currentUserMessage: messagePointer(rebuilt), currentUserMessageId: 'admission-1' }
+assert.equal((await hook(admitted, ctx))?.prependContext?.includes(base.text), true)
+assert.equal((await hook(admitted, ctx))?.prependContext?.includes(base.text), true)
+assert.equal(!!(await hook({ ...admitted, currentUserMessageId: 'admission-2' }, ctx))?.prependContext?.includes(base.text), false)
+nativeRevision = 'R2'
+assert.equal(!!(await hook(admitted, ctx))?.prependContext?.includes(base.text), false)
+nativeRevision = 'R1'
 const nextId = 'sm_restart'
 const next = { ...base, delivery_id: createHash('sha256').update(generation + '\\0' + nextId)
   .digest('hex').slice(0, 32), message_id: nextId }

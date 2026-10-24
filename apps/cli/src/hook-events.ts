@@ -79,7 +79,7 @@ export const HOOK_EVENT_TABLE = [
     openclaw: true,
     opencodeDiscovery: true,
     timeoutSeconds: 5,
-    cursorLoopLimit: 3,
+    cursorLoopLimit: null,
   },
   {
     notifai: 'session-end',
@@ -189,3 +189,6 @@ export function requiredHookEvents(harness: HookInstallableHarness): readonly Ho
         : row.document !== null,
   ).map((row) => row.notifai)
 }
+
+/** Maximum held native Cursor continuation, with no synthetic model turns. */
+export const CURSOR_STOP_TIMEOUT_SECONDS = 3600

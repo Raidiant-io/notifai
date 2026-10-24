@@ -46,6 +46,7 @@ export interface HookEnvelope {
   phase?: string
   reason?: string
   /** OpenClaw's current transcript ID; session_id remains its stable sessionKey. */
+  openclaw_native_thread_id?: string
   openclaw_session_id?: string
   openclaw_lifecycle_revision?: string
   /** OpenClaw's lifecycle reason, when its typed hook supplies one. */

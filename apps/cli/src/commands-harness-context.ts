@@ -1,3 +1,4 @@
+import { openclawNativeSession } from './openclaw-native-session.js'
 import {
   hermesClassicCliLocalInstance,
   type HermesClassicCliLocalInstance,
@@ -97,7 +98,12 @@ function harnessEnvCandidates(env: NodeJS.ProcessEnv): ActiveHarnessSession[] {
   }
   const codexSession = env['CODEX_THREAD_ID']
   if (codexSession !== undefined && codexSession !== '') {
-    candidates.push({ harness: 'codex', label: 'Codex', sessionId: codexSession })
+    const owner = openclawNativeSession(env)
+    if (owner === undefined) candidates.push({ harness: 'codex', label: 'Codex', sessionId: codexSession })
+    else if (owner === null) candidates.push({ harness: 'openclaw', label: 'OpenClaw' })
+    else if (!candidates.some((candidate) => candidate.harness === 'openclaw' && candidate.sessionId === owner.sessionKey)) {
+      candidates.push({ harness: 'openclaw', label: 'OpenClaw', sessionId: owner.sessionKey })
+    }
   }
   if ((env['CURSOR_AGENT'] ?? '') !== '') {
     const sessionId = env['CURSOR_CONVERSATION_ID']

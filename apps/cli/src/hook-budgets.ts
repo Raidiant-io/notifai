@@ -1,3 +1,4 @@
+import { CURSOR_STOP_TIMEOUT_SECONDS } from './hook-events.js'
 /**
  * The time each nested step of a hook process may spend.
  *
@@ -83,6 +84,7 @@ export function hookTimeoutSeconds(
   if (event === 'opencode-question' && harness === 'opencode') return null
   // One plugin child-process ceiling bounds every other event the plugin runs.
   if (harness === 'opencode' || harness === 'openclaw') return NON_ROUTING_STOP_TIMEOUT_SECONDS
+  if (event === 'stop' && harness === 'cursor') return CURSOR_STOP_TIMEOUT_SECONDS
   if (event === 'stop') {
     // A command without a harness stamp came from a definition this build did
     // not write; its declared timeout is unknown, so it keeps owner budgets.

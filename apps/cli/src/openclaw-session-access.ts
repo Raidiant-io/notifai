@@ -1,3 +1,4 @@
+import { openclawNativeSession } from './openclaw-native-session.js'
 /** Exact-generation access to OpenClaw reply pointers in agent tool subprocesses. */
 import { readSessionIncarnation, readSessionState, sessionHasEnded, updateSessionState } from './hook-session-state.js'
 import { openclawGenerationLockPath, readOpenclawGeneration } from './openclaw-generation.js'
@@ -13,6 +14,8 @@ export function activeOpenclawGeneration(
   sessionKey: string,
   env: NodeJS.ProcessEnv,
 ): string | null {
+  const native = openclawNativeSession(env)
+  if (native !== undefined) return native?.sessionKey === sessionKey ? native.generation : null
   if (env['NOTIFAI_ACTIVE_HARNESS'] !== 'openclaw' ||
       env['NOTIFAI_ACTIVE_SESSION_ID'] !== sessionKey) return null
   const marker = env['NOTIFAI_ACTIVE_OPENCLAW_GENERATION']
