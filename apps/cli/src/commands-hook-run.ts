@@ -728,8 +728,11 @@ export async function hookRunCommand(
   // Cursor resume may emit a prompt without SessionStart. The exact native
   // callback can establish an unseen conversation, but never revive an ended one.
   if (event === 'user-prompt-submit' && harness === 'cursor' && envelope.session_id !== undefined &&
-      readSessionIncarnation(envelope.session_id, deps.env) === null && !sessionHasEnded(envelope.session_id, deps.env)) {
-    recordSessionStart(envelope.session_id, deps.env, harness, cwd, undefined, invokedAt)
+      !sessionHasEnded(envelope.session_id, deps.env)) {
+    if (readSessionIncarnation(envelope.session_id, deps.env) === null) {
+      recordSessionStart(envelope.session_id, deps.env, harness, cwd, undefined, invokedAt)
+    }
+    updateSessionState(envelope.session_id, deps.env, (state) => ({ ...state, last_prompt_at: now() }))
   }
   if (event === 'stop' && harness === 'cursor') {
     try { await attendCursorStop(deps, envelope, logger, processDeadlineAt) }

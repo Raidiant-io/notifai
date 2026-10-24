@@ -1,5 +1,5 @@
 {
-  "current": "c756658cd5990ccdd22608d143b015af53f0d60f71fffac6d79af00f779b039e",
+  "current": "d4b96d69b5b2084cc28eb42a6850bed494a668811577d92c8e4b21dc870dc3a3",
   "releases": [
     {
       "digest": "3e47b01bc6bbfb43e910c660b9964fab6459d75148c3c02dcbcd0be64cfb2963",
@@ -56,6 +56,10 @@
     {
       "digest": "c756658cd5990ccdd22608d143b015af53f0d60f71fffac6d79af00f779b039e",
       "note": "Cursor Session Presence ends when its native agent exits, even if an intermediate hook shell remains alive."
+    },
+    {
+      "digest": "d4b96d69b5b2084cc28eb42a6850bed494a668811577d92c8e4b21dc870dc3a3",
+      "note": "A new Cursor prompt fences the previous held Stop before it can deliver another note."
     }
   ]
 }
