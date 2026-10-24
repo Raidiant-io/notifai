@@ -72,10 +72,24 @@ export type PairingOutcome = 'pending' | 'denied' | 'expired' | 'not_started'
  * proof-bearing link, so it never belongs in a Notification Request.
  */
 export function pairingApprovalMessage(pairing: Pick<PendingPairing, 'code' | 'approve_url'>, qrShown: boolean): string {
-  const open = qrShown ? 'Scan the QR shown here to open Notifai' : `Open ${pairing.approve_url}`
-  return `Approve this computer before the approval expires. ${open}, check your Account and this computer, ` +
-    `compare code **${pairing.code}**, and approve. A signed-in app needs no new email code.` +
-    (qrShown ? ` Browser alternative: ${pairing.approve_url}.` : '') + ' Tell me when it\'s done.'
+  const open = qrShown
+    ? 'scan the QR code above with your phone\'s camera'
+    : `open ${pairing.approve_url}`
+  return `To connect this computer to Notifai, ${open} and sign in with your email if it asks. ` +
+    `Check that the code shown is **${pairing.code}**, then approve it within a few minutes. ` +
+    (qrShown ? `No phone handy? Open ${pairing.approve_url} instead. ` : '') +
+    'Tell me when you\'ve approved it.'
+}
+
+/**
+ * The name a computer gets when the User names none: its hostname, without
+ * the `.local` that macOS appends for the local network. It is what the
+ * approval screen and the setup notification show, so it should read like the
+ * computer's name.
+ */
+export function defaultMachineName(hostname: string): string {
+  const name = hostname.replace(/\.local\.?$/i, '')
+  return name.length > 0 ? name : hostname
 }
 
 /**
@@ -183,7 +197,7 @@ export async function loginCommand(
   const client = makeClient(deps, baseUrl, null)
 
   const startPairing = async (): Promise<PendingPairing | number> => {
-    const machineName = flags.name ?? os.hostname()
+    const machineName = flags.name ?? defaultMachineName(os.hostname())
     const secret = randomBytes(32).toString('base64url')
     const pollVerifier = randomBytes(24).toString('base64url')
     const confirmationSecret = randomBytes(32).toString('base64url')
@@ -282,12 +296,13 @@ export async function loginCommand(
         deps.io.out('Scan to approve in Notifai:')
         deps.io.out(await terminalPairingQr(pairing.approve_url, false))
       }
-      deps.io.out(`Local QR image: ${file}`)
+      // A person here already sees the QR above; the image is for an agent to show.
+      if (!interactive) deps.io.out(`Local QR image: ${file}`)
     }
     if (interactive && flags.approval === undefined && flags.approvalEmail === undefined && deps.io.select) {
       const io = deps.io
-      const choice = await askWhileWatching(async (signal) => await io.select?.('Connect this computer', [
-        { value: 'qr', label: 'Scan the QR', hint: 'Approve in your signed-in Notifai app' },
+      const choice = await askWhileWatching(async (signal) => await io.select?.('How do you want to approve it?', [
+        { value: 'qr', label: 'Scan the QR', hint: 'with your phone\'s camera or the Notifai app' },
         { value: 'notification', label: 'Send approval notification', hint: 'Enter your Account email' },
         { value: 'browser', label: 'Use browser approval' },
       ], signal) ?? null)
@@ -429,7 +444,13 @@ export async function loginCommand(
       // reaches the service the way this sign-in just did.
       await notifyCredentialChanged(deps.env)
       await adoptHubNetwork(deps.env)
-      if (interactive) {
+      if (onBlocked !== undefined) {
+        // Inside setup, which carries on and closes with what is now true:
+        // where the credential lives is a detail no one acts on here.
+        const connected = `This computer is connected to your account as "${active.machine_name}".`
+        if (progress.spinner) progress.spinner.stop(connected)
+        else deps.io.out(connected)
+      } else if (interactive) {
         if (progress.spinner) progress.spinner.stop(`Machine "${active.machine_name}" approved`)
         else deps.io.out(`Machine "${active.machine_name}" approved`)
         await deps.io.outro?.(`Credential stored in ${deps.store.describe()}`)

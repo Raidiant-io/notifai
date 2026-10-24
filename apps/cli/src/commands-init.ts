@@ -44,6 +44,7 @@ import {
 } from './setup-destinations.js'
 import { assessReadiness, remedyLine } from './commands-doctor.js'
 import { hooksInstallCommand, pickHarnessesToInstall } from './commands-hook-install.js'
+import { detectedHarnesses } from './install-hooks.js'
 import {
   observedCompanionReceipt,
   observedSetupProof,
@@ -58,12 +59,11 @@ import { inspectCliInstallations } from './cli-bin.js'
 import { hookAdapterTargetsArtifact, inspectHookAdapter, installHookAdapter } from './hook-adapter.js'
 import {
   CLAUDE_COMMANDS_STATE_ID,
-  CLAUDE_COMMANDS_PROSE,
   claudeCommandRulesInstalled,
   claudeCommandsNotWritten,
   installClaudeCommandRules,
 } from './claude-command-approval.js'
-import { CODEX_COMMANDS_PROSE, installCodexCommandRules } from './codex-command-rules.js'
+import { installCodexCommandRules } from './codex-command-rules.js'
 import { packageVersion } from './release.js'
 import { HARNESS_LABELS, SOURCE_CONTEXT_HARNESSES, type SourceContextHarness } from './harnesses.js'
 
@@ -234,8 +234,10 @@ async function closeGap(
     let harnesses: readonly string[] = flags.skillsHarness?.split(',').map((value) => value.trim())
       ?? [...new Set(before.copies.flatMap((copy) => copy.harnesses))]
     if (harnesses.length === 0 && deps.io.interactive === true && deps.io.multiselect) {
-      harnesses = await deps.io.multiselect('Which agent harnesses should load the Notifai skill?',
-        SOURCE_CONTEXT_HARNESSES.map((value) => ({ value, label: HARNESS_LABELS[value] })), []) ?? []
+      const detected = detectedHarnesses(deps.env, deps.hookPlatform ?? process.platform).filter((value): value is SourceContextHarness =>
+        (SOURCE_CONTEXT_HARNESSES as readonly string[]).includes(value))
+      harnesses = await deps.io.multiselect('Which agent apps should get the Notifai skill?',
+        SOURCE_CONTEXT_HARNESSES.map((value) => ({ value, label: HARNESS_LABELS[value] })), detected) ?? []
     }
     if (harnesses.length === 0 || harnesses.some((harness) => !(SOURCE_CONTEXT_HARNESSES as readonly string[]).includes(harness))) {
       deps.io.err(`Choose the harnesses for this skill with --skills-harness ${SOURCE_CONTEXT_HARNESSES.join(',')}.`)
@@ -269,13 +271,13 @@ async function closeGap(
 
 function deviceBridgeMessage(devices: readonly RoutableDevice[]): string {
   if (devices.length === 0) {
-    return 'Waiting for a Companion App to sign in and register…'
+    return 'Waiting for the Notifai app to sign in…'
   }
   const denied = devices.find((device) => device.permission_status === 'denied')
   if (denied) return `Waiting for notifications to be allowed on ${denied.display_name}…`
   const undecided = devices.find((device) => device.permission_status === 'not_determined')
-  if (undecided) return `Waiting for ${undecided.display_name} to allow the notification prompt…`
-  return 'Waiting for a Companion device to become ready…'
+  if (undecided) return `Waiting for ${undecided.display_name} to allow notifications…`
+  return `Waiting for ${devices[0]!.display_name} to finish connecting…`
 }
 
 /** How many Companion Apps this Account has registered, on any platform. */
@@ -340,16 +342,22 @@ async function waitForReadyDevice(deps: CommandDeps, state: ReadinessState): Pro
   const platform = needsPlatform ? await askCompanionPlatform(deps) : null
   if (needsPlatform && platform === null) return 'pending'
   const setupUrl = setupCompanionUrl(authed.baseUrl, platform ?? undefined)
-  const stepsLabel =
-    platform === null ? 'Setup steps (no typing)' : `${companionPlatformLabel(platform)} steps (no typing)`
+  const technical = state.technical as { account_email?: unknown } | null | undefined
+  const email = typeof technical?.account_email === 'string' ? technical.account_email : null
+  // One instruction in the User's words. The state's own detail and summary
+  // are written for a report and would say the same step twice.
+  const steps = platform === null
+    ? [`${remedy.summary.charAt(0).toUpperCase()}${remedy.summary.slice(1)}.`]
+    : [
+        `Install Notifai on your ${companionPlatformLabel(platform)}: ${setupUrl}`,
+        `Sign in there with ${email ?? 'the email you used for this computer'}, and allow notifications when it asks.`,
+      ]
   await deps.io.note?.(
     [
-      state.detail,
-      remedy.summary,
-      `${stepsLabel}: ${setupUrl}`,
-      `I will wait up to ${budgetLabel} for a Companion App to become ready. Ctrl-C stops this wait.`,
+      ...steps,
+      `I'll wait up to ${budgetLabel} for it. Ctrl-C stops waiting; \`${SETUP_COMMAND}\` picks up from here later.`,
     ].join('\n'),
-    'Finish setup on your phone',
+    platform === null ? 'Finish on your phone' : `Get Notifai on your ${companionPlatformLabel(platform)}`,
   )
 
   // The platform choice (or resuming an existing installation) starts the
@@ -360,9 +368,7 @@ async function waitForReadyDevice(deps: CommandDeps, state: ReadinessState): Pro
   const sleep =
     deps.sleep ??
     ((milliseconds: number) => new Promise<void>((resolve) => setTimeout(resolve, milliseconds)))
-  const spinner = await deps.io.spinner?.(
-    `Waiting up to ${budgetLabel} for a Companion device…`,
-  )
+  const spinner = await deps.io.spinner?.(deviceBridgeMessage([]))
   let lastDevices: RoutableDevice[] = []
   let deadline = now() + DEVICE_BRIDGE_TIMEOUT_MS
 
@@ -567,18 +573,16 @@ async function runSetupProof(deps: CommandDeps): Promise<GapCloseResult> {
       companion_receipt: { state: 'unknown', observed_at: null },
     }
     if (!writeSetupProof(deps, proof)) return 'failed'
-    deps.io.out(`Verification notification sent to ${target.display_name} (${proof.request_id}).`)
+    deps.io.out(`Test notification sent to ${target.display_name} (${proof.request_id}).`)
   } else {
-    deps.io.out(`Checking verification notification ${proof.request_id} again.`)
+    deps.io.out(`Checking test notification ${proof.request_id} again.`)
   }
 
   const now = deps.now ?? Date.now
   const sleep = deps.sleep ?? ((milliseconds: number) => new Promise<void>((resolve) => setTimeout(resolve, milliseconds)))
   const deadline = now() + PROOF_TIMEOUT_MS
   const spinner = deps.io.interactive === true
-    ? await deps.io.spinner?.(
-        "Waiting for a Companion Receipt (the app's delivery confirmation)…",
-      )
+    ? await deps.io.spinner?.(`Waiting for ${target.display_name} to confirm it arrived…`)
     : null
   let lastError: unknown = null
   let replacedMissingProof = false
@@ -592,10 +596,13 @@ async function runSetupProof(deps: CommandDeps): Promise<GapCloseResult> {
           spinner?.error('Could not save the observed Companion Receipt')
           return 'failed'
         }
-        spinner?.stop(`Receipt observed from ${observed.delivery.device_name}`)
-        deps.io.out(
-          `Companion Receipt (the app's delivery confirmation) observed from ${observed.delivery.device_name}.`,
-        )
+        // One line either way: the spinner's close is the line a person reads.
+        if (spinner) spinner.stop(`${observed.delivery.device_name} got the test notification`)
+        else {
+          deps.io.out(
+            `Companion Receipt (the app's delivery confirmation) observed from ${observed.delivery.device_name}.`,
+          )
+        }
         return 'closed'
       }
       lastError = null
@@ -652,6 +659,38 @@ function refreshAfterClose(id: string): readonly ReadinessRefresh[] | undefined 
     : undefined
 }
 
+/** The optional states init offers with a yes/no question of their own. */
+function isOffered(id: string): boolean {
+  // Every other hook sub-state is a report line about routing, not an errand
+  // with a yes/no question of its own; offering the hooks question for one of
+  // them would ask about something the answer does not change.
+  return id === 'hooks' || id === 'skill' || id === 'claude-commands' || id === 'codex-commands'
+}
+
+function explicitChoice(state: ReadinessState, flags: InitFlags): boolean | undefined {
+  return state.id === 'hooks' ? flags.hooks
+    : state.id === 'skill' ? flags.skills
+      : state.id === 'claude-commands' ? flags.claudeCommands
+        : state.id === 'codex-commands' ? flags.codexCommands
+          : undefined
+}
+
+/**
+ * Whether an offer waits until the product has been shown to work.
+ *
+ * Hooks, command approval and the skill are offered after the delivery proof,
+ * never in front of it: a first-timer who is still connecting their computer
+ * and installing the phone app should not first answer questions about
+ * harness wiring. A flag the caller already passed is no question, so it is
+ * acted on at once.
+ */
+function offerWaits(deps: CommandDeps, state: ReadinessState, flags: InitFlags, readiness: Readiness): boolean {
+  return deps.io.interactive === true &&
+    isOffered(state.id) &&
+    explicitChoice(state, flags) === undefined &&
+    firstRequiredBlocker(readiness) !== null
+}
+
 /** Whether an optional gap should be closed, given flags and who is watching. */
 function wantsOptional(deps: CommandDeps, state: ReadinessState, flags: InitFlags): Promise<boolean> {
   // Optional CLI updates are surfaced by doctor or when a missing feature is
@@ -659,26 +698,20 @@ function wantsOptional(deps: CommandDeps, state: ReadinessState, flags: InitFlag
   if (state.id === 'contract') return Promise.resolve(false)
   if (state.id === 'project') return Promise.resolve(false)
   if (state.id === 'project-enablement') return Promise.resolve(true)
-  // Every other hook sub-state is a report line about routing, not an errand
-  // with a yes/no question of its own; offering the hooks question for one of
-  // them would ask about something the answer does not change.
-  if (state.id !== 'hooks' && state.id !== 'skill' && state.id !== 'claude-commands' && state.id !== 'codex-commands') return Promise.resolve(false)
-  const explicit = state.id === 'hooks' ? flags.hooks
-    : state.id === 'skill' ? flags.skills
-      : state.id === 'claude-commands' ? flags.claudeCommands
-        : flags.codexCommands
+  if (!isOffered(state.id)) return Promise.resolve(false)
+  const explicit = explicitChoice(state, flags)
   if (explicit !== undefined) return Promise.resolve(explicit)
   // An agent is never asked, and never assumed into a change it did not
   // request: silence means no, and the summary says what was skipped.
   if (deps.io.interactive !== true) return Promise.resolve(false)
   const question =
     state.id === 'hooks'
-      ? 'Install harness hooks, so your agents use Notifai on their own and their questions reach your devices when you are away?'
+      ? 'Connect your agents to Notifai, so they notify you on their own and their questions reach you when you are away? This adds Notifai hooks to your agent apps.'
       : state.id === 'claude-commands'
-        ? `Let Claude Code run Notifai's ${CLAUDE_COMMANDS_PROSE} commands without asking first? Otherwise a question can wait for a terminal approval while you are away.`
+        ? 'Let Claude Code run Notifai\'s own commands without asking each time? Otherwise a question can wait at a permission prompt while you are away.'
         : state.id === 'codex-commands'
-          ? `Let Codex run Notifai's ${CODEX_COMMANDS_PROSE} commands outside its sandbox without asking first? Otherwise a question can wait for a terminal approval while you are away.`
-          : 'Install or update the bundled Notifai skill for your agents?'
+          ? 'Let Codex run Notifai\'s own commands outside its sandbox without asking each time? Otherwise a question can wait at a permission prompt while you are away.'
+          : 'Give your agents the Notifai skill, which tells them when and how to notify you?'
   return deps.io.confirm(question, true)
 }
 
@@ -741,17 +774,17 @@ async function scopeForSkillInstall(
   if (flags.skillsScope !== undefined) return flags.skillsScope
   if (deps.io.interactive === true && deps.io.select) {
     const selected = await deps.io.select(
-      'Should the agent guidance skill be installed for this project only, or for every project on this machine?',
+      'Use the Notifai skill in this project only, or in every project on this computer?',
       [
         {
           value: 'project',
           label: 'This project',
-          hint: 'the skill stays in this checkout',
+          hint: 'only agents working here get it',
         },
         {
           value: 'global',
-          label: 'This machine',
-          hint: 'the skill follows you into every repo',
+          label: 'Every project',
+          hint: 'agents get it wherever they work',
         },
       ],
     )
@@ -832,6 +865,9 @@ export async function initCommand(deps: CommandDeps, flags: InitFlags): Promise<
   // earlier and sends the reader back into the command that just failed.
   let loginBlocker: ReadinessState | null = null
   const attempted = new Set<string>()
+  // Offers the User answered no to in this run: the close does not offer
+  // them straight back.
+  const declined = new Set<string>()
 
   // Re-assess after every successful action. This is how a browser approval or
   // companion registration can unlock the next state while the user is still
@@ -863,7 +899,11 @@ export async function initCommand(deps: CommandDeps, flags: InitFlags): Promise<
       }
 
       if (state.status === 'optional-gap') {
-        if (remedy.by !== 'cli' || !(await wantsOptional(workingDeps, state, resolved))) continue
+        if (remedy.by !== 'cli' || offerWaits(workingDeps, state, resolved, readiness)) continue
+        if (!(await wantsOptional(workingDeps, state, resolved))) {
+          if (isOffered(state.id)) declined.add(state.id)
+          continue
+        }
         if (needsSkillScope(state)) {
           const scope = await scopeForSkillInstall(workingDeps, resolved)
           if (scope === 'declined') {
@@ -991,14 +1031,15 @@ export async function initCommand(deps: CommandDeps, flags: InitFlags): Promise<
 
   const blocker = loginBlocker ?? firstRequiredBlocker(readiness)
   if (flags.json === true) deps.io.out(JSON.stringify(readinessJson(readiness), null, 2))
-  else await printInitClose(deps, readiness, resolved, loginBlocker)
+  else await printInitClose(deps, readiness, resolved, loginBlocker, declined)
   if (blocker === null) return failed ? EXIT.failed : EXIT.ok
   return failed || workingDeps.io.interactive !== true ? EXIT.failed : EXIT.ok
 }
 
-function leftoverOptionals(readiness: Readiness, flags: InitFlags): ReadinessState[] {
+function leftoverOptionals(readiness: Readiness, flags: InitFlags, declined: ReadonlySet<string>): ReadinessState[] {
   return readiness.states.filter((state) => {
     if (state.status !== 'optional-gap') return false
+    if (declined.has(state.id)) return false
     if (isOptionalAutomation(state.id)) return false
     // Not an install anyone declined, so "Optional, not set up" would misread
     // it; it gets its own line below.
@@ -1034,11 +1075,12 @@ async function printInitClose(
   readiness: Readiness,
   flags: InitFlags,
   stoppedBy: ReadinessState | null = null,
+  declined: ReadonlySet<string> = new Set(),
 ): Promise<void> {
   const blocker = stoppedBy ?? firstRequiredBlocker(readiness)
   const canSend = readiness.states.find((state) => state.id === 'devices')?.status === 'ready'
   const questions = questionRoutingReady(readiness)
-  const leftovers = leftoverOptionals(readiness, flags).filter(
+  const leftovers = leftoverOptionals(readiness, flags, declined).filter(
     (state) => state.id !== 'contract',
   )
 
@@ -1056,17 +1098,20 @@ async function printInitClose(
 
   if (deps.io.interactive === true) {
     if (blocker === null) {
-      const lines = projectDisabledHere(readiness)
+      const disabled = projectDisabledHere(readiness)
+      const lines = disabled
         ? ['You are signed in.', 'Nothing from this project reaches your devices.']
         : [
-            canSend ? 'You can send notifications.' : 'You are signed in.',
+            canSend ? 'Your agents can notify you.' : 'You are signed in.',
             questions
-              ? 'Questions will reach your devices.'
-              : 'Questions are terminal-only until Question Routing is ready.',
+              ? 'Their questions reach your devices too.'
+              : 'Their questions stay in the terminal.',
           ]
       await deps.io.note?.(lines.join('\n'), 'Ready')
       printOptionalLeftovers(deps, leftovers)
-      deps.io.out(allSetLine(readiness, questions))
+      // The note already says what is true; only a disabled Project has a
+      // command to add.
+      if (disabled) deps.io.out(allSetLine(readiness, questions))
       await deps.io.outro?.('All set ✨')
       return
     }

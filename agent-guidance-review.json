@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "behavior_digest": "sha256:6a8af78401b8723ceb705f35156fbe66509558215da7dbaea532aba53fc41c48",
+  "behavior_digest": "sha256:b7d22523e34155b29acfc0efc89c3a1021e9b9a619c2a95c940642ed054c4afe",
   "outcome": "reviewed-no-impact",
   "surfaces_reviewed": [
     "lifecycle-hooks",
@@ -9,5 +9,5 @@
     "cli-readiness",
     "domain-terms"
   ],
-  "reason": "Reviewed lifecycle hooks, skill setup, capability boundaries and domain terms. Cursor notes and presence use the held native Stop only; the reference states the one-hour and working-turn boundary and retains ask --wait. OpenClaw native Codex tool attribution and note acknowledgements share exact generation ownership, and note context survives only the same native admission rebuild. Live staging proof covers macOS Cursor TUI and local OpenClaw Codex runtime. This is implementation review, not independent approval. Cursor attendance now probes the native agent ancestor instead of its intermediate hook shell; reviewed for correct withdrawal when the UI exits. The Cursor prompt callback records the turn boundary even while async ask remains unsupported. Reviewed 708c83d across all five surfaces: repository discovery now avoids invoking Git when no repository is reachable, preventing the macOS developer-tools prompt during setup. Lifecycle identity still uses Git inside repositories and honors GIT_DIR/GIT_WORK_TREE; Projectless requests, harness setup instructions, readiness requirements and domain terms are unchanged. The guidance-change ledger records this implementation-only setup fix; no instruction text needs changing."
+  "reason": "Reviewed the setup-copy change across all five surfaces. The prepared pairing message agents relay now says to scan the QR with the phone's camera, sign in with email if asked, check the code and approve, and keeps the proof-bearing link in the conversation only; harness-setup.md still tells agents to send it as written. Interactive init defers its hooks, command-approval and skill questions until no required gate is open, acting on explicit flags at once, so agents passing flags see no change. The device remedy names the missing sub-state (update, Settings, allow prompt, finish connecting) and the devices detail drops platform and permission jargon; technical.devices is unchanged. The default Machine name drops a trailing .local. Lifecycle hooks, readiness ids, statuses and JSON shapes and domain terms are unchanged."
 }

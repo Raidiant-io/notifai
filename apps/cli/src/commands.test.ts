@@ -31,6 +31,8 @@ import { guidanceSessionNeedsToken } from './command-guidance.js'
 import { PROGRAM_RECEIPT } from './commands-ask-wait.js'
 import type { AskFlags } from './commands-ask.js'
 import { MISSING_TITLE_NOTE } from './commands-ask.js'
+import { defaultMachineName } from './commands-auth.js'
+import { deviceInstallRemedy } from './commands-devices.js'
 import { guidanceCheckCommand,guidanceShowCommand as readCurrentGuidance } from './commands-guidance.js'
 import {
 EXIT,
@@ -625,6 +627,50 @@ it('resumes the same init after a required CLI update becomes current', async ()
   }
 
 
+
+  it('offers hooks, command approval and the skill only after the delivery proof', async () => {
+    const cwd = mkdtempSync(path.join(os.tmpdir(), 'init-offers-after-proof-'))
+    const io = new InteractiveIo()
+    io.confirmAnswer = false
+    const client = {
+      health: async () => true,
+      compatibility: async () => currentCompatibility,
+      listDevices: async () => ({ devices: [readyIphone] }),
+      accessStatus: async () => ({ status: 'active', reason: 'alpha_grant', expires_at: null, email: 'user@example.test' }),
+      submit: async () => {
+        io.prompts.push('<proof sent>')
+        return setupReceipt('req_offers')
+      },
+      evidence: async () =>
+        setupEvidence('req_offers', { state: 'observed', observed_at: '2026-08-18T18:00:02.000Z', latency_ms: 1_000 }),
+    } as unknown as ApiClient
+    const deps = { ...makeDeps(io, client), cwd, env: isolatedEnv(cwd) }
+
+    await initCommand(deps, {})
+
+    const proof = io.prompts.indexOf('<proof sent>')
+    const hooks = io.prompts.findIndex((prompt) => prompt.startsWith('Connect your agents to Notifai'))
+    expect(proof).toBeGreaterThanOrEqual(0)
+    expect(hooks).toBeGreaterThan(proof)
+    // A no in this run is not offered straight back by the close.
+    expect(io.outLines.join('\n')).not.toContain('install the skill')
+  })
+
+  it('names the computer without the .local suffix macOS adds', () => {
+    expect(defaultMachineName('Rafaels-MacBook-Pro.local')).toBe('Rafaels-MacBook-Pro')
+    expect(defaultMachineName('build-box')).toBe('build-box')
+    expect(defaultMachineName('.local')).toBe('.local')
+  })
+
+  it('tells the User the one thing a registered device is missing', () => {
+    const remedy = (device: Partial<typeof readyIphone>) =>
+      deviceInstallRemedy({ baseUrl: 'https://test.notifai.invalid', email: null, devices: [{ ...readyIphone, ...device } as never] })
+    expect(remedy({ permission_status: 'denied' })).toContain('Settings')
+    expect(remedy({ permission_status: 'not_determined' })).toContain('allow notifications when it asks')
+    expect(remedy({ registration_healthy: false })).toBe('open Notifai on the device so it can finish connecting')
+    expect(remedy({ support: { ...currentSupport, state: 'must_update', affected_operation: 'receive_notifications' } as never }))
+      .toBe('update the Notifai app on the device')
+  })
 
   it('never hangs an agent on the device wait or keep-waiting prompt', async () => {
     const cwd = mkdtempSync(path.join(os.tmpdir(), 'init-device-agent-'))

@@ -155,10 +155,18 @@ export function deviceInstallRemedy(options: {
         : `Notifai on ${companionPlatformLabel(options.platform)}`
     return `open the steps for ${named} at ${destination}, install it, ${sameEmail}, and allow notifications`
   }
+  if (options.devices.some((d) => d.support?.state === 'must_update' && d.support.affected_operation === 'receive_notifications')) {
+    return 'update the Notifai app on the device'
+  }
   if (options.devices.some((d) => d.permission_status === 'denied')) {
     return "allow notifications for Notifai in the device's Settings"
   }
-  return 'open Notifai on the device and allow its notification prompt'
+  if (options.devices.some((d) => d.permission_status === 'not_determined')) {
+    return 'open Notifai on the device and allow notifications when it asks'
+  }
+  // Notifications are allowed, so the prompt is not what is missing: the app
+  // has not finished registering, which it does when it is opened.
+  return 'open Notifai on the device so it can finish connecting'
 }
 
 export function deviceCanReceive(device: RoutableDevice): boolean {

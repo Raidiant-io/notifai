@@ -1032,7 +1032,7 @@ export async function pickHarnessesToInstall(
   if (detected.length === 1) return detected
   if (deps.io.interactive === true && deps.io.multiselect) {
     const picked = await deps.io.multiselect(
-      'Which agent harnesses should Notifai wire here?',
+      'Which agent apps should Notifai connect to?',
       HOOK_INSTALLABLE_HARNESSES.map((name) => ({
         value: name,
         label: HARNESS_LABELS[name],

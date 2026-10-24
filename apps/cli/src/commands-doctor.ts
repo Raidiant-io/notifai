@@ -745,7 +745,7 @@ export async function assessReadiness(
             detail:
               devices.length === 0
                 ? 'no active Companion App registered yet'
-                : `${devices.map((d) => `${d.display_name} (${d.platform}, ${d.permission_status})`).join(', ')} — registered but not able to receive`,
+                : `${devices.map((d) => d.display_name).join(', ')} can't receive notifications yet`,
             // The pieces an agent's fixed wording needs, separately from the
             // sentence a human reads: where the install steps are, which
             // email the app must sign in with, and what is registered so far.
