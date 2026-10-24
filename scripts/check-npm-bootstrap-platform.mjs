@@ -13,7 +13,9 @@ import { repositoryRoot } from './cross-platform.mjs'
 const staged = mkdtempSync(path.join(os.tmpdir(), 'notifai-npm-platform-source-'))
 mkdirSync(path.join(staged, 'lib'))
 mkdirSync(path.join(staged, 'data'))
-copyFileSync(path.join(repositoryRoot, 'apps/cli/npm/platform.mjs'), path.join(staged, 'lib/platform.mjs'))
+for (const name of ['platform.mjs', 'notarization.mjs']) {
+  copyFileSync(path.join(repositoryRoot, 'apps/cli/npm', name), path.join(staged, 'lib', name))
+}
 copyFileSync(path.join(repositoryRoot, 'scripts/install.ps1'), path.join(staged, 'data/install.ps1'))
 const { nativePlatform } = await import(pathToFileURL(path.join(staged, 'lib/platform.mjs')).href)
 if (process.platform === 'win32') {
