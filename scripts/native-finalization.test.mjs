@@ -63,5 +63,5 @@ test('macOS finalization calls codesign and the keychain the way the real tools 
   assert.ok(listed > 0 && listed < signed)
   assert.match(signing, /finally \{[\s\S]*'list-keychains', '-d', 'user', '-s', \.\.\.searchList/)
   // A ticket lookup made right after acceptance fails, so the check waits and retries.
-  assert.match(signing, /pause\(TICKET_FIRST_CHECK_MS\)[\s\S]*verifyNotarization\(/)
+  assert.match(signing, /pause\(TICKET_FIRST_CHECK_MS\)[\s\S]*verifyAcceptedNotarization\(/)
 })
