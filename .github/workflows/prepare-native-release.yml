@@ -155,3 +155,11 @@ jobs:
           path: ${{ runner.temp }}/native-final/
           if-no-files-found: error
           retention-days: 90
+      - name: Retain failed finalization evidence without signing credentials
+        if: failure()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: native-final-failed-${{ matrix.target }}-${{ inputs.expected_sha }}-attempt-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/native-final/
+          if-no-files-found: warn
+          retention-days: 14
