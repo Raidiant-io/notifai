@@ -106,7 +106,7 @@ jobs:
       - name: Verify npm bootstrap on its minimum Node version
         if: matrix.target == 'bun-linux-x64'
         run: |
-          node --test apps/cli/npm/adapter.test.mjs apps/cli/npm/route.test.mjs
+          node --test apps/cli/npm/notarization.test.mjs apps/cli/npm/adapter.test.mjs apps/cli/npm/route.test.mjs
           node dist/npm/notifai/bin/notifai.mjs --help
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         if: matrix.target == 'bun-linux-x64'
