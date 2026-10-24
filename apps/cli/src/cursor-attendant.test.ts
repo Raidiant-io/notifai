@@ -4,7 +4,7 @@ import type { SessionAttendantOptions } from './session-attendant.js'
 import type { MessageHandOffDeps } from './session-message-handoff.js'
 import type { Logger } from './logging.js'
 import { attendCursorStop } from './cursor-attendant.js'
-const state = vi.hoisted(() => ({ notified: true, promptAt: 1, options: null as SessionAttendantOptions | null, delivery: null as MessageHandOffDeps | null }))
+const state = vi.hoisted(() => ({ notified: true, promptAt: 1, hostAlive: true, options: null as SessionAttendantOptions | null, delivery: null as MessageHandOffDeps | null }))
 vi.mock('./commands-core.js', () => ({ makeClient: () => ({}) }))
 vi.mock('./install-hooks.js', () => ({ loadCursorSettings: () => ({ hooks: { stop: [{ timeout: 3600, loop_limit: null }] } }), findInstallations: () => [{ harness: 'cursor', handlers: [{ event: 'stop', handlerIndex: 0 }] }] }))
 vi.mock('./hook-session-state.js', () => ({
@@ -14,13 +14,14 @@ vi.mock('./hook-session-state.js', () => ({
 }))
 vi.mock('./hook-question-lock.js', () => ({ acquireClaimFile: () => 'claim', readClaimFile: () => ({ token: 'claim' }), releaseClaimFile: vi.fn() }))
 vi.mock('./session-attendant-state.js', () => ({ attendantClaimPath: () => '/claim', writeAttendantStatus: vi.fn() }))
-vi.mock('./process-identity.js', () => ({ currentProcessIdentity: () => ({ pid: 1, start: 'self' }), processStartTime: () => 'host', processIdentityLiveness: () => 'alive' }))
+vi.mock('./process-ancestry.js', () => ({ processAncestry: () => [{ pid: 2, name: 'zsh' }, { pid: 3, name: 'cursor-agent' }] }))
+vi.mock('./process-identity.js', () => ({ currentProcessIdentity: () => ({ pid: 1, start: 'self' }), processStartTime: () => 'host', processIdentityLiveness: () => state.hostAlive ? 'alive' : 'gone' }))
 vi.mock('./session-attendant.js', () => ({ runSessionAttendant: async (options: SessionAttendantOptions) => {
   state.options = options
   await options.onMessages!([], { mayWrite: () => true, generation: () => 1, incarnation: () => 'incarnation' })
 } }))
 vi.mock('./session-message-handoff.js', () => ({ handOffSessionMessages: async (_messages: unknown, _attendant: unknown, deps: MessageHandOffDeps) => { state.delivery = deps; return 'done' } }))
-beforeEach(() => { state.notified = true; state.promptAt = 1; state.options = null; state.delivery = null })
+beforeEach(() => { state.notified = true; state.promptAt = 1; state.hostAlive = true; state.options = null; state.delivery = null })
 function deps() {
   return { env: { NOTIFAI_HOOK_SOURCE_PID: '2' }, io: { out: vi.fn() }, store: { load: () => ({ baseUrl: 'https://example.test', machineId: 'test', secret: 'test' }) } } as unknown as CommandDeps
 }
@@ -52,4 +53,10 @@ it('withdraws its writer when a new user prompt supersedes the held Stop', async
   expect(state.options?.gates()).toEqual({ ok: true })
   state.promptAt = 2
   expect(state.options?.gates()).toEqual({ ok: false, reason: 'cursor-stop-closed' })
+})
+
+it('ends attendance when the native host dies even if its hook shell remains', async () => {
+  await attendCursorStop(deps(), { session_id: 'conversation', status: 'completed' }, {} as Logger, Date.now() + 60000)
+  state.hostAlive = false
+  expect(state.options?.probe()).toEqual({ state: 'ended', reason: 'harness-gone' })
 })

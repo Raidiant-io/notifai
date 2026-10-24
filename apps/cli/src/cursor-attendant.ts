@@ -10,6 +10,7 @@ import type { Logger } from './logging.js'
 import { readSessionIncarnation, readSessionState, rotateSessionIncarnation, sessionHasEnded, sessionNotified } from './hook-session-state.js'
 import { acquireClaimFile, readClaimFile, releaseClaimFile } from './hook-question-lock.js'
 import { attendantClaimPath, writeAttendantStatus } from './session-attendant-state.js'
+import { processAncestry } from './process-ancestry.js'
 import { currentProcessIdentity, processIdentityLiveness, processStartTime } from './process-identity.js'
 import { CURSOR_STOP_TIMEOUT_SECONDS } from './hook-events.js'
 import { runSessionAttendant } from './session-attendant.js'
@@ -22,10 +23,16 @@ export async function attendCursorStop(deps: CommandDeps, envelope: HookEnvelope
   const record = readSessionIncarnation(sessionId, deps.env)
   const promptAt = readSessionState(sessionId, deps.env).last_prompt_at
   const writer = currentProcessIdentity()
-  const pid = Number(deps.env['NOTIFAI_HOOK_SOURCE_PID'])
-  const start = processStartTime(pid)
+  const sourcePid = Number(deps.env['NOTIFAI_HOOK_SOURCE_PID'])
+  const chain = processAncestry()
+  // Cursor starts hooks through a shell. That shell can survive its UI, so
+  // attendance must probe the actual native owner above it, not just $PPID.
+  const hostProcess = chain?.some((ancestor) => ancestor.pid === sourcePid)
+    ? chain.find((ancestor) => ancestor.name === 'cursor-agent') : undefined
+  const pid = hostProcess?.pid
+  const start = pid === undefined ? null : processStartTime(pid)
   const credential = deps.store.load()
-  if (record === null || writer === null || start === null || credential === null) return
+  if (record === null || writer === null || pid === undefined || start === null || credential === null) return
   const host = { pid, start }
   const fingerprint = (): string | null => {
     const installations = findInstallations(deps.env, deps.hookAdapterHome, deps.hookPlatform).filter((i) => i.harness === 'cursor')

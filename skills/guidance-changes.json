@@ -1,5 +1,5 @@
 {
-  "current": "c25ef6695bcbc7c0f7f657077d4a0346c38366d3cacc512f88b7dddf97a0bf5c",
+  "current": "c756658cd5990ccdd22608d143b015af53f0d60f71fffac6d79af00f779b039e",
   "releases": [
     {
       "digest": "3e47b01bc6bbfb43e910c660b9964fab6459d75148c3c02dcbcd0be64cfb2963",
@@ -52,6 +52,10 @@
     {
       "digest": "c25ef6695bcbc7c0f7f657077d4a0346c38366d3cacc512f88b7dddf97a0bf5c",
       "note": "Cursor can receive Session Notes through a held native Stop continuation. OpenClaw native Codex shells retain their OpenClaw session identity."
+    },
+    {
+      "digest": "c756658cd5990ccdd22608d143b015af53f0d60f71fffac6d79af00f779b039e",
+      "note": "Cursor Session Presence ends when its native agent exits, even if an intermediate hook shell remains alive."
     }
   ]
 }

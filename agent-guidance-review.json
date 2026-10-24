@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "behavior_digest": "sha256:58e0e5684f9b7475adb0686026584405567e383a9d36d175a9d6cd5fe343a1e9",
+  "behavior_digest": "sha256:9a9aceef67eb7b06b87b5fcaa91b6f0780d1b253ac5887e8f93298ef5fb1f40b",
   "outcome": "guidance-updated",
   "surfaces_reviewed": [
     "lifecycle-hooks",
@@ -9,5 +9,5 @@
     "cli-readiness",
     "domain-terms"
   ],
-  "reason": "Reviewed lifecycle hooks, skill setup, capability boundaries and domain terms. Cursor notes and presence use the held native Stop only; the reference states the one-hour and working-turn boundary and retains ask --wait. OpenClaw native Codex tool attribution and note acknowledgements share exact generation ownership, and note context survives only the same native admission rebuild. Live staging proof covers macOS Cursor TUI and local OpenClaw Codex runtime. This is implementation review, not independent approval."
+  "reason": "Reviewed lifecycle hooks, skill setup, capability boundaries and domain terms. Cursor notes and presence use the held native Stop only; the reference states the one-hour and working-turn boundary and retains ask --wait. OpenClaw native Codex tool attribution and note acknowledgements share exact generation ownership, and note context survives only the same native admission rebuild. Live staging proof covers macOS Cursor TUI and local OpenClaw Codex runtime. This is implementation review, not independent approval. Cursor attendance now probes the native agent ancestor instead of its intermediate hook shell; reviewed for correct withdrawal when the UI exits."
 }
