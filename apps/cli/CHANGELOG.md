@@ -8,6 +8,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 This project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 and [Conventional Commits](https://www.conventionalcommits.org/en/v1.0.0/).
 
+## [14.2.1](https://github.com/Raidiant-io/notifai/compare/v14.2.0...v14.2.1) (2026-10-24)
+
+### Bug Fixes
+
+* Retry propagation of Apple-accepted notarization tickets during release signing, retaining failed artifacts for diagnosis.
+* Ask optional setup questions after the test notification, use plainer approval and connection messages, and finish with one closing note.
+* Give agents explicit scripts for each setup moment and a plainer Codex `/hooks` request.
+
 ## [14.2.0](https://github.com/Raidiant-io/notifai/compare/v14.1.1...v14.2.0) (2026-10-24)
 
 
