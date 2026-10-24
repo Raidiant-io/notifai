@@ -547,7 +547,7 @@ jobs:
   adapter-acceptance:
     name: npm adapter (${{ matrix.target }})
     needs: npm
-    if: (inputs.mode == 'candidate' || inputs.mode == 'release') && startsWith(github.ref, 'refs/tags/v')
+    if: always() && needs.npm.result == 'success' && (inputs.mode == 'candidate' || inputs.mode == 'release') && startsWith(github.ref, 'refs/tags/v')
     timeout-minutes: 30
     strategy:
       fail-fast: false
@@ -817,7 +817,7 @@ jobs:
     if: inputs.mode == 'release'
   promote-npm:
     needs: adapter-acceptance
-    if: inputs.mode == 'release' && inputs.channel != 'none'
+    if: always() && needs.adapter-acceptance.result == 'success' && inputs.mode == 'release' && inputs.channel != 'none'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     environment: npm-release
@@ -929,7 +929,43 @@ jobs:
             exit 1
           fi
           node scripts/publish-native-release.mjs "${args[@]}" --publication-receipt "$RUNNER_TEMP/publication/publication.json"
-    if: inputs.mode == 'release' && inputs.channel != 'none'
+    if: always() && needs.promote-npm.result == 'success' && inputs.mode == 'release' && inputs.channel != 'none'
+  release-result:
+    needs:
+      - source
+      - native
+      - native-publication
+      - npm
+      - adapter-acceptance
+      - promote-npm
+      - promote-native
+    if: always() && inputs.mode == 'release'
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - name: Require every release boundary and retain one execution record
+        env:
+          RESULTS: ${{ toJSON(needs) }}
+          CHANNEL: ${{ inputs.channel }}
+          SOURCE_REVISION: ${{ inputs.expected_sha }}
+        run: |-
+          node <<'NODE'
+          const fs = require('node:fs');
+          const results = JSON.parse(process.env.RESULTS);
+          const required = ['source', 'native', 'native-publication', 'npm', 'adapter-acceptance'];
+          if (process.env.CHANNEL !== 'none') required.push('promote-npm', 'promote-native');
+          const missing = required.filter(name => results[name]?.result !== 'success');
+          const record = { schema: 1, source_revision: process.env.SOURCE_REVISION, run_id: process.env.GITHUB_RUN_ID, channel: process.env.CHANNEL, ok: missing.length === 0, jobs: results, missing };
+          fs.writeFileSync('release-record.json', JSON.stringify(record, null, 2));
+          if (missing.length) { console.error('Required release evidence did not pass: ' + missing.join(', ')); process.exitCode = 1; }
+          NODE
+      - if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: release-record-${{ inputs.expected_sha }}
+          path: release-record.json
+          if-no-files-found: error
+          retention-days: 90
 concurrency:
   group: cli-release-${{ inputs.expected_sha }}
   cancel-in-progress: false
