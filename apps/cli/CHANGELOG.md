@@ -8,6 +8,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 This project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 and [Conventional Commits](https://www.conventionalcommits.org/en/v1.0.0/).
 
+## [14.2.0-beta.2](https://github.com/Raidiant-io/notifai/compare/v14.1.1...v14.2.0-beta.2) (2026-10-24)
+
+### Harness support
+
+* Identify Cursor conversations exactly for sends, maintain idle Session Presence on the macOS interactive CLI, and deliver notes without crossing prompt boundaries.
+* Identify OpenClaw sessions running on its Codex engine as OpenClaw, maintain Session Presence, and deliver notes.
+* Preserve OpenClaw notes when its prompt is rebuilt.
+
+### Release reliability
+
+* Capture failed macOS notarization checks and retry only evidenced lookup failures; rejection and unknown errors remain fatal.
+
+* Vendor verified Bun license materials so native packaging does not depend on fetching them.
+* Bound npm-adapter verification phases with timeouts and process diagnostics.
+* Check agent guidance before builds and tests, and retain focused contract and routing regressions.
+
 ## [14.1.1](https://github.com/Raidiant-io/notifai/compare/v14.1.0...v14.1.1) (2026-10-23)
 
 
