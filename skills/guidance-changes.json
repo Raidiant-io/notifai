@@ -1,5 +1,5 @@
 {
-  "current": "a6caf4eef8b6e690db4aa33b065aecbe8c8208da0771257b6e9619894b4006fb",
+  "current": "8a78210b3c4389efece0b8c44aad8773e5609d07c53e6bface725a4962c68fa6",
   "releases": [
     {
       "digest": "3e47b01bc6bbfb43e910c660b9964fab6459d75148c3c02dcbcd0be64cfb2963",
@@ -84,6 +84,10 @@
     {
       "digest": "a6caf4eef8b6e690db4aa33b065aecbe8c8208da0771257b6e9619894b4006fb",
       "note": "Every gap in `notifai init --json` now carries `message`: the exact line to send the User, written by the CLI for that gap. It covers approving this computer, getting the phone app, allowing notifications on iPhone and Android, a declined or expired approval, an unreachable service, an Account without a plan, Codex `/hooks` approval and an unconfirmed test notification; any other gap says what Notifai reported and what it asks for. States that need nothing from the User carry `null`. Harness setup and recovery now says: close a gap themselves when its remedy is a command they can run, otherwise send its `message` exactly as written, and keeps scripts only for the moments that are not gaps (installing, the approval link when the QR cannot be shown, the hooks choices, a new Claude Code session, finishing, and cloud or unknown computers). With an older Notifai that has no `message`, say what `remedy.summary` asks in plain words."
+    },
+    {
+      "digest": "8a78210b3c4389efece0b8c44aad8773e5609d07c53e6bface725a4962c68fa6",
+      "note": "While an Account has no plan, `notifai init` counts a registered phone or desktop app that has notification permission as set up, so the plan is the one remaining step. A desktop app cannot keep its delivery stream open before a plan is active. Existing agent guidance is unchanged."
     }
   ]
 }

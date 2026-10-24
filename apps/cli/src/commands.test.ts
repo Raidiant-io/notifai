@@ -787,6 +787,16 @@ it('resumes the same init after a required CLI update becomes current', async ()
     expect(result.states.find((state) => state.id === 'proof')?.status).toBe('unknown')
     expect(submit).not.toHaveBeenCalled()
   })
+
+  it('counts a desktop app with permission as set up while the plan is missing', async () => {
+    // Without a plan a desktop app cannot hold its delivery stream open.
+    const desktop = { ...readyIphone, device_id: 'dev_mac', display_name: 'Mac', platform: 'macos' as never, registration_healthy: false }
+    const { io, deps } = noPlanInit([desktop])
+    expect(await initCommand(deps, { hooks: false, skills: false, json: true })).toBe(EXIT.failed)
+    const result = JSON.parse(io.outLines.at(-1) ?? '{}') as { states: { id: string; status: string }[] }
+    expect(result.states.find((state) => state.id === 'devices')?.status).toBe('ready')
+    expect(result.states.filter((state) => state.status === 'gap').map((state) => state.id)).toEqual(['auth'])
+  })
 })
 
 describe('the phone install hand-off', () => {

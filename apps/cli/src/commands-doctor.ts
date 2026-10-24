@@ -728,14 +728,22 @@ export async function assessReadiness(
       : { id: 'devices', title: 'Your devices', status: 'unknown', detail: 'not checked — Account access is unresolved' })
   } else {
     const devices = accountDevices
-    const ready = readyCompanionDevices(devices)
+    // Without a plan an app can register and allow notifications, but a
+    // desktop app cannot keep its delivery stream open, so permission is the
+    // setup that can be proven; the plan gap that follows says the rest.
+    const planRequired = states.some(isPlanGap)
+    const ready = planRequired
+      ? devices.filter((d) => d.permission_status === 'authorized' || d.permission_status === 'provisional')
+      : readyCompanionDevices(devices)
     states.push(
       ready.length > 0
         ? {
             id: 'devices',
             title: 'Your devices',
             status: 'ready',
-            detail: `${ready.map((d) => `${d.display_name} (${d.platform})`).join(', ')} ready to receive`,
+            detail: planRequired
+              ? `${ready.map((d) => `${d.display_name} (${d.platform})`).join(', ')} set up; receives once a plan is active`
+              : `${ready.map((d) => `${d.display_name} (${d.platform})`).join(', ')} ready to receive`,
           }
         : {
             id: 'devices',
