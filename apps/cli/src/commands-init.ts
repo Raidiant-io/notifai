@@ -616,37 +616,6 @@ function explicitChoice(state: ReadinessState, flags: InitFlags): boolean | unde
           : undefined
 }
 
-/**
- * Whether an offer waits for the phone step.
- *
- * Hooks, command approval and the skill are asked once this computer is
- * connected: after the phone step when the run is about to walk the User
- * through it, and always before the plan and the setup notification, which
- * they do not depend on. A flag the caller passed is no question, so it is
- * acted on at once.
- */
-function offerWaits(
-  deps: CommandDeps,
-  state: ReadinessState,
-  flags: InitFlags,
-  readiness: Readiness,
-  attempted: ReadonlySet<string>,
-): boolean {
-  return deps.io.interactive === true &&
-    isOffered(state.id) &&
-    explicitChoice(state, flags) === undefined &&
-    !attempted.has('devices') &&
-    readiness.states.some((candidate) => candidate.id === 'devices' && candidate.status === 'gap' &&
-      candidate.remedy?.by === 'user-elsewhere')
-}
-
-/** An offer that waited for the phone step and has not been answered yet. */
-function offersHeldForPhone(deps: CommandDeps, readiness: Readiness, flags: InitFlags): boolean {
-  return deps.io.interactive === true && readiness.states.some((state) =>
-    state.status === 'optional-gap' && state.remedy?.by === 'cli' && isOffered(state.id) &&
-    explicitChoice(state, flags) === undefined)
-}
-
 /** Whether an optional gap should be closed, given flags and who is watching. */
 function wantsOptional(deps: CommandDeps, state: ReadinessState, flags: InitFlags): Promise<boolean> {
   // Optional CLI updates are surfaced by doctor or when a missing feature is
@@ -860,7 +829,11 @@ export async function initCommand(deps: CommandDeps, flags: InitFlags): Promise<
       }
 
       if (state.status === 'optional-gap') {
-        if (remedy.by !== 'cli' || offerWaits(workingDeps, state, resolved, readiness, attempted)) continue
+        // Hooks, command approval and the skill are asked here, once this
+        // computer is connected and while the User is still at it: before the
+        // phone step, the plan and the setup notification, none of which they
+        // depend on.
+        if (remedy.by !== 'cli') continue
         if (!(await wantsOptional(workingDeps, state, resolved))) {
           // Answered once per run: a later pass never asks again.
           attempted.add(state.id)
@@ -966,9 +939,7 @@ export async function initCommand(deps: CommandDeps, flags: InitFlags): Promise<
         attempted.add(state.id)
         const result = await waitForReadyDevice(workingDeps, state)
         if (result === 'failed') failed = true
-        // An unfinished phone step still lets the agent-wiring questions it
-        // held back be asked before this run stops.
-        if (result !== 'closed' && !offersHeldForPhone(workingDeps, readiness, resolved)) {
+        if (result !== 'closed') {
           stop = true
           break
         }

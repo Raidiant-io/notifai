@@ -722,18 +722,20 @@ it('resumes the same init after a required CLI update becomes current', async ()
     return { io, deps, clock: () => clock }
   }
 
-  it('asks about hooks and the skill after the phone step and before the setup notification, once each', async () => {
+  it('asks about hooks and the skill before the phone step and the setup notification, once each', async () => {
     let clockAtStart: (() => number) | null = null
     const { io, deps, clock } = phoneStepInit(() => clockAtStart !== null && clockAtStart() > 0)
     clockAtStart = clock
     await initCommand(deps, {})
+    const platform = io.prompts.indexOf('Where do you want to receive notifications?')
     const phone = io.prompts.indexOf('<phone ready>')
     const hooks = io.prompts.findIndex((prompt) => prompt.startsWith('Connect your agents to Notifai'))
     const proof = io.prompts.indexOf('<proof sent>')
     expect(io.notes.some((note) => note.title === 'Get Notifai on your iPhone')).toBe(true)
-    expect(phone).toBeGreaterThanOrEqual(0)
-    expect(hooks).toBeGreaterThan(phone)
-    expect(proof).toBeGreaterThan(hooks)
+    expect(hooks).toBeGreaterThanOrEqual(0)
+    expect(platform).toBeGreaterThan(hooks)
+    expect(phone).toBeGreaterThan(platform)
+    expect(proof).toBeGreaterThan(phone)
     expect(io.prompts.filter((prompt) => prompt.startsWith('Connect your agents to Notifai'))).toHaveLength(1)
   })
 

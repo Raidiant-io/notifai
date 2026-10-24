@@ -1,5 +1,5 @@
 {
-  "current": "50c6688b2bbee1fd692877dd386810b403b5d003e3507ada5a78bef8d469915c",
+  "current": "1f2e45f73a5666a7776a8b19206686b7fe3fb05d83db063c3adfef56426a68bf",
   "releases": [
     {
       "digest": "3e47b01bc6bbfb43e910c660b9964fab6459d75148c3c02dcbcd0be64cfb2963",
@@ -90,8 +90,8 @@
       "note": "While an Account has no plan, `notifai init` counts a registered phone or desktop app that has notification permission as set up, so the plan is the one remaining step. A desktop app cannot keep its delivery stream open before a plan is active. Existing agent guidance is unchanged."
     },
     {
-      "digest": "50c6688b2bbee1fd692877dd386810b403b5d003e3507ada5a78bef8d469915c",
-      "note": "The setup notification is a confirmation, not a setup step. `notifai init --json` reports `ready: true` once this computer, the Project and a phone that can receive are set up, whether or not the app has confirmed the test notification. Until it confirms, the `proof` state is an optional gap with no `message`: it asks nothing of the User and never sets the exit code. Never wait for it or ask the User about it. Init sends it last, at most once per machine and phone, watches about 10 seconds for its receipt, and never re-sends it; a later run only reads whether it arrived. A test notification that cannot be sent, or whose delivery is rejected, is a real `proof` gap: its `message` asks the User to open the app so it can reconnect. Interactive `notifai init` asks about hooks, command approval and the skill once each, after the phone step and before the plan and the test notification, and still asks them when the phone step is left unfinished. The `done` and `done-no-questions` scripts no longer say the app confirmed the test notification. An older Notifai can report `proof` as a gap and `ready: false` because of it alone; setup is done all the same."
+      "digest": "1f2e45f73a5666a7776a8b19206686b7fe3fb05d83db063c3adfef56426a68bf",
+      "note": "The setup notification is a confirmation, not a setup step. `notifai init --json` reports `ready: true` once this computer, the Project and a phone that can receive are set up, whether or not the app has confirmed the test notification. Until it confirms, the `proof` state is an optional gap with no `message`: it asks nothing of the User and never sets the exit code. Never wait for it or ask the User about it. Init sends it last, at most once per machine and phone, watches about 10 seconds for its receipt, and never re-sends it; a later run only reads whether it arrived. A test notification that cannot be sent, or whose delivery is rejected, is a real `proof` gap: its `message` asks the User to open the app so it can reconnect. Interactive `notifai init` asks about hooks, command approval and the skill once each, right after this computer is approved and before the phone step, the plan and the test notification. The `done` and `done-no-questions` scripts no longer say the app confirmed the test notification. An older Notifai can report `proof` as a gap and `ready: false` because of it alone; setup is done all the same."
     }
   ]
 }

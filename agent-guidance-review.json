@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "behavior_digest": "sha256:1736f983ada596c89d57f1d8d00617d1becb0bf5290cd18f00b71f487edb61a6",
+  "behavior_digest": "sha256:706b0d1b91c9e08032486c3286043b24d9cb69ddece1771fabd6c3cc98fdaff9",
   "outcome": "guidance-updated",
   "surfaces_reviewed": [
     "lifecycle-hooks",
@@ -9,5 +9,5 @@
     "cli-readiness",
     "domain-terms"
   ],
-  "reason": "Reviewed the setup-notification change against all five surfaces. CLI readiness: the proof state is now an optional gap until the Companion App confirms it, so ready, the exit code and doctor no longer depend on it; it carries no message, and only a never-sent proof keeps a cli remedy (init sends it last, at most once per machine and device, with a 10 s look for the receipt; it is never re-sent). A send that fails or is rejected becomes a real proof gap with a message asking the User to open the app. Interactive init asks the hooks, command-approval and skill questions once each, after the phone step and before the plan and the test notification, and still asks them when the phone step is left unfinished. Harness setup: done/done-no-questions no longer claim the app confirmed the test notification; a new paragraph tells agents never to wait for or ask about it, to send a proof gap's message only when it has one, and that an older CLI's message-less proof gap does not block done. The unconfirmed-proof relay line was removed. Lifecycle hooks and domain terms are unchanged. Non-exfiltration holds: messages stay in the conversation."
+  "reason": "Reviewed moving interactive init's hooks, command-approval and skill questions to right after computer approval, before the phone step, the plan and the test notification (they were held until after the phone step). Each is still asked once per run. Only the interactive order and the release note changed: init --json, readiness states, messages, the skill's scripts, lifecycle hooks and domain terms are unchanged. Non-exfiltration holds."
 }
