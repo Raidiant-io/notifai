@@ -20,7 +20,8 @@
         "/README.md"
       ],
       "draft": true,
-      "force-tag-creation": true
+      "force-tag-creation": true,
+      "release-as": "14.2.0"
     },
     "packages/protocol": {
       "release-type": "node",
