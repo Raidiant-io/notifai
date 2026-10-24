@@ -72,7 +72,7 @@ export const CODEX_HOOK_APPROVAL_USER_ACTION = {
   code: 'codex_hook_approval_required',
   harness: 'codex',
   action: 'approve_or_enable_notifai_hooks',
-  message: 'Open `/hooks` in Codex, approve or enable the Notifai handlers, then tell me when it is done. I will finish setup and verify a fresh session.',
+  message: 'In Codex, type `/hooks` and approve the Notifai hooks it lists, turning them on if they are off. Tell me when that\'s done and I\'ll finish setting up.',
 } as const
 
 export const CODEX_FRESH_SESSION_USER_ACTION = {

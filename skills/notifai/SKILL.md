@@ -253,12 +253,11 @@ Run every command you can run yourself; hand the User only human-only steps.
 do not ask again. Run the send. If setup is missing, run `notifai init --json`
 and retry the exact send. Projectless requests never enable a Project.
 
-`init --json` names each gap. Signing this machine in, installing hooks and
-their trust, and bounded recovery are in
-[Harness setup and recovery](references/harness-setup.md); read it when you are
-installing hooks or diagnosing routing, or when a gap names sign-in, not
-before. Only the User approves a computer in the browser or companion app,
-signs in to a Companion App, or grants notification permission: never emulate
+`init --json` names each gap. [Harness setup and recovery](references/harness-setup.md)
+opens with the scripts to say at each step that needs the User, then covers
+signing in, hooks and their trust, and recovery; read it before your first
+setup message to the User. Only the User approves a computer in the browser or
+companion app, signs in to a Companion App, or grants notification permission: never emulate
 those, claim to approve hooks yourself, or claim an unlisted harness.
 
 Two independent decisions remain, both the User's; ask both together:

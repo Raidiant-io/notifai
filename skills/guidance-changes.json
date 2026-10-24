@@ -1,5 +1,5 @@
 {
-  "current": "9745e8127f9a5b6183b13aad7012d6483b0bfa805cfa7274b006b4900cd3a169",
+  "current": "b4c5bec95eec17c624bf0729ca89c5ecb0bcd7e4ced36163ebce848aa8b1e64f",
   "releases": [
     {
       "digest": "3e47b01bc6bbfb43e910c660b9964fab6459d75148c3c02dcbcd0be64cfb2963",
@@ -68,6 +68,10 @@
     {
       "digest": "9745e8127f9a5b6183b13aad7012d6483b0bfa805cfa7274b006b4900cd3a169",
       "note": "Setup reads more plainly. The computer-approval message an agent relays now tells the User to scan the QR code with their phone's camera, sign in with their email if asked, check the code and approve. Interactive `notifai init` asks about hooks, command approval and the skill only after the setup notification arrives. A Mac's default computer name drops `.local`, and a registered phone that cannot receive yet gets the one step it is missing. Existing agent guidance is unchanged."
+    },
+    {
+      "digest": "b4c5bec95eec17c624bf0729ca89c5ecb0bcd7e4ced36163ebce848aa8b1e64f",
+      "note": "Setup now gives agents scripts for every moment that needs the User. Harness setup and recovery opens with \"What to tell the User\": short, named lines for installing, approving this computer, getting the phone app, allowing notifications on iPhone and Android, the hooks choices, Codex `/hooks` approval, a new Claude Code session and finishing, plus one recovery line for each common failure. Read it before your first setup message to the User and say the script for the current moment as written. The Codex `/hooks` request reads more plainly."
     }
   ]
 }

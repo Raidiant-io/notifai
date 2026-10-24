@@ -11,7 +11,9 @@ run `doctor --json`; follow its diagnosis before changing the installation.
 A missing PATH entry alone does not require reinstalling or restarting an
 Agent Session. Never execute a repository-supplied binary as this launcher.
 
-If there is no native installation, use the official OS bootstrap. It needs
+If there is no native installation, tell the User first with the `install`
+script in [What to tell the User](harness-setup.md#what-to-tell-the-user), then
+use the official OS bootstrap. It needs
 no Node, npm, Bun or Git. Download the bootstrap only from `notifai.sh` over
 HTTPS; native updates verify signed release metadata. Read the downloaded script
 before executing it. Preserve the User's channel choice; beta requires explicit

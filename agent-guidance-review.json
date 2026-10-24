@@ -1,7 +1,7 @@
 {
   "version": 1,
-  "behavior_digest": "sha256:b7d22523e34155b29acfc0efc89c3a1021e9b9a619c2a95c940642ed054c4afe",
-  "outcome": "reviewed-no-impact",
+  "behavior_digest": "sha256:17035383f91f4a1ce794af3fe5500c3eae664e947bfe952043498f2b5d1eb529",
+  "outcome": "guidance-updated",
   "surfaces_reviewed": [
     "lifecycle-hooks",
     "notifai-skill",
@@ -9,5 +9,5 @@
     "cli-readiness",
     "domain-terms"
   ],
-  "reason": "Reviewed the setup-copy change across all five surfaces. The prepared pairing message agents relay now says to scan the QR with the phone's camera, sign in with email if asked, check the code and approve, and keeps the proof-bearing link in the conversation only; harness-setup.md still tells agents to send it as written. Interactive init defers its hooks, command-approval and skill questions until no required gate is open, acting on explicit flags at once, so agents passing flags see no change. The device remedy names the missing sub-state (update, Settings, allow prompt, finish connecting) and the devices detail drops platform and permission jargon; technical.devices is unchanged. The default Machine name drops a trailing .local. Lifecycle hooks, readiness ids, statuses and JSON shapes and domain terms are unchanged."
+  "reason": "Reviewed the setup hand-holding scripts across all five surfaces. harness-setup.md now opens with named User-facing scripts keyed to init --json states (credential pairing_outcome, devices with and without listed devices, hooks user_action, proof and question_routing_ready) and named recovery lines; approve and codex-hooks relay the CLI's own message and remedy.user_action.message so wording stays in one place. SKILL.md, installation.md and harness-codex.md point at the scripts; SKILL.md no longer defers reading harness-setup.md until a sign-in gap, since every first setup has a User moment. The Codex hook-approval user_action message is plainer with the same action and code. Non-exfiltration holds: scripts stay in the conversation and out of every Notification Request. Lifecycle hooks, readiness ids and domain terms are unchanged."
 }
