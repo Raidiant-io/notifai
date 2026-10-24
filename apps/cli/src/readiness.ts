@@ -20,6 +20,8 @@
  * and marks what follows `unknown` rather than guessing.
  */
 
+import { relayMessage } from './relay-message.js'
+
 /** Whether the gap can be closed from here, and by whom. */
 export type Remedy =
   /**
@@ -75,6 +77,11 @@ export interface ReadinessState {
   status: StateStatus
   /** The current condition, phrased for the human renderer. */
   detail: string
+  /**
+   * The one message an agent sends the User about this state, word for word.
+   * Set where the producer knows best; `relayMessage` covers every other gap.
+   */
+  message?: string
   /** Structured diagnostics emitted only by --json / non-human surfaces. */
   technical?: unknown
   remedy?: Remedy
@@ -247,6 +254,7 @@ export function readinessJson(readiness: Readiness): object {
       title: state.title,
       status: state.status,
       detail: state.detail,
+      message: relayMessage(state),
       technical: state.technical ?? null,
       remedy: state.remedy ?? null,
       informational: state.informational ?? null,

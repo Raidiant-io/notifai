@@ -1,7 +1,7 @@
 {
   "version": 1,
-  "behavior_digest": "sha256:4b1e417cd7a06bcc627d09119d489fe20c84176b0e7bca2519a1714ced2a2a26",
-  "outcome": "reviewed-no-impact",
+  "behavior_digest": "sha256:bbf7d13f862c09998589c18d21391ea46311aa8f1572d841cbfe7485a05eff01",
+  "outcome": "guidance-updated",
   "surfaces_reviewed": [
     "lifecycle-hooks",
     "notifai-skill",
@@ -9,5 +9,5 @@
     "cli-readiness",
     "domain-terms"
   ],
-  "reason": "Reviewed the phone-install hand-off across all five surfaces. Interactive init now shows a terminal QR that opens the App Store or the Android test sign-up and opens no browser on the computer; the devices gap's remedy summary and `notifai devices` name the same two links, and the devices gap adds technical.install_urls. Readiness ids, statuses and the existing technical fields (companion_setup_url, account_email, devices) are unchanged, so the get-app and allow scripts in harness-setup.md still hold. Lifecycle hooks, the skill and domain terms are unchanged. Non-exfiltration holds: the install links are public store addresses and carry nothing about the User."
+  "reason": "Reviewed the relay-message change across all five surfaces. CLI readiness: every state in init --json now has a top-level message, the exact line to send the User, null when nothing is asked of them; gaps use their producer's line (pairing message, hooks user_action message, devices sub-state, unconfirmed proof) or a fixed line for denied, expired, unreachable and the no-plan gap (the shared no-plan line plus the plans page), and any other gap gets the stuck line built from detail and remedy.summary. Readiness ids, statuses, remedies and technical fields are unchanged (companion_setup_url is kept for older agents). harness-setup.md now tells agents to close a gap themselves when its remedy is a command they can run and otherwise send the gap's message exactly as written, keeps approve-link for a QR the harness cannot show, keeps scripts only for moments that are not gaps, and says to fall back to remedy.summary in plain words with an older CLI. SKILL.md and harness-codex.md point at message. Lifecycle hooks and domain terms are unchanged. Non-exfiltration holds: messages stay in the conversation and out of every Notification Request."
 }

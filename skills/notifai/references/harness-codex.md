@@ -8,8 +8,8 @@ harness shares.
 Run `notifai hooks install --harness codex`. If `hooks-trust` fails, the User
 approves or enables the Notifai handlers in Codex's `/hooks`, including the
 `PostToolUse` handler that hands answers and notes into a working turn; `/hooks`
-is authoritative when it disagrees with doctor. Send them the `codex-hooks`
-script from [What to tell the User](harness-setup.md#what-to-tell-the-user).
+is authoritative when it disagrees with doctor. Send them the gap's `message`
+as written ([What to tell the User](harness-setup.md#what-to-tell-the-user)).
 
 Then start one fresh Agent Session, send one prompt, and run `notifai doctor`. If
 doctor finds no SessionStart, reinstall the current hooks and start a fresh

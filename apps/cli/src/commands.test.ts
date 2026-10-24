@@ -32,7 +32,7 @@ import { PROGRAM_RECEIPT } from './commands-ask-wait.js'
 import type { AskFlags } from './commands-ask.js'
 import { MISSING_TITLE_NOTE } from './commands-ask.js'
 import { defaultMachineName } from './commands-auth.js'
-import { deviceInstallRemedy } from './commands-devices.js'
+import { deviceInstallRemedy,deviceRelayMessage } from './commands-devices.js'
 import { guidanceCheckCommand,guidanceShowCommand as readCurrentGuidance } from './commands-guidance.js'
 import {
 EXIT,
@@ -64,6 +64,7 @@ import { opencodePluginSource } from './opencode-plugin.js'
 import { disableProject,projectBinding,projectEnablementState } from './project-enablement.js'
 import { terminalQr } from './pairing-qr.js'
 import { readinessJson } from './readiness.js'
+import { relayMessage } from './relay-message.js'
 import { COMPANION_INSTALL_URLS } from './setup-destinations.js'
 import type { SendFlags } from './send.js'
 import { reopenLine,reopenReport } from './session-reopen.js'
@@ -820,6 +821,59 @@ describe('the phone install hand-off', () => {
       "Scan with your phone's camera to get Notifai, then sign in with user@example.test and allow notifications.",
     )
     expect(note!.message).toContain((await terminalQr(COMPANION_INSTALL_URLS.iphone)).trimEnd())
+  })
+
+  it('gives every gap in init --json the exact line to relay', async () => {
+    const cwd = mkdtempSync(path.join(os.tmpdir(), 'init-relay-messages-'))
+    const io = new CapturedIo()
+    const deps = { ...makeDeps(io, noDevicesClient()), cwd, env: isolatedEnv(cwd) }
+
+    await initCommand(deps, { json: true, hooks: false, skills: false })
+
+    const result = JSON.parse(io.outLines.join('\n')) as { states: { id: string; status: string; message: string | null }[] }
+    const gaps = result.states.filter((state) => state.status === 'gap')
+    expect(gaps.map((gap) => gap.id)).toContain('devices')
+    for (const gap of gaps) expect(gap.message, gap.id).toMatch(/\S/)
+    expect(result.states.find((state) => state.id === 'devices')!.message).toBe(
+      deviceRelayMessage({ email: 'user@example.test', devices: [] }),
+    )
+    for (const state of result.states.filter((s) => s.status === 'ready')) expect(state.message).toBeNull()
+  })
+
+  it('names what a registered phone is missing, in the User\'s words', () => {
+    const phone = (device: Record<string, unknown>) => ({
+      device_id: 'dev', display_name: 'Pixel', platform: 'android', permission_status: 'authorized',
+      registration_healthy: true, ...device,
+    }) as never
+    const empty = deviceRelayMessage({ email: null, devices: [] })
+    expect(empty).toContain(COMPANION_INSTALL_URLS.iphone)
+    expect(empty).toContain(COMPANION_INSTALL_URLS.android)
+    expect(empty).toContain('the email you approved this computer with')
+    expect(deviceRelayMessage({ email: null, devices: [phone({ permission_status: 'denied' })] }))
+      .toContain('Settings → Apps → Notifai → Notifications')
+    expect(deviceRelayMessage({ email: null, devices: [phone({ platform: 'ios', permission_status: 'denied' })] }))
+      .toContain('Settings → Notifai → Notifications')
+    expect(deviceRelayMessage({ email: null, devices: [phone({ permission_status: 'not_determined' })] }))
+      .toBe("Open Notifai on your phone and allow notifications when it asks. Tell me when that's done.")
+    expect(deviceRelayMessage({ email: null, devices: [phone({ registration_healthy: false })] }))
+      .toBe("Open Notifai on your phone so it can finish connecting, then tell me when that's done.")
+  })
+
+  it('relays the prepared lines a gap already carries, and says something for any other gap', () => {
+    expect(relayMessage({ id: 'credential', title: 'This machine', status: 'gap', detail: 'x', technical: { pairing: { message: 'Scan it.' } } }))
+      .toBe('Scan it.')
+    expect(relayMessage({ id: 'credential', title: 'This machine', status: 'gap', detail: 'x', technical: { pairing_outcome: 'denied' } }))
+      .toContain('You declined')
+    expect(relayMessage({ id: 'server', title: 'Service', status: 'gap', detail: 'x' })).toContain("I can't reach Notifai")
+    expect(relayMessage({ id: 'auth', title: 'Plan', status: 'gap', detail: 'x', technical: { plan_required: true, access_url: 'https://plans.example' } }))
+      .toBe('Notifai needs an active plan to deliver notifications. Choose one at https://plans.example, then ask me to finish setting up.')
+    expect(relayMessage({
+      id: 'hooks-codex', title: 'Codex', status: 'optional-gap', detail: 'x',
+      remedy: { by: 'user-here', summary: 's', command: 'c', user_action: { code: 'c', harness: 'codex', action: 'a', message: 'Type /hooks.' } },
+    })).toBe('Type /hooks.')
+    expect(relayMessage({ id: 'contract', title: 'Update', status: 'gap', detail: 'too old', remedy: { by: 'user-here', summary: 'update Notifai', command: 'notifai update' } }))
+      .toBe('I couldn\'t finish setting up Notifai. It said: "too old". Update Notifai.')
+    expect(relayMessage({ id: 'skill', title: 'Skill', status: 'optional-gap', detail: 'x' })).toBeNull()
   })
 })
 

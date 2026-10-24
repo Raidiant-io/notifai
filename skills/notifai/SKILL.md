@@ -253,8 +253,9 @@ Run every command you can run yourself; hand the User only human-only steps.
 do not ask again. Run the send. If setup is missing, run `notifai init --json`
 and retry the exact send. Projectless requests never enable a Project.
 
-`init --json` names each gap. [Harness setup and recovery](references/harness-setup.md)
-opens with the scripts to say at each step that needs the User, then covers
+`init --json` names each gap and gives the exact `message` to send the User.
+[Harness setup and recovery](references/harness-setup.md) opens with what to
+say at each step that needs the User, then covers
 signing in, hooks and their trust, and recovery; read it before your first
 setup message to the User. Only the User approves a computer in the browser or
 companion app, signs in to a Companion App, or grants notification permission: never emulate

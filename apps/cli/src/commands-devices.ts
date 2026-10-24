@@ -170,6 +170,48 @@ function installLinks(): string {
   return `iPhone: ${COMPANION_INSTALL_URLS.iphone}; Android: ${COMPANION_INSTALL_URLS.android}`
 }
 
+/**
+ * The line an agent relays, word for word, when no phone can receive yet:
+ * the same sub-states as `deviceInstallRemedy`, said to the User.
+ */
+export function deviceRelayMessage(options: { email: string | null; devices: readonly RoutableDevice[] }): string {
+  const { devices } = options
+  if (devices.length === 0) {
+    return 'Now get the Notifai app on your phone: iPhone from the App Store at ' +
+      `${COMPANION_INSTALL_URLS.iphone}, or Android through the free test at ${COMPANION_INSTALL_URLS.android}. ` +
+      `Sign in with ${options.email ?? 'the email you approved this computer with'}, and allow notifications ` +
+      "when it asks. Tell me when it's in."
+  }
+  const device = (pick: (d: RoutableDevice) => boolean) => devices.find(pick)
+  const updating = device((d) => d.support?.state === 'must_update' && d.support.affected_operation === 'receive_notifications')
+  if (updating) return `Update the Notifai app on your ${deviceNoun(updating)}, then tell me when that's done.`
+  const denied = device((d) => d.permission_status === 'denied')
+  if (denied) {
+    const where = denied.platform === 'ios'
+      ? 'Settings → Notifai → Notifications'
+      : denied.platform === 'android'
+        ? 'Settings → Apps → Notifai → Notifications'
+        : 'its notification settings'
+    return `Notifications are off for Notifai on your ${deviceNoun(denied)}. Turn them on in ${where}, ` +
+      "then tell me when that's done."
+  }
+  const undecided = device((d) => d.permission_status === 'not_determined')
+  if (undecided) {
+    return `Open Notifai on your ${deviceNoun(undecided)} and allow notifications when it asks. ` +
+      "Tell me when that's done."
+  }
+  return `Open Notifai on your ${deviceNoun(devices[0]!)} so it can finish connecting, then tell me when that's done.`
+}
+
+function deviceNoun(device: RoutableDevice): string {
+  switch (device.platform) {
+    case 'ios': return 'iPhone'
+    case 'android': return 'phone'
+    case 'macos': return 'Mac'
+    default: return 'computer'
+  }
+}
+
 export function deviceCanReceive(device: RoutableDevice): boolean {
   const receiveIsFloored =
     device.support?.state === 'must_update' &&

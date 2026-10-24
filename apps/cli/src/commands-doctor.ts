@@ -84,7 +84,8 @@ import {
   updateCliCommand,
   type CommandDeps,
 } from './commands-core.js'
-import { deviceInstallRemedy, readyCompanionDevices } from './commands-devices.js'
+import { deviceInstallRemedy, deviceRelayMessage, readyCompanionDevices } from './commands-devices.js'
+import { PROOF_UNCONFIRMED_MESSAGE } from './relay-message.js'
 import { COMPANION_INSTALL_URLS, NO_ACTIVE_PLAN_LINE, plansUrl, setupCompanionUrl } from './setup-destinations.js'
 import { readPendingPairing } from './pending-pairing.js'
 import { pendingApprovalBlocker } from './commands-auth.js'
@@ -752,7 +753,9 @@ export async function assessReadiness(
             // The pieces an agent's fixed wording needs, separately from the
             // sentence a human reads: where the install steps are, which
             // email the app must sign in with, and what is registered so far.
+            message: deviceRelayMessage({ email: accountEmail, devices }),
             technical: {
+              // Kept for agents that predate `message`; it needs a sign-in.
               companion_setup_url: setupCompanionUrl(baseUrl),
               install_urls: COMPANION_INSTALL_URLS,
               account_email: accountEmail,
@@ -937,6 +940,7 @@ async function setupProofState(
         title: 'Delivery proof',
         status: 'gap',
         detail: `${proof.request_id} is older than ${SETUP_PROOF_STALE_MS / 36e5}h with no Companion Receipt; init will send a replacement`,
+        message: PROOF_UNCONFIRMED_MESSAGE,
         remedy: {
           by: 'cli',
           summary: 'replace the stale verification notification',
@@ -949,6 +953,7 @@ async function setupProofState(
       title: 'Delivery proof',
       status: 'gap',
       detail: `${proof.request_id} was sent, but its Companion Receipt (the app's delivery confirmation) is still unknown`,
+      message: PROOF_UNCONFIRMED_MESSAGE,
       remedy: {
         by: 'cli',
         summary: 'check the same verification notification again',

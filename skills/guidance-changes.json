@@ -1,5 +1,5 @@
 {
-  "current": "b2c1c635915247537e49d91f6875005a33f0310fd4dab4566bdeb76b6ef3be0c",
+  "current": "a6caf4eef8b6e690db4aa33b065aecbe8c8208da0771257b6e9619894b4006fb",
   "releases": [
     {
       "digest": "3e47b01bc6bbfb43e910c660b9964fab6459d75148c3c02dcbcd0be64cfb2963",
@@ -80,6 +80,10 @@
     {
       "digest": "b2c1c635915247537e49d91f6875005a33f0310fd4dab4566bdeb76b6ef3be0c",
       "note": "Getting the phone app no longer opens a page on the computer. Interactive `notifai init` shows a QR in the terminal that a phone's camera opens straight to the App Store (iPhone) or the free Android test sign-up, with one line saying to sign in with the same email and allow notifications. The devices gap's remedy and `notifai devices` name the same two links, and `init --json` adds them to the devices gap as `technical.install_urls`. Existing agent guidance is unchanged."
+    },
+    {
+      "digest": "a6caf4eef8b6e690db4aa33b065aecbe8c8208da0771257b6e9619894b4006fb",
+      "note": "Every gap in `notifai init --json` now carries `message`: the exact line to send the User, written by the CLI for that gap. It covers approving this computer, getting the phone app, allowing notifications on iPhone and Android, a declined or expired approval, an unreachable service, an Account without a plan, Codex `/hooks` approval and an unconfirmed test notification; any other gap says what Notifai reported and what it asks for. States that need nothing from the User carry `null`. Harness setup and recovery now says: close a gap themselves when its remedy is a command they can run, otherwise send its `message` exactly as written, and keeps scripts only for the moments that are not gaps (installing, the approval link when the QR cannot be shown, the hooks choices, a new Claude Code session, finishing, and cloud or unknown computers). With an older Notifai that has no `message`, say what `remedy.summary` asks in plain words."
     }
   ]
 }

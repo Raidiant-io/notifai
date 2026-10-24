@@ -2,50 +2,40 @@
 
 Choose the branch for the reported gap: sign-in, hook installation and trust,
 or bounded recovery. Settings follow the steps. Whatever the branch, talk to
-the User with the scripts below.
+the User as below.
 
 ## What to tell the User
 
-The User may be new to Notifai and to agent tooling. At each moment that needs
-them, send that moment's script in the conversation: fill the `{placeholders}`
-from the `init --json` result, keep the words, and add nothing before or
-after. One moment per message; when a script asks for something, end your turn
-and continue from their reply. Scripts carry the approval link, so they stay in
-the conversation and out of every Notification Request.
+The User may be new to Notifai and to agent tooling. Send one message per
+moment in the conversation, keep its words, and add nothing before or after.
+When it asks for something, end your turn and continue from their reply. These
+messages stay in the conversation, never in a Notification Request.
 
-| Moment | When | Say | They |
-| --- | --- | --- | --- |
-| install | before the installer runs | I'll install Notifai on this computer so your agents can reach your phone. Your agent app may ask you to allow a download and a few commands; please allow them. | allow the harness prompts |
-| approve | `credential` gap, `pairing_outcome: pending` | Show the QR, then send `technical.pairing.message` exactly as written. It names the code and a browser link. | scan, sign in, approve |
-| approve-link | the same, where you cannot show the QR | To connect this computer to Notifai, open {approve_url} and sign in with your email if it asks. Check that the code shown is **{code}**, then approve it within a few minutes. Tell me when you've approved it. | open the link, approve |
-| get-app | `devices` gap, `technical.devices` empty | Now get the Notifai app on your phone: open {companion_setup_url} on the phone and install it. Sign in with {account_email}, the same email you just used, and allow notifications when it asks. Tell me when it's in. | install, sign in, allow |
-| allow-iphone | `devices` gap, an `ios` device listed | Open Notifai on your iPhone and tap Allow when it asks about notifications. If you said no before, turn them on in Settings → Notifai → Notifications. Tell me when that's done. | allow notifications |
-| allow-android | `devices` gap, an `android` device listed | Open Notifai on your phone, tap Continue, then Allow. If you turned notifications off before, turn them on in Settings → Apps → Notifai → Notifications. Tell me when that's done. | allow notifications |
-| choices | before `init --hooks`/`--no-hooks`, unless already chosen | Should your agents' questions also reach your phone, so you can answer them while you're away? And should I teach agents in every project on this computer how to use Notifai, only in this project, or skip that? | answer both |
-| codex-hooks | a `hooks` gap whose `remedy.user_action` names Codex | Send `remedy.user_action.message` exactly as written. | approve in `/hooks` |
-| claude-session | after hooks are installed for Claude Code | Notifai is connected to Claude Code. It starts working in new sessions, so the next Claude Code session you open will use it. | nothing now |
-| done | `proof` ready, `question_routing_ready: true` | Notifai is set up: the Notifai app confirmed it got the test notification. Your agents can now notify you, and you can answer their questions from your phone. | nothing |
-| done-no-questions | `proof` ready, questions not routed | Notifai is set up: the Notifai app confirmed it got the test notification. Your agents can now notify you; their questions still come to this conversation. | nothing |
+**Every gap in `init --json` carries `message`.** Close a gap yourself when
+its remedy is a command you can run. When it needs the User, send its
+`message` exactly as written. For a pending approval, show the QR first (see
+below). If you cannot show it, say **approve-link** instead. If a gap has no
+`message`, your Notifai is older than this guidance: say what `remedy.summary`
+asks, in plain words.
+
+The moments that are not gaps:
+
+| Moment | When | Say |
+| --- | --- | --- |
+| install | before the installer runs | I'll install Notifai on this computer so your agents can reach your phone. Your agent app may ask you to allow a download and a few commands; please allow them. |
+| installer-needs-you | the installer reports a `user_action`, or the OS shows a permission prompt | Installing Notifai needs one thing from you: {user_action_message, or "please review the prompt on your screen"}. Tell me when it's done. |
+| approve-link | a pending approval whose QR you cannot show | To connect this computer to Notifai, open {approve_url} and sign in with your email if it asks. Check that the code shown is **{code}**, then approve it within a few minutes. Tell me when you've approved it. |
+| choices | before `init --hooks`/`--no-hooks`, unless already chosen | Should your agents' questions also reach your phone, so you can answer them while you're away? And should I teach agents in every project on this computer how to use Notifai, only in this project, or skip that? |
+| claude-session | after hooks are installed for Claude Code | Notifai is connected to Claude Code. It starts working in new sessions, so the next Claude Code session you open will use it. |
+| done | `proof` ready, `question_routing_ready: true` | Notifai is set up: the Notifai app confirmed it got the test notification. Your agents can now notify you, and you can answer their questions from your phone. |
+| done-no-questions | `proof` ready, questions not routed | Notifai is set up: the Notifai app confirmed it got the test notification. Your agents can now notify you; their questions still come to this conversation. |
+| cloud | your commands run in a cloud or temporary session | I can't set up Notifai from here: my commands run on a temporary machine, not your computer. Run `curl -fsSL https://notifai.sh/install.sh \| sh` in a terminal on the computer where your agents run (Windows PowerShell: `irm https://notifai.sh/install.ps1 \| iex`), or ask an agent there to follow notifai.sh/setup. |
+| which-computer | you cannot tell where your commands run | Notifai connects the computer where your agents run, and I can't tell if that's where my commands run. Is this the computer (or server) you want to connect? |
 
 `choices` adds one sentence for each harness whose command approval is still
 open (`claude-commands`, `codex-commands`): "Can {Claude Code or Codex} run
 Notifai's own commands without asking you each time? Otherwise a question can
 sit waiting for your OK while you're away."
-
-**When something goes wrong**, say the one line for it:
-
-| Line | When | Say |
-| --- | --- | --- |
-| installer-needs-you | the installer reports a `user_action`, or the OS shows a permission prompt | Installing Notifai needs one thing from you: {user_action_message, or "please review the prompt on your screen"}. Tell me when it's done. |
-| denied | `pairing_outcome: denied` | You declined connecting this computer, so I've stopped. Ask me again whenever you want to set it up. |
-| expired | `pairing_outcome: expired` | That code expired before it was approved, so here's a new one. (Then `approve`.) |
-| no-plan | `auth` gap: no plan yet | Notifai needs an active plan to deliver notifications. Choose one at {access_url}, then ask me to finish setting up. |
-| unreachable | `server` or `not_started`, twice | I can't reach Notifai from this computer right now. I'll try again when you ask; nothing you set up so far is lost. |
-| app-missing | `devices` still empty after they said done | I don't see the app yet. Check that you signed in with {account_email}, the same email you approved this computer with, then tell me. |
-| proof-unconfirmed | `proof` unconfirmed after one recheck | I sent a test notification, but the Notifai app hasn't confirmed it yet. Open Notifai on your phone so it can check in, then tell me and I'll check again. |
-| cloud | your commands run in a cloud or temporary session | I can't set up Notifai from here: my commands run on a temporary machine, not your computer. Run `curl -fsSL https://notifai.sh/install.sh \| sh` in a terminal on the computer where your agents run (Windows PowerShell: `irm https://notifai.sh/install.ps1 \| iex`), or ask an agent there to follow notifai.sh/setup. |
-| which-computer | you cannot tell where your commands run | Notifai connects the computer where your agents run, and I can't tell if that's where my commands run. Is this the computer (or server) you want to connect? |
-| stuck | anything else you cannot close | I couldn't finish setting up Notifai. It said: "{detail}". {remedy_summary} |
 
 ## Signing this machine in
 
@@ -56,8 +46,8 @@ on stderr and final readiness on stdout. The `credential` state's
 the `approve_url`, the matching `code` and the prepared `message`. Present the
 QR first: show the local image where supported, or read `qr_text_path` and
 reproduce the library-generated QR verbatim in a fenced text block in a
-terminal/text-only harness. Then send `message` in the conversation as written
-(the `approve` script), and end your turn. Never include the QR, the message or
+terminal/text-only harness. Then send `message` in the conversation as written,
+and end your turn. Never include the QR, the message or
 the proof-bearing link in any Notification Request field or media. Only the
 User can approve; opening review never approves automatically. If the harness
 cannot display the local QR, use the `approve-link` script rather than claiming
