@@ -591,11 +591,12 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - run: pnpm --filter @raidiant/notifai-protocol build
       - run: pnpm --filter @raidiant/notifai build
-      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
-        with:
-          pattern: npm-candidate-*-${{ inputs.expected_sha }}
-          path: ${{ runner.temp }}/verified-npm
-          merge-multiple: true
+      - name: Restore immutable artifacts from this execution
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EXPECTED_SHA: ${{ inputs.expected_sha }}
+        run: gh run download "$GITHUB_RUN_ID" --repo "$GITHUB_REPOSITORY" --pattern "npm-candidate-*-$EXPECTED_SHA" --dir "$RUNNER_TEMP/verified-npm"
       - name: Acquire exact registry bytes and exercise the distributed native product
         shell: bash
         env:
@@ -612,6 +613,9 @@ jobs:
           path: ${{ runner.temp }}/npm-native-acceptance.json
           if-no-files-found: error
           retention-days: 90
+    permissions:
+      contents: read
+      actions: read
   platform-macos:
     name: platform (macos-latest)
     needs: release-admission
@@ -891,10 +895,12 @@ jobs:
         run: node scripts/verify-native-bundle.mjs "$RUNNER_TEMP/native-release" "$EXPECTED_SHA"
       - name: Verify deployed service accepts this candidate
         run: node scripts/check-live-server-contract.mjs
-      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
-        with:
-          name: publication-${{ inputs.expected_sha }}
-          path: ${{ runner.temp }}/publication
+      - name: Restore immutable artifacts from this execution
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EXPECTED_SHA: ${{ inputs.expected_sha }}
+        run: gh run download "$GITHUB_RUN_ID" --repo "$GITHUB_REPOSITORY" --name "publication-$EXPECTED_SHA" --dir "$RUNNER_TEMP/publication"
       - name: Publish candidate assets or promote admitted distributions
         shell: bash
         env:
