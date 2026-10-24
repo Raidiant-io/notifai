@@ -44,11 +44,6 @@ export function relayMessage(state: ReadinessState): string | null {
 const UNREACHABLE =
   "I can't reach Notifai from this computer right now. I'll try again when you ask; nothing you set up so far is lost."
 
-/** The proof notification went out and the app has not confirmed it yet. */
-export const PROOF_UNCONFIRMED_MESSAGE =
-  "I sent a test notification, but the Notifai app hasn't confirmed it yet. " +
-  "Open Notifai on your phone so it can check in, then tell me and I'll check again."
-
 /** Any other gap: what Notifai said, and what it asks for. */
 function stuck(state: ReadinessState): string {
   const summary = state.remedy?.summary

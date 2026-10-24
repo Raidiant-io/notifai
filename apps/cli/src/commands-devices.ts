@@ -203,7 +203,7 @@ export function deviceRelayMessage(options: { email: string | null; devices: rea
   return `Open Notifai on your ${deviceNoun(devices[0]!)} so it can finish connecting, then tell me when that's done.`
 }
 
-function deviceNoun(device: RoutableDevice): string {
+export function deviceNoun(device: RoutableDevice): string {
   switch (device.platform) {
     case 'ios': return 'iPhone'
     case 'android': return 'phone'

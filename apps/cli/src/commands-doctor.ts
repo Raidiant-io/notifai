@@ -85,7 +85,6 @@ import {
   type CommandDeps,
 } from './commands-core.js'
 import { deviceInstallRemedy, deviceRelayMessage, readyCompanionDevices } from './commands-devices.js'
-import { PROOF_UNCONFIRMED_MESSAGE } from './relay-message.js'
 import { COMPANION_INSTALL_URLS, NO_ACTIVE_PLAN_LINE, plansUrl, setupCompanionUrl } from './setup-destinations.js'
 import { readPendingPairing } from './pending-pairing.js'
 import { pendingApprovalBlocker } from './commands-auth.js'
@@ -112,11 +111,9 @@ import {
   shouldConsultCliRegistry,
 } from './cli-release.js'
 import {
-  SETUP_PROOF_STALE_MS,
   observedCompanionReceipt,
   observedSetupProof,
   readSetupProof,
-  setupProofIsStale,
   setupProofApplies,
   writeSetupProof,
 } from './commands-setup-proof.js'
@@ -789,7 +786,7 @@ export async function assessReadiness(
   states.push(planRequired
     ? {
         id: 'proof',
-        title: 'Delivery proof',
+        title: 'Test notification',
         status: 'unknown',
         detail: `not sent — ${NO_ACTIVE_PLAN_LINE}`,
       }
@@ -830,18 +827,24 @@ function projectDisabledProofState(deps: CommandDeps, config: CliConfig): Readin
   if (binding === null || projectEnablementState(binding) !== 'disabled') return null
   return {
     id: 'proof',
-    title: 'Delivery proof',
+    title: 'Test notification',
     status: 'optional-gap',
     detail: `not sent: Notifai is disabled for Project "${binding.project}", so setup sends nothing from here`,
     technical: { project_disabled: true },
     remedy: {
       by: 'user-here',
-      summary: 'if the User asked for Notifai here, enable it, then run setup again to prove delivery',
+      summary: 'if the User asked for Notifai here, enable it, then run setup again',
       command: 'notifai project enable',
     },
   }
 }
 
+/**
+ * The setup notification: a confirmation that setup worked, never a setup
+ * step. Unsent or unconfirmed, it is an optional gap, so it decides neither
+ * `ready` nor the exit code, asks the User for nothing, and `init` sends it
+ * last, after everything the User has to do.
+ */
 async function setupProofState(
   deps: CommandDeps,
   config: CliConfig,
@@ -852,7 +855,7 @@ async function setupProofState(
   if (client === null || devices === null) {
     return {
       id: 'proof',
-      title: 'Delivery proof',
+      title: 'Test notification',
       status: 'unknown',
       detail: 'not checked — account and device readiness must be established first',
     }
@@ -862,7 +865,7 @@ async function setupProofState(
   if (companions.length === 0) {
     return {
       id: 'proof',
-      title: 'Delivery proof',
+      title: 'Test notification',
       status: 'unknown',
       detail: 'not checked — no Companion App is ready',
     }
@@ -877,14 +880,12 @@ async function setupProofState(
     if (disabledProject !== null) return disabledProject
     return {
       id: 'proof',
-      title: 'Delivery proof',
-      status: 'gap',
-      detail:
-        "no Companion Receipt (the app's delivery confirmation) has proven this machine yet",
+      title: 'Test notification',
+      status: 'optional-gap',
+      detail: 'not sent yet; setup sends it last, once everything else is set up',
       remedy: {
         by: 'cli',
-        summary:
-          "send one notification that this machine is set up and wait for its Companion Receipt (the app's delivery confirmation)",
+        summary: 'setup sends one notification saying this machine is set up',
         command: 'notifai init',
       },
     }
@@ -899,7 +900,7 @@ async function setupProofState(
     localPersistence?: SetupProofPersistenceFailure,
   ): ReadinessState => ({
     id: 'proof',
-    title: 'Delivery proof',
+    title: 'Test notification',
     status: 'ready',
     detail:
       `Companion Receipt (the app's delivery confirmation) observed from ${deviceName} at ` +
@@ -940,33 +941,13 @@ async function setupProofState(
     if (proof.companion_receipt.state === 'observed') {
       return readyFromObservation(proof.companion_receipt.observed_at, { status: 'unknown' })
     }
-    const now = (deps.now ?? Date.now)()
-    if (setupProofIsStale(proof, now)) {
-      if (disabledProject !== null) return disabledProject
-      return {
-        id: 'proof',
-        title: 'Delivery proof',
-        status: 'gap',
-        detail: `${proof.request_id} is older than ${SETUP_PROOF_STALE_MS / 36e5}h with no Companion Receipt; init will send a replacement`,
-        message: PROOF_UNCONFIRMED_MESSAGE,
-        remedy: {
-          by: 'cli',
-          summary: 'replace the stale verification notification',
-          command: 'notifai init',
-        },
-      }
-    }
+    // Sent and not confirmed yet: a confirmation still to come, never a
+    // step. Nothing re-sends it, so there is nothing to run.
     return {
       id: 'proof',
-      title: 'Delivery proof',
-      status: 'gap',
-      detail: `${proof.request_id} was sent, but its Companion Receipt (the app's delivery confirmation) is still unknown`,
-      message: PROOF_UNCONFIRMED_MESSAGE,
-      remedy: {
-        by: 'cli',
-        summary: 'check the same verification notification again',
-        command: 'notifai init',
-      },
+      title: 'Test notification',
+      status: 'optional-gap',
+      detail: `sent (${proof.request_id}); the app has not confirmed it yet`,
     }
   } catch (err) {
     const failure = setupProofEvidenceFailure(err)
@@ -981,15 +962,10 @@ async function setupProofState(
     }
     return {
       id: 'proof',
-      title: 'Delivery proof',
-      status: 'gap',
-      detail: `could not read ${proof.request_id} evidence (${failure.code})`,
+      title: 'Test notification',
+      status: 'optional-gap',
+      detail: `sent (${proof.request_id}); its confirmation could not be read (${failure.code})`,
       technical: { live_evidence: failure },
-      remedy: {
-        by: 'cli',
-        summary: 'retry the existing verification evidence check',
-        command: 'notifai init',
-      },
     }
   }
 }
@@ -1274,7 +1250,7 @@ function hookStatesWithContext(deps: CommandDeps): ReadinessState[] {
  *
  * Three checks used to collapse onto "Question routing", so a reader could not
  * tell which of them had failed, and the rest fell through to their internal
- * name — `hooks (stale)` beside `Delivery proof`. The `id` stays the stable
+ * name — `hooks (stale)` beside `Test notification`. The `id` stays the stable
  * thing to branch on; this is only what a person reads.
  */
 const CHECK_TITLES: Readonly<Record<string, string>> = {

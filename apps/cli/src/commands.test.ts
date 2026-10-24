@@ -656,8 +656,8 @@ it('resumes the same init after a required CLI update becomes current', async ()
 
 
 
-  it('offers hooks, command approval and the skill only after the delivery proof', async () => {
-    const cwd = mkdtempSync(path.join(os.tmpdir(), 'init-offers-after-proof-'))
+  it('asks about hooks, command approval and the skill before the setup notification', async () => {
+    const cwd = mkdtempSync(path.join(os.tmpdir(), 'init-offers-before-proof-'))
     const io = new InteractiveIo()
     io.confirmAnswer = false
     const client = {
@@ -678,10 +678,149 @@ it('resumes the same init after a required CLI update becomes current', async ()
 
     const proof = io.prompts.indexOf('<proof sent>')
     const hooks = io.prompts.findIndex((prompt) => prompt.startsWith('Connect your agents to Notifai'))
-    expect(proof).toBeGreaterThanOrEqual(0)
-    expect(hooks).toBeGreaterThan(proof)
+    const skill = io.prompts.findIndex((prompt) => prompt.startsWith('Give your agents the Notifai skill'))
+    expect(hooks).toBeGreaterThanOrEqual(0)
+    expect(skill).toBeGreaterThan(hooks)
+    expect(proof).toBeGreaterThan(skill)
+    // Each question once: a no is never asked again later in the run.
+    expect(io.prompts.filter((prompt) => prompt.startsWith('Connect your agents to Notifai'))).toHaveLength(1)
+    expect(io.prompts.filter((prompt) => prompt.startsWith('Give your agents the Notifai skill'))).toHaveLength(1)
     // A no in this run is not offered straight back by the close.
     expect(io.outLines.join('\n')).not.toContain('install the skill')
+  })
+
+  /** A phone that is installed during the run once `installed` returns true. */
+  function phoneStepInit(installed: () => boolean) {
+    const cwd = mkdtempSync(path.join(os.tmpdir(), 'init-phone-step-'))
+    const io = new InteractiveIo()
+    io.selectAnswer = 'iphone'
+    io.confirmAnswer = false
+    let clock = 0
+    let reported = false
+    const client = {
+      health: async () => true,
+      compatibility: async () => currentCompatibility,
+      listDevices: async () => {
+        if (!installed()) return { devices: [] }
+        if (!reported) io.prompts.push('<phone ready>')
+        reported = true
+        return { devices: [readyIphone] }
+      },
+      accessStatus: async () => ({ status: 'active', reason: 'alpha_grant', expires_at: null, email: 'user@example.test' }),
+      submit: async () => {
+        io.prompts.push('<proof sent>')
+        return setupReceipt('req_phone_step')
+      },
+      evidence: async () =>
+        setupEvidence('req_phone_step', { state: 'observed', observed_at: '2026-08-18T18:00:02.000Z', latency_ms: 1_000 }),
+    } as unknown as ApiClient
+    const deps = {
+      ...makeDeps(io, client), cwd, env: isolatedEnv(cwd),
+      now: () => clock,
+      sleep: async (ms: number) => { clock += ms },
+    }
+    return { io, deps, clock: () => clock }
+  }
+
+  it('asks about hooks and the skill after the phone step and before the setup notification, once each', async () => {
+    let clockAtStart: (() => number) | null = null
+    const { io, deps, clock } = phoneStepInit(() => clockAtStart !== null && clockAtStart() > 0)
+    clockAtStart = clock
+    await initCommand(deps, {})
+    const phone = io.prompts.indexOf('<phone ready>')
+    const hooks = io.prompts.findIndex((prompt) => prompt.startsWith('Connect your agents to Notifai'))
+    const proof = io.prompts.indexOf('<proof sent>')
+    expect(io.notes.some((note) => note.title === 'Get Notifai on your iPhone')).toBe(true)
+    expect(phone).toBeGreaterThanOrEqual(0)
+    expect(hooks).toBeGreaterThan(phone)
+    expect(proof).toBeGreaterThan(hooks)
+    expect(io.prompts.filter((prompt) => prompt.startsWith('Connect your agents to Notifai'))).toHaveLength(1)
+  })
+
+  it('still asks about hooks and the skill when the phone step is left unfinished', async () => {
+    const { io, deps } = phoneStepInit(() => false)
+    await initCommand(deps, {})
+    expect(io.prompts.some((prompt) => prompt.startsWith('Keep waiting'))).toBe(true)
+    expect(io.prompts.filter((prompt) => prompt.startsWith('Connect your agents to Notifai'))).toHaveLength(1)
+    expect(io.prompts).not.toContain('<proof sent>')
+    expect(io.outLines.join('\n')).toContain('Next: Your devices')
+  })
+
+  it('reports a rejected setup notification instead of claiming setup is done', async () => {
+    const cwd = mkdtempSync(path.join(os.tmpdir(), 'init-rejected-proof-'))
+    const io = new CapturedIo()
+    const client = {
+      health: async () => true,
+      compatibility: async () => currentCompatibility,
+      listDevices: async () => ({ devices: [readyIphone] }),
+      accessStatus: async () => ({ status: 'active', reason: 'alpha_grant', expires_at: null, email: 'user@example.test' }),
+      submit: async () => ({ ...setupReceipt('req_rejected'), overall: 'provider_rejected_all' }),
+    } as unknown as ApiClient
+    const deps = { ...makeDeps(io, client), cwd, env: isolatedEnv(cwd) }
+    expect(await initCommand(deps, { hooks: false, skills: false, json: true })).toBe(EXIT.failed)
+    const result = JSON.parse(io.outLines.at(-1) ?? '{}') as {
+      ready: boolean
+      states: { id: string; status: string; message?: string | null }[]
+    }
+    expect(result.ready).toBe(false)
+    const proof = result.states.find((state) => state.id === 'proof')
+    expect(proof?.status).toBe('gap')
+    expect(proof?.message).toContain("couldn't receive a test notification")
+  })
+
+  /** A ready phone whose app never confirms the setup notification. */
+  function unconfirmedProofInit() {
+    const cwd = mkdtempSync(path.join(os.tmpdir(), 'init-unconfirmed-proof-'))
+    const io = new CapturedIo()
+    let clock = Date.parse('2026-08-05T18:00:00.000Z')
+    const sleep = vi.fn(async (ms: number) => { clock += ms })
+    const submit = vi.fn(async () => setupReceipt('req_unconfirmed'))
+    const evidence = vi.fn(async () => setupEvidence('req_unconfirmed', { state: 'unknown', observed_at: null, latency_ms: null }))
+    const client = {
+      health: async () => true,
+      compatibility: async () => currentCompatibility,
+      listDevices: async () => ({ devices: [readyIphone] }),
+      accessStatus: async () => ({ status: 'active', reason: 'alpha_grant', expires_at: null, email: 'user@example.test' }),
+      submit,
+      evidence,
+    } as unknown as ApiClient
+    const deps = { ...makeDeps(io, client), cwd, env: isolatedEnv(cwd), now: () => clock, sleep }
+    const run = async () => {
+      io.outLines.length = 0
+      const code = await initCommand(deps, { hooks: false, skills: false, json: true })
+      const result = JSON.parse(io.outLines.at(-1) ?? '{}') as {
+        ready: boolean
+        states: { id: string; status: string; message?: string | null }[]
+      }
+      return { code, result }
+    }
+    return { run, sleep, submit, evidence, later: (ms: number) => { clock += ms } }
+  }
+
+  it('finishes setup without the setup notification being confirmed', async () => {
+    const { run } = unconfirmedProofInit()
+    const { code, result } = await run()
+    expect(code).toBe(EXIT.ok)
+    expect(result.ready).toBe(true)
+    const proof = result.states.find((state) => state.id === 'proof')
+    expect(proof?.status).toBe('optional-gap')
+    // Nothing is asked of the User about a confirmation.
+    expect(proof?.message ?? null).toBeNull()
+  })
+
+  it('checks an earlier setup notification on a later run, without waiting or resending, even days later', async () => {
+    const { run, sleep, submit, evidence, later } = unconfirmedProofInit()
+    await run()
+    expect(sleep).toHaveBeenCalled()
+    sleep.mockClear()
+    evidence.mockClear()
+    later(3 * 24 * 60 * 60 * 1000)
+    const { code, result } = await run()
+    expect(code).toBe(EXIT.ok)
+    expect(result.ready).toBe(true)
+    expect(evidence).toHaveBeenCalled()
+    expect(sleep).not.toHaveBeenCalled()
+    expect(submit).toHaveBeenCalledTimes(1)
   })
 
   it('names the computer without the .local suffix macOS adds', () => {
@@ -745,9 +884,8 @@ it('resumes the same init after a required CLI update becomes current', async ()
   })
 
   /** An Account without a plan: setup carries on; only delivery waits for the plan. */
-  function noPlanInit(devices: unknown[]) {
+  function noPlanInit(devices: unknown[], io: CapturedIo = new CapturedIo()) {
     const cwd = mkdtempSync(path.join(os.tmpdir(), 'init-no-plan-'))
-    const io = new CapturedIo()
     const submit = vi.fn(async () => receipt)
     const client = {
       health: async () => true,
@@ -785,6 +923,16 @@ it('resumes the same init after a required CLI update becomes current', async ()
     const ids = result.states.map((state) => state.id)
     expect(ids.indexOf('auth')).toBeGreaterThan(ids.indexOf('devices'))
     expect(result.states.find((state) => state.id === 'proof')?.status).toBe('unknown')
+    expect(submit).not.toHaveBeenCalled()
+  })
+
+  it('asks about hooks, command approval and the skill before stopping at the plan', async () => {
+    const io = new InteractiveIo()
+    io.confirmAnswer = false
+    const { submit, deps } = noPlanInit([readyIphone], io)
+    await initCommand(deps, {})
+    expect(io.prompts.some((prompt) => prompt.startsWith('Connect your agents to Notifai'))).toBe(true)
+    expect(io.outLines.join('\n')).toContain('Next: Plan')
     expect(submit).not.toHaveBeenCalled()
   })
 

@@ -18,6 +18,13 @@ below). If you cannot show it, say **approve-link** instead. If a gap has no
 `message`, your Notifai is older than this guidance: say what `remedy.summary`
 asks, in plain words.
 
+The `proof` state is the setup notification. It confirms that setup worked
+and is never a setup step: setup is done without it, and you never wait for it,
+run setup again for it, or ask the User about it. Only a test notification that
+could not be sent or was rejected is a `proof` gap with a `message`; send that
+one. An older Notifai can report `proof` as a gap with no `message` and
+`ready: false` because of it alone; setup is done all the same.
+
 The moments that are not gaps:
 
 | Moment | When | Say |
@@ -27,8 +34,8 @@ The moments that are not gaps:
 | approve-link | a pending approval whose QR you cannot show | To connect this computer to Notifai, open {approve_url} and sign in with your email if it asks. Check that the code shown is **{code}**, then approve it within a few minutes. Tell me when you've approved it. |
 | choices | before `init --hooks`/`--no-hooks`, unless already chosen | Should your agents' questions also reach your phone, so you can answer them while you're away? And should I teach agents in every project on this computer how to use Notifai, only in this project, or skip that? |
 | claude-session | after hooks are installed for Claude Code | Notifai is connected to Claude Code. It starts working in new sessions, so the next Claude Code session you open will use it. |
-| done | `proof` ready, `question_routing_ready: true` | Notifai is set up: the Notifai app confirmed it got the test notification. Your agents can now notify you, and you can answer their questions from your phone. |
-| done-no-questions | `proof` ready, questions not routed | Notifai is set up: the Notifai app confirmed it got the test notification. Your agents can now notify you; their questions still come to this conversation. |
+| done | `ready: true`, `question_routing_ready: true` | Notifai is set up. Your agents can now notify you, and you can answer their questions from your phone. |
+| done-no-questions | `ready: true`, questions not routed | Notifai is set up. Your agents can now notify you; their questions still come to this conversation. |
 | cloud | your commands run in a cloud or temporary session | I can't set up Notifai from here: my commands run on a temporary machine, not your computer. Run `curl -fsSL https://notifai.sh/install.sh \| sh` in a terminal on the computer where your agents run (Windows PowerShell: `irm https://notifai.sh/install.ps1 \| iex`), or ask an agent there to follow notifai.sh/setup. |
 | which-computer | you cannot tell where your commands run | Notifai connects the computer where your agents run, and I can't tell if that's where my commands run. Is this the computer (or server) you want to connect? |
 

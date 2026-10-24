@@ -9,7 +9,7 @@ import { randomBytes } from 'node:crypto'
 import { existsSync, readFileSync, writeFileSync } from 'node:fs'
 import path from 'node:path'
 import { parse as parseToml, stringify as stringifyToml } from 'smol-toml'
-import { ApiCallError, NetworkError, type ApiClient } from './client.js'
+import { NetworkError, type ApiClient } from './client.js'
 import { ensurePrivateDirectory } from './atomic-file.js'
 import { personalProjectConfigPath, projectLocation, type CliConfig } from './config.js'
 import { projectSlugFrom as inferredProjectSlugFrom } from './invocation-context.js'
@@ -36,7 +36,7 @@ import {
   updateCliCommand,
   type CommandDeps,
 } from './commands-core.js'
-import { readyCompanionDevices } from './commands-devices.js'
+import { deviceNoun, readyCompanionDevices } from './commands-devices.js'
 import { terminalQr } from './pairing-qr.js'
 import {
   COMPANION_INSTALL_URLS,
@@ -51,8 +51,8 @@ import {
   observedSetupProof,
   readSetupProof,
   setupProofApplies,
-  setupProofIsStale,
   writeSetupProof,
+  type SetupProofRecord,
 } from './commands-setup-proof.js'
 import { skillInventory } from './commands-skill.js'
 import { enableProjectUnlessDisabled, projectBinding, projectEnablementState } from './project-enablement.js'
@@ -108,7 +108,8 @@ export interface InitFlags {
 /** Long enough for a first controlled Companion install; keep-waiting extends another budget. */
 const DEVICE_BRIDGE_TIMEOUT_MS = 10 * 60 * 1000
 const DEVICE_BRIDGE_POLL_MS = 2_000
-const PROOF_TIMEOUT_MS = 30_000
+/** A short look for the setup notification's receipt; nothing waits on it. */
+const PROOF_TIMEOUT_MS = 10_000
 const PROOF_POLL_MS = 1_000
 
 function formatWaitBudget(milliseconds: number): string {
@@ -264,8 +265,6 @@ async function closeGap(
     }
     return 'closed'
   }
-
-  if (state.id === 'proof') return await runSetupProof(deps)
 
   return 'failed'
 }
@@ -488,18 +487,23 @@ async function submitSetupProof(
 }
 
 /**
- * Send or resume one real setup probe, then wait for a Companion Receipt.
- * Provider Acceptance is intentionally insufficient: it proves a push provider
- * accepted the request, not that a companion process received it.
+ * Send the setup notification once, then briefly watch for its Companion
+ * Receipt. It confirms a setup that is already complete, so it is sent at most
+ * once per machine and device, never re-sent, and an unconfirmed receipt is no
+ * failure. A send that fails or is rejected is reported through `onFailure`:
+ * that one says something real about delivery.
  */
-async function runSetupProof(deps: CommandDeps): Promise<GapCloseResult> {
+async function runSetupProof(
+  deps: CommandDeps,
+  onFailure: (state: ReadinessState) => void,
+): Promise<GapCloseResult> {
   const config = loadLoggedConfig(deps, { cwd: deps.cwd, env: deps.env })
   // Readiness already reports the proof as skipped here; this guard keeps the
   // promise even if a gap reaches this closer: nothing is sent from a Project
-  // the User disabled, the one-time delivery proof included.
+  // the User disabled, the setup notification included.
   const binding = projectBinding(deps.cwd, deps.env, config.project.value)
   if (binding !== null && projectEnablementState(binding) === 'disabled') {
-    deps.io.out(`Skipping the delivery proof: Notifai is disabled for Project "${binding.project}", so nothing is sent from here.`)
+    deps.io.out(`Skipping the test notification: Notifai is disabled for Project "${binding.project}", so nothing is sent from here.`)
     return 'pending'
   }
   const authed = authedClient(deps, config)
@@ -510,138 +514,82 @@ async function runSetupProof(deps: CommandDeps): Promise<GapCloseResult> {
     devices = (await authed.client.listDevices()).devices
   } catch (err) {
     reportError(deps, err)
-    return 'failed'
-  }
-  const candidates = readyCompanionDevices(devices)
-  const existing = readSetupProof(deps)
-  // An observed receipt proved this machine; setup never sends again.
-  if (existing?.companion_receipt.state === 'observed') return 'closed'
-  const existingApplies = setupProofApplies(
-    existing,
-    candidates.map((device) => device.device_id),
-  )
-  const target = (existingApplies
-    ? candidates.find((device) => device.device_id === existing.device_id)
-    : undefined) ?? candidates[0]
-  if (!target) {
-    deps.io.err('Setup proof needs a Companion App that can receive notifications.')
     return 'pending'
   }
+  const candidates = readyCompanionDevices(devices)
+  // Sent once already, to a device still here: never again.
+  const existing = readSetupProof(deps)
+  if (setupProofApplies(existing, candidates.map((device) => device.device_id))) {
+    return existing.companion_receipt.state === 'observed' ? 'closed' : 'pending'
+  }
+  const target = candidates[0]
+  if (!target) return 'pending'
 
-  let proof =
-    existingApplies && existing.device_id === target.device_id
-      ? existing
-      : null
-  const nowMs = (deps.now ?? Date.now)()
-  if (proof !== null && setupProofIsStale(proof, nowMs)) {
-    let keepStale = false
-    try {
-      const snapshot = await authed.client.evidence(proof.request_id)
-      keepStale = observedCompanionReceipt(snapshot, proof.device_id) !== null
-    } catch (err) {
-      if (!(err instanceof ApiCallError && err.code === 'not_found')) {
-        // Unavailable evidence cannot establish that the saved request needs replacing.
-        reportError(deps, err)
-        return 'failed'
-      }
-    }
-    if (!keepStale) {
-      deps.io.out(
-        `The saved proof ${proof.request_id} is older than 24h without a Companion Receipt; sending a replacement.`,
-      )
-      proof = null
-    }
+  const interactive = deps.io.interactive === true
+  const spinner = interactive
+    ? await deps.io.spinner?.(`Sending a test notification to ${target.display_name}…`)
+    : null
+  const receipt = await submitSetupProof(deps, authed.client, config, target)
+  if (receipt === null || receipt.overall === 'provider_rejected_all') {
+    spinner?.error(`The test notification to ${target.display_name} did not go through`)
+    if (receipt !== null) deps.io.err(formatReceipt(receipt))
+    onFailure(receipt === null
+      ? {
+          id: 'proof',
+          title: 'Test notification',
+          status: 'gap',
+          detail: `the test notification to ${target.display_name} could not be sent`,
+          remedy: { by: 'cli', summary: 'run setup again to retry it', command: 'notifai init' },
+        }
+      : {
+          id: 'proof',
+          title: 'Test notification',
+          status: 'gap',
+          detail: `${target.display_name} could not receive the test notification: its push delivery was rejected`,
+          message: `Your ${deviceNoun(target)} couldn't receive a test notification from Notifai. ` +
+            `Open Notifai on it so it can reconnect, then tell me and I'll try again.`,
+          remedy: {
+            by: 'user-elsewhere',
+            summary: `open Notifai on ${target.display_name} so it can reconnect, then run setup again`,
+          },
+        })
+    return 'failed'
   }
-  if (proof === null) {
-    const receipt = await submitSetupProof(deps, authed.client, config, target)
-    if (receipt === null) return 'failed'
-    if (receipt.overall === 'provider_rejected_all') {
-      deps.io.err(formatReceipt(receipt))
-      return 'failed'
-    }
-    proof = {
-      request_id: receipt.request_id,
-      device_id: target.device_id,
-      started_at: new Date((deps.now ?? Date.now)()).toISOString(),
-      companion_receipt: { state: 'unknown', observed_at: null },
-    }
-    if (!writeSetupProof(deps, proof)) return 'failed'
-    deps.io.out(`Test notification sent to ${target.display_name} (${proof.request_id}).`)
-  } else {
-    deps.io.out(`Checking test notification ${proof.request_id} again.`)
+  const proof: SetupProofRecord = {
+    request_id: receipt.request_id,
+    device_id: target.device_id,
+    started_at: new Date((deps.now ?? Date.now)()).toISOString(),
+    companion_receipt: { state: 'unknown', observed_at: null },
   }
+  // A record that cannot be saved would make the next run send again.
+  if (!writeSetupProof(deps, proof)) {
+    spinner?.stop(`Test notification sent to ${target.display_name}`)
+    return 'pending'
+  }
+  if (!interactive) deps.io.out(`Test notification sent to ${target.display_name} (${proof.request_id}).`)
 
   const now = deps.now ?? Date.now
   const sleep = deps.sleep ?? ((milliseconds: number) => new Promise<void>((resolve) => setTimeout(resolve, milliseconds)))
   const deadline = now() + PROOF_TIMEOUT_MS
-  const spinner = deps.io.interactive === true
-    ? await deps.io.spinner?.(`Waiting for ${target.display_name} to confirm it arrived…`)
-    : null
-  let lastError: unknown = null
-  let replacedMissingProof = false
-
   for (;;) {
     try {
-      const snapshot = await authed.client.evidence(proof.request_id)
-      const observed = observedCompanionReceipt(snapshot, proof.device_id)
+      const observed = observedCompanionReceipt(await authed.client.evidence(proof.request_id), proof.device_id)
       if (observed) {
-        if (!writeSetupProof(deps, observedSetupProof(proof, observed.observedAt))) {
-          spinner?.error('Could not save the observed Companion Receipt')
-          return 'failed'
-        }
-        // One line either way: the spinner's close is the line a person reads.
+        writeSetupProof(deps, observedSetupProof(proof, observed.observedAt))
         if (spinner) spinner.stop(`${observed.delivery.device_name} got the test notification`)
-        else {
-          deps.io.out(
-            `Companion Receipt (the app's delivery confirmation) observed from ${observed.delivery.device_name}.`,
-          )
-        }
+        else deps.io.out(`Companion Receipt (the app's delivery confirmation) observed from ${observed.delivery.device_name}.`)
         return 'closed'
       }
-      lastError = null
     } catch (err) {
-      lastError = err
-      if (
-        err instanceof ApiCallError &&
-        err.code === 'not_found' &&
-        !replacedMissingProof
-      ) {
-        const receipt = await submitSetupProof(deps, authed.client, config, target)
-        if (receipt === null) return 'failed'
-        if (receipt.overall === 'provider_rejected_all') {
-          deps.io.err(formatReceipt(receipt))
-          return 'failed'
-        }
-        proof = {
-          request_id: receipt.request_id,
-          device_id: target.device_id,
-          started_at: new Date(now()).toISOString(),
-          companion_receipt: { state: 'unknown', observed_at: null },
-        }
-        if (!writeSetupProof(deps, proof)) return 'failed'
-        replacedMissingProof = true
-        lastError = null
-        deps.io.out(`The saved proof had expired; sent replacement ${proof.request_id}.`)
-        continue
-      }
-      if (!(err instanceof NetworkError)) {
-        spinner?.error('Could not read Companion Receipt evidence')
-        reportError(deps, err)
-        return 'failed'
-      }
-      spinner?.message('Connection lost — still checking the same request…')
+      // The send went through; not being able to watch for its receipt is no
+      // reason to keep anyone waiting.
+      if (!(err instanceof NetworkError)) break
     }
-
     if (now() >= deadline) break
     await sleep(Math.min(PROOF_POLL_MS, Math.max(0, deadline - now())))
   }
-
-  spinner?.stop('Delivery confirmation not observed yet')
-  if (lastError instanceof NetworkError) deps.io.err(lastError.message)
-  deps.io.out(
-    `Provider accepted the notification; Companion Receipt (the app's delivery confirmation) for ${proof.request_id} was not observed within ${PROOF_TIMEOUT_MS / 1000}s. ` +
-      'Proof may still arrive — re-run `notifai init` and it will re-check this same notification.',
-  )
+  if (spinner) spinner.stop(`Test notification sent to ${target.display_name}`)
+  else deps.io.out(`Its Companion Receipt (the app's delivery confirmation) was not observed within ${PROOF_TIMEOUT_MS / 1000}s; setup does not depend on it.`)
   return 'pending'
 }
 
@@ -669,19 +617,34 @@ function explicitChoice(state: ReadinessState, flags: InitFlags): boolean | unde
 }
 
 /**
- * Whether an offer waits until the product has been shown to work.
+ * Whether an offer waits for the phone step.
  *
- * Hooks, command approval and the skill are offered after the delivery proof,
- * never in front of it: a first-timer who is still connecting their computer
- * and installing the phone app should not first answer questions about
- * harness wiring. A flag the caller already passed is no question, so it is
+ * Hooks, command approval and the skill are asked once this computer is
+ * connected: after the phone step when the run is about to walk the User
+ * through it, and always before the plan and the setup notification, which
+ * they do not depend on. A flag the caller passed is no question, so it is
  * acted on at once.
  */
-function offerWaits(deps: CommandDeps, state: ReadinessState, flags: InitFlags, readiness: Readiness): boolean {
+function offerWaits(
+  deps: CommandDeps,
+  state: ReadinessState,
+  flags: InitFlags,
+  readiness: Readiness,
+  attempted: ReadonlySet<string>,
+): boolean {
   return deps.io.interactive === true &&
     isOffered(state.id) &&
     explicitChoice(state, flags) === undefined &&
-    firstRequiredBlocker(readiness) !== null
+    !attempted.has('devices') &&
+    readiness.states.some((candidate) => candidate.id === 'devices' && candidate.status === 'gap' &&
+      candidate.remedy?.by === 'user-elsewhere')
+}
+
+/** An offer that waited for the phone step and has not been answered yet. */
+function offersHeldForPhone(deps: CommandDeps, readiness: Readiness, flags: InitFlags): boolean {
+  return deps.io.interactive === true && readiness.states.some((state) =>
+    state.status === 'optional-gap' && state.remedy?.by === 'cli' && isOffered(state.id) &&
+    explicitChoice(state, flags) === undefined)
 }
 
 /** Whether an optional gap should be closed, given flags and who is watching. */
@@ -691,6 +654,8 @@ function wantsOptional(deps: CommandDeps, state: ReadinessState, flags: InitFlag
   if (state.id === 'contract') return Promise.resolve(false)
   if (state.id === 'project') return Promise.resolve(false)
   if (state.id === 'project-enablement') return Promise.resolve(true)
+  // The setup notification is a confirmation, not a choice: sent unasked.
+  if (state.id === 'proof') return Promise.resolve(true)
   if (!isOffered(state.id)) return Promise.resolve(false)
   const explicit = explicitChoice(state, flags)
   if (explicit !== undefined) return Promise.resolve(explicit)
@@ -861,6 +826,9 @@ export async function initCommand(deps: CommandDeps, flags: InitFlags): Promise<
   // Offers the User answered no to in this run: the close does not offer
   // them straight back.
   const declined = new Set<string>()
+  // A setup notification that could not be sent or was rejected: the one
+  // outcome of that confirmation that says something real about delivery.
+  let proofFailure: ReadinessState | null = null
 
   // Re-assess after every successful action. This is how a browser approval or
   // companion registration can unlock the next state while the user is still
@@ -892,8 +860,10 @@ export async function initCommand(deps: CommandDeps, flags: InitFlags): Promise<
       }
 
       if (state.status === 'optional-gap') {
-        if (remedy.by !== 'cli' || offerWaits(workingDeps, state, resolved, readiness)) continue
+        if (remedy.by !== 'cli' || offerWaits(workingDeps, state, resolved, readiness, attempted)) continue
         if (!(await wantsOptional(workingDeps, state, resolved))) {
+          // Answered once per run: a later pass never asks again.
+          attempted.add(state.id)
           if (isOffered(state.id)) declined.add(state.id)
           continue
         }
@@ -906,7 +876,9 @@ export async function initCommand(deps: CommandDeps, flags: InitFlags): Promise<
           resolved = { ...resolved, skillsScope: scope }
         }
         attempted.add(state.id)
-        const result = await closeGap(workingDeps, state, resolved)
+        const result = state.id === 'proof'
+          ? await runSetupProof(workingDeps, (failure) => { proofFailure = failure })
+          : await closeGap(workingDeps, state, resolved)
         if (result === 'failed') failed = true
         if (result === 'failed' && state.status === 'optional-gap') {
           readiness = await reassess(refreshAfterClose(state.id))
@@ -994,7 +966,9 @@ export async function initCommand(deps: CommandDeps, flags: InitFlags): Promise<
         attempted.add(state.id)
         const result = await waitForReadyDevice(workingDeps, state)
         if (result === 'failed') failed = true
-        if (result !== 'closed') {
+        // An unfinished phone step still lets the agent-wiring questions it
+        // held back be asked before this run stops.
+        if (result !== 'closed' && !offersHeldForPhone(workingDeps, readiness, resolved)) {
           stop = true
           break
         }
@@ -1022,6 +996,10 @@ export async function initCommand(deps: CommandDeps, flags: InitFlags): Promise<
     if (notWritten !== null) workingDeps.io.out(notWritten)
   }
 
+  if (proofFailure !== null) {
+    const failure: ReadinessState = proofFailure
+    readiness = { ...readiness, states: readiness.states.map((state) => state.id === 'proof' ? failure : state) }
+  }
   const blocker = loginBlocker ?? firstRequiredBlocker(readiness)
   if (flags.json === true) deps.io.out(JSON.stringify(readinessJson(readiness), null, 2))
   else await printInitClose(deps, readiness, resolved, loginBlocker, declined)
@@ -1038,7 +1016,9 @@ function leftoverOptionals(readiness: Readiness, flags: InitFlags, declined: Rea
     // it; it gets its own line below.
     if (state.id === 'cli-bin') return false
     // The User's own choice; the closing line names it and its command.
-    if ((state.id === 'project-enablement' || state.id === 'proof') && projectDisabledHere(readiness)) return false
+    if (state.id === 'project-enablement' && projectDisabledHere(readiness)) return false
+    // A confirmation, not something left to set up.
+    if (state.id === 'proof') return false
     if (state.id === 'skill' && flags.skills === false) return false
     return true
   })
@@ -1142,8 +1122,8 @@ function allSetLine(readiness: Readiness, questions: boolean): string {
   if (disabled !== undefined && projectDisabledHere(readiness)) {
     const proof = readiness.states.find((state) => state.id === 'proof')
     const unproven = proof !== undefined && proof.status !== 'ready'
-    return `Set up${unproven ? ' without the delivery proof' : ''}, but ${disabled.detail}. ` +
-      `If the User asked for Notifai here, run \`notifai project enable\`${unproven ? ', then `notifai init` to prove delivery' : ''}.`
+    return `Set up${unproven ? ' without the test notification' : ''}, but ${disabled.detail}. ` +
+      `If the User asked for Notifai here, run \`notifai project enable\`${unproven ? ', then `notifai init` to send the test notification' : ''}.`
   }
   return questions
     ? 'All set. Agents in this project can notify you and ask you questions.'
