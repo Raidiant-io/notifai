@@ -8,6 +8,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 This project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 and [Conventional Commits](https://www.conventionalcommits.org/en/v1.0.0/).
 
+## [14.2.2-beta.1](https://github.com/Raidiant-io/notifai/compare/v14.2.1...v14.2.2-beta.1) (2026-10-24)
+
+### Bug Fixes
+
+* Show one plain line when sending or asking without a plan; finish phone setup before asking for a plan and avoid a setup notification without one.
+* Count an installed app with notification permission as set up while a plan is missing.
+* Show phone installation as a terminal QR without opening the computer browser.
+* Give every JSON setup gap a message for agents to relay as written, with matching setup guidance.
+
 ## [14.2.1](https://github.com/Raidiant-io/notifai/compare/v14.2.0...v14.2.1) (2026-10-24)
 
 ### Bug Fixes
