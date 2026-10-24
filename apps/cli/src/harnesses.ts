@@ -92,7 +92,7 @@ const CURSOR_CAPABILITY: HarnessCapability = {
   stopContinuation: 'unsupported',
   deliveryRoutes: ['unsupported'],
   deliveryContract:
-    'the hook can return a live follow-up, but the invoking shell exposes no exact conversation id, so an answer cannot come back later; `notifai ask --wait` waits for it instead',
+    'current Cursor shells identify their conversation for sends and session labels, but no attended asynchronous answer route is implemented; `notifai ask --wait` waits for the answer instead',
 }
 
 const OPENCODE_CAPABILITY: HarnessCapability = {

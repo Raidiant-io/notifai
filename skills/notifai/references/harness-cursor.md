@@ -27,10 +27,15 @@ Start one fresh conversation and send one prompt, then run `notifai doctor`.
 
 Delegated work stays under the parent Agent Session and its Notification
 Request ownership; Cursor starts no separately activated context for it.
-Cursor does not tell Notifai which conversation ran a command, so the Agent
-Session has no name to set or rename (omit `--session-label`) and no answer
-can come back later: ask with `notifai ask --wait` in the foreground, and let
-it run until it returns with the answer or says the question ended.
+Current Cursor shells identify their conversation through
+`CURSOR_CONVERSATION_ID`. Sends use that exact Agent Session, and
+`--session-label` can name it. Older shells without that marker remain
+detection-only: omit `--session-label` there.
+
+Session Presence and Session Notes are not implemented for Cursor. Exact
+identity alone does not provide an attended asynchronous answer route. Ask
+with `notifai ask --wait` in the foreground, and let it run until it returns
+with the answer or says the question ended.
 `notifai doctor` reports that as a Cursor limit, not a fault to repair.
 
 ## Command approval

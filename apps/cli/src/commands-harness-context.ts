@@ -99,7 +99,13 @@ function harnessEnvCandidates(env: NodeJS.ProcessEnv): ActiveHarnessSession[] {
   if (codexSession !== undefined && codexSession !== '') {
     candidates.push({ harness: 'codex', label: 'Codex', sessionId: codexSession })
   }
-  if ((env['CURSOR_AGENT'] ?? '') !== '') candidates.push({ harness: 'cursor', label: 'Cursor' })
+  if ((env['CURSOR_AGENT'] ?? '') !== '') {
+    const sessionId = env['CURSOR_CONVERSATION_ID']
+    candidates.push({
+      harness: 'cursor', label: 'Cursor',
+      ...(sessionId === undefined || sessionId === '' ? {} : { sessionId }),
+    })
+  }
   const grokSession = env['GROK_SESSION_ID']?.trim()
   if (grokSession) candidates.push({ harness: 'grok', label: 'Grok', sessionId: grokSession })
   const hermesSession = env['HERMES_SESSION_ID']

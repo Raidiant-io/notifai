@@ -1,5 +1,5 @@
 {
-  "current": "3901a5e6a965f197ec9f0236a09c85fe463230ca78a34551c792e0d651d595b9",
+  "current": "4e11f4bd52cdd1933f595280daa6d76b366b54dbd163f2bb2bb09127f8424cbb",
   "releases": [
     {
       "digest": "3e47b01bc6bbfb43e910c660b9964fab6459d75148c3c02dcbcd0be64cfb2963",
@@ -44,6 +44,10 @@
     {
       "digest": "3901a5e6a965f197ec9f0236a09c85fe463230ca78a34551c792e0d651d595b9",
       "note": "Use --choice-description when a choice label alone does not explain its effect, and --recommended <label> for the recommended choice. Keep recommendation markers out of labels. The CLI now converts a trailing (recommended) or [recommended] into recommendation metadata and refuses conflicting recommendations."
+    },
+    {
+      "digest": "4e11f4bd52cdd1933f595280daa6d76b366b54dbd163f2bb2bb09127f8424cbb",
+      "note": "Cursor sends now use its native conversation identifier when available. Older Cursor shells remain detection-only; asynchronous questions and notes still require a proven continuation route."
     }
   ]
 }

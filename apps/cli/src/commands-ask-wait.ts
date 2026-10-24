@@ -1,7 +1,7 @@
 /**
  * The held wait: `notifai ask --wait` where no later answer can come back.
  *
- * A script outside any harness, Cursor (no exact conversation id), OpenCode,
+ * A script outside any harness, Cursor (no attended asynchronous route), OpenCode,
  * OpenClaw off macOS, Hermes off its classic CLI and a shell with conflicting
  * inherited markers have no Agent Session a later answer could wake. So the
  * command itself submits the question at once and stays in the foreground
