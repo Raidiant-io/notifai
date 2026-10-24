@@ -18,7 +18,7 @@ import {
   type CommandDeps,
   type CommandSpinner,
 } from './commands-core.js'
-import { setupAccessUrl } from './setup-destinations.js'
+import { NO_ACTIVE_PLAN_LINE, plansUrl } from './setup-destinations.js'
 import {
   clearPendingPairing,
   readPendingPairing,
@@ -466,29 +466,23 @@ export async function loginCommand(
       onBlocked?.(pairingOutcomeBlocker('denied', 'you denied this computer'))
       return EXIT.auth
     }
-    // Proof-gated: the server never returns this from lookup. Stop now rather
-    // than waiting out a TTL no approval can arrive within.
+    // Proof-gated: the server never returns this from lookup. A current
+    // service approves computers without a plan and never sends it; an older
+    // one may, so stop rather than wait out a TTL no approval can arrive in.
     if (poll.status === 'no_active_plan') {
       clearPendingPairing(deps.env)
-      // The server owns which access errand is current — requesting it today,
-      // choosing a plan after cutover — so its line wins whenever it sends one.
-      const accessUrl = setupAccessUrl(baseUrl)
-      const next = poll.next_action ?? `Open ${accessUrl} to set up access, then retry.`
+      const accessUrl = plansUrl(baseUrl)
+      const next = `Choose one at ${accessUrl}`
       progress.spinner?.error('Pairing stopped')
-      // One wall, said once. When a caller takes the blocker it closes the
-      // visit on this exact errand, so repeating the destination here would
-      // leave the User three phrasings of one step to choose between.
-      if (onBlocked === undefined) {
-        deps.io.err('This account has no active plan or temporary Alpha access.')
-        deps.io.err(`next: ${next}`)
-        deps.io.err(`After access is granted, run \`${SETUP_COMMAND}\` again.`)
-      }
+      // One line, said once. When a caller takes the blocker it closes the
+      // visit on this exact errand.
+      if (onBlocked === undefined) deps.io.err(`no_active_plan: ${NO_ACTIVE_PLAN_LINE} ${next}`)
       onBlocked?.({
         id: 'auth',
-        title: 'Access',
+        title: 'Plan',
         status: 'gap',
-        detail: 'this account does not have access to Notifai yet',
-        technical: { access_url: accessUrl, next_action: next },
+        detail: NO_ACTIVE_PLAN_LINE,
+        technical: { plan_required: true, access_url: accessUrl, next_action: next },
         remedy: { by: 'user-elsewhere', summary: next },
       })
       return EXIT.auth
@@ -735,8 +729,7 @@ export async function accessStatusCommand(
       return access.status === 'active' ? EXIT.ok : EXIT.failed
     }
     if (access.status === 'no_active_plan') {
-      deps.io.out('This account does not have access to Notifai yet.')
-      deps.io.out(`next: Open ${setupAccessUrl(authed.baseUrl)} to set up access, then retry.`)
+      deps.io.out(`${NO_ACTIVE_PLAN_LINE} Choose one at ${plansUrl(authed.baseUrl)}`)
       return EXIT.failed
     }
     const expiry = access.expires_at ? ` until ${access.expires_at}` : ''

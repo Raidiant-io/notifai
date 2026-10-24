@@ -85,7 +85,7 @@ import {
   type CommandDeps,
 } from './commands-core.js'
 import { deviceInstallRemedy, readyCompanionDevices } from './commands-devices.js'
-import { setupAccessUrl, setupCompanionUrl } from './setup-destinations.js'
+import { NO_ACTIVE_PLAN_LINE, plansUrl, setupCompanionUrl } from './setup-destinations.js'
 import { readPendingPairing } from './pending-pairing.js'
 import { pendingApprovalBlocker } from './commands-auth.js'
 import {
@@ -416,8 +416,40 @@ function isNoActivePlanError(err: unknown): err is ApiCallError {
 }
 
 /**
- * Device listing is grant-gated; access status is not. A paired Account whose
- * plan lapsed must not be diagnosed as a revoked machine.
+ * The one no-plan line. Setup needs no plan; delivering notifications does,
+ * so this gap comes last, after the app is in, and replaces the proof.
+ */
+function noPlanGap(baseUrl: string): ReadinessState {
+  const next = `Choose one at ${plansUrl(baseUrl)}`
+  return {
+    id: 'auth',
+    title: 'Plan',
+    status: 'gap',
+    detail: NO_ACTIVE_PLAN_LINE,
+    technical: { plan_required: true, access_url: plansUrl(baseUrl), next_action: next },
+    remedy: { by: 'user-elsewhere', summary: next },
+  }
+}
+
+function isPlanGap(state: ReadinessState | undefined): boolean {
+  const technical = state?.technical
+  return state?.id === 'auth' && typeof technical === 'object' && technical !== null &&
+    (technical as { plan_required?: unknown }).plan_required === true
+}
+
+/** The plan gap is the last step of setup, just before the proof it replaces. */
+function planGapLast(states: ReadinessState[]): ReadinessState[] {
+  const plan = states.find(isPlanGap)
+  if (plan === undefined) return states
+  const rest = states.filter((state) => state !== plan)
+  const proof = rest.findIndex((state) => state.id === 'proof')
+  return proof === -1 ? [...rest, plan] : [...rest.slice(0, proof), plan, ...rest.slice(proof)]
+}
+
+/**
+ * Setup needs no plan, so device listing answers for an Account without one;
+ * only delivery needs a plan. A paired Account whose plan lapsed must not be
+ * diagnosed as a revoked machine.
  */
 async function probeAccount(
   client: ApiClient,
@@ -429,14 +461,11 @@ async function probeAccount(
   lookupFailed: boolean
   auth: ReadinessState
 }> {
-  const [devicesOutcome, accessOutcome, requestOutcome] = await Promise.allSettled([
+  const [devicesOutcome, accessOutcome] = await Promise.allSettled([
     Promise.resolve().then(() => client.listDevices()),
     Promise.resolve().then(() => client.accessStatus()),
-    Promise.resolve().then(() => client.accessRequest()),
   ])
   const access = accessOutcome.status === 'fulfilled' ? accessOutcome.value : null
-  const pendingRequest =
-    requestOutcome.status === 'fulfilled' ? requestOutcome.value.request : null
   const devices = devicesOutcome.status === 'fulfilled' ? devicesOutcome.value.devices : null
   const email = access?.email ?? null
   const devicesErr = devicesOutcome.status === 'rejected' ? devicesOutcome.reason : null
@@ -444,39 +473,14 @@ async function probeAccount(
     access?.status === 'no_active_plan' || isNoActivePlanError(devicesErr)
 
   if (noActivePlan) {
-    const next =
-      (isNoActivePlanError(devicesErr) ? devicesErr.nextAction : null) ??
-      `Open ${setupAccessUrl(baseUrl)} to set up access, then retry.`
-    const who = email ? ` (${email})` : ''
-    // Three values, not two. Someone who asked yesterday is waiting on a person,
-    // not on an action of theirs, and telling them to ask again — every run,
-    // forever — is the only thing this terminal could get wrong about a wait it
-    // cannot shorten.
+    // An older service still refuses the device list without a plan; a
+    // current one answers it, so setup carries on to the app and the plan
+    // is the last step.
     return {
       email,
-      devices: null,
-      lookupFailed: true,
-      auth:
-        pendingRequest === null
-          ? {
-              id: 'auth',
-              title: 'Account',
-              status: 'gap',
-              detail: `this account does not have access to Notifai yet${who}`,
-              technical: { access_url: setupAccessUrl(baseUrl), next_action: next },
-              remedy: { by: 'user-elsewhere', summary: next },
-            }
-          : {
-              id: 'auth',
-              title: 'Account',
-              status: 'gap',
-              detail: `access requested on ${pendingRequest.requested_at.slice(0, 10)}${who} — waiting to be granted`,
-              remedy: {
-                by: 'user-elsewhere',
-                summary:
-                  'nothing is needed from you; this resumes on the next run once access is granted',
-              },
-            },
+      devices,
+      lookupFailed: devices === null,
+      auth: noPlanGap(baseUrl),
     }
   }
 
@@ -603,7 +607,7 @@ export async function assessReadiness(
     const reused = remoteStatesFrom(previous)
     if (reused !== null) {
       return {
-        states: [
+        states: planGapLast([
           cliBinReadiness(deps.env, deps.hookPlatform ?? process.platform, { nativeHome: deps.hookAdapterHome, invokingNpmAdapterArtifact: deps.invokingNpmAdapterArtifact, inspectExecutionDomain: true }),
           projectEnablementReadiness(deps, config),
           projectReadiness(deps, config),
@@ -617,7 +621,7 @@ export async function assessReadiness(
           await skillReadiness(deps, options.skillScope, options.skillHarnesses),
           reused.devices,
           reused.proof,
-        ],
+        ]),
         harness,
       }
     }
@@ -771,9 +775,17 @@ export async function assessReadiness(
     )
   }
 
-  states.push(await setupProofState(deps, config, accountClient, accountDevices, options.readOnly === true))
+  const planRequired = states.some(isPlanGap)
+  states.push(planRequired
+    ? {
+        id: 'proof',
+        title: 'Delivery proof',
+        status: 'unknown',
+        detail: `not sent — ${NO_ACTIVE_PLAN_LINE}`,
+      }
+    : await setupProofState(deps, config, accountClient, accountDevices, options.readOnly === true))
 
-  return { states, harness }
+  return { states: planGapLast(states), harness }
 }
 
 async function applyRegistryRecommendation(

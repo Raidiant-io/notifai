@@ -39,7 +39,7 @@ sit waiting for your OK while you're away."
 | installer-needs-you | the installer reports a `user_action`, or the OS shows a permission prompt | Installing Notifai needs one thing from you: {user_action_message, or "please review the prompt on your screen"}. Tell me when it's done. |
 | denied | `pairing_outcome: denied` | You declined connecting this computer, so I've stopped. Ask me again whenever you want to set it up. |
 | expired | `pairing_outcome: expired` | That code expired before it was approved, so here's a new one. (Then `approve`.) |
-| no-plan | `auth` gap: no plan yet | Your Notifai account needs a plan before this computer can connect. Choose one at {access_url}, then ask me to finish setting up. |
+| no-plan | `auth` gap: no plan yet | Notifai needs an active plan to deliver notifications. Choose one at {access_url}, then ask me to finish setting up. |
 | unreachable | `server` or `not_started`, twice | I can't reach Notifai from this computer right now. I'll try again when you ask; nothing you set up so far is lost. |
 | app-missing | `devices` still empty after they said done | I don't see the app yet. Check that you signed in with {account_email}, the same email you approved this computer with, then tell me. |
 | proof-unconfirmed | `proof` unconfirmed after one recheck | I sent a test notification, but the Notifai app hasn't confirmed it yet. Open Notifai on your phone so it can check in, then tell me and I'll check again. |
@@ -76,10 +76,9 @@ shell does not strand an approval already given.
 `notifai logout --revoke` first revokes this computer on the service.
 
 `notifai auth status --json` says whether this machine is paired.
-`notifai auth access --json` says whether the account has access, including
-access already requested and waiting on a person — not something to ask them to
-do again. They fail differently and are worth separating before you report
-either as broken.
+`notifai auth access --json` says whether the account has an active plan.
+Setup needs no plan; delivering notifications does. They fail differently and
+are worth separating before you report either as broken.
 
 ## Installing hooks and trust
 

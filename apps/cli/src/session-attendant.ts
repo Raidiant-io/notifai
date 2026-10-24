@@ -513,7 +513,8 @@ export async function runSessionAttendant(options: SessionAttendantOptions): Pro
       if (exit !== null) break
       if (current.signal.aborted || options.client() !== client) continue
       if (err instanceof ApiCallError) {
-        if (err.status === 401 || err.status === 403) {
+        // No plan is not a refused credential; back off and resume once it is active.
+        if ((err.status === 401 || err.status === 403) && err.code !== 'no_active_plan') {
           stop('unauthorized')
           break
         }

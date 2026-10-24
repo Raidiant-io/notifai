@@ -32,6 +32,17 @@ function dashboardOrigin(baseUrl: string): string {
   return normalized
 }
 
+/**
+ * The one line every no-plan surface says. Setup needs no plan; delivering
+ * notifications does, and there is no free tier.
+ */
+export const NO_ACTIVE_PLAN_LINE = 'Notifai needs an active plan to deliver notifications.'
+
+/** Where an Account without a plan chooses one. */
+export function plansUrl(baseUrl: string): string {
+  return `${dashboardOrigin(baseUrl)}/plans`
+}
+
 /** Getting this Account access to Notifai, and nothing else. */
 export function setupAccessUrl(baseUrl: string, platform?: CompanionPlatform): string {
   const base = `${dashboardOrigin(baseUrl)}/setup/access`

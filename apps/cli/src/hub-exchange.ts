@@ -217,6 +217,9 @@ export class ExchangeDriver {
   }
 
   private isUnauthorized(err: unknown): boolean {
+    // No plan is not a refused credential: the machine stays paired, and the
+    // exchange resumes by itself once the plan is active. It backs off instead.
+    if (err instanceof ApiCallError && err.code === 'no_active_plan') return false
     if (err instanceof ApiCallError && (err.status === 401 || err.status === 403)) {
       this.host.unauthorized()
       return true

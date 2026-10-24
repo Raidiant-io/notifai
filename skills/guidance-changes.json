@@ -1,5 +1,5 @@
 {
-  "current": "b4c5bec95eec17c624bf0729ca89c5ecb0bcd7e4ced36163ebce848aa8b1e64f",
+  "current": "1d6cecfa62d7333a8ae3b9ee9df6b33d8e9fefba8fe59499ec7d4f7e2288a3d0",
   "releases": [
     {
       "digest": "3e47b01bc6bbfb43e910c660b9964fab6459d75148c3c02dcbcd0be64cfb2963",
@@ -72,6 +72,10 @@
     {
       "digest": "b4c5bec95eec17c624bf0729ca89c5ecb0bcd7e4ced36163ebce848aa8b1e64f",
       "note": "Setup now gives agents scripts for every moment that needs the User. Harness setup and recovery opens with \"What to tell the User\": short, named lines for installing, approving this computer, getting the phone app, allowing notifications on iPhone and Android, the hooks choices, Codex `/hooks` approval, a new Claude Code session and finishing, plus one recovery line for each common failure. Read it before your first setup message to the User and say the script for the current moment as written. The Codex `/hooks` request reads more plainly."
+    },
+    {
+      "digest": "1d6cecfa62d7333a8ae3b9ee9df6b33d8e9fefba8fe59499ec7d4f7e2288a3d0",
+      "note": "Setup no longer needs a plan; delivering notifications does. An Account without a plan can approve this computer, install the phone app and wire its harnesses, so `notifai init` now asks for the app first and reports the plan as the last step, in place of the test notification, which it does not send without a plan. `send` and `ask` refused for that reason print one line with the stable code `no_active_plan`: \"Notifai needs an active plan to deliver notifications. Choose one at <plans page>\". The `no-plan` setup script now says the same. A running Notifai no longer treats a missing plan as a refused credential: it keeps the computer paired and resumes once a plan is active."
     }
   ]
 }

@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "behavior_digest": "sha256:17035383f91f4a1ce794af3fe5500c3eae664e947bfe952043498f2b5d1eb529",
+  "behavior_digest": "sha256:52ef7f70a3aa20895ff50949c6a78a55d6b1d463241041ed3b75d3e2b9a35d6e",
   "outcome": "guidance-updated",
   "surfaces_reviewed": [
     "lifecycle-hooks",
@@ -9,5 +9,5 @@
     "cli-readiness",
     "domain-terms"
   ],
-  "reason": "Reviewed the setup hand-holding scripts across all five surfaces. harness-setup.md now opens with named User-facing scripts keyed to init --json states (credential pairing_outcome, devices with and without listed devices, hooks user_action, proof and question_routing_ready) and named recovery lines; approve and codex-hooks relay the CLI's own message and remedy.user_action.message so wording stays in one place. SKILL.md, installation.md and harness-codex.md point at the scripts; SKILL.md no longer defers reading harness-setup.md until a sign-in gap, since every first setup has a User moment. The Codex hook-approval user_action message is plainer with the same action and code. Non-exfiltration holds: scripts stay in the conversation and out of every Notification Request. Lifecycle hooks, readiness ids and domain terms are unchanged."
+  "reason": "Reviewed setup without a plan across all five surfaces. CLI readiness: an Account without a plan now lists its devices, so init asks for the app first; the auth gap (title Plan, technical.plan_required, access_url to the plans page) comes last, after devices, and the proof is reported unknown and never sent without a plan. send and ask print one line for no_active_plan with the server's message and next step. The pairing poll and auth access print the same line. The hub and session attendant treat no_active_plan as a back-off, not a refused credential. harness-setup.md: the no-plan script now says Notifai needs an active plan to deliver notifications, and the auth access description drops the Alpha request wording. Lifecycle hooks, readiness ids and domain terms are unchanged. Non-exfiltration holds: no new field leaves the machine."
 }

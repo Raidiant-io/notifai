@@ -335,6 +335,11 @@ export function reportError(
         ? { kind: 'network', message: err.message }
         : { kind: 'unknown', message: String(err) }),
   })
+  if (err instanceof ApiCallError && err.code === 'no_active_plan') {
+    // One calm line the agent relays as written: the plan is the only step.
+    deps.io.err(noActivePlanLine(err))
+    return EXIT.failed
+  }
   if (err instanceof ApiCallError) {
     deps.io.err(
       deps.io.interactive === true && err.recoveryAction !== null
@@ -375,6 +380,15 @@ export function reportError(
   }
   deps.io.err(String(err))
   return EXIT.failed
+}
+
+/**
+ * `no_active_plan: Notifai needs an active plan to deliver notifications.
+ * Choose one at <plans page>` — the server's own words when it sends them.
+ */
+export function noActivePlanLine(err: ApiCallError): string {
+  const next = err.nextAction ?? ''
+  return `no_active_plan: ${err.message}${next ? ` ${next}` : ''}`
 }
 
 export function rejectedPaths(details: unknown): string[] {

@@ -448,6 +448,31 @@ describe('command contracts', () => {
     expect(keys[1]).toBe(keys[0])
     expect(await sendCommand(deps, { ...semantic, retry: true })).toBe(EXIT.usage)
   })
+
+  it('relays the no-plan refusal as one line with its stable code', async () => {
+    const root = mkdtempSync(path.join(os.tmpdir(), 'notifai-send-no-plan-'))
+    const io = new CapturedIo()
+    const client = {
+      submit: async () => {
+        throw new ApiCallError(
+          403,
+          'no_active_plan',
+          'Notifai needs an active plan to deliver notifications.',
+          'Choose one at https://app.notifai.sh/plans',
+        )
+      },
+    } as unknown as ApiClient
+    const deps = {
+      ...makeDeps(io, client),
+      cwd: root,
+      env: { XDG_CONFIG_HOME: path.join(root, 'config'), XDG_STATE_HOME: path.join(root, 'state') },
+    }
+
+    expect(await sendCommand(deps, { kind: 'done', title: 'Build finished', body: 'All green.' })).toBe(EXIT.failed)
+    expect(io.errLines).toEqual([
+      'no_active_plan: Notifai needs an active plan to deliver notifications. Choose one at https://app.notifai.sh/plans',
+    ])
+  })
 })
 
 describe('credential origin pinning', () => {
@@ -712,6 +737,50 @@ it('resumes the same init after a required CLI update becomes current', async ()
     expect(out).not.toContain('/support')
     expect(out).toContain('sign in with the same email as this account (agent@example.com)')
     expect(io.openedUrls).toEqual([])
+  })
+
+  /** An Account without a plan: setup carries on; only delivery waits for the plan. */
+  function noPlanInit(devices: unknown[]) {
+    const cwd = mkdtempSync(path.join(os.tmpdir(), 'init-no-plan-'))
+    const io = new CapturedIo()
+    const submit = vi.fn(async () => receipt)
+    const client = {
+      health: async () => true,
+      capabilities: async () => ({ schema_version: 1, platform: 'ios' }),
+      listDevices: async () => ({ devices }),
+      accessStatus: async () => ({
+        status: 'no_active_plan',
+        reason: 'no_active_grant',
+        expires_at: null,
+        email: 'new@example.com',
+      }),
+      submit,
+    } as unknown as ApiClient
+    return { io, submit, deps: { ...makeDeps(io, client), cwd, env: isolatedEnv(cwd) } }
+  }
+
+  it('asks for the app before the plan when an Account has no plan', async () => {
+    const { io, submit, deps } = noPlanInit([])
+    expect(await initCommand(deps, { hooks: false, skills: false })).toBe(EXIT.failed)
+    const out = io.outLines.join('\n')
+    expect(out).toContain('Next: Your devices')
+    expect(out).toContain('https://test.notifai.invalid/setup/companion')
+    expect(out).not.toMatch(/alpha/i)
+    expect(submit).not.toHaveBeenCalled()
+  })
+
+  it('ends setup on the plan, without a proof notification, once the app is in', async () => {
+    const { io, submit, deps } = noPlanInit([readyIphone])
+    expect(await initCommand(deps, { hooks: false, skills: false, json: true })).toBe(EXIT.failed)
+    const result = JSON.parse(io.outLines.at(-1) ?? '{}') as { states: { id: string; status: string; detail: string; technical?: { access_url?: string } }[] }
+    const gaps = result.states.filter((state) => state.status === 'gap')
+    expect(gaps.map((state) => state.id)).toEqual(['auth'])
+    expect(gaps[0]!.detail).toBe('Notifai needs an active plan to deliver notifications.')
+    expect(gaps[0]!.technical?.access_url).toBe('https://test.notifai.invalid/plans')
+    const ids = result.states.map((state) => state.id)
+    expect(ids.indexOf('auth')).toBeGreaterThan(ids.indexOf('devices'))
+    expect(result.states.find((state) => state.id === 'proof')?.status).toBe('unknown')
+    expect(submit).not.toHaveBeenCalled()
   })
 })
 
