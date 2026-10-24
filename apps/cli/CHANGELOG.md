@@ -8,6 +8,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 This project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 and [Conventional Commits](https://www.conventionalcommits.org/en/v1.0.0/).
 
+## [14.2.0](https://github.com/Raidiant-io/notifai/compare/v14.1.1...v14.2.0) (2026-10-24)
+
+
+### Bug Fixes
+
+* **cli:** retry only evidenced notarization lookup failures ([d31388b](https://github.com/Raidiant-io/notifai/commit/d31388b5bf9ed30dc5d1554ed80651720bd9a954))
+* **cli:** skip git where no repository can be found ([708c83d](https://github.com/Raidiant-io/notifai/commit/708c83d3dc4bc7a16554b424ded4fe6ec17d8496))
+* **cursor:** fence held notes when a new prompt starts ([78ea835](https://github.com/Raidiant-io/notifai/commit/78ea83563bd021f74fc100090b73db84efbc78c7))
+* **cursor:** use native conversation identity for sends ([08bd30c](https://github.com/Raidiant-io/notifai/commit/08bd30c665fdd931dcd9c42ad6dbf534999db883))
+* **cursor:** withdraw attendance when the native host exits ([80deeaf](https://github.com/Raidiant-io/notifai/commit/80deeafa229cc835ba7e6bcb0e663c76753197ac))
+* **harness:** deliver Cursor notes and retain OpenClaw native identity ([fdb29f9](https://github.com/Raidiant-io/notifai/commit/fdb29f9dc51db990477ad63526c113311b44654d))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * @raidiant/notifai-protocol bumped from 9.1.1 to 9.1.2
+
 ## [14.1.1](https://github.com/Raidiant-io/notifai/compare/v14.1.0...v14.1.1) (2026-10-23)
 
 
