@@ -192,58 +192,15 @@ test('release-please is explicit, exact-main guarded, and uses a verified predec
   assert.equal(releaseCheckout.with['fetch-depth'], 0)
   assert.doesNotMatch(release, /github\.event\.before/u)
   assert.match(release, /release-please:\n(?:.*\n)*?    permissions:\n      contents: write\n      pull-requests: write/u)
-  assert.match(release, /  dispatch:\n(?:.*\n)*?    permissions:\n      actions: write/u)
-  const dispatch = release.slice(release.indexOf('\n  dispatch:'))
-  assert.doesNotMatch(dispatch, /pull-requests:/u)
-  assert.match(dispatch, /persist-credentials: false/u)
+  assert.equal(releaseCheckout.with['persist-credentials'], false)
 })
 
-test('release refs dispatch CI and publication at one exact SHA', () => {
-  assert.match(release, /dispatch_workflow ci\.yml "\$ref" "\$sha"/u)
-  assert.match(release, /if \[ "\$returned_sha" != "\$expected_sha" \]/u)
-  assert.match(release, /dispatch_workflow publish\.yml "\$PROTOCOL_TAG" "\$PROTOCOL_SHA"/u)
-  assert.match(release, /dispatch_workflow prepare-native-release\.yml "\$CLI_TAG" "\$CLI_SHA" "\$CANDIDATE_RUN_ID"/u)
-  assert.doesNotMatch(release, /dispatch_workflow publish\.yml "\$CLI_TAG"/u)
-})
-
-test('release candidate dispatch maps every strict-shell release output', () => {
-  const job = releaseWorkflow.jobs.dispatch
-  const step = job.steps.find(candidate => candidate.name === 'Dispatch release evidence and publication')
-
-  assert.match(job.if, /outputs\.release_refs != ''/u)
-  assert.match(step.run, /set -euo pipefail/u)
-  for (const [name, output] of [
-    ['RELEASE_REFS', 'release_refs'],
-    ['RELEASES_CREATED', 'releases_created'],
-    ['CLI_RELEASE_CREATED', 'cli_release_created'],
-    ['CLI_TAG', 'cli_tag'],
-    ['CLI_SHA', 'cli_sha'],
-    ['PROTOCOL_RELEASE_CREATED', 'protocol_release_created'],
-    ['PROTOCOL_TAG', 'protocol_tag'],
-    ['PROTOCOL_SHA', 'protocol_sha'],
-  ]) {
-    assert.equal(step.env[name], `\${{ needs.release-please.outputs.${output} }}`)
-  }
-  assert.match(step.run, /JSON\.parse\(process\.env\.RELEASE_REFS \|\| "\[\]"\)/u)
-})
-
-test('created releases dispatch and wait for exact-SHA CI before publish', () => {
-  const job = releaseWorkflow.jobs.dispatch
-  const dispatchIndex = job.steps.findIndex(step => step.name === 'Dispatch release evidence and publication')
-
-  assert.equal(job['timeout-minutes'], 30)
-  assert.deepEqual(job.permissions, {actions: 'write', contents: 'read'})
-  assert.match(job.if, /outputs\.releases_created == 'true'/u)
-  assert.ok(dispatchIndex >= 0, 'release dispatch step is missing')
-  const command = job.steps[dispatchIndex].run
-  assert.match(command, /if \[ "\$RELEASES_CREATED" = "true" \]; then/u)
-  assert.match(command, /dispatch_workflow ci\.yml "\$GITHUB_REF_NAME" "\$GITHUB_SHA"/u)
-  assert.match(command, /gh run watch "\$CANDIDATE_RUN_ID" --exit-status/u)
-  assert.match(command, /require-native-evidence\.mjs --kind candidate --expected-sha "\$GITHUB_SHA" --run-id "\$CANDIDATE_RUN_ID"/u)
-  assert.ok(
-    command.indexOf('require-native-evidence.mjs') < command.indexOf('dispatch_workflow publish.yml'),
-    'publication must follow exact-SHA CI evidence',
-  )
+test('release preparation does not start a second release graph', () => {
+  assert.equal(releaseWorkflow.jobs.dispatch, undefined)
+  assert.ok(publishWorkflow.jobs['native-publication'].needs.includes('source'))
+  assert.equal(publishWorkflow.jobs['promote-npm'].needs, 'adapter-acceptance')
+  assert.equal(publishWorkflow.jobs['promote-native'].needs, 'promote-npm')
+  assert.equal(publishWorkflow.on.workflow_dispatch.inputs.channel.default, 'none')
 })
 
 test('publication requires exact-SHA CI before the protected OIDC job', () => {
@@ -253,10 +210,8 @@ test('publication requires exact-SHA CI before the protected OIDC job', () => {
   assert.match(publish, /node scripts\/require-ci-evidence\.mjs --expected-sha/u)
   assert.equal(publishWorkflow.jobs.npm.environment, 'npm-release')
   assert.deepEqual(publishWorkflow.jobs.npm.permissions, {contents: 'read', 'id-token': 'write'})
-  const releaseTooling = publishWorkflow.jobs.npm.steps.find(
-    candidate => candidate.name === 'Verify release-specific artifact tooling',
-  )
-  assert.doesNotMatch(releaseTooling.run, /pnpm (?:build|-r test|lint|-r typecheck|check:release)/u)
+  assert.ok(publishWorkflow.jobs['native-publication'].needs.includes('source'))
+  assert.ok(publishWorkflow.jobs.npm.needs.includes('native-publication'))
 })
 
 test('npm publication stages the unified CLI then separately promotes exact verified bytes', () => {
@@ -266,8 +221,7 @@ test('npm publication stages the unified CLI then separately promotes exact veri
   const steps = publishWorkflow.jobs.npm.steps
   const index = name => steps.findIndex(step => step.name === name)
   const build = index('Build the exact source verification modules')
-  const tooling = index('Verify release-specific artifact tooling')
-  assert.ok(build >= 0 && build < tooling, 'Clean release jobs must build imported verification modules before artifact tests')
+  assert.ok(build >= 0 && build < index('Pack once or retain the already-published candidate'))
   const pack = index('Pack once or retain the already-published candidate')
   const service = index('Verify deployed service accepts this candidate')
   const publishIndex = index('Publish the selected npm package with OIDC provenance')
@@ -283,7 +237,7 @@ test('npm publication stages the unified CLI then separately promotes exact veri
   assert.equal(steps[promotion].if, "inputs.mode == 'promote' || steps.plan.outputs.package_name == '@raidiant/notifai-protocol'")
   assert.ok(index('Verify staged candidate discovery') < promotion)
   assert.match(steps[promotion].run, /verify-npm-distribution\.mjs promote/)
-  assert.equal(publishWorkflow.on.workflow_dispatch.inputs.mode.default, 'candidate')
+  assert.equal(publishWorkflow.on.workflow_dispatch.inputs.mode.default, 'release')
   const retry = steps.find(step => step.name === 'Verify an existing package before declaring a retry successful')
   assert.equal(retry.if, "steps.plan.outputs.publish == 'false'")
   assert.match(retry.run, /--expected-tarball "\$NPM_TARBALL"/u)
@@ -301,7 +255,7 @@ test('beta repair uses exact main, protected OIDC, shared serialization and rece
   const repair = publishWorkflow.jobs['beta-repair']
   assert.equal(repair.needs, 'dispatch-integrity')
   assert.equal(repair.if, "inputs.mode == 'repair-beta'")
-  assert.equal(publishWorkflow.jobs.npm.if, "inputs.mode != 'repair-beta'")
+  assert.match(publishWorkflow.jobs.npm.if, /inputs.mode != 'repair-beta'/)
   assert.equal(repair.environment, 'npm-release')
   assert.deepEqual(repair.permissions, { contents: 'read', actions: 'read', 'id-token': 'write' })
   assert.equal(repair.concurrency.group, publishWorkflow.jobs.npm.concurrency.group)

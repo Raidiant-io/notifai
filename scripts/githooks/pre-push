@@ -26,6 +26,9 @@ if [ -n "$(git -C "$root" status --porcelain --untracked-files=normal)" ]; then
 fi
 
 cd "$root"
+# Review shipped instructions and behavior dependencies at integration.
+# An unchanged digest needs no new review or release approval.
+pnpm check:agent-guidance
 pnpm check:boundary:self-test
 pnpm check:boundary
 pnpm check:secrets

@@ -1,6 +1,7 @@
 # Agent Guidance review
 
-Run `pnpm check:agent-guidance` before builds and unit tests. A stale record
+Run `pnpm check:agent-guidance` at integration (the public pre-push hook enforces it).
+Release execution reuses that review; unchanged guidance needs no new approval. A stale record
 fails closed and reports behavior input paths changed since the commit that
 last changed the review record. A missing Git baseline is reported explicitly;
 inspect all input roots in that case. Test files and generated README release

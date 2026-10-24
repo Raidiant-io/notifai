@@ -62,7 +62,7 @@ export function changedFilesAgainstMain() {
   }
 }
 
-async function verifyPackedSkillInstaller(prepared, scratch) {
+export async function verifyPackedSkillInstaller(prepared, scratch) {
   // The distributed native executable performs every refresh; npm carries no product modules.
   const project = path.join(scratch, 'skill project Ω')
   const skill = path.join(project, '.agents/skills/notifai/SKILL.md')

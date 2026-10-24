@@ -1,5 +1,4 @@
 name: publish
-
 on:
   workflow_dispatch:
     inputs:
@@ -14,22 +13,289 @@ on:
       mode:
         description: Stage candidate bytes, promote verified discovery, or repair beta for an existing latest version
         type: choice
-        options: [candidate, promote, repair-beta]
-        default: candidate
+        options:
+          - release
+          - candidate
+          - promote
+          - repair-beta
+        default: release
       repair_package:
         description: Existing package whose beta discovery needs repair (repair-beta only)
         type: choice
-        options: ['@raidiant/notifai', '@raidiant/notifai-protocol']
-        default: '@raidiant/notifai'
+        options:
+          - "@raidiant/notifai"
+          - "@raidiant/notifai-protocol"
+        default: "@raidiant/notifai"
       repair_version:
         description: Already-published stable version currently under npm latest (repair-beta only)
         type: string
         required: false
-
+      channel:
+        description: Authorized discovery channel; none publishes a never-promoted validation candidate
+        type: choice
+        options:
+          - none
+          - beta
+          - stable
+        default: none
 permissions:
   contents: read
-
 jobs:
+  release-admission:
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 5
+    steps:
+      - name: Admit exact first-party release tag
+        env:
+          EXPECTED_SHA: ${{ inputs.expected_sha }}
+          CHANNEL: ${{ inputs.channel }}
+        run: |
+          set -euo pipefail
+          [[ "$EXPECTED_SHA" =~ ^[0-9a-f]{40}$ ]]
+          test "$GITHUB_REPOSITORY" = Raidiant-io/notifai
+          test "$GITHUB_SHA" = "$EXPECTED_SHA"
+          [[ "$GITHUB_REF" == refs/tags/v* ]]
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version: "24"
+      - name: Bind the release version and authorized channel
+        run: node scripts/release-receipt.mjs scope "${{ inputs.channel }}"
+    if: inputs.mode == 'release'
+  source:
+    needs: release-admission
+    if: inputs.mode == 'release'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320
+        with:
+          version: 10.34.5
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version: "24"
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: Install verified gitleaks binary
+        env:
+          GITLEAKS_VERSION: 8.30.1
+          GITLEAKS_TARBALL_SHA256: 551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb
+        run: |
+          mkdir -p "$RUNNER_TEMP/gitleaks"
+          cd "$RUNNER_TEMP/gitleaks"
+          curl --fail --silent --show-error --location --remote-name \
+            "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"
+          echo "${GITLEAKS_TARBALL_SHA256}  gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz" \
+            | sha256sum --check --strict
+          tar -xzf "gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz" gitleaks
+          echo "$RUNNER_TEMP/gitleaks" >> "$GITHUB_PATH"
+      - name: Prove redacted detection and scan the release history
+        shell: bash
+        run: |
+          set -euo pipefail
+          node scripts/check-secrets.mjs --mode controls
+          node scripts/check-secrets.mjs --mode tree
+          node scripts/check-secrets.mjs --mode full
+      - id: receipt
+        name: Reuse successful source tests only for identical inputs
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: node scripts/release-receipt.mjs restore release-source.json
+      - name: Lint public packages
+        run: pnpm lint
+        if: steps.receipt.outputs.reused != 'true'
+      - name: Build public packages
+        run: pnpm build
+        if: steps.receipt.outputs.reused != 'true'
+      - name: Run public unit tests
+        run: pnpm -r test
+        if: steps.receipt.outputs.reused != 'true'
+      - name: Typecheck public packages
+        run: pnpm -r typecheck
+        if: steps.receipt.outputs.reused != 'true'
+      - name: Audit production dependencies
+        run: pnpm audit --prod --audit-level moderate --ignore-registry-errors
+        if: steps.receipt.outputs.reused != 'true'
+      - name: Verify public boundary
+        run: pnpm check:boundary && pnpm check:machine-paths
+      - name: Verify release metadata and package contents
+        run: pnpm check:release
+        if: steps.receipt.outputs.reused != 'true'
+      - name: Verify signed npm artifact validation tooling
+        run: node --test scripts/verify-packed-install.test.mjs
+        if: steps.receipt.outputs.reused != 'true'
+      - name: Verify release tooling once
+        run: node --test scripts/package-standalone.test.mjs scripts/sign-release-records.test.mjs scripts/assemble-native-release.test.mjs scripts/publish-native-assets.test.mjs scripts/advance-native-channel.test.mjs scripts/require-native-evidence.test.mjs scripts/native-finalization.test.mjs scripts/verify-runtime-sources.test.mjs scripts/release-receipt.test.mjs scripts/publication-receipt.test.mjs
+        if: steps.receipt.outputs.reused != 'true'
+      - name: Record successful input-bound source evidence
+        run: node scripts/release-receipt.mjs write source release-source.json
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: release-source-${{ inputs.expected_sha }}
+          path: release-source.json
+          if-no-files-found: error
+          retention-days: 90
+    permissions:
+      contents: read
+      actions: read
+  native:
+    name: finalize (${{ matrix.target }})
+    timeout-minutes: 50
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-15
+            target: bun-darwin-arm64
+            arch: arm64
+            extension: ""
+          - runner: macos-15-intel
+            target: bun-darwin-x64
+            arch: x64
+            extension: ""
+          - runner: ubuntu-24.04
+            target: bun-linux-x64
+            arch: x64
+            extension: ""
+          - runner: ubuntu-24.04-arm
+            target: bun-linux-arm64
+            arch: arm64
+            extension: ""
+          - runner: windows-2025
+            target: bun-windows-x64
+            arch: x64
+            extension: .exe
+          - runner: windows-11-arm
+            target: bun-windows-arm64
+            arch: arm64
+            extension: .exe
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - name: Admit only the exact release candidate
+        shell: bash
+        env:
+          EXPECTED_SHA: ${{ inputs.expected_sha }}
+          ACTUAL_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          [[ "$EXPECTED_SHA" =~ ^[0-9a-f]{40}$ ]]
+          test "$ACTUAL_SHA" = "$EXPECTED_SHA"
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320
+        with:
+          version: 10.34.5
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version: "24"
+          architecture: ${{ matrix.arch }}
+          cache: pnpm
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6
+        with:
+          bun-version: 1.4.2
+      - uses: ilammy/msvc-dev-cmd@0b201ec74fa43914dc39ae48a89fd1d8cb592756
+        if: runner.os == 'Windows'
+        with:
+          arch: ${{ matrix.arch }}
+      - run: pnpm install --frozen-lockfile
+      - name: Verify native architecture
+        env:
+          EXPECTED_ARCH: ${{ matrix.arch }}
+        run: node -e "if(process.arch !== process.env.EXPECTED_ARCH) process.exit(1)"
+      - name: Verify npm adapter signatures and OS boundaries
+        timeout-minutes: 10
+        shell: bash
+        env:
+          TARGET: ${{ matrix.target }}
+          EXPECTED_SHA: ${{ inputs.expected_sha }}
+        run: |
+          set -euo pipefail
+          pnpm run ci:phase protocol-build 120000 pnpm --filter @raidiant/notifai-protocol build
+          pnpm run ci:phase cli-build 120000 pnpm --filter @raidiant/notifai build
+          pnpm run ci:phase adapter-build 60000 node scripts/build-npm-adapter.mjs --source-revision "$EXPECTED_SHA"
+          pnpm run ci:phase bootstrap-platform 120000 node scripts/check-npm-bootstrap-platform.mjs "$TARGET"
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        if: matrix.target == 'bun-linux-x64'
+        with:
+          node-version: 20.12.0
+      - name: Verify npm bootstrap on its minimum Node version
+        if: matrix.target == 'bun-linux-x64'
+        run: |
+          node --test apps/cli/npm/notarization.test.mjs apps/cli/npm/adapter.test.mjs apps/cli/npm/route.test.mjs
+          node dist/npm/notifai/bin/notifai.mjs --help
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        if: matrix.target == 'bun-linux-x64'
+        with:
+          node-version: "24"
+      - name: Verify Windows PowerShell bootstrap
+        if: runner.os == 'Windows'
+        shell: powershell
+        run: ./scripts/check-windows-bootstrap.ps1
+      - name: Verify modern PowerShell bootstrap
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: ./scripts/check-windows-bootstrap.ps1
+      - name: Compile launcher and full application
+        shell: bash
+        env:
+          TARGET: ${{ matrix.target }}
+          EXTENSION: ${{ matrix.extension }}
+        run: |
+          set -euo pipefail
+          node scripts/build-launcher.mjs "$RUNNER_TEMP/native-final"
+          node scripts/build-standalone.mjs --target "$TARGET" --out "$RUNNER_TEMP/native-final/notifai-runtime$EXTENSION"
+      - name: Prepare exact reviewed release materials
+        shell: bash
+        run: node scripts/prepare-reviewed-materials.mjs --target "${{ matrix.target }}" --output "$RUNNER_TEMP/native-materials" --adapter-manifest dist/npm/notifai/npm-adapter-files.json
+      - name: Sign and notarize the final macOS CLI bytes
+        if: runner.os == 'macOS'
+        shell: bash
+        env:
+          EXPECTED_SHA: ${{ inputs.expected_sha }}
+          NOTIFAI_MACOS_CERTIFICATE_BASE64: ${{ secrets.NOTIFAI_MACOS_CERTIFICATE_BASE64 }}
+          NOTIFAI_MACOS_CERTIFICATE_PASSWORD: ${{ secrets.NOTIFAI_MACOS_CERTIFICATE_PASSWORD }}
+          NOTIFAI_MACOS_SIGNING_IDENTITY: ${{ vars.NOTIFAI_MACOS_SIGNING_IDENTITY }}
+          NOTIFAI_NOTARY_KEY_BASE64: ${{ secrets.NOTIFAI_NOTARY_KEY_BASE64 }}
+          NOTIFAI_NOTARY_KEY_ID: ${{ vars.NOTIFAI_NOTARY_KEY_ID }}
+          NOTIFAI_NOTARY_ISSUER: ${{ vars.NOTIFAI_NOTARY_ISSUER }}
+        run: node scripts/sign-macos-standalone.mjs --directory "$RUNNER_TEMP/native-final" --expected-sha "$EXPECTED_SHA"
+      - name: Verify and package final bytes on their native OS
+        shell: bash
+        env:
+          EXTENSION: ${{ matrix.extension }}
+        run: |
+          set -euo pipefail
+          node scripts/check-standalone.mjs "$RUNNER_TEMP/native-final/notifai$EXTENSION" > "$RUNNER_TEMP/native-final/check.json"
+          node scripts/check-standalone-runtime.mjs --launcher "$RUNNER_TEMP/native-final/notifai$EXTENSION" > "$RUNNER_TEMP/native-final/runtime-check.log"
+          node scripts/package-standalone.mjs --directory "$RUNNER_TEMP/native-final" --materials "$RUNNER_TEMP/native-materials" --output "$RUNNER_TEMP/native-final/archive"
+          args=()
+          if [ "$RUNNER_OS" = macOS ]; then args+=(--notarized); fi
+          node scripts/verify-standalone-archive.mjs "$RUNNER_TEMP/native-final/archive" "${args[@]}" > "$RUNNER_TEMP/native-final/archive-check.json"
+      - name: Retain exact final artifacts for explicit publication and retries
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: native-final-${{ matrix.target }}-${{ inputs.expected_sha }}
+          path: ${{ runner.temp }}/native-final/
+          if-no-files-found: error
+          retention-days: 90
+      - name: Retain failed finalization evidence without signing credentials
+        if: failure()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: native-final-failed-${{ matrix.target }}-${{ inputs.expected_sha }}-attempt-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/native-final/
+          if-no-files-found: warn
+          retention-days: 14
+    needs: release-admission
+    if: inputs.mode == 'release'
+    environment: native-release
   dispatch-integrity:
     runs-on: ubuntu-latest
     timeout-minutes: 1
@@ -64,26 +330,19 @@ jobs:
                 ;;
             esac
           fi
-
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           persist-credentials: false
-
       - name: Require an immutable GitHub release
         if: inputs.mode != 'repair-beta'
         env:
           GH_TOKEN: ${{ github.token }}
-        run: >-
-          node scripts/check-public-provider-posture.mjs
-          --release-tag "$GITHUB_REF_NAME"
-          --expected-sha "${{ inputs.expected_sha }}"
-
+        run: node scripts/check-public-provider-posture.mjs --release-tag "$GITHUB_REF_NAME" --expected-sha "${{ inputs.expected_sha }}"
       - name: Require successful CI evidence at the exact release SHA
         if: inputs.mode != 'repair-beta'
         env:
           GH_TOKEN: ${{ github.token }}
         run: node scripts/require-ci-evidence.mjs --expected-sha "${{ inputs.expected_sha }}"
-
       - name: Require retained npm/native acceptance before CLI promotion
         if: inputs.mode == 'promote' && startsWith(github.ref, 'refs/tags/v')
         env:
@@ -91,10 +350,12 @@ jobs:
           EXPECTED_SHA: ${{ inputs.expected_sha }}
           CANDIDATE_RUN: ${{ inputs.candidate_run_id }}
         run: node scripts/require-native-evidence.mjs --kind npm --expected-sha "$EXPECTED_SHA" --run-id "$CANDIDATE_RUN"
-
+    if: inputs.mode != 'release'
   npm:
-    needs: dispatch-integrity
-    if: inputs.mode != 'repair-beta'
+    needs:
+      - dispatch-integrity
+      - native-publication
+    if: always() && ((inputs.mode == 'release' && needs.native-publication.result == 'success') || (inputs.mode != 'release' && inputs.mode != 'repair-beta' && needs.dispatch-integrity.result == 'success'))
     runs-on: ubuntu-latest
     timeout-minutes: 30
     environment: npm-release
@@ -105,28 +366,22 @@ jobs:
       contents: read
       id-token: write
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           fetch-depth: 0
           persist-credentials: false
-
-      - uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320 # v4.4.0
+      - uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320
         with:
           version: 10.34.5
-
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
         with:
-          node-version: '24'
+          node-version: "24"
           cache: pnpm
-
       - name: Install the pinned OIDC publication and dist-tag client
         run: npm install --global npm@11.21.0 --ignore-scripts --no-audit --no-fund
-
       - name: Require an npm CLI with trusted-publishing support
         run: node scripts/check-npm-trusted-publishing.mjs --dist-tags
-
       - run: pnpm install --frozen-lockfile
-
       - name: Install verified gitleaks binary
         env:
           GITLEAKS_VERSION: 8.30.1
@@ -140,25 +395,15 @@ jobs:
             | sha256sum --check --strict
           tar -xzf "gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz" gitleaks
           echo "$RUNNER_TEMP/gitleaks" >> "$GITHUB_PATH"
-
       - name: Build the exact source verification modules
         run: |
           pnpm --filter @raidiant/notifai-protocol build
           pnpm --filter @raidiant/notifai build
-
-      - name: Verify release-specific artifact tooling
-        run: |
-          node --test \
-            scripts/check-packed-boundary.test.mjs \
-            scripts/verify-packed-install.test.mjs \
-            scripts/verify-published.test.mjs
-
       - name: Plan idempotent package publication
         id: plan
         env:
-          PUBLICATION_MODE: ${{ inputs.mode }}
+          PUBLICATION_MODE: ${{ inputs.mode == 'release' && 'candidate' || inputs.mode }}
         run: node scripts/plan-publish.mjs
-
       - name: Pack once or retain the already-published candidate
         env:
           PACKAGE_NAME: ${{ steps.plan.outputs.package_name }}
@@ -188,81 +433,76 @@ jobs:
           node scripts/check-packed-boundary.mjs --tarball "$tarball" --gitleaks
           if [ "$PACKAGE_NAME" = '@raidiant/notifai' ]; then
             node scripts/verify-packed-npm-adapter.mjs "$tarball" "$EXPECTED_SHA" "$VERSION"
-            node scripts/verify-packed-install.mjs --cli-tarball "$tarball" --expected-sha "$EXPECTED_SHA" --owned-hosted-account
-            node scripts/verify-packed-skill-install.mjs --cli-tarball "$tarball" --expected-sha "$EXPECTED_SHA" --owned-hosted-account
           fi
-
       - name: Verify an existing package before declaring a retry successful
         if: steps.plan.outputs.publish == 'false'
         env:
           PACKAGE_NAME: ${{ steps.plan.outputs.package_name }}
           EXPECTED_SHA: ${{ inputs.expected_sha }}
         run: node scripts/verify-published.mjs "$PACKAGE_NAME" --expected-tarball "$NPM_TARBALL" --expected-sha "$EXPECTED_SHA"
-
       - name: Record npm distribution tags before publication
         env:
           PACKAGE_NAME: ${{ steps.plan.outputs.package_name }}
         run: node scripts/verify-npm-distribution.mjs snapshot "$RUNNER_TEMP/npm-dist-tags-before.json" "$PACKAGE_NAME"
-
       - name: Build protocol for the live service contract check
         if: steps.plan.outputs.publish == 'true'
         run: pnpm --filter @raidiant/notifai-protocol build
-
       - name: Verify deployed service accepts this candidate
         if: steps.plan.outputs.publish == 'true'
         run: node scripts/check-live-server-contract.mjs
-
       - name: Publish the selected npm package with OIDC provenance
         if: steps.plan.outputs.publish == 'true'
         env:
           NPM_DIST_TAG: ${{ steps.plan.outputs.npm_dist_tag }}
         run: npm publish "$NPM_TARBALL" --access public --provenance --tag "$NPM_DIST_TAG"
-
       - name: Verify published package bytes and metadata
         if: steps.plan.outputs.publish == 'true'
         env:
           PACKAGE_NAME: ${{ steps.plan.outputs.package_name }}
         run: node scripts/verify-published.mjs "$PACKAGE_NAME" --expected-tarball "$NPM_TARBALL" --expected-sha "${{ inputs.expected_sha }}"
-
       - name: Admit both immutable distributions before promotion
         if: inputs.mode == 'promote' && steps.plan.outputs.package_name == '@raidiant/notifai'
         env:
           GH_TOKEN: ${{ github.token }}
         run: node scripts/require-unified-publication.mjs "${{ steps.plan.outputs.version }}" "${{ inputs.expected_sha }}"
-
       - name: Verify staged candidate discovery
-        if: inputs.mode == 'candidate'
+        if: inputs.mode == 'candidate' || inputs.mode == 'release'
         env:
           PACKAGE_NAME: ${{ steps.plan.outputs.package_name }}
           NPM_DIST_TAG: ${{ steps.plan.outputs.npm_dist_tag }}
         run: node scripts/verify-npm-distribution.mjs verify "$RUNNER_TEMP/npm-dist-tags-before.json" "$PACKAGE_NAME"
-
       - name: Snapshot audience tags before promotion
         if: inputs.mode == 'promote' || steps.plan.outputs.package_name == '@raidiant/notifai-protocol'
         env:
           PACKAGE_NAME: ${{ steps.plan.outputs.package_name }}
         run: node scripts/verify-npm-distribution.mjs snapshot "$RUNNER_TEMP/npm-promotion-before.json" "$PACKAGE_NAME"
-
       - name: Promote only the already-verified npm version
         if: inputs.mode == 'promote' || steps.plan.outputs.package_name == '@raidiant/notifai-protocol'
         env:
           PACKAGE_NAME: ${{ steps.plan.outputs.package_name }}
         run: node scripts/verify-npm-distribution.mjs promote "$RUNNER_TEMP/npm-promotion-before.json" "$PACKAGE_NAME"
-
       - name: Retain exact npm candidate bytes
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: npm-candidate-${{ steps.plan.outputs.version }}-${{ inputs.expected_sha }}
           path: ${{ env.NPM_TARBALL }}
           if-no-files-found: error
           retention-days: 90
-
       - name: Verify npm distribution
         if: inputs.mode == 'promote' || steps.plan.outputs.package_name == '@raidiant/notifai-protocol'
         env:
           PACKAGE_NAME: ${{ steps.plan.outputs.package_name }}
         run: node scripts/verify-npm-distribution.mjs verify "$RUNNER_TEMP/npm-promotion-before.json" "$PACKAGE_NAME"
-
+      - name: Retain verified immutable publication identity
+        if: inputs.mode == 'release'
+        run: node scripts/publication-receipt.mjs "$NPM_TARBALL" "$RUNNER_TEMP/publication.json"
+      - if: inputs.mode == 'release'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: publication-${{ inputs.expected_sha }}
+          path: ${{ runner.temp }}/publication.json
+          if-no-files-found: error
+          retention-days: 90
   beta-repair:
     needs: dispatch-integrity
     if: inputs.mode == 'repair-beta'
@@ -277,13 +517,13 @@ jobs:
       actions: read
       id-token: write
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           fetch-depth: 0
           persist-credentials: false
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
         with:
-          node-version: '24'
+          node-version: "24"
       - name: Install the pinned OIDC dist-tag client
         run: npm install --global npm@11.21.0 --ignore-scripts --no-audit --no-fund
       - run: node scripts/check-npm-trusted-publishing.mjs --dist-tags
@@ -298,17 +538,16 @@ jobs:
         run: node scripts/repair-npm-beta.mjs repair "$PACKAGE_NAME" "$VERSION" "$RUNNER_TEMP/beta-repair.json"
       - name: Retain before and after discovery evidence
         if: always()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: npm-beta-repair-${{ inputs.repair_version }}-${{ inputs.expected_sha }}
           path: ${{ runner.temp }}/beta-repair.json
           if-no-files-found: warn
           retention-days: 90
-
   adapter-acceptance:
     name: npm adapter (${{ matrix.target }})
     needs: npm
-    if: inputs.mode == 'candidate' && startsWith(github.ref, 'refs/tags/v')
+    if: (inputs.mode == 'candidate' || inputs.mode == 'release') && startsWith(github.ref, 'refs/tags/v')
     timeout-minutes: 30
     strategy:
       fail-fast: false
@@ -334,40 +573,357 @@ jobs:
             arch: arm64
     runs-on: ${{ matrix.runner }}
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           persist-credentials: false
-      - uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320 # v4.4.0
+      - uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320
         with:
           version: 10.34.5
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
         with:
-          node-version: '24'
+          node-version: "24"
           architecture: ${{ matrix.arch }}
           cache: pnpm
-      - uses: ilammy/msvc-dev-cmd@0b201ec74fa43914dc39ae48a89fd1d8cb592756 # v1
+      - uses: ilammy/msvc-dev-cmd@0b201ec74fa43914dc39ae48a89fd1d8cb592756
         if: runner.os == 'Windows'
         with:
           arch: ${{ matrix.arch }}
       - run: pnpm install --frozen-lockfile
       - run: pnpm --filter @raidiant/notifai-protocol build
       - run: pnpm --filter @raidiant/notifai build
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          pattern: npm-candidate-*-${{ inputs.expected_sha }}
+          path: ${{ runner.temp }}/verified-npm
+          merge-multiple: true
       - name: Acquire exact registry bytes and exercise the distributed native product
         shell: bash
         env:
           EXPECTED_SHA: ${{ inputs.expected_sha }}
         run: |
           set -euo pipefail
-          tarball="$RUNNER_TEMP/registry-candidate.tgz"
-          node scripts/verify-published.mjs @raidiant/notifai --expected-sha "$EXPECTED_SHA" --artifact-output "$tarball"
-          node scripts/verify-packed-install.mjs --cli-tarball "$tarball" --expected-sha "$EXPECTED_SHA" --owned-hosted-account > "$RUNNER_TEMP/npm-native-acceptance.json"
-          node scripts/verify-packed-skill-install.mjs --cli-tarball "$tarball" --expected-sha "$EXPECTED_SHA" --owned-hosted-account > "$RUNNER_TEMP/npm-native-skill-acceptance.json"
+          tarball=$(find "$RUNNER_TEMP/verified-npm" -name "*.tgz")
+          test -f "$tarball"
+          node scripts/verify-packed-install.mjs --with-skill --cli-tarball "$tarball" --expected-sha "$EXPECTED_SHA" --owned-hosted-account > "$RUNNER_TEMP/npm-native-acceptance.json"
       - name: Retain exact OS acceptance receipts
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: npm-native-acceptance-${{ matrix.target }}-${{ inputs.expected_sha }}
-          path: |
-            ${{ runner.temp }}/npm-native-acceptance.json
-            ${{ runner.temp }}/npm-native-skill-acceptance.json
+          path: ${{ runner.temp }}/npm-native-acceptance.json
           if-no-files-found: error
           retention-days: 90
+  platform-macos:
+    name: platform (macos-latest)
+    needs: release-admission
+    if: inputs.mode == 'release'
+    runs-on: macos-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320
+        with:
+          version: 10.34.5
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version: "24"
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm --filter @raidiant/notifai-protocol build
+      - name: Verify the macOS wake boundary
+        run: pnpm --filter @raidiant/notifai test -- src/codex-wake.test.ts src/local-input.test.ts
+  platform-windows-x64:
+    name: platform (windows-2025)
+    needs: release-admission
+    if: inputs.mode == 'release'
+    runs-on: windows-2025
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320
+        with:
+          version: 10.34.5
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version: "24"
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm --filter @raidiant/notifai-protocol build
+      - name: Record the native Windows evidence environment
+        shell: pwsh
+        run: |
+          "runner_image=$env:ImageOS"
+          "runner_image_version=$env:ImageVersion"
+          "windows=$([System.Environment]::OSVersion.VersionString)"
+          "process_arch=$(node -p process.arch)"
+          "node=$(node --version)"
+          "npm=$(npm --version)"
+          "pnpm=$(pnpm --version)"
+          "powershell=$($PSVersionTable.PSVersion)"
+          git --version
+      - name: Run native Windows boundaries
+        shell: bash
+        run: |
+          pnpm --filter @raidiant/notifai test -- \
+            src/credentials.test.ts src/local-input.test.ts src/shell-quoting.test.ts
+          pnpm --filter @raidiant/notifai test -- \
+            src/hook-adapter.test.ts src/install-hooks.test.ts \
+            --testNamePattern Windows
+          pnpm --filter @raidiant/notifai test -- \
+            src/process-identity.test.ts src/claude-wake.test.ts src/windows-hook-source.test.ts
+      - name: Configure the native Windows access-check compiler
+        uses: ilammy/msvc-dev-cmd@0b201ec74fa43914dc39ae48a89fd1d8cb592756
+        with:
+          arch: x64
+      - name: Warm Windows PowerShell
+        shell: pwsh
+        run: powershell.exe -NoProfile -NonInteractive -Command '(Get-Process -Id $PID).StartTime.ToFileTimeUtc(); Get-CimInstance Win32_Process -Filter "ProcessId = $PID" | Out-Null'
+      - name: Verify signed npm artifact validation on Windows
+        shell: bash
+        run: node --test scripts/verify-packed-install.test.mjs scripts/windows-npm-process.test.mjs scripts/windows-hook-command.test.mjs scripts/scratch-root.test.mjs
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version: 20.12.0
+          cache: pnpm
+      - name: Prove concurrent adapter installation on minimum Node
+        run: pnpm --filter @raidiant/notifai test -- src/hook-adapter.test.ts --testNamePattern "concurrent Windows installers"
+  platform-windows-arm:
+    name: platform (windows-11-arm)
+    needs: release-admission
+    if: inputs.mode == 'release'
+    runs-on: windows-11-arm
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320
+        with:
+          version: 10.34.5
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version: "24"
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm --filter @raidiant/notifai-protocol build
+      - name: Record the native Windows evidence environment
+        shell: pwsh
+        run: |
+          "runner_image=$env:ImageOS"
+          "runner_image_version=$env:ImageVersion"
+          "windows=$([System.Environment]::OSVersion.VersionString)"
+          "process_arch=$(node -p process.arch)"
+          "node=$(node --version)"
+          "npm=$(npm --version)"
+          "pnpm=$(pnpm --version)"
+          "powershell=$($PSVersionTable.PSVersion)"
+          git --version
+      - name: Run native Windows boundaries
+        shell: bash
+        run: |
+          pnpm --filter @raidiant/notifai test -- \
+            src/credentials.test.ts src/local-input.test.ts src/shell-quoting.test.ts
+          pnpm --filter @raidiant/notifai test -- \
+            src/hook-adapter.test.ts src/install-hooks.test.ts \
+            --testNamePattern Windows
+      - name: Configure the native Windows access-check compiler
+        uses: ilammy/msvc-dev-cmd@0b201ec74fa43914dc39ae48a89fd1d8cb592756
+        with:
+          arch: arm64
+      - name: Warm Windows PowerShell
+        shell: pwsh
+        run: powershell.exe -NoProfile -NonInteractive -Command '(Get-Process -Id $PID).StartTime.ToFileTimeUtc(); Get-CimInstance Win32_Process -Filter "ProcessId = $PID" | Out-Null'
+      - name: Verify signed npm artifact validation on Windows
+        shell: bash
+        run: node --test scripts/verify-packed-install.test.mjs scripts/windows-npm-process.test.mjs scripts/windows-hook-command.test.mjs scripts/scratch-root.test.mjs
+  native-publication:
+    needs:
+      - source
+      - native
+      - platform-macos
+      - platform-windows-x64
+      - platform-windows-arm
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 30
+    environment: native-release
+    permissions:
+      actions: read
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320
+        with:
+          version: 10.34.5
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version: "24"
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm --filter @raidiant/notifai-protocol build
+      - run: pnpm --filter @raidiant/notifai build
+      - name: Restore exactly the admitted final artifacts
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EXPECTED_SHA: ${{ inputs.expected_sha }}
+          FINAL_RUN: ${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          for target in bun-darwin-arm64 bun-darwin-x64 bun-linux-arm64 bun-linux-x64 bun-windows-arm64 bun-windows-x64; do
+            gh run download "$FINAL_RUN" --repo "$GITHUB_REPOSITORY" --name "native-final-$target-$EXPECTED_SHA" --dir "$RUNNER_TEMP/native-input/$target"
+          done
+      - name: Assemble and sign the exact admitted inventory
+        shell: bash
+        env:
+          EXPECTED_SHA: ${{ inputs.expected_sha }}
+          NOTIFAI_RELEASE_SIGNING_KEY: ${{ secrets.NOTIFAI_RELEASE_SIGNING_KEY }}
+          SIGNING_KEY_ID: ${{ vars.NOTIFAI_RELEASE_SIGNING_KEY_ID }}
+        run: |
+          set -euo pipefail
+          version=$(node -p 'require("./apps/cli/package.json").version')
+          test "$GITHUB_REF" = "refs/tags/v$version"
+          node scripts/build-npm-adapter.mjs --source-revision "$EXPECTED_SHA"
+          node scripts/assemble-native-release.mjs --input "$RUNNER_TEMP/native-input" --output "$RUNNER_TEMP/native-release" --version "$version" --expected-sha "$EXPECTED_SHA" --key-id "$SIGNING_KEY_ID" --adapter-manifest dist/npm/notifai/npm-adapter-files.json
+      - name: Verify the retained signed bundle identity
+        env:
+          EXPECTED_SHA: ${{ inputs.expected_sha }}
+        run: node scripts/verify-native-bundle.mjs "$RUNNER_TEMP/native-release" "$EXPECTED_SHA"
+      - name: Retain the identical signed bundle for acceptance and retries
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: native-release-bundle-${{ inputs.expected_sha }}
+          path: ${{ runner.temp }}/native-release/
+          if-no-files-found: error
+          retention-days: 90
+      - name: Verify deployed service accepts this candidate
+        run: node scripts/check-live-server-contract.mjs
+      - name: Publish immutable native assets without discovery
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EXPECTED_SHA: ${{ inputs.expected_sha }}
+          NOTIFAI_RELEASE_SIGNING_KEY: ${{ secrets.NOTIFAI_RELEASE_SIGNING_KEY }}
+          SIGNING_KEY_ID: ${{ vars.NOTIFAI_RELEASE_SIGNING_KEY_ID }}
+        run: node scripts/publish-native-release.mjs --directory "$RUNNER_TEMP/native-release" --expected-sha "$EXPECTED_SHA" --publish
+    if: inputs.mode == 'release'
+  promote-npm:
+    needs: adapter-acceptance
+    if: inputs.mode == 'release' && inputs.channel != 'none'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment: npm-release
+    concurrency:
+      group: npm-publish
+      cancel-in-progress: false
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320
+        with:
+          version: 10.34.5
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version: "24"
+          cache: pnpm
+      - name: Install the pinned OIDC publication and dist-tag client
+        run: npm install --global npm@11.21.0 --ignore-scripts --no-audit --no-fund
+      - name: Require an npm CLI with trusted-publishing support
+        run: node scripts/check-npm-trusted-publishing.mjs --dist-tags
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm build
+      - name: Check live contract and promote admitted registry candidate
+        env:
+          PACKAGE_NAME: "@raidiant/notifai"
+        run: |-
+          node scripts/check-live-server-contract.mjs
+          node scripts/verify-npm-distribution.mjs snapshot "$RUNNER_TEMP/promotion.json" "$PACKAGE_NAME"
+          node scripts/verify-npm-distribution.mjs promote "$RUNNER_TEMP/promotion.json" "$PACKAGE_NAME"
+          node scripts/verify-npm-distribution.mjs verify "$RUNNER_TEMP/promotion.json" "$PACKAGE_NAME"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: npm-promotion-${{ inputs.expected_sha }}
+          path: ${{ runner.temp }}/promotion.json
+          if-no-files-found: error
+  promote-native:
+    needs: promote-npm
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 30
+    environment: native-release
+    permissions:
+      actions: read
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320
+        with:
+          version: 10.34.5
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version: "24"
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm --filter @raidiant/notifai-protocol build
+      - run: pnpm --filter @raidiant/notifai build
+      - name: Restore the retained signed bundle without rebuilding or resigning
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EXPECTED_SHA: ${{ inputs.expected_sha }}
+          ASSEMBLED_RUN: ${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          gh run download "$ASSEMBLED_RUN" --repo "$GITHUB_REPOSITORY" --name "native-release-bundle-$EXPECTED_SHA" --dir "$RUNNER_TEMP/native-release"
+      - name: Verify the retained signed bundle identity
+        env:
+          EXPECTED_SHA: ${{ inputs.expected_sha }}
+        run: node scripts/verify-native-bundle.mjs "$RUNNER_TEMP/native-release" "$EXPECTED_SHA"
+      - name: Verify deployed service accepts this candidate
+        run: node scripts/check-live-server-contract.mjs
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: publication-${{ inputs.expected_sha }}
+          path: ${{ runner.temp }}/publication
+      - name: Publish candidate assets or promote admitted distributions
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EXPECTED_SHA: ${{ inputs.expected_sha }}
+          CHANNEL: ${{ inputs.channel }}
+          MODE: promote
+          INITIALIZE_CHANNEL: "false"
+          NOTIFAI_RELEASE_SIGNING_KEY: ${{ secrets.NOTIFAI_RELEASE_SIGNING_KEY }}
+          SIGNING_KEY_ID: ${{ vars.NOTIFAI_RELEASE_SIGNING_KEY_ID }}
+        run: |
+          set -euo pipefail
+          args=(--directory "$RUNNER_TEMP/native-release" --expected-sha "$EXPECTED_SHA")
+          if [ "$MODE" = publish ]; then
+            test "$CHANNEL" = none
+            args+=(--publish)
+          else
+            test "$MODE" = promote
+            test "$CHANNEL" != none
+          fi
+          if [ "$CHANNEL" != none ]; then
+            args+=(--promote --channel "$CHANNEL" --key-id "$SIGNING_KEY_ID")
+            if [ "$INITIALIZE_CHANNEL" = true ]; then args+=(--initialize-channel); fi
+          elif [ "$INITIALIZE_CHANNEL" = true ]; then
+            echo 'Channel initialization requires explicit channel promotion' >&2
+            exit 1
+          fi
+          node scripts/publish-native-release.mjs "${args[@]}" --publication-receipt "$RUNNER_TEMP/publication/publication.json"
+    if: inputs.mode == 'release' && inputs.channel != 'none'
+concurrency:
+  group: cli-release-${{ inputs.expected_sha }}
+  cancel-in-progress: false

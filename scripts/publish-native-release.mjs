@@ -3,6 +3,10 @@
 // flags and an admitted signed bundle at the exact dispatched release tag/SHA.
 import assert from 'node:assert/strict'
 import { createHash, createPrivateKey } from 'node:crypto'
+import { readFileSync } from 'node:fs'
+import { validatePublicationReceipt } from './publication-receipt.mjs'
+import { requireNpmDiscovery } from './require-unified-publication.mjs'
+import { registryDistTags } from './verify-npm-distribution.mjs'
 import { parseArgs } from 'node:util'
 import { Distribution } from '../apps/cli/dist/release-distribution.js'
 import { RELEASE_PUBLIC_KEYS } from '../apps/cli/dist/release-trust.js'
@@ -13,6 +17,7 @@ import { requireUnifiedPublication } from './require-unified-publication.mjs'
 import { advanceNativeChannel } from './advance-native-channel.mjs'
 
 const { values } = parseArgs({ options: { directory: { type: 'string' }, 'expected-sha': { type: 'string' },
+  'publication-receipt': { type: 'string' },
   publish: { type: 'boolean', default: false }, promote: { type: 'boolean', default: false },
   channel: { type: 'string' }, 'key-id': { type: 'string' }, 'initialize-channel': { type: 'boolean', default: false },
   'allow-channel-rollback': { type: 'boolean', default: false }, withdraw: { type: 'string', multiple: true, default: [] } } })
@@ -41,7 +46,12 @@ if (values.promote) {
 // Validate local admission and all requested controls before the first mutation.
 const result = {}
 try {
-  if (values.promote) result.admission = await requireUnifiedPublication({ version: bundle.inventory.version,
+  if (values.promote && values['publication-receipt']) {
+    result.admission = validatePublicationReceipt(JSON.parse(readFileSync(values['publication-receipt'], 'utf8')),
+      { version: bundle.inventory.version, sourceRevision: values['expected-sha'], signedInventory: bundle.signedInventory })
+    const [cliTags, protocolTags] = await Promise.all(['@raidiant/notifai', '@raidiant/notifai-protocol'].map(name => registryDistTags(name)))
+    requireNpmDiscovery({ version: bundle.inventory.version, cliTags, protocolTags })
+  } else if (values.promote) result.admission = await requireUnifiedPublication({ version: bundle.inventory.version,
     sourceRevision: values['expected-sha'], requireNpmPointer: true })
   if (values.promote) assert.equal(result.admission.inventory_sha256,
     createHash('sha256').update(bundle.signedInventory).digest('hex'), 'Retained bundle differs from admitted npm/native inventory')

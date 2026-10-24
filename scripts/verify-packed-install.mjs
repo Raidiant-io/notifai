@@ -167,6 +167,10 @@ async function main() {
     const help = runPhase(process.execPath, [bin, '--help'], { cwd: prepared.installDir,
       env: { ...process.env, ...prepared.env }, timeoutMs: TIMEOUTS.cliCommand, phase: 'packed-adapter-help' })
     assert.match(help.stdout, /init/)
+    if (process.argv.includes('--with-skill')) {
+      const { verifyPackedSkillInstaller } = await import('./verify-packed-skill-install.mjs')
+      await verifyPackedSkillInstaller(prepared, scratch)
+    }
     const timings = [{ phase: help.phase, elapsed_ms: help.elapsedMs }]
     if (process.platform === 'win32') timings.push(...verifyWindowsShims(prepared.installDir, /init/, { ...process.env, ...prepared.env }))
     console.log(JSON.stringify({ ok: true, version: prepared.cliManifest.version,
