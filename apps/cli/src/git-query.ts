@@ -13,7 +13,7 @@
  * Outside a hook scope nothing changes: the question goes to Git.
  */
 import { execFileSync } from 'node:child_process'
-import { lstatSync } from 'node:fs'
+import { existsSync, lstatSync } from 'node:fs'
 import path from 'node:path'
 import { hookScopeEnv, oncePerHook } from './hook-scope.js'
 
@@ -33,6 +33,7 @@ export function shareGitIdentityAnswers(): void {
 /** `git -C <cwd> <args>`, trimmed; null when Git fails or is missing. */
 export function gitQuery(cwd: string, args: readonly string[]): string | null {
   const env = hookScopeEnv()
+  if (!repositoryReachable(cwd, env ?? process.env)) return null
   if (env === undefined) return runGit(cwd, args, undefined)
   const key = `${cwd}\0${args.join('\0')}`
   return oncePerHook(`git\0${key}`, () => sharedOrAsked(cwd, args, key, env))
@@ -59,6 +60,22 @@ function sharedOrAsked(cwd: string, args: readonly string[], key: string, env: N
     answer = runGit(cwd, args, env)
   }
   return answer
+}
+
+/**
+ * Whether Git's discovery from `cwd` could find a repository: a `.git` entry
+ * or a bare repository at or above it, or one named by the environment. Every
+ * question asked here is about a repository, so without one Git is not run.
+ * On a Mac without the developer tools, running `git` at all opens the
+ * system's offer to install them.
+ */
+function repositoryReachable(cwd: string, env: NodeJS.ProcessEnv): boolean {
+  if (env['GIT_DIR'] || env['GIT_WORK_TREE']) return true
+  for (let directory = path.resolve(cwd); ; directory = path.dirname(directory)) {
+    if (existsSync(path.join(directory, '.git'))) return true
+    if (existsSync(path.join(directory, 'HEAD')) && existsSync(path.join(directory, 'objects'))) return true
+    if (path.dirname(directory) === directory) return false
+  }
 }
 
 function runGit(cwd: string, args: readonly string[], env: NodeJS.ProcessEnv | undefined): string | null {

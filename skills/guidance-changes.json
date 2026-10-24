@@ -1,5 +1,5 @@
 {
-  "current": "d4b96d69b5b2084cc28eb42a6850bed494a668811577d92c8e4b21dc870dc3a3",
+  "current": "412e9e071219dccfd79829fc1c58af40078a74394bd07d842792e74bff3e74fd",
   "releases": [
     {
       "digest": "3e47b01bc6bbfb43e910c660b9964fab6459d75148c3c02dcbcd0be64cfb2963",
@@ -60,6 +60,10 @@
     {
       "digest": "d4b96d69b5b2084cc28eb42a6850bed494a668811577d92c8e4b21dc870dc3a3",
       "note": "A new Cursor prompt fences the previous held Stop before it can deliver another note."
+    },
+    {
+      "digest": "412e9e071219dccfd79829fc1c58af40078a74394bd07d842792e74bff3e74fd",
+      "note": "Notifai no longer runs git where no repository can be found, so a Mac without the developer tools no longer offers to install them when Notifai checks setup. Existing agent guidance is unchanged."
     }
   ]
 }
