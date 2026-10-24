@@ -10,6 +10,7 @@ import { commandInvocation, repositoryRoot } from './cross-platform.mjs'
 import { requireStatus, runExternal } from './run-external.mjs'
 import { PACKED_SKILL_SMOKE_TIMEOUTS } from './packed-skill-smoke.mjs'
 import { verifyPackedAdapter, releaseAdapterAccess } from './verify-packed-npm-adapter.mjs'
+import { verifyPackedSkillInstaller } from './verify-installed-skill.mjs'
 import { Distribution } from '../apps/cli/dist/release-distribution.js'
 import { RELEASE_PUBLIC_KEYS } from '../apps/cli/dist/release-trust.js'
 const TIMEOUTS = PACKED_SKILL_SMOKE_TIMEOUTS
@@ -167,15 +168,13 @@ async function main() {
     const help = runPhase(process.execPath, [bin, '--help'], { cwd: prepared.installDir,
       env: { ...process.env, ...prepared.env }, timeoutMs: TIMEOUTS.cliCommand, phase: 'packed-adapter-help' })
     assert.match(help.stdout, /init/)
-    if (process.argv.includes('--with-skill')) {
-      const { verifyPackedSkillInstaller } = await import('./verify-packed-skill-install.mjs')
-      await verifyPackedSkillInstaller(prepared, scratch)
-    }
+    const skillRefresh = process.argv.includes('--with-skill')
+      ? await verifyPackedSkillInstaller(prepared, scratch) : undefined
     const timings = [{ phase: help.phase, elapsed_ms: help.elapsedMs }]
     if (process.platform === 'win32') timings.push(...verifyWindowsShims(prepared.installDir, /init/, { ...process.env, ...prepared.env }))
     console.log(JSON.stringify({ ok: true, version: prepared.cliManifest.version,
       build: prepared.nativeReceipt.build, skill: prepared.nativeReceipt.skill,
-      timings,
+      timings, skillRefresh,
       checks: ['exact-npm-files', 'isolated-npm-install', 'signed-exact-native-acquisition', 'native-process-identity', 'embedded-skill-integrity'] }))
   } finally { rmSync(scratch, { recursive: true, force: true }) }
 }
