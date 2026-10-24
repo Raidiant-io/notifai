@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 // Only the standalone CLI binaries are signed here. No Companion App target.
 import assert from 'node:assert/strict'
+import { verifyNotarization } from '../apps/cli/npm/notarization.mjs'
 import { createHash, randomBytes } from 'node:crypto'
 import { spawnSync } from 'node:child_process'
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
@@ -30,19 +31,8 @@ const run = (command, args, timeout = 60_000) => {
 }
 // Apple accepts a submission before its ticket is visible to this machine's
 // online lookup, and a lookup made too early keeps failing for minutes.
-const TICKET_FIRST_CHECK_MS = 60_000, TICKET_RETRY_MS = 30_000, TICKET_WINDOW_MS = 12 * 60_000
+const TICKET_FIRST_CHECK_MS = 60_000
 const pause = ms => { Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms) }
-const notarizationTicket = file => {
-  const deadline = Date.now() + TICKET_WINDOW_MS
-  for (let attempts = 1; ; attempts += 1) {
-    const result = spawnSync('/usr/bin/codesign', ['-vvvv', '-R=notarized', '--check-notarization', file],
-      { encoding: 'utf8', timeout: 60_000, maxBuffer: 4 * 1024 * 1024, env: process.env })
-    if (!result.error && result.status === 0) return { stdout: result.stdout, stderr: result.stderr, attempts }
-    if (Date.now() >= deadline) console.error(String(result.stderr ?? '').slice(-2000))
-    assert.ok(Date.now() < deadline, 'Apple notarization ticket did not become verifiable on this machine')
-    pause(TICKET_RETRY_MS)
-  }
-}
 const hash = file => createHash('sha256').update(readFileSync(file)).digest('hex')
 const scratch = mkdtempSync(path.join(os.tmpdir(), 'notifai-native-sign-'))
 const keychain = path.join(scratch, 'signing.keychain-db'), password = randomBytes(32).toString('hex')
@@ -96,7 +86,7 @@ try {
   for (const name of Object.keys(members)) {
     assert.equal(hash(path.join(directory, name)), members[name], 'Signed executable changed during notarization')
     // spctl execute assessment is for app bundles, not raw CLI Mach-O code.
-    const assessment = notarizationTicket(path.join(directory, name))
+    const assessment = verifyNotarization(path.join(directory, name))
     writeFileSync(path.join(evidence, `${name}-notarization-ticket.json`), JSON.stringify(assessment) + '\n', { flag: 'wx' })
   }
   const receipt = { schema: 1, target: build.target, team_id: policy.macos_team_id,

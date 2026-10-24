@@ -2,6 +2,7 @@
 // CI verification only: an ephemeral test key admits one candidate locally.
 // No production trust root, release publication, or channel mutation occurs.
 import assert from 'node:assert/strict'
+import { verifyNotarization } from '../apps/cli/npm/notarization.mjs'
 import { generateKeyPairSync, sign } from 'node:crypto'
 import { execFileSync } from 'node:child_process'
 import { mkdirSync, mkdtempSync, readFileSync, readdirSync, statSync, writeFileSync } from 'node:fs'
@@ -43,7 +44,7 @@ try {
     for (const name of ['notifai', 'notifai-runtime']) {
       const executable = path.join(extracted, name)
       execFileSync('/usr/bin/codesign', ['--verify', '--strict', `-R=anchor apple generic and certificate leaf[subject.OU] = "${policy.macos_team_id}"`, executable], { timeout: 30_000 })
-      execFileSync('/usr/bin/codesign', ['-vvvv', '-R=notarized', '--check-notarization', executable], { timeout: 60_000 })
+      verifyNotarization(executable)
     }
   }
   // An earlier non-native CLI leaves ~/.notifai/bin with ordinary inherited

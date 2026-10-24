@@ -598,6 +598,17 @@ nor an ordinary CI execution proves a fresh quarantined download launches on a
 User's Mac. That separate acceptance check uses the shipped archive on a clean
 Mac and the documented Terminal invocation. Raw executables and ZIPs cannot be
 stapled; this distribution needs Apple's online ticket lookup on first use.
+The npm bootstrap and native release verification capture each failed
+`codesign` diagnostic. They make at most three attempts, waiting 5 then 15
+seconds, only for an explicit transport error or a generic requirement failure
+that a separate `spctl -a -vvv -t install` assessment contradicts by positively
+identifying Notarized Developer ID code. That assessment is diagnostic only:
+`codesign` must still succeed. Rejection, revocation, invalid signatures, timeout,
+and unknown results fail closed. Apple's requirement evaluator can return the
+same false result for a missing ticket and a failed lookup; the generic error
+alone is never a retry signal. See Apple's
+[notarization evaluator](https://github.com/apple-oss-distributions/Security/blob/main/OSX/libsecurity_codesigning/lib/notarization.cpp).
+
 Sources: [Apple DTS testing guide](https://developer.apple.com/forums/thread/130560),
 [Apple Gatekeeper guidance](https://developer.apple.com/forums/thread/706379),
 [Bun 1.4.2 signing guide](https://github.com/oven-sh/bun/blob/bun-v1.4.2/docs/guides/runtime/codesign-macos-executable.mdx),

@@ -1,3 +1,4 @@
+import { verifyNotarization } from './notarization.mjs'
 import assert from 'node:assert/strict'
 import { execFileSync, spawn, spawnSync } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
@@ -173,7 +174,7 @@ export function nativePlatform() {
       for (const name of ['notifai', 'notifai-runtime']) {
         const executable = path.join(directory, name)
         execFileSync('/usr/bin/codesign', ['--verify', '--strict', executable], { timeout: 30_000, stdio: ['ignore', 'ignore', 'pipe'] })
-        execFileSync('/usr/bin/codesign', ['-vvvv', '-R=notarized', '--check-notarization', executable], { timeout: 60_000, stdio: ['ignore', 'ignore', 'pipe'] })
+        verifyNotarization(executable)
       }
     },
     execute: (executable, args) => executeNative(executable, args, { env: childEnvironment }),
