@@ -62,7 +62,9 @@ settingsFile
 } from './install-hooks.js'
 import { opencodePluginSource } from './opencode-plugin.js'
 import { disableProject,projectBinding,projectEnablementState } from './project-enablement.js'
+import { terminalQr } from './pairing-qr.js'
 import { readinessJson } from './readiness.js'
+import { COMPANION_INSTALL_URLS } from './setup-destinations.js'
 import type { SendFlags } from './send.js'
 import { reopenLine,reopenReport } from './session-reopen.js'
 
@@ -689,7 +691,7 @@ it('resumes the same init after a required CLI update becomes current', async ()
 
   it('tells the User the one thing a registered device is missing', () => {
     const remedy = (device: Partial<typeof readyIphone>) =>
-      deviceInstallRemedy({ baseUrl: 'https://test.notifai.invalid', email: null, devices: [{ ...readyIphone, ...device } as never] })
+      deviceInstallRemedy({ email: null, devices: [{ ...readyIphone, ...device } as never] })
     expect(remedy({ permission_status: 'denied' })).toContain('Settings')
     expect(remedy({ permission_status: 'not_determined' })).toContain('allow notifications when it asks')
     expect(remedy({ registration_healthy: false })).toBe('open Notifai on the device so it can finish connecting')
@@ -733,7 +735,9 @@ it('resumes the same init after a required CLI update becomes current', async ()
     ).toBe(EXIT.failed)
     const out = io.outLines.join('\n')
     expect(out).toContain('Next: Your devices')
-    expect(out).toContain('https://test.notifai.invalid/setup/companion')
+    expect(out).toContain(COMPANION_INSTALL_URLS.iphone)
+    expect(out).toContain(COMPANION_INSTALL_URLS.android)
+    expect(out).not.toContain('/setup/companion')
     expect(out).not.toContain('/support')
     expect(out).toContain('sign in with the same email as this account (agent@example.com)')
     expect(io.openedUrls).toEqual([])
@@ -764,7 +768,7 @@ it('resumes the same init after a required CLI update becomes current', async ()
     expect(await initCommand(deps, { hooks: false, skills: false })).toBe(EXIT.failed)
     const out = io.outLines.join('\n')
     expect(out).toContain('Next: Your devices')
-    expect(out).toContain('https://test.notifai.invalid/setup/companion')
+    expect(out).toContain(COMPANION_INSTALL_URLS.iphone)
     expect(out).not.toMatch(/alpha/i)
     expect(submit).not.toHaveBeenCalled()
   })
@@ -781,6 +785,41 @@ it('resumes the same init after a required CLI update becomes current', async ()
     expect(ids.indexOf('auth')).toBeGreaterThan(ids.indexOf('devices'))
     expect(result.states.find((state) => state.id === 'proof')?.status).toBe('unknown')
     expect(submit).not.toHaveBeenCalled()
+  })
+})
+
+describe('the phone install hand-off', () => {
+  const noDevicesClient = () => ({
+    health: async () => true,
+    capabilities: async () => ({ schema_version: 1, platform: 'ios' }),
+    listDevices: async () => ({ devices: [] }),
+    accessStatus: async () => ({ status: 'active', reason: 'alpha_grant', expires_at: null, email: 'user@example.test' }),
+  }) as unknown as ApiClient
+
+  it('shows a QR straight to the store and opens nothing on this computer', async () => {
+    const cwd = mkdtempSync(path.join(os.tmpdir(), 'init-phone-qr-'))
+    const io = new InteractiveIo()
+    io.selectAnswer = 'iphone'
+    io.confirmAnswer = false
+    let clock = 0
+    const deps = {
+      ...makeDeps(io, noDevicesClient()),
+      cwd,
+      env: isolatedEnv(cwd),
+      now: () => clock,
+      sleep: async (ms: number) => { clock += ms },
+    }
+
+    await initCommand(deps, {})
+
+    expect(io.openedUrls).toEqual([])
+    const note = io.notes.find((n) => n.title === 'Get Notifai on your iPhone')
+    expect(note).toBeDefined()
+    const lines = note!.message.split('\n')
+    expect(lines.at(-1)).toBe(
+      "Scan with your phone's camera to get Notifai, then sign in with user@example.test and allow notifications.",
+    )
+    expect(note!.message).toContain((await terminalQr(COMPANION_INSTALL_URLS.iphone)).trimEnd())
   })
 })
 

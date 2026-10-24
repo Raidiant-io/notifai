@@ -85,7 +85,7 @@ import {
   type CommandDeps,
 } from './commands-core.js'
 import { deviceInstallRemedy, readyCompanionDevices } from './commands-devices.js'
-import { NO_ACTIVE_PLAN_LINE, plansUrl, setupCompanionUrl } from './setup-destinations.js'
+import { COMPANION_INSTALL_URLS, NO_ACTIVE_PLAN_LINE, plansUrl, setupCompanionUrl } from './setup-destinations.js'
 import { readPendingPairing } from './pending-pairing.js'
 import { pendingApprovalBlocker } from './commands-auth.js'
 import {
@@ -744,8 +744,7 @@ export async function assessReadiness(
             // likeliest place a first setup is abandoned. Naming which of
             // the three sub-states it is matters: "install the app" is
             // useless advice to someone who installed it and denied the
-            // permission prompt. The live bridge is /support on the
-            // dashboard origin — not a placeholder, and not typed by hand.
+            // permission prompt.
             detail:
               devices.length === 0
                 ? 'no active Companion App registered yet'
@@ -755,6 +754,7 @@ export async function assessReadiness(
             // email the app must sign in with, and what is registered so far.
             technical: {
               companion_setup_url: setupCompanionUrl(baseUrl),
+              install_urls: COMPANION_INSTALL_URLS,
               account_email: accountEmail,
               devices: devices.map((d) => ({
                 display_name: d.display_name,
@@ -766,7 +766,6 @@ export async function assessReadiness(
             remedy: {
               by: 'user-elsewhere',
               summary: deviceInstallRemedy({
-                baseUrl,
                 email: accountEmail,
                 devices: devices,
               }),

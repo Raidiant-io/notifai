@@ -21,7 +21,10 @@ export async function renderPairingQr(env: NodeJS.ProcessEnv, url: string): Prom
   return file
 }
 
-export async function terminalPairingQr(url: string, ansi = true): Promise<string> {
+/** A QR a phone camera can read from the terminal. */
+export async function terminalQr(url: string, ansi = true): Promise<string> {
   const { default: QRCode } = await import('qrcode')
   return QRCode.toString(url, { type: ansi ? 'terminal' : 'utf8', small: true, errorCorrectionLevel: 'M', margin: 4 })
 }
+
+export const terminalPairingQr = terminalQr

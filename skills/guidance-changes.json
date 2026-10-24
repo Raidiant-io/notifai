@@ -1,5 +1,5 @@
 {
-  "current": "1d6cecfa62d7333a8ae3b9ee9df6b33d8e9fefba8fe59499ec7d4f7e2288a3d0",
+  "current": "b2c1c635915247537e49d91f6875005a33f0310fd4dab4566bdeb76b6ef3be0c",
   "releases": [
     {
       "digest": "3e47b01bc6bbfb43e910c660b9964fab6459d75148c3c02dcbcd0be64cfb2963",
@@ -76,6 +76,10 @@
     {
       "digest": "1d6cecfa62d7333a8ae3b9ee9df6b33d8e9fefba8fe59499ec7d4f7e2288a3d0",
       "note": "Setup no longer needs a plan; delivering notifications does. An Account without a plan can approve this computer, install the phone app and wire its harnesses, so `notifai init` now asks for the app first and reports the plan as the last step, in place of the test notification, which it does not send without a plan. `send` and `ask` refused for that reason print one line with the stable code `no_active_plan`: \"Notifai needs an active plan to deliver notifications. Choose one at <plans page>\". The `no-plan` setup script now says the same. A running Notifai no longer treats a missing plan as a refused credential: it keeps the computer paired and resumes once a plan is active."
+    },
+    {
+      "digest": "b2c1c635915247537e49d91f6875005a33f0310fd4dab4566bdeb76b6ef3be0c",
+      "note": "Getting the phone app no longer opens a page on the computer. Interactive `notifai init` shows a QR in the terminal that a phone's camera opens straight to the App Store (iPhone) or the free Android test sign-up, with one line saying to sign in with the same email and allow notifications. The devices gap's remedy and `notifai devices` name the same two links, and `init --json` adds them to the devices gap as `technical.install_urls`. Existing agent guidance is unchanged."
     }
   ]
 }

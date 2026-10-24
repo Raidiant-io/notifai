@@ -9,8 +9,8 @@ import {
   type CommandDeps,
 } from './commands-core.js'
 import {
+  COMPANION_INSTALL_URLS,
   companionPlatformLabel,
-  setupCompanionUrl,
   type CompanionPlatform,
 } from './setup-destinations.js'
 
@@ -45,7 +45,6 @@ export async function devicesCommand(
         deps.io.out(`No ${platform} devices registered.`)
         return EXIT.ok
       }
-      const setupUrl = setupCompanionUrl(authed.baseUrl)
       let email: string | null = null
       try {
         email = (await authed.client.accessStatus()).email
@@ -53,7 +52,7 @@ export async function devicesCommand(
         // Best-effort: the empty-state copy still names the destination.
       }
       deps.io.out(
-        `No devices yet. Set up a Companion App at ${setupUrl}, ${sameAccountSignInLine(email)}, and allow notifications.`,
+        `No devices yet. Get Notifai on your phone (${installLinks()}), ${sameAccountSignInLine(email)}, and allow notifications.`,
       )
       return EXIT.ok
     }
@@ -141,19 +140,16 @@ export function sameAccountSignInLine(email: string | null | undefined): string 
  * read the state it just fetched.
  */
 export function deviceInstallRemedy(options: {
-  baseUrl: string
   email: string | null
   devices: readonly RoutableDevice[]
   platform?: CompanionPlatform
 }): string {
   const sameEmail = sameAccountSignInLine(options.email)
   if (options.devices.length === 0) {
-    const destination = setupCompanionUrl(options.baseUrl, options.platform)
-    const named =
-      options.platform === undefined
-        ? 'the Companion App'
-        : `Notifai on ${companionPlatformLabel(options.platform)}`
-    return `open the steps for ${named} at ${destination}, install it, ${sameEmail}, and allow notifications`
+    const from = options.platform === undefined
+      ? `get Notifai on your phone (${installLinks()})`
+      : `get Notifai on your ${companionPlatformLabel(options.platform)} at ${COMPANION_INSTALL_URLS[options.platform]}`
+    return `${from}, ${sameEmail}, and allow notifications`
   }
   if (options.devices.some((d) => d.support?.state === 'must_update' && d.support.affected_operation === 'receive_notifications')) {
     return 'update the Notifai app on the device'
@@ -167,6 +163,11 @@ export function deviceInstallRemedy(options: {
   // Notifications are allowed, so the prompt is not what is missing: the app
   // has not finished registering, which it does when it is opened.
   return 'open Notifai on the device so it can finish connecting'
+}
+
+/** Both phones' install links, for a line that cannot know which phone the User has. */
+function installLinks(): string {
+  return `iPhone: ${COMPANION_INSTALL_URLS.iphone}; Android: ${COMPANION_INSTALL_URLS.android}`
 }
 
 export function deviceCanReceive(device: RoutableDevice): boolean {

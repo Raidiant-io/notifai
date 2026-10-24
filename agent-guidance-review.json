@@ -1,7 +1,7 @@
 {
   "version": 1,
-  "behavior_digest": "sha256:52ef7f70a3aa20895ff50949c6a78a55d6b1d463241041ed3b75d3e2b9a35d6e",
-  "outcome": "guidance-updated",
+  "behavior_digest": "sha256:4b1e417cd7a06bcc627d09119d489fe20c84176b0e7bca2519a1714ced2a2a26",
+  "outcome": "reviewed-no-impact",
   "surfaces_reviewed": [
     "lifecycle-hooks",
     "notifai-skill",
@@ -9,5 +9,5 @@
     "cli-readiness",
     "domain-terms"
   ],
-  "reason": "Reviewed setup without a plan across all five surfaces. CLI readiness: an Account without a plan now lists its devices, so init asks for the app first; the auth gap (title Plan, technical.plan_required, access_url to the plans page) comes last, after devices, and the proof is reported unknown and never sent without a plan. send and ask print one line for no_active_plan with the server's message and next step. The pairing poll and auth access print the same line. The hub and session attendant treat no_active_plan as a back-off, not a refused credential. harness-setup.md: the no-plan script now says Notifai needs an active plan to deliver notifications, and the auth access description drops the Alpha request wording. Lifecycle hooks, readiness ids and domain terms are unchanged. Non-exfiltration holds: no new field leaves the machine."
+  "reason": "Reviewed the phone-install hand-off across all five surfaces. Interactive init now shows a terminal QR that opens the App Store or the Android test sign-up and opens no browser on the computer; the devices gap's remedy summary and `notifai devices` name the same two links, and the devices gap adds technical.install_urls. Readiness ids, statuses and the existing technical fields (companion_setup_url, account_email, devices) are unchanged, so the get-app and allow scripts in harness-setup.md still hold. Lifecycle hooks, the skill and domain terms are unchanged. Non-exfiltration holds: the install links are public store addresses and carry nothing about the User."
 }

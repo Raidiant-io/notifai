@@ -43,6 +43,17 @@ export function plansUrl(baseUrl: string): string {
   return `${dashboardOrigin(baseUrl)}/plans`
 }
 
+/**
+ * Where a phone gets the Notifai app: straight to the store or download, with
+ * no sign-in first, so a phone can open it from a QR. These mirror the links
+ * on notifai.sh. Android is the free tester sign-up until Notifai is live on
+ * Google Play; going live there changes `android` only.
+ */
+export const COMPANION_INSTALL_URLS: Readonly<Record<CompanionPlatform, string>> = Object.freeze({
+  iphone: 'https://apps.apple.com/app/id6799027730',
+  android: 'https://app.notifai.sh/test-android',
+})
+
 /** Getting this Account access to Notifai, and nothing else. */
 export function setupAccessUrl(baseUrl: string, platform?: CompanionPlatform): string {
   const base = `${dashboardOrigin(baseUrl)}/setup/access`

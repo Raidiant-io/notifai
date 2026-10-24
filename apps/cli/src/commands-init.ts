@@ -37,9 +37,10 @@ import {
   type CommandDeps,
 } from './commands-core.js'
 import { readyCompanionDevices } from './commands-devices.js'
+import { terminalQr } from './pairing-qr.js'
 import {
+  COMPANION_INSTALL_URLS,
   companionPlatformLabel,
-  setupCompanionUrl,
   type CompanionPlatform,
 } from './setup-destinations.js'
 import { assessReadiness, remedyLine } from './commands-doctor.js'
@@ -310,11 +311,11 @@ async function askCompanionPlatform(deps: CommandDeps): Promise<CompanionPlatfor
 
 /**
  * Observe the supported Device Installation path while the user finishes the
- * app-side work. The bridge is one focused setup destination for the platform
- * they just named — not the omnibus help page, whose own next step is to go
- * somewhere else. Interactive runs open it so the user never types
- * the URL; non-interactive/agent paths only print plain text and never wait on
- * a prompt.
+ * app-side work. The app goes on the phone, so the bridge is a QR the phone
+ * scans straight to the store or download for the platform they just named,
+ * with nothing to sign in to first. Nothing opens on this computer: the
+ * computer is the wrong device for this errand. Non-interactive/agent paths
+ * only print plain text and never wait on a prompt.
  *
  * The wait budget is stated up front. On expiry we say the *timer* expired —
  * not the setup — and offer another budget when a human is present. Agents
@@ -341,28 +342,20 @@ async function waitForReadyDevice(deps: CommandDeps, state: ReadinessState): Pro
   const needsPlatform = (await registeredCompanions(authed.client)) === 0
   const platform = needsPlatform ? await askCompanionPlatform(deps) : null
   if (needsPlatform && platform === null) return 'pending'
-  const setupUrl = setupCompanionUrl(authed.baseUrl, platform ?? undefined)
+  const installUrl = platform === null ? null : COMPANION_INSTALL_URLS[platform]
   const technical = state.technical as { account_email?: unknown } | null | undefined
   const email = typeof technical?.account_email === 'string' ? technical.account_email : null
-  // One instruction in the User's words. The state's own detail and summary
-  // are written for a report and would say the same step twice.
-  const steps = platform === null
-    ? [`${remedy.summary.charAt(0).toUpperCase()}${remedy.summary.slice(1)}.`]
-    : [
-        `Install Notifai on your ${companionPlatformLabel(platform)}: ${setupUrl}`,
-        `Sign in there with ${email ?? 'the email you used for this computer'}, and allow notifications when it asks.`,
-      ]
-  await deps.io.note?.(
-    [
-      ...steps,
-      `I'll wait up to ${budgetLabel} for it. Ctrl-C stops waiting; \`${SETUP_COMMAND}\` picks up from here later.`,
-    ].join('\n'),
-    platform === null ? 'Finish on your phone' : `Get Notifai on your ${companionPlatformLabel(platform)}`,
-  )
-
-  // The platform choice (or resuming an existing installation) starts the
-  // handoff. Only extending an expired wait needs another decision.
-  deps.io.openUrl(setupUrl)
+  // One QR and one line in the User's words. The state's own detail and
+  // summary are written for a report and would say the same step twice.
+  if (platform === null || installUrl === null) {
+    await deps.io.note?.(`${remedy.summary.charAt(0).toUpperCase()}${remedy.summary.slice(1)}.`, 'Finish on your phone')
+  } else {
+    await deps.io.note?.(
+      `${(await terminalQr(installUrl)).trimEnd()}\n` +
+        `Scan with your phone's camera to get Notifai, then sign in with ${email ?? 'the email you used for this computer'} and allow notifications.`,
+      `Get Notifai on your ${companionPlatformLabel(platform)}`,
+    )
+  }
 
   const now = deps.now ?? Date.now
   const sleep =
@@ -403,7 +396,7 @@ async function waitForReadyDevice(deps: CommandDeps, state: ReadinessState): Pro
     )
     deps.io.err(deviceBridgeMessage(lastDevices).replace(/…$/, '.'))
     deps.io.err(
-      `Re-run \`notifai init\` later and it will pick up from here (steps: ${setupUrl}).`,
+      `Re-run \`notifai init\` later and it will pick up from here${installUrl === null ? '' : ` (get the app: ${installUrl})`}.`,
     )
 
     const keepWaiting = await deps.io.confirm(
