@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // Only the standalone CLI binaries are signed here. No Companion App target.
 import assert from 'node:assert/strict'
-import { verifyNotarization } from '../apps/cli/npm/notarization.mjs'
+import { verifyAcceptedNotarization } from './verify-accepted-notarization.mjs'
 import { createHash, randomBytes } from 'node:crypto'
 import { spawnSync } from 'node:child_process'
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
@@ -86,7 +86,7 @@ try {
   for (const name of Object.keys(members)) {
     assert.equal(hash(path.join(directory, name)), members[name], 'Signed executable changed during notarization')
     // spctl execute assessment is for app bundles, not raw CLI Mach-O code.
-    const assessment = verifyNotarization(path.join(directory, name))
+    const assessment = verifyAcceptedNotarization(path.join(directory, name), members[name])
     writeFileSync(path.join(evidence, `${name}-notarization-ticket.json`), JSON.stringify(assessment) + '\n', { flag: 'wx' })
   }
   const receipt = { schema: 1, target: build.target, team_id: policy.macos_team_id,
