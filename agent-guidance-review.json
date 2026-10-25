@@ -1,7 +1,7 @@
 {
   "version": 1,
-  "behavior_digest": "sha256:1281220b734a0bc8a4d89d743cef979201d5cf1097b8a941140c1f06eecff2f9",
-  "outcome": "guidance-updated",
+  "behavior_digest": "sha256:e9951466cb93882914ca0d9d9f603e38ca6e6dc60d72592b2c64819d700111be",
+  "outcome": "reviewed-no-impact",
   "surfaces_reviewed": [
     "lifecycle-hooks",
     "notifai-skill",
@@ -9,5 +9,5 @@
     "cli-readiness",
     "domain-terms"
   ],
-  "reason": "Reviewed lifecycle hooks, the Notifai skill, harness setup, CLI readiness and domain terms. Machine configuration discovery and repair follow selected-home symlinks while retaining logical Codex trust identities. Setup output and the Codex reference require User approval through /hooks in the same Codex home, including unchanged shared files. No approval is copied or granted; ordinary send remains independent of hook readiness. Project residue keeps its existing authority boundary and private local evidence stays local."
+  "reason": "Reviewed lifecycle hooks, the Notifai skill, harness setup, CLI readiness and domain terms against a README-only change: an \"Also works with\" row naming T3 Code and Orca with their app icons. Both are apps that run supported harnesses, not new harnesses, so no hook, setup step, readiness check, skill rule or domain term changes; the existing Cursor reference already describes SDK hosts such as T3 Code."
 }
