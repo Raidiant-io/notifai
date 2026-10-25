@@ -4,6 +4,14 @@ Your agents can reach you, and you can answer from your phone. The answer goes
 back to the exact Agent Session that asked, in whichever harness it runs:
 Claude Code, Codex, Cursor, OpenCode, OpenClaw, Hermes or Grok.
 
+<p align="center"><sub>Also works with</sub></p>
+<table align="center">
+  <tr>
+    <td align="center"><a href="https://t3.codes"><img src="docs/images/t3-code.png" width="48" alt="T3 Code logo"><br>T3 Code</a></td>
+    <td align="center"><a href="https://www.onorca.dev"><img src="docs/images/orca.png" width="48" alt="Orca logo"><br>Orca</a></td>
+  </tr>
+</table>
+
 Know which one needs you. Notifications name the Project and Agent Session
 they come from, so several agents at once never blur into one generic bell.
 
