@@ -16,6 +16,7 @@ import {
   pendingList,
   readSessionState,
   sessionStatePath,
+  settleSessionState,
   updateSessionState,
   writeSessionStateUnlocked,
 } from './hook-session-state.js'
@@ -394,12 +395,14 @@ export function clearAcknowledgementObligation(
   if (id.startsWith(SESSION_MESSAGE_ID_PREFIX)) return clearMessageAcknowledgement(sessionId, env, id)
   const requestId = id
   let cleared = false
-  updateSessionState(sessionId, env, (current) => {
+  // Settled even after the session ended: the service recorded the acknowledgement.
+  settleSessionState(sessionId, env, (current) => {
     const due = current.acknowledgement_due ?? []
     const remaining = due.filter((entry) => entry.request_id !== requestId)
     const delivered = (current.delivered_answers ?? []).filter((entry) => entry.pending.request_id !== requestId)
     const waiting = (current.waiting_answers ?? []).filter((entry) => entry.pending.request_id !== requestId)
-    cleared = remaining.length !== due.length || delivered.length !== (current.delivered_answers?.length ?? 0)
+    cleared = remaining.length !== due.length || delivered.length !== (current.delivered_answers?.length ?? 0) ||
+      waiting.length !== (current.waiting_answers?.length ?? 0)
     if (!cleared) return current
     const next = { ...current }
     if (remaining.length > 0) next.acknowledgement_due = remaining
@@ -415,7 +418,7 @@ export function clearAcknowledgementObligation(
 
 function clearMessageAcknowledgement(sessionId: string, env: NodeJS.ProcessEnv, messageId: string): boolean {
   let cleared = false
-  updateSessionState(sessionId, env, (current) => {
+  settleSessionState(sessionId, env, (current) => {
     const due = current.message_acknowledgement_due ?? []
     const remaining = due.filter((entry) => entry.message_id !== messageId)
     cleared = remaining.length !== due.length

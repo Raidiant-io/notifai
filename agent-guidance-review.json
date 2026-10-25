@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "behavior_digest": "sha256:e9951466cb93882914ca0d9d9f603e38ca6e6dc60d72592b2c64819d700111be",
+  "behavior_digest": "sha256:52b1b55933291b816712f5215c17a19aa1cf40c798129f2fbad40e72d596283c",
   "outcome": "reviewed-no-impact",
   "surfaces_reviewed": [
     "lifecycle-hooks",
@@ -9,5 +9,5 @@
     "cli-readiness",
     "domain-terms"
   ],
-  "reason": "Reviewed lifecycle hooks, the Notifai skill, harness setup, CLI readiness and domain terms against a README-only change: an \"Also works with\" row naming T3 Code and Orca with their app icons. Both are apps that run supported harnesses, not new harnesses, so no hook, setup step, readiness check, skill rule or domain term changes; the existing Cursor reference already describes SDK hosts such as T3 Code."
+  "reason": "Reviewed lifecycle hooks, the Notifai skill, harness setup, CLI readiness and domain terms against a change to local session-state housekeeping: acknowledgement obligations the service recorded after a session ended now clear through a removal-only path that never recreates state, and Session Message debt of an ended session, or one whose harness process is gone, is dropped after 30 days without acknowledging it, leaving a text-free local trail. No hook output, skill rule, setup step, readiness line or domain term changes, and no message text leaves the machine."
 }

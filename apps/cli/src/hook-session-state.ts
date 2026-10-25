@@ -15,7 +15,7 @@ import { atomicWriteFileSync } from './atomic-file.js'
 import { sanitizeSessionId, sessionConfigPath, stateDir } from './config.js'
 import { withFileLock } from './file-lock.js'
 import type { HookHarness, PendingQuestion, SessionState } from './hook-types.js'
-import type { ProcessIdentity } from './process-identity.js'
+import { processIdentityLiveness, type ProcessIdentity } from './process-identity.js'
 import { systemMonotonicNs } from './monotonic-clock.js'
 import { finishBeforeExit } from './exit-work.js'
 export function sessionStatePath(sessionId: string, env: NodeJS.ProcessEnv): string {
@@ -577,6 +577,29 @@ export function writeSessionStateUnlocked(file: string, sessionId: string, state
   atomicWriteFileSync(file, `${JSON.stringify({ ...state, session_id: sessionId }, null, 2)}\n`)
 }
 
+/**
+ * Remove settled obligations from a session's state even after it ended.
+ *
+ * The ended-session fence in `updateSessionState` keeps observers from
+ * recreating state; it must not also keep authenticated, completed debt on
+ * the books. This path only edits a file that exists, never creates one, and
+ * accepts only an update that removes entries.
+ */
+export function settleSessionState(
+  sessionId: string,
+  env: NodeJS.ProcessEnv,
+  settle: (current: SessionState) => SessionState,
+): void {
+  const file = sessionStatePath(sessionId, env)
+  withFileLock(`${file}.lock`, () => {
+    if (!existsSync(file)) return
+    const current = readSessionState(sessionId, env)
+    const next = settle(current)
+    if (next === current) return
+    writeSessionStateUnlocked(file, sessionId, next)
+  })
+}
+
 export function updateSessionState(
   sessionId: string,
   env: NodeJS.ProcessEnv,
@@ -652,6 +675,64 @@ const SESSION_PRUNE_AFTER_MS = 7 * 24 * 3600 * 1000
 
 const SESSION_PRUNE_INTERVAL_MS = 24 * 3600 * 1000
 
+/**
+ * How long a gone session's Session Message debt stays on this computer:
+ * 30 days, then it is dropped. Until then its exact
+ * records stay, so a resumed session can still be handed them. After it they
+ * are dropped without acknowledging anything: the Companion App already shows
+ * such a note as not delivered.
+ */
+export const DORMANT_MESSAGE_DEBT_MS = 30 * 24 * 3600 * 1000
+
+/** Text-free trail of dropped debt, so a drop is never mistaken for a delivery. */
+export function droppedMessagesPath(env: NodeJS.ProcessEnv): string {
+  return path.join(stateDir(env), 'dropped-session-messages.jsonl')
+}
+
+/**
+ * Whether the session behind `stem` can never present or acknowledge again:
+ * it ended, or the exact harness process it recorded is gone.
+ */
+function sessionGone(directory: string, stem: string): boolean {
+  if (existsSync(path.join(directory, `${stem}.ended`))) return true
+  try {
+    const record = JSON.parse(readFileSync(path.join(directory, `${stem}.incarnation.json`), 'utf8')) as Record<string, unknown>
+    const harness = record['harness_process'] as Record<string, unknown> | undefined
+    return typeof harness?.['pid'] === 'number' && harness['pid'] > 0 && typeof harness['start'] === 'string' &&
+      harness['start'].length > 0 && processIdentityLiveness({ pid: harness['pid'], start: harness['start'] }) === 'gone'
+  } catch {
+    return false
+  }
+}
+
+/** Caller holds the state lock. Returns the state with old dormant message debt dropped, or the same object. */
+function dropDormantMessageDebt(
+  env: NodeJS.ProcessEnv,
+  directory: string,
+  stem: string,
+  stateFile: string,
+  state: SessionState,
+  now: number,
+): SessionState {
+  const due = state.message_acknowledgement_due ?? []
+  // The file names its session; without that name it is left as it is rather than rewritten under a guess.
+  const sessionId = (state as SessionState & { session_id?: unknown }).session_id
+  if (due.length === 0 || typeof sessionId !== 'string' || !sessionGone(directory, stem)) return state
+  const dropped = due.filter((entry) => Number.isFinite(entry.recorded_at) && now - entry.recorded_at > DORMANT_MESSAGE_DEBT_MS)
+  if (dropped.length === 0) return state
+  const next: SessionState = { ...state }
+  const kept = due.filter((entry) => !dropped.includes(entry))
+  if (kept.length > 0) next.message_acknowledgement_due = kept
+  else delete next.message_acknowledgement_due
+  const trail = dropped.map((entry) => JSON.stringify({
+    session_file: stem, message_id: entry.message_id, recorded_at: entry.recorded_at, dropped_at: now,
+    presented: entry.queued_context === undefined, reason: 'session_gone_30_days',
+  })).join('\n')
+  writeFileSync(droppedMessagesPath(env), `${trail}\n`, { flag: 'a', mode: 0o600 })
+  writeSessionStateUnlocked(stateFile, sessionId, next)
+  return next
+}
+
 export function pruneAbandonedSessions(
   env: NodeJS.ProcessEnv,
   now: number = Date.now(),
@@ -676,7 +757,8 @@ export function pruneAbandonedSessions(
         const stateFile = path.join(directory, `${stem}.json`)
         const prune = (): void => {
           if (existsSync(stateFile)) {
-            const state = JSON.parse(readFileSync(stateFile, 'utf8')) as SessionState
+            const state = dropDormantMessageDebt(env, directory, stem, stateFile,
+              JSON.parse(readFileSync(stateFile, 'utf8')) as SessionState, now)
             if (state.native_answer_operations?.some(op => op.acknowledgement === undefined)) return
             // A durable native owner must never lose its build pin merely
             // because no prompt has refreshed an mtime. SessionEnd and the
