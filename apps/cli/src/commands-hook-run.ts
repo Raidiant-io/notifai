@@ -75,6 +75,7 @@ import {
   writeOpenclawGeneration,
 } from './openclaw-generation.js'
 import { projectBinding, projectEnabled } from './project-enablement.js'
+import { workspaceExclusion } from './workspace-eligibility.js'
 import { releaseCodexCardHandbacks } from './codex-card-handback.js'
 import { codexCardPostToolUse, codexPreToolUse } from './codex-question-hooks.js'
 import { grokQuestionFormGate, unlinkedQuestionFormContext } from './unlinked-question-forms.js'
@@ -372,6 +373,7 @@ export async function hookRunCommand(
   }
 
   const cwd = envelope.cwd ?? deps.cwd
+  if (harness === 'codex' && workspaceExclusion(cwd, deps.env) !== null) return EXIT.ok
   const observeIntegration = (): void => {
     if (harness === undefined || envelope.session_id === undefined || envelope.agent_id !== undefined ||
         envelope.agent_type !== undefined || !['session-start', 'user-prompt-submit', 'stop'].includes(event)) return

@@ -1,5 +1,5 @@
 {
-  "current": "1f2e45f73a5666a7776a8b19206686b7fe3fb05d83db063c3adfef56426a68bf",
+  "current": "a266fba266976c3780b4463beeb285713acab7e72d75c4e159928a7ba56743fa",
   "releases": [
     {
       "digest": "3e47b01bc6bbfb43e910c660b9964fab6459d75148c3c02dcbcd0be64cfb2963",
@@ -92,6 +92,10 @@
     {
       "digest": "1f2e45f73a5666a7776a8b19206686b7fe3fb05d83db063c3adfef56426a68bf",
       "note": "The setup notification is a confirmation, not a setup step. `notifai init --json` reports `ready: true` once this computer, the Project and a phone that can receive are set up, whether or not the app has confirmed the test notification. Until it confirms, the `proof` state is an optional gap with no `message`: it asks nothing of the User and never sets the exit code. Never wait for it or ask the User about it. Init sends it last, at most once per machine and phone, watches about 10 seconds for its receipt, and never re-sends it; a later run only reads whether it arrived. A test notification that cannot be sent, or whose delivery is rejected, is a real `proof` gap: its `message` asks the User to open the app so it can reconnect. Interactive `notifai init` asks about hooks, command approval and the skill once each, right after this computer is approved and before the phone step, the plan and the test notification. The `done` and `done-no-questions` scripts no longer say the app confirmed the test notification. An older Notifai can report `proof` as a gap and `ready: false` because of it alone; setup is done all the same."
+    },
+    {
+      "digest": "a266fba266976c3780b4463beeb285713acab7e72d75c4e159928a7ba56743fa",
+      "note": "Codex internal memory workspaces no longer activate Notifai. Requests from these folders are refused with codex_memory_workspace; normal Projects and other harnesses are unchanged."
     }
   ]
 }

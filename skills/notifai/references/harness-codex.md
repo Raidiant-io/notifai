@@ -5,6 +5,8 @@ harness shares.
 
 ## Activation
 
+Codex's internal `$CODEX_HOME/memories` and `memories_v2` workspaces (default `~/.codex`) intentionally receive no Notifai lifecycle context; requests there fail with `codex_memory_workspace`, so do not repair or re-enable them.
+
 Run `notifai hooks install --harness codex`. If `hooks-trust` fails, the User
 approves or enables the Notifai handlers in Codex's `/hooks`, including the
 `PostToolUse` handler that hands answers and notes into a working turn; `/hooks`

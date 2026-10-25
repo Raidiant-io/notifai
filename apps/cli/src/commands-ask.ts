@@ -9,6 +9,7 @@ import {
   type QuestionT,
 } from '@raidiant/notifai-protocol'
 import { currentCommandGuidance } from './command-guidance.js'
+import { rejectExcludedWorkspace } from './workspace-eligibility.js'
 import { EXIT, authedClient, log, makeClient, type CommandDeps } from './commands-core.js'
 import type { ServiceIdentity } from './credentials.js'
 import { resolveAskingHarness } from './commands-harness-context.js'
@@ -1002,6 +1003,7 @@ export function askCommand(
   question: string | undefined,
   flags: AskFlags,
 ): number | Promise<number> {
+  if (rejectExcludedWorkspace(deps, flags.json)) return EXIT.usage
   // Validate before route discovery. A malformed question belongs to the
   // caller and should not be hidden behind whichever harness setup issue
   // happens to exist on this machine.

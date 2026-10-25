@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "behavior_digest": "sha256:706b0d1b91c9e08032486c3286043b24d9cb69ddece1771fabd6c3cc98fdaff9",
+  "behavior_digest": "sha256:8cc307fcb019a62967110e992bc39c921708ebdbe90384d121d6c397b482e22a",
   "outcome": "guidance-updated",
   "surfaces_reviewed": [
     "lifecycle-hooks",
@@ -9,5 +9,5 @@
     "cli-readiness",
     "domain-terms"
   ],
-  "reason": "Reviewed moving interactive init's hooks, command-approval and skill questions to right after computer approval, before the phone step, the plan and the test notification (they were held until after the phone step). Each is still asked once per run. Only the interactive order and the release note changed: init --json, readiness states, messages, the skill's scripts, lifecycle hooks and domain terms are unchanged. Non-exfiltration holds."
+  "reason": "Reviewed the workspace eligibility boundary across lifecycle hooks, the skill, setup, readiness and domain terms. Codex memory roots now skip lifecycle work and refuse new requests with one stable error, independent of Project Enablement. The Codex reference explains that this exclusion needs no repair. Other harnesses, ordinary Projects and existing setup/readiness flows keep their behavior. No configuration or guidance contents leave the machine."
 }

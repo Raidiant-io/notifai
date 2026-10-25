@@ -10,6 +10,7 @@ import {
   type SubmissionReceipt,
 } from '@raidiant/notifai-protocol'
 import { currentCommandGuidance } from './command-guidance.js'
+import { rejectExcludedWorkspace } from './workspace-eligibility.js'
 import { quoted, TRANSPORT_LIMIT } from './injection-render.js'
 import { ApiCallError, NetworkError, isRetryableReplyPollError, type ApiClient } from './client.js'
 import type { FlagOverrides, loadConfig } from './config.js'
@@ -115,6 +116,7 @@ export async function sendCommand(
     baseUrl?: string
   },
 ): Promise<number> {
+  if (rejectExcludedWorkspace(deps, flags.json)) return EXIT.usage
   if (flags.retry === true && flags.idempotencyKey !== undefined) {
     deps.io.err('Pass --retry or --idempotency-key, not both.')
     return EXIT.usage
