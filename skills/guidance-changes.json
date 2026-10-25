@@ -1,5 +1,5 @@
 {
-  "current": "a266fba266976c3780b4463beeb285713acab7e72d75c4e159928a7ba56743fa",
+  "current": "2cd22c86ae1f8ce2ddeb332acf04e5d3b23f393c9b707ca9501bbd3abaf09048",
   "releases": [
     {
       "digest": "3e47b01bc6bbfb43e910c660b9964fab6459d75148c3c02dcbcd0be64cfb2963",
@@ -96,6 +96,10 @@
     {
       "digest": "a266fba266976c3780b4463beeb285713acab7e72d75c4e159928a7ba56743fa",
       "note": "Codex internal memory workspaces no longer activate Notifai. Requests from these folders are refused with codex_memory_workspace; normal Projects and other harnesses are unchanged."
+    },
+    {
+      "digest": "2cd22c86ae1f8ce2ddeb332acf04e5d3b23f393c9b707ca9501bbd3abaf09048",
+      "note": "Hook installation and discovery now follow shared configuration files in the selected harness home without replacing symlinks. Codex approval remains specific to the active home: open /hooks in a session using that same CODEX_HOME, even when its hook files are shared with another home. Existing approvals are never copied automatically."
     }
   ]
 }

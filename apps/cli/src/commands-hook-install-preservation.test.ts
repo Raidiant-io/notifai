@@ -1,4 +1,4 @@
-import { existsSync,mkdirSync,mkdtempSync,readFileSync,rmSync,writeFileSync } from 'node:fs'
+import { existsSync,lstatSync,symlinkSync,mkdirSync,mkdtempSync,readFileSync,rmSync,writeFileSync } from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -6,7 +6,7 @@ import { parse as parseToml } from 'smol-toml'
 import { afterEach,describe,expect,it,vi } from 'vitest'
 import { EXIT,type CommandDeps } from './commands-core.js'
 import { hooksInstallCommand,hooksUninstallCommand } from './commands-hook-install.js'
-import { buildHookConfig,codexHookIdentityHash,codexStopDefinitionFingerprint,codexTrustFindings,codexTrustKey,codexTrustProblems,findInstallations } from './install-hooks.js'
+import { buildHookConfig,codexHookIdentityHash,codexStopDefinitionFingerprint,codexTrustFindings,codexTrustKey,codexTrustProblems,detectedHarnesses,findInstallations } from './install-hooks.js'
 
 const roots: string[] = []
 afterEach(() => {
@@ -166,4 +166,93 @@ describe('Codex native plugin cleanup through actual commands', () => {
     expect(existsSync(f.hooks)).toBe(false)
     expect(f.err).toEqual([])
   })
+})
+
+
+describe('active harness homes', () => {
+  it.each(['default', 'separate', 'symlinked'] as const)('discovers and repairs the %s Codex home without replacing shared links', (kind) => {
+    const f = fixture('model = "keep-model"\n')
+    expect(hooksInstallCommand(f.deps, f.flags)).toBe(EXIT.ok)
+    const sourceInstallation = findInstallations(f.deps.env, f.deps.hookAdapterHome).find(i => i.harness === 'codex')!
+    writeFileSync(f.toml, readFileSync(f.toml, 'utf8') + sourceInstallation.handlers.map(handler =>
+      `[hooks.state.${JSON.stringify(codexTrustKey(sourceInstallation, handler))}]\ntrusted_hash = "${codexHookIdentityHash(handler)}"\n`,
+    ).join('\n'))
+    const original = readFileSync(f.hooks, 'utf8')
+    const originalConfig = readFileSync(f.toml, 'utf8')
+    if (kind === 'default') delete f.deps.env['CODEX_HOME']
+    else {
+      const selected = path.join(f.deps.cwd, 'profile')
+      mkdirSync(selected)
+      f.deps.env['CODEX_HOME'] = selected
+      for (const [name, file] of [['hooks.json', f.hooks], ['config.toml', f.toml]]) {
+        if (kind === 'symlinked') symlinkSync(file!, path.join(selected, name!))
+        else writeFileSync(path.join(selected, name!), readFileSync(file!))
+      }
+    }
+    const problems: string[] = []
+    const installed = findInstallations(f.deps.env, f.deps.hookAdapterHome, 'darwin', problems).filter(i => i.harness === 'codex')
+    expect(installed).toHaveLength(1)
+    expect(problems).toEqual([])
+    expect(codexTrustFindings(installed, f.deps.env).length).toBe(kind === 'default' ? 0 : installed[0]!.handlers.length)
+    expect(hooksInstallCommand(f.deps, f.flags), f.err.join('\n')).toBe(EXIT.ok)
+    expect(readFileSync(f.hooks, 'utf8')).toBe(original)
+    expect(readFileSync(f.toml, 'utf8')).toBe(originalConfig)
+    if (kind !== 'default') expect(f.out.join('\n')).toContain('same CODEX_HOME')
+    if (kind === 'symlinked') {
+      expect(lstatSync(path.join(f.deps.env['CODEX_HOME']!, 'hooks.json')).isSymbolicLink()).toBe(true)
+      expect(lstatSync(path.join(f.deps.env['CODEX_HOME']!, 'config.toml')).isSymbolicLink()).toBe(true)
+    }
+  })
+})
+
+
+describe('shared Machine configuration repair', () => {
+  it.each(['codex', 'claude-code'] as const)('repairs %s through the selected home and preserves foreign content', (harness) => {
+    const f = fixture('model = "keep-model"\n')
+    const flags = { ...f.flags, harness }
+    expect(hooksInstallCommand(f.deps, flags)).toBe(EXIT.ok)
+    const sourceHome = harness === 'codex' ? path.dirname(f.hooks) : f.deps.env['CLAUDE_CONFIG_DIR']!
+    const name = harness === 'codex' ? 'hooks.json' : 'settings.json'
+    const sourceFile = path.join(sourceHome, name)
+    const document = JSON.parse(readFileSync(sourceFile, 'utf8'))
+    document.custom = { keep: true }
+    document.hooks.UserPromptSubmit = [{ hooks: [{ type: 'command', command: 'foreign-command' }] }]
+    writeFileSync(sourceFile, JSON.stringify(document))
+    const selected = path.join(f.deps.cwd, 'shared-profile')
+    mkdirSync(selected)
+    symlinkSync(sourceFile, path.join(selected, name))
+    if (harness === 'codex') symlinkSync(f.toml, path.join(selected, 'config.toml'))
+    f.deps.env[harness === 'codex' ? 'CODEX_HOME' : 'CLAUDE_CONFIG_DIR'] = selected
+    expect(hooksInstallCommand(f.deps, flags), f.err.join('\n')).toBe(EXIT.ok)
+    const repaired = JSON.parse(readFileSync(sourceFile, 'utf8'))
+    expect(repaired.custom).toEqual({ keep: true })
+    expect(repaired.hooks.UserPromptSubmit[0]).toEqual(document.hooks.UserPromptSubmit[0])
+    expect(repaired.hooks.UserPromptSubmit.length).toBeGreaterThan(1)
+    expect(lstatSync(path.join(selected, name)).isSymbolicLink()).toBe(true)
+    expect(findInstallations(f.deps.env, f.deps.hookAdapterHome).some(i => i.harness === harness)).toBe(true)
+    const bytes = readFileSync(sourceFile, 'utf8')
+    expect(hooksInstallCommand(f.deps, flags)).toBe(EXIT.ok)
+    expect(readFileSync(sourceFile, 'utf8')).toBe(bytes)
+  })
+
+  it('refuses a dangling selected config link without replacing it', () => {
+    const f = fixture('')
+    rmSync(f.toml)
+    symlinkSync(path.join(f.deps.cwd, 'missing.toml'), f.toml)
+    expect(hooksInstallCommand(f.deps, f.flags)).toBe(EXIT.failed)
+    expect(lstatSync(f.toml).isSymbolicLink()).toBe(true)
+    expect(existsSync(f.hooks)).toBe(false)
+  })
+})
+
+
+it('detects only the selected Claude home, just as it does for Codex', () => {
+  const f = fixture('')
+  const selected = path.join(f.deps.cwd, 'claude-profile')
+  f.deps.env['CLAUDE_CONFIG_DIR'] = selected
+  mkdirSync(selected)
+  expect(detectedHarnesses(f.deps.env)).toContain('claude-code')
+  rmSync(selected, { recursive: true })
+  mkdirSync(path.join(f.deps.env['HOME']!, '.claude'))
+  expect(detectedHarnesses(f.deps.env)).not.toContain('claude-code')
 })

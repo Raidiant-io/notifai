@@ -15,6 +15,7 @@ PLATFORMS
 import { execFileSync } from 'node:child_process'
 import {
 existsSync,
+symlinkSync,
 mkdirSync,
 mkdtempSync,
 readFileSync,
@@ -1122,7 +1123,7 @@ describe('asking before the hooks have ever run', () => {
     }
   })
 
-  it('registers a first-turn question from a linked worktree with account-specific Codex state', async () => {
+  it.each([false, true])('registers a first-turn question with account-specific Codex state (shared files: %s)', async (shared) => {
     const root = scratchDir('notifai-active-codex-matching-')
     const repo = path.join(root, 'repo')
     const worktree = path.join(root, 'linked-worktree')
@@ -1153,6 +1154,16 @@ describe('asking before the hooks have ever run', () => {
 
     expect(hooksInstallCommand(deps, { harness: 'codex', execPath, scriptPath })).toBe(EXIT.ok)
     trustInstalledCodexHooks(cwd, env)
+    if (shared) {
+      const shadow = path.join(root, 'shadow')
+      mkdirSync(shadow)
+      for (const name of ['hooks.json', 'config.toml']) symlinkSync(path.join(codexHome, name), path.join(shadow, name))
+      env.CODEX_HOME = shadow
+      // Source-home approval must not admit a question in a different home.
+      expect(askCommand(deps, 'Ship it?', { title: 'Decision', json: true })).toBe(EXIT.usage)
+      expect(JSON.parse(io.outLines.at(-1)!)).toMatchObject({ code: 'codex_hook_approval_required' })
+      trustInstalledCodexHooks(cwd, env)
+    }
     writeCurrentCodexSessionState(cwd, env, 'codex-current-thread', {
       last_prompt_at: 42,
     })
@@ -1179,7 +1190,7 @@ describe('asking before the hooks have ever run', () => {
     expect(askCommand(deps, 'Ship it now?', {})).toBe(EXIT.ok)
     expect(readSessionState('codex-current-thread', env).pending?.[1]?.title).toBe('Gentle Salmon')
     expect(io.errLines).toContain(MISSING_TITLE_NOTE)
-    expect(settingsFile('codex', env)).toBe(path.join(codexHome, 'hooks.json'))
+    expect(settingsFile('codex', env)).toBe(path.join(env.CODEX_HOME, 'hooks.json'))
     expect(existsSync(path.join(repo, '.codex'))).toBe(false)
     expect(existsSync(path.join(worktree, '.codex'))).toBe(false)
 

@@ -8,7 +8,8 @@ harness shares.
 Codex's internal `$CODEX_HOME/memories` and `memories_v2` workspaces (default `~/.codex`) intentionally receive no Notifai lifecycle context; requests there fail with `codex_memory_workspace`, so do not repair or re-enable them.
 
 Run `notifai hooks install --harness codex`. If `hooks-trust` fails, the User
-approves or enables the Notifai handlers in Codex's `/hooks`, including the
+approves or enables the Notifai handlers in `/hooks` in a Codex session using
+the same `CODEX_HOME`, including the
 `PostToolUse` handler that hands answers and notes into a working turn; `/hooks`
 is authoritative when it disagrees with doctor. Send them the gap's `message`
 as written ([What to tell the User](harness-setup.md#what-to-tell-the-user)).
@@ -17,8 +18,12 @@ Then start one fresh Agent Session, send one prompt, and run `notifai doctor`. I
 doctor finds no SessionStart, reinstall the current hooks and start a fresh
 Agent Session; a prompt hook alone never activates Notifai.
 
-A fresh install writes the Machine layer's `~/.codex/hooks.json`, or joins
-inline `[hooks]` when the User already keeps their own hooks there. When it
+A fresh install writes the active Machine layer's `$CODEX_HOME/hooks.json`
+(default `~/.codex/hooks.json`), or joins inline `[hooks]` when the User already
+keeps their own hooks there. Shared configuration symlinks are preserved, but
+a distinct Codex home needs its own `/hooks` approval even when the files are
+shared. Run installation from that home; approval in the default home alone
+does not configure another account's home. When it
 moves Notifai's own inline handlers to `hooks.json`, Codex asks for `/hooks`
 approval again, because it keys trust by file. The User's own inline hooks stay
 where they are. One install covers every project and worktree, so there is

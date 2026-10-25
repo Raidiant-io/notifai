@@ -27,7 +27,8 @@ import {
   codexCoexistenceNotes,
   codexHomeNote,
   codexLegacyProjectLayers,
-  codexMachineLayerPaths,
+  codexMachineWriteLayerPaths,
+  machineConfigTarget,
   codexRepresentationProblems,
   codexTrustProblems,
   detectHarness,
@@ -145,10 +146,10 @@ function installationBytes(files: string[]): string {
 function printHooksInstallClose(deps: CommandDeps, harness: HookInstallableHarness, file: string, changed = true): void {
   const label = HARNESS_LABELS[harness]
   const approvalNote = harness === 'codex' && codexTrustProblems(findInstallations(deps.env, deps.hookAdapterHome, deps.hookPlatform).filter(entry => entry.harness === 'codex'), deps.env).length === 0
-    ? 'Your existing Codex hook approvals still match. ' : ''
+    ? 'Your existing Codex hook approvals still match. ' : harness === 'codex' ? 'In a Codex session using this same CODEX_HOME, open `/hooks` and approve or enable the Notifai handlers. Approval in another home does not apply here. ' : ''
   const activation = !changed
     ? approvalNote + 'Hook installation is unchanged; this write needs no restart. Continue the current Agent Session if its lifecycle and trust are ready; `notifai update --check --json` reports any remaining session requirement.'
-    : (harness === 'codex' ? approvalNote || 'The changed Notifai handlers need approval. Open `/hooks` in Codex to approve or enable them. ' : '') +
+    : approvalNote +
       'Keep existing working sessions and pending questions. Run `notifai doctor --json` for the affected scope; verify a real callback from the changed definition and follow only its remaining reload or approval requirement.'
 
   if (deps.io.interactive === true && deps.io.note) {
@@ -254,9 +255,12 @@ function installDocumentHooks(deps: CommandDeps, flags: HooksInstallFlags, harne
     flags.scriptPath ?? fileHookInstallTarget(adapterTarget)?.scriptPath ?? process.argv[1] ?? 'notifai'
   const hookPlatform = deps.hookPlatform ?? process.platform
   const nodePath = adapterTarget.kind === 'native' ? undefined : adapterTarget.execPath
-  const codexPaths = harness === 'codex' ? codexMachineLayerPaths(deps.env, hookPlatform) : null
+  let codexPaths: ReturnType<typeof codexMachineWriteLayerPaths> | null
+  let settingsTarget: string
   let adapterPath: string
   try {
+    codexPaths = harness === 'codex' ? codexMachineWriteLayerPaths(deps.env, hookPlatform) : null
+    settingsTarget = codexPaths?.configToml ?? machineConfigTarget(settingsFile(harness, deps.env, hookPlatform))
     // Refuse unsupported plugin configuration before even updating the adapter.
     // The authoritative plan is made again under the layer lock below.
     if (codexPaths !== null) prepareCodexPluginCleanup(codexPaths.configToml)
@@ -274,7 +278,6 @@ function installDocumentHooks(deps: CommandDeps, flags: HooksInstallFlags, harne
   }
   // Codex is the one harness whose layer holds two candidate files, so its
   // transaction anchors on `config.toml` and the inspection names the target.
-  const settingsTarget = codexPaths?.configToml ?? settingsFile(harness, deps.env, hookPlatform)
   const comparedFiles = codexPaths !== null ? [codexPaths.configToml, codexPaths.hooksJson]
     : harness === 'cursor' ? [settingsTarget, cursorActivationRuleFile(deps.env, hookPlatform)]
     : [settingsTarget]
@@ -818,10 +821,9 @@ export function hooksUninstallCommand(deps: CommandDeps, flags: HooksInstallFlag
     }
   }
   const scriptPath = flags.scriptPath ?? process.argv[1] ?? 'notifai'
-  const codexPaths =
-    harness === 'codex' ? codexMachineLayerPaths(deps.env, deps.hookPlatform) : null
-  const file = codexPaths?.configToml ?? settingsFile(harness, deps.env, deps.hookPlatform)
   try {
+    const codexPaths = harness === 'codex' ? codexMachineWriteLayerPaths(deps.env, deps.hookPlatform) : null
+    const file = codexPaths?.configToml ?? machineConfigTarget(settingsFile(harness, deps.env, deps.hookPlatform))
     if (harness === 'openclaw') {
       const configFile = openclawConfigPath(deps.env, deps.hookPlatform)
       if (existsSync(configFile)) {
@@ -875,7 +877,7 @@ export function hooksUninstallCommand(deps: CommandDeps, flags: HooksInstallFlag
         deps.io.out(`Left ${cursorActivationRuleFile(deps.env, deps.hookPlatform)} alone: Notifai did not write it.`)
       }
     } else {
-      const files = machineHookFiles(harness, deps.env, deps.hookPlatform)
+      const files = machineHookFiles(harness, deps.env, deps.hookPlatform).map(machineConfigTarget)
       const result =
         codexPaths === null
           ? stripNotifaiHandlers(files, scriptPath, false)

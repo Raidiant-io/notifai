@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "behavior_digest": "sha256:8cc307fcb019a62967110e992bc39c921708ebdbe90384d121d6c397b482e22a",
+  "behavior_digest": "sha256:1281220b734a0bc8a4d89d743cef979201d5cf1097b8a941140c1f06eecff2f9",
   "outcome": "guidance-updated",
   "surfaces_reviewed": [
     "lifecycle-hooks",
@@ -9,5 +9,5 @@
     "cli-readiness",
     "domain-terms"
   ],
-  "reason": "Reviewed the workspace eligibility boundary across lifecycle hooks, the skill, setup, readiness and domain terms. Codex memory roots now skip lifecycle work and refuse new requests with one stable error, independent of Project Enablement. The Codex reference explains that this exclusion needs no repair. Other harnesses, ordinary Projects and existing setup/readiness flows keep their behavior. No configuration or guidance contents leave the machine."
+  "reason": "Reviewed lifecycle hooks, the Notifai skill, harness setup, CLI readiness and domain terms. Machine configuration discovery and repair follow selected-home symlinks while retaining logical Codex trust identities. Setup output and the Codex reference require User approval through /hooks in the same Codex home, including unchanged shared files. No approval is copied or granted; ordinary send remains independent of hook readiness. Project residue keeps its existing authority boundary and private local evidence stays local."
 }

@@ -680,6 +680,31 @@ export function codexGlobalDir(
   return configHome(env, 'CODEX_HOME', '.codex', platform)
 }
 
+/** Resolve only User-selected Machine configuration, never repository residue.
+ * Keep the logical name for harness identity/trust; use this target for IO and
+ * locking so shared files retain their links and concurrent writers share a lock.
+ * The ordinary readers/writers still enforce current-user ownership and regular
+ * files. A dangling link is an error, not permission to replace that link.
+ */
+export function machineConfigTarget(file: string): string {
+  try { return realpathSync.native(file) } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
+    try {
+      if (lstatSync(file).isSymbolicLink()) throw new Error(`Dangling harness configuration symlink: ${file}`)
+    } catch (entryError) {
+      if ((entryError as NodeJS.ErrnoException).code !== 'ENOENT') throw entryError
+    }
+    const parent = path.dirname(file)
+    return parent === file ? file : path.join(machineConfigTarget(parent), path.basename(file))
+  }
+}
+
+/** Physical write targets, distinct from Codex's logical hook trust identity. */
+export function codexMachineWriteLayerPaths(env: NodeJS.ProcessEnv, platform: NodeJS.Platform | HookHostPlatform = process.platform): CodexLayerPaths {
+  const paths = codexMachineLayerPaths(env, platform)
+  return { dir: machineConfigTarget(paths.dir), hooksJson: machineConfigTarget(paths.hooksJson), configToml: machineConfigTarget(paths.configToml) }
+}
+
 export interface CodexLayerPaths {
   dir: string
   hooksJson: string
@@ -754,8 +779,8 @@ export interface CodexLayerInspection {
  * preserved through every write.
  */
 export function inspectCodexLayer(paths: CodexLayerPaths): CodexLayerInspection {
-  const jsonDocument = tryLoadSettings(paths.hooksJson)
-  const tomlDocument = tryLoadSettings(paths.configToml)
+  const jsonDocument = tryLoadMachineSettings(paths.hooksJson)
+  const tomlDocument = tryLoadMachineSettings(paths.configToml)
   const ourJsonEvents = ourHandlerEvents(jsonDocument)
   const ourTomlEvents = ourHandlerEvents(tomlDocument)
   const foreignTomlHooks =
@@ -885,13 +910,13 @@ export function codexHomeNote(
   const effective = codexGlobalDir(env, platform)
   const accountDefault = path.join(harnessAccountHome(env, platform), '.codex')
   if (effective === accountDefault) return null
-  return `CODEX_HOME points Codex at ${effective}, so ${accountDefault} is not read by Codex in this shell at all. Global hooks installed from a shell without CODEX_HOME live there and are invisible here; Codex also keys hook trust by absolute file path, so hooks copied between homes need approving again in each one.`
+  return `CODEX_HOME points Codex at ${effective}, instead of ${accountDefault}. This home may share configuration through symlinks, but Codex keys hook trust by the active home path. Approve Notifai in /hooks in a Codex session using this home; approval in another home does not approve these hooks.`
 }
 
-function tryLoadSettings(file: string): SettingsDocument | null {
+function tryLoadMachineSettings(file: string): SettingsDocument | null {
   if (!existsSync(file)) return null
   try {
-    return loadSettings(file)
+    return loadSettings(machineConfigTarget(file))
   } catch {
     return null
   }
@@ -923,7 +948,7 @@ function globalHarnessEvidence(
 ): HookInstallableHarness[] {
   const home = harnessAccountHome(env, platform)
   const found: HookInstallableHarness[] = []
-  if (existsSync(path.join(home, '.claude'))) found.push('claude-code')
+  if (existsSync(configHome(env, 'CLAUDE_CONFIG_DIR', '.claude', platform))) found.push('claude-code')
   if (existsSync(codexGlobalDir(env, platform))) found.push('codex')
   if (existsSync(path.join(home, '.cursor'))) found.push('cursor')
   if (existsSync(opencodeConfigDir(env, platform))) found.push('opencode')
@@ -1833,7 +1858,7 @@ export function findInstallations(
   problems?: string[],
 ): Installation[] {
   return HOOK_INSTALLABLE_HARNESSES.flatMap((harness) =>
-    collectInstallations(harness, machineHookFiles(harness, env, platform), adapterHome, platform, env, problems),
+    collectInstallations(harness, machineHookFiles(harness, env, platform), adapterHome, platform, env, problems, true),
   )
 }
 
@@ -1877,6 +1902,7 @@ function collectInstallations(
   platform: NodeJS.Platform | HookHostPlatform,
   env: NodeJS.ProcessEnv,
   inspectionProblems?: string[],
+  machine = false,
 ): Installation[] {
   const adapter = inspectHookAdapter(adapterHome, platform).target
   const nodePath = adapter?.kind === 'native' ? undefined : adapter?.execPath
@@ -1886,9 +1912,14 @@ function collectInstallations(
   }
   const found: Installation[] = []
   for (const file of files) {
+    let readTarget: string
+    try { readTarget = machine ? machineConfigTarget(file) : file } catch {
+      inspectionProblems?.push(`Cannot inspect harness wiring: ${file}`)
+      continue
+    }
     if (inspectionProblems) {
       try {
-        const stat = lstatSync(file)
+        const stat = lstatSync(readTarget)
         if (!stat.isFile() || stat.isSymbolicLink()) throw new Error('Not a regular file')
       } catch (error) {
         if ((error as NodeJS.ErrnoException).code !== 'ENOENT') inspectionProblems.push(`Cannot inspect harness wiring: ${file}`)
@@ -1916,7 +1947,7 @@ function collectInstallations(
     if (harness === 'opencode' || harness === 'openclaw') {
       let source: string
       try {
-        source = readOwnedRegularFile(file)
+        source = readOwnedRegularFile(readTarget)
       } catch {
         inspectionProblems?.push(`Cannot inspect harness wiring: ${file}`)
         continue
@@ -1960,7 +1991,7 @@ function collectInstallations(
     if (harness === 'cursor') {
       let document: CursorSettingsDocument
       try {
-        document = readCursorSettings(file)
+        document = readCursorSettings(readTarget)
       } catch {
         inspectionProblems?.push(`Cannot inspect harness wiring: ${file}`)
         continue
@@ -1979,7 +2010,7 @@ function collectInstallations(
     }
     let document: SettingsDocument
     try {
-      document = loadSettings(file)
+      document = loadSettings(readTarget)
     } catch {
       inspectionProblems?.push(`Cannot inspect harness wiring: ${file}`)
       continue
