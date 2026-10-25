@@ -8,7 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 This project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 and [Conventional Commits](https://www.conventionalcommits.org/en/v1.0.0/).
 
-## [14.2.3-beta.5](https://github.com/Raidiant-io/notifai/compare/v14.2.2...v14.2.3-beta.5) (2026-10-25)
+## [14.2.3](https://github.com/Raidiant-io/notifai/compare/v14.2.2...v14.2.3) (2026-10-25)
 
 ### Bug Fixes
 
@@ -23,7 +23,7 @@ and [Conventional Commits](https://www.conventionalcommits.org/en/v1.0.0/).
 
 ### Documentation
 
-* Show the iPhone app near the top of the README.
+* Show the iPhone app near the top of the README and list T3 Code and Orca as supported harness hosts.
 
 ## [14.2.2](https://github.com/Raidiant-io/notifai/compare/v14.2.1...v14.2.2) (2026-10-24)
 
