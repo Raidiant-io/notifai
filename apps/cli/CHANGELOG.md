@@ -8,6 +8,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 This project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 and [Conventional Commits](https://www.conventionalcommits.org/en/v1.0.0/).
 
+## [14.2.3](https://github.com/Raidiant-io/notifai/compare/v14.2.2...v14.2.3) (2026-10-25)
+
+### Bug Fixes
+
+* Recognize shared Codex and Claude configuration through symlinks while preserving per-home Codex hook approval and explaining the /hooks approval step.
+* Exclude Codex internal memory workspaces.
+* Never let the setup confirmation notification hold up setup.
+* Ask about agent wiring before the phone step.
+
+### Build System
+
+* Consolidate publication into one resumable release workflow with immutable source admission and complete target installation acceptance.
+
+### Documentation
+
+* Show the iPhone app near the top of the README and list T3 Code and Orca as supported harness hosts.
+
 ## [14.2.2](https://github.com/Raidiant-io/notifai/compare/v14.2.1...v14.2.2) (2026-10-24)
 
 ### Bug Fixes
