@@ -7,8 +7,9 @@ is immutable. Never move its tag, overwrite its assets, or republish its npm byt
 ## One Release PR, one execution
 
 Use one Release PR for version, changelog, README markers and lockfile changes.
-`release-please.yml` prepares the combined stable PR and creates its tags after
-merge; it does not dispatch duplicate CI. Beta candidates use the same metadata
+Dispatch `release-please.yml` by hand with `expected_sha` set to the exact
+current `main` commit; it prepares the combined stable PR and creates its tags
+after merge. It dispatches nothing else. Beta candidates use the same metadata
 in one release branch/PR, with the stable manifest unchanged. Close a completed
 beta PR without merging beta metadata into main. Ordinary product changes land
 before the release. Review notes against the previous stable tag.
@@ -76,9 +77,12 @@ retain their release-tag restrictions. The authorized release owner progresses
 exact-run environment gates without asking for repeated human approvals.
 
 `candidate`, `promote` and `repair-beta` modes remain for already-started legacy
-runs and protocol releases. Protocol versions remain independent; use the existing
-protocol CI/OIDC lane. `repair-beta` changes only already-verified stable discovery,
-never artifact bytes. Do not select a legacy mode for a new CLI release.
+runs and protocol releases. Do not select a legacy mode for a new CLI release.
+Protocol versions remain independent: dispatch `ci.yml` at the exact release
+commit, then `publish.yml` on the `protocol-v*` tag with `mode: candidate` and
+later `mode: promote`; both require that successful CI run at the same commit.
+`repair-beta` changes only already-verified stable discovery, never artifact
+bytes.
 
 Authored PR text is UTF-8 via `gh pr create/edit --body-file`, followed by read-back.
 Use Conventional Commits and SemVer. Changes to shipped guidance need an authored
