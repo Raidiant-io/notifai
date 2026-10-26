@@ -17,8 +17,9 @@ Only the latest published version receives fixes.
 
 ## Scope
 
-This repository is the client surface: the CLI, the wire contract, and
-the agent skill. The service and companion apps live elsewhere.
+This repository is the client surface: the CLI and its native launcher, the
+installers and update verification, the wire contract, and the agent skill.
+The service and Companion Apps live elsewhere.
 
 A report about **this repository** is in scope if it concerns the CLI or
 the protocol types — for example credential handling on disk, a hook
@@ -40,11 +41,13 @@ safety depends on this code being private, that *is* a vulnerability and
 we want to hear about it.
 
 **Machine credentials are stored per-machine, not in the repository.**
-On macOS they go to the Keychain. On Windows they are protected with the
+On macOS they go to the Keychain, or to a `0600` file when the Keychain is
+unavailable. On Windows they are protected with the
 Data Protection API for the current user and stored under
 `%LOCALAPPDATA%\notifai`, not roaming configuration. On a Linux desktop
 session they go to the Secret Service through `secret-tool`; a Linux
-machine without one (a server, CI, SSH-only) keeps a `0600` file.
+machine without one (a server, CI, SSH-only) keeps a `0600` file, and an
+existing file is never moved into the Secret Service implicitly.
 `NOTIFAI_CREDENTIALS=file` forces the plaintext file store for development
 and tests; POSIX mode bits are not an NTFS ACL, so that override is not a
 protected Windows store. A credential is scoped to one machine and can be
@@ -59,6 +62,7 @@ credential that is already stored.
 **A Companion Receipt proves delivery to a device, not display to a
 person.** It is deliberately not evidence that anyone saw anything.
 
-**Harness hooks run with the user's own privileges** and are installed
-only by explicit action. The CLI does not install hooks without being
-asked, and does not edit a repository's ignore rules or create commits.
+**Harness hooks run with the user's own privileges.** The CLI adds a
+harness integration only when asked; updates keep integrations that are
+already installed current. It does not edit a repository's ignore rules or
+create commits in it.
