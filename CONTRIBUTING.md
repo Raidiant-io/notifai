@@ -11,6 +11,19 @@ This repository is the **client surface** of Notifai: the `notifai` CLI,
 the wire contract it speaks, and the agent skill. The service and the
 companion apps are developed separately and are not part of this tree.
 
+- **`apps/cli`** — the `notifai` command-line tool (`@raidiant/notifai`).
+- **`packages/protocol`** — the client-visible wire contract
+  (`@raidiant/notifai-protocol`): notification draft schemas, REST v1
+  request/response types, the status vocabulary, and capability
+  negotiation. The CLI validates drafts offline against the same bundled
+  capability documents the service enforces.
+- **`skills/notifai`** — the agent guidance skill: when to notify and how
+  to write notifications that work on a lock screen.
+
+Everything the CLI sends and receives crosses the documented `/api/v1`
+contract in `packages/protocol`; nothing in this repository depends on
+private code.
+
 That split is a security posture, not an accident, so it is the one
 thing a pull request cannot negotiate. The service must stay secure when
 everything here is fully known. Read [`docs/BOUNDARY.md`](docs/BOUNDARY.md)
@@ -19,11 +32,18 @@ advisory.
 
 ## Getting set up
 
+Requires Node >= 20.12 and pnpm. Release evidence runs on Node 24.
+
 ```sh
 pnpm install
 pnpm build         # protocol first; the CLI resolves its built exports
 git config core.hooksPath scripts/githooks
 ```
+
+The CLI binary builds to `apps/cli/dist/main.js`. The CLI source builds both
+the native product and the optional same-name npm launcher artifact. See
+[standalone distribution](docs/STANDALONE.md) for the candidate lifecycle
+contract; candidate documentation does not prove publication.
 
 ## Before you open a pull request
 

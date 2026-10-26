@@ -226,10 +226,11 @@ for (const { manifest, directory } of packages) {
     `${manifest.name}: CHANGELOG.md must have a section for ${manifest.version}`,
   )
 }
+const usage = readFileSync(path.join(root, 'docs/USAGE.md'), 'utf8')
 requireValue(
-  readme.includes('notifai init --skills --skills-scope') && readme.includes('--skills-harness') &&
-    readme.includes('skill bundled with'),
-  'README must describe the bundled skill installer with explicit scope and harness selection',
+  usage.includes('notifai init --skills --skills-scope') && usage.includes('--skills-harness') &&
+    usage.includes('skill bundled with'),
+  'docs/USAGE.md must describe the bundled skill installer with explicit scope and harness selection',
 )
 for (const relative of ['LICENSE', 'NOTICE', 'SECURITY.md', 'CONTRIBUTING.md', 'docs/BOUNDARY.md', 'docs/RELEASING.md', 'docs/TRUST.md']) {
   requireValue(readFileSync(path.join(root, relative), 'utf8').trim().length > 0, `${relative} must not be empty`)

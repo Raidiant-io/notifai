@@ -4,7 +4,7 @@ import { inputPath, validateReceipt, admitSourceJob } from './release-receipt.mj
 const sha = 'a'.repeat(40), digest = 'b'.repeat(64)
 test('documentation movement is excluded; shipped inputs and release tools are included', () => {
   assert.equal(inputPath('docs/RELEASING.md'), false)
-  for (const file of ['docs/TRUST.md','apps/cli/src/main.ts','skills/notifai/SKILL.md','pnpm-lock.yaml','.github/workflows/publish.yml','scripts/release-receipt.mjs']) assert.equal(inputPath(file), true)
+  for (const file of ['docs/TRUST.md','docs/USAGE.md','apps/cli/src/main.ts','skills/notifai/SKILL.md','pnpm-lock.yaml','.github/workflows/publish.yml','scripts/release-receipt.mjs']) assert.equal(inputPath(file), true)
 })
 test('receipt reuse rejects changed input or unsuccessful evidence', () => {
   const receipt = { schema:1,kind:'source',ok:true,input_digest:digest,source_revision:sha }

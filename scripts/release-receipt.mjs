@@ -11,7 +11,8 @@ import { pathToFileURL } from 'node:url'
 export function inputPath(file) {
   // Documentation outside shipped materials is deliberately not a test input.
   // Everything else, including tests, workflows, tools and dependency pins is.
-  return !(file.startsWith('docs/') && file !== 'docs/TRUST.md') &&
+  // docs/USAGE.md is read by check-release, so it counts too.
+  return !(file.startsWith('docs/') && !['docs/TRUST.md', 'docs/USAGE.md'].includes(file)) &&
     !['AGENTS.md', 'CLAUDE.md', 'agent-guidance-review.json'].includes(file)
 }
 export function inputDigest(root = process.cwd()) {

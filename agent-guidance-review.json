@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "behavior_digest": "sha256:8f44ed8991ca23c396ce6120568ba589fbcc2b72c4d84ef209b2c62608966a75",
+  "behavior_digest": "sha256:dfdc5a1022838daf04b0ef7ea0e288d1f22a67d5560636e31989dc47a2d8d675",
   "outcome": "reviewed-no-impact",
   "surfaces_reviewed": [
     "lifecycle-hooks",
@@ -9,5 +9,5 @@
     "cli-readiness",
     "domain-terms"
   ],
-  "reason": "Reviewed lifecycle hooks, the Notifai skill, harness setup, CLI readiness and domain terms against a README-only change: a \"Works with\" row showing the logos of the harnesses the README already lists (Claude Code, Codex, Cursor, OpenCode, OpenClaw, Hermes, Grok). No harness is added or removed, and no hook, setup step, readiness check, skill rule or domain term changes."
+  "reason": "Reviewed lifecycle hooks, the Notifai skill, harness setup, CLI readiness and domain terms against a documentation move: the README is shortened and its usage, setup, Companion App and subscription detail moves to docs/USAGE.md, its support table and hook internals to docs/HARNESSES.md, and its development notes to CONTRIBUTING.md. Both new docs join the review inputs. Moved text now names the shipped Mac app, drops the stale npm-launcher publication caveat, says only Codex hook changes hold an update as the config help does, and points to the Claude Code and Codex skill references for command approval instead of repeating it. No hook, skill text, setup step, readiness check or domain term changes, and no shipped agent text links to the README."
 }

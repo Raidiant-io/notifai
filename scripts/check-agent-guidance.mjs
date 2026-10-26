@@ -12,6 +12,8 @@ export const DEFAULT_INPUT_ROOTS = [
   'skills/notifai',
   'skills/guidance-changes.json',
   'README.md',
+  'docs/USAGE.md',
+  'docs/HARNESSES.md',
   'docs/TRUST.md',
 ]
 

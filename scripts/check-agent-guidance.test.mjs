@@ -32,6 +32,8 @@ function fixture() {
       'Install `@raidiant/notifai` <!--x-release-please-start-notifai-->9.2.2<!--x-release-please-end-->.',
       '',
     ].join('\n'),
+    'docs/USAGE.md': '# Using Notifai\n',
+    'docs/HARNESSES.md': '# Harness support\n',
     'docs/TRUST.md': '# Trust\n',
   }
   for (const [relative, contents] of Object.entries(inputs)) write(root, relative, contents)
