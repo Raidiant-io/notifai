@@ -8,15 +8,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 This project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 and [Conventional Commits](https://www.conventionalcommits.org/en/v1.0.0/).
 
-## [9.2.0](https://github.com/Raidiant-io/notifai/compare/protocol-v9.1.2...protocol-v9.2.0) (2026-10-26)
-
-
-### Features
-
-* **cli:** keep computer approval codes open for thirty minutes ([7fbf1a9](https://github.com/Raidiant-io/notifai/commit/7fbf1a915414ca56d24758256c2b96be2f02db81))
-* **protocol:** let a waiting computer approval be extended ([1c822d3](https://github.com/Raidiant-io/notifai/commit/1c822d3813035dbf7a6ac95466f706fd85ed049b))
-* **protocol:** share guided setup definitions and the setup notification check ([0cc2f69](https://github.com/Raidiant-io/notifai/commit/0cc2f6926b125155fe6e622d1ec0ae9749ecf6a9))
-
 ## [9.1.2](https://github.com/Raidiant-io/notifai/compare/protocol-v9.1.1...protocol-v9.1.2) (2026-10-24)
 
 ## [9.1.1](https://github.com/Raidiant-io/notifai/compare/protocol-v9.1.0...protocol-v9.1.1) (2026-10-23)
