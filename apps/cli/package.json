@@ -19,7 +19,7 @@
   },
   "dependencies": {
     "@clack/prompts": "^1.7.0",
-    "@raidiant/notifai-protocol": "9.1.2",
+    "@raidiant/notifai-protocol": "9.2.0",
     "@zip.js/zip.js": "2.23.0",
     "commander": "^14.0.0",
     "jsonc-parser": "^3.3.1",

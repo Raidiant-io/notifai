@@ -8,6 +8,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 This project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 and [Conventional Commits](https://www.conventionalcommits.org/en/v1.0.0/).
 
+## [9.2.0](https://github.com/Raidiant-io/notifai/compare/protocol-v9.1.2...protocol-v9.2.0) (2026-10-26)
+
+### Features
+
+* Share the guided setup definitions and the setup notification check.
+* Let a waiting computer approval be extended, and keep approval codes open for thirty minutes.
+
+### Documentation
+
+* Say push envelopes can carry the full Body.
+
 ## [9.1.2](https://github.com/Raidiant-io/notifai/compare/protocol-v9.1.1...protocol-v9.1.2) (2026-10-24)
 
 ## [9.1.1](https://github.com/Raidiant-io/notifai/compare/protocol-v9.1.0...protocol-v9.1.1) (2026-10-23)
