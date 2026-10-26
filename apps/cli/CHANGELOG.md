@@ -8,6 +8,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 This project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 and [Conventional Commits](https://www.conventionalcommits.org/en/v1.0.0/).
 
+## [14.2.6](https://github.com/Raidiant-io/notifai/compare/v14.2.5...v14.2.6) (2026-10-26)
+
+### Documentation
+
+* Rewrite the Notifai skill description so it says what the skill does and lists each trigger on its own.
+
 ## [14.2.5](https://github.com/Raidiant-io/notifai/compare/v14.2.4...v14.2.5) (2026-10-26)
 
 ### Bug Fixes
