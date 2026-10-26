@@ -79,8 +79,8 @@ Against the `codex` on `PATH`, in a throwaway `CODEX_HOME`:
 - That a real model emits the card. The model is mocked; the canary covers
   Codex's handling of the call, not the model's choice to make it.
 - That the Codex TUI clears the card when the steer is consumed, or that it
-  still parses Notifai's reply envelope. No TUI runs here. Those are the live
-  proofs recorded in the private design record when the floor is raised.
+  still parses Notifai's reply envelope. No TUI runs here. Those are checked
+  live by hand when the floor is raised.
 - Anything about the Notifai service, devices, or Companion Apps.
 - Windows: the control socket is Unix-only, and so is the canary.
 
