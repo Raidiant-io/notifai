@@ -60,7 +60,8 @@ export async function attendCursorStop(deps: CommandDeps, envelope: HookEnvelope
   let written = false
   try {
     await runSessionAttendant({
-      sessionId, incarnation: record.incarnation,
+      sessionId,
+      labelContext: { env: deps.env, harness: 'cursor' }, incarnation: record.incarnation,
       incarnationNow: () => readSessionIncarnation(sessionId, deps.env)?.incarnation ?? null,
       rotateIncarnation: (expected) => rotateSessionIncarnation(sessionId, deps.env, expected)?.incarnation ?? null,
       probe: () => sessionHasEnded(sessionId, deps.env) ? { state: 'ended', reason: 'session-end-hook' }

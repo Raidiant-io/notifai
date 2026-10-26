@@ -421,6 +421,7 @@ export async function attendHook(
   try {
     const result = await runSessionAttendant({
       sessionId,
+      labelContext: { env: deps.env, harness },
       incarnation: record.incarnation,
       incarnationNow: () => readSessionIncarnation(sessionId, deps.env)?.incarnation ?? null,
       rotateIncarnation: (expected) => {

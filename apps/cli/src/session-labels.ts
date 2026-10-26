@@ -517,3 +517,8 @@ export function renameStoredSessionLabel(
     }
   }
 }
+
+/** Inspect provenance without allocating a name or changing the store. */
+export function storedSessionLabel(sessionId: string, env: NodeJS.ProcessEnv): Readonly<StoredSessionLabel> | undefined {
+  return readStore(storePath(env)).sessions[sessionKey(sessionId)]
+}

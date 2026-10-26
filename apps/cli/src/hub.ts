@@ -1,3 +1,4 @@
+import { SessionLabelReconciler } from './session-label-reconciliation.js'
 import { releaseCodexCardHandbacks } from './codex-card-handback.js'
 /**
  * The hub: one shared Notifai process per OS user and state directory.
@@ -464,6 +465,8 @@ function openedLater(a: Writer, b: Writer): boolean {
 
 /** One Agent Session the hub attends. */
 class HubSession implements AttendedSession {
+  readonly labelReconciler = new SessionLabelReconciler()
+
   lease: SessionLease
   /** The primary writer's child: the only one anything is written through. */
   child: ChildLink | null = null
@@ -3413,6 +3416,8 @@ export class Hub {
     void this.checkBuildHandover()
     for (const session of this.sessions.values()) {
       if (session.ending !== null) continue
+      if (session.notified) void session.labelReconciler.reconcile(session.env,
+        { harness: session.harness, label: session.harness, sessionId: session.id }, this.client(), this.logger, now)
       if (session.stopped !== null) { this.checkStopped(session); continue }
       // Back from a reopen: stalled if it does not take what it was reopened for.
       if (this.reopen?.watching(session.id) === true) this.reopen.progress(session.id, this.reopenItems(session))

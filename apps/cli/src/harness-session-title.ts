@@ -5,6 +5,8 @@ import type { ActiveHarnessSession } from './commands-harness-context.js'
 import { readSessionState, updateSessionState } from './hook-session-state.js'
 import { readOrcaSessionTitle, type OrcaSessionTitleLookup } from './orca-session-title.js'
 
+import { readCodexNamedThread, readT3SessionTitle } from './host-title-store.js'
+
 const SESSION_INDEX_MAX_BYTES = 64 * 1024 * 1024
 
 export type ClaudeSessionTitleLookup = (
@@ -57,7 +59,10 @@ export type CodexSessionTitleLookup = (
   sessionId: string,
 ) => string | undefined
 
+export type HostTitleSource = 'managed' | 'orca' | 't3' | 'claude' | 'codex'
+
 interface SessionTitleAdapters {
+  resolved?: (source: HostTitleSource) => void
   orca?: OrcaSessionTitleLookup
   codex?: CodexSessionTitleLookup
   claude?: ClaudeSessionTitleLookup
@@ -77,11 +82,11 @@ function safeSessionId(value: string): boolean {
 /**
  * Read Codex's own append-only Agent Session title index.
  *
- * Codex writes one JSONL row for every title update and its consumers scan
- * newest-first. Missing, oversized, or malformed local state is ordinary
+ * CLI title updates use this index; Desktop/app-server may only write the
+ * explicit name in their state database. The index is scanned newest-first. Missing, oversized, or malformed local state is ordinary
  * adapter failure: callers retain the generated fallback path.
  */
-export function readCodexSessionTitle(
+function readCodexIndexTitle(
   env: NodeJS.ProcessEnv,
   sessionId: string,
 ): string | undefined {
@@ -114,6 +119,11 @@ export function readCodexSessionTitle(
   return undefined
 }
 
+export function readCodexSessionTitle(env: NodeJS.ProcessEnv, sessionId: string): string | undefined {
+  if (!safeSessionId(sessionId)) return undefined
+  return readCodexIndexTitle(env, sessionId) ?? readCodexNamedThread(env, sessionId)
+}
+
 /**
  * Resolve semantic title adapters without making any host a prerequisite.
  * Managed harness output is authoritative, Orca may enrich an exact pane, and
@@ -124,12 +134,43 @@ export function readHarnessSessionTitle(
   active: ActiveHarnessSession | null,
   adapters: SessionTitleAdapters = {},
 ): string | undefined {
-  if (active?.sessionLabel !== undefined) return active.sessionLabel
-  if (active?.sessionId === undefined) return undefined
+  const found = (title: string | undefined, source: HostTitleSource): string | undefined => {
+    if (title !== undefined) adapters.resolved?.(source)
+    return title
+  }
+  if (active?.sessionLabel !== undefined) return found(active.sessionLabel, 'managed')
+  if (active?.sessionId === undefined || !safeSessionId(active.sessionId)) return undefined
 
   const orca = (adapters.orca ?? readOrcaSessionTitle)(env)
-  if (orca !== undefined) return orca
-  if (active.harness === 'claude-code') return (adapters.claude ?? readClaudeSessionTitle)(env, active.sessionId)
+  if (orca !== undefined) return found(orca, 'orca')
+  const t3 = readT3SessionTitle(env, active.harness, active.sessionId)
+  if (t3 !== undefined) return found(t3, 't3')
+  if (active.harness === 'claude-code') return found((adapters.claude ?? readClaudeSessionTitle)(env, active.sessionId), 'claude')
   if (active.harness !== 'codex') return undefined
-  return (adapters.codex ?? readCodexSessionTitle)(env, active.sessionId)
+  return found((adapters.codex ?? readCodexSessionTitle)(env, active.sessionId), 'codex')
+}
+
+const TITLE_ENV_KEYS = ['T3CODE_HOME', 'TERM_PROGRAM', 'ORCA_WORKTREE_ID', 'ORCA_PANE_KEY', 'ORCA_CLI_COMMAND', 'ORCA_DEV_REPO_ROOT'] as const
+
+/** Only this exact foreground session may supply host selectors to the shared Hub. */
+export function recordHarnessTitleEnvironment(sessionId: string, env: NodeJS.ProcessEnv): void {
+  if (!safeSessionId(sessionId)) return
+  const selectors: Record<string, string> = {}
+  for (const key of TITLE_ENV_KEYS) {
+    const value = env[key]
+    if (value !== undefined && value.length <= 4_096) selectors[key] = value
+  }
+  if (JSON.stringify(readSessionState(sessionId, env).harness_title_env) === JSON.stringify(selectors)) return
+  updateSessionState(sessionId, env, state => ({ ...state, harness_title_env: selectors }))
+}
+
+export function sessionTitleEnvironment(sessionId: string, env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+  const scoped = { ...env }
+  const selectors = readSessionState(sessionId, env).harness_title_env
+  for (const key of TITLE_ENV_KEYS) {
+    delete scoped[key]
+    const value = selectors?.[key]
+    if (typeof value === 'string' && value.length <= 4_096) scoped[key] = value
+  }
+  return scoped
 }

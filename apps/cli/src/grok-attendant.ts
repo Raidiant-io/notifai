@@ -68,6 +68,7 @@ export async function grokAttendHook(deps: CommandDeps, envelope: HookEnvelope, 
   try {
     await runSessionAttendant({
       sessionId,
+      labelContext: { env: deps.env, harness: 'grok' },
       incarnation: record.incarnation,
       incarnationNow: () => readSessionIncarnation(sessionId, deps.env)?.incarnation ?? null,
       rotateIncarnation: expected => {

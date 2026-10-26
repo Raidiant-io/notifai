@@ -1,3 +1,5 @@
+import { SessionLabelReconciler } from './session-label-reconciliation.js'
+import type { SourceContextHarness } from './harnesses.js'
 /**
  * The Session Attendant: one long-lived CLI process per Agent Session.
  *
@@ -103,6 +105,8 @@ export interface AttendantClock {
 }
 
 export interface SessionAttendantOptions {
+  /** Exact native identity is supplied separately as sessionId. */
+  labelContext?: { env: NodeJS.ProcessEnv; harness: SourceContextHarness }
   sessionId: string
   /** The opaque incarnation this attendant serves; see `incarnationNow`. */
   incarnation: string
@@ -185,6 +189,7 @@ export interface AttendantResult {
 
 /** Runs one Session Attendant until its session ends or a gate fails. */
 export async function runSessionAttendant(options: SessionAttendantOptions): Promise<AttendantResult> {
+  const labelReconciler = new SessionLabelReconciler()
   const { clock, logger } = options
   const probeInterval = options.probeIntervalMs ?? ATTENDANT_PROBE_INTERVAL_MS
   const waitSeconds = Math.min(options.waitSeconds ?? ATTENDANCE_MAX_WAIT_SECONDS, ATTENDANCE_MAX_WAIT_SECONDS)
@@ -458,6 +463,10 @@ export async function runSessionAttendant(options: SessionAttendantOptions): Pro
       break
     }
     leaseClient = client
+    if (options.labelContext !== undefined) {
+      const { env, harness } = options.labelContext
+      void labelReconciler.reconcile(env, { harness, label: harness, sessionId: options.sessionId }, client, logger, clock.wall())
+    }
     if (!serverChecked) {
       // Discovery is an exchange like any other: a stop, an uncertain probe,
       // or an activity change cuts it, and whatever it answers, every check

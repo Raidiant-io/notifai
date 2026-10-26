@@ -144,6 +144,7 @@ export interface ApiClient {
     body: PutAgentAcknowledgementRequestT,
   ): Promise<PutAgentAcknowledgementResponse>
   recordHarnessAnswer(requestId: string, body: RecordHarnessAnswerRequestT): Promise<RecordHarnessAnswerResponse>
+  upgradeAgentSessionLabel(body: PutAgentSessionLabelRequestT): Promise<AgentSessionView>
   putAgentSessionLabel(body: PutAgentSessionLabelRequestT): Promise<AgentSessionView>
   agentAcknowledgement(
     requestId: string,
@@ -398,6 +399,8 @@ export function createClient(
       ),
     recordHarnessAnswer: (requestId, body) =>
       call<RecordHarnessAnswerResponse>('POST', `/api/v1/notifications/${encodeURIComponent(requestId)}/harness-answers`, body),
+    upgradeAgentSessionLabel: (body) =>
+      call<AgentSessionView>('POST', '/api/v1/agent-sessions/label/upgrade', body),
     putAgentSessionLabel: (body) =>
       call<AgentSessionView>('PUT', '/api/v1/agent-sessions/label', body),
     agentAcknowledgement: (requestId, { waitSeconds }) =>

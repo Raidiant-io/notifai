@@ -21,6 +21,8 @@ import { ExchangeDriver,type AttendedSession,type ExchangeHost } from './hub-exc
 import { credentialGenerationPath,encodeFrame,ensurePrivateDirectory,FrameDecoder,hubLockPath,hubSocketPath,requestHub } from './hub-ipc.js'
 import { HUB_WRITE_MARGIN_MS,SessionLease } from './hub-lease.js'
 import { Hub,type HubOptions,type PeerCredentials } from './hub.js'
+import { recordClaudeSessionTitle } from './harness-session-title.js'
+import { resolveSessionLabel } from './session-labels.js'
 import { nullLogger } from './logging.js'
 import { pidExists,processStartTime } from './process-identity.js'
 import { attendantStatusPath,readAttendantEndingLease,readAttendantLease,recordTurnEnd,recordTurnStart } from './session-attendant-state.js'
@@ -110,6 +112,7 @@ function fakeService(options: {
   capabilities?: string[]
   batch?: (body: AttendanceBatchRequestT) => AttendanceBatchResponse | Error
   single?: (sessionId: string, body: AttendanceRequestT) => AttendanceResponse
+  upgrade?: (body: { session_id: string; label: string }) => Promise<unknown>
 } = {}): FakeService {
   const batches: FakeService['batches'] = []
   const single: FakeService['single'] = []
@@ -128,6 +131,7 @@ function fakeService(options: {
   const client = new Proxy({} as ApiClient, {
     get(_target, property) {
       if (property === 'then') return undefined
+      if (property === 'upgradeAgentSessionLabel' && options.upgrade !== undefined) return options.upgrade
       if (property === 'compatibility') {
         return async (): Promise<CompatibilityResponse> => ({ cli: {} as CompatibilityResponse['cli'], platforms: [],
           server_capabilities: (options.capabilities ?? ['session_attendance', 'session_attendance_batch']) as CompatibilityResponse['server_capabilities'] })
@@ -370,6 +374,34 @@ async function registered(env: NodeJS.ProcessEnv, sessionId: string, pid: number
 }
 
 describe('hub', () => {
+  it('upgrades a registered fallback when a host title appears without another send', async () => {
+    const env = hubEnv()
+    writeDescriptor(env, SESSION)
+    expect(resolveSessionLabel({ env, sessionId: SESSION, harness: 'claude-code' })).toMatchObject({ source: 'fallback' })
+    recordSessionNotified(SESSION, env, Date.now())
+    const upgrades: { session_id: string; label: string }[] = []
+    const service = fakeService({ upgrade: async (body) => {
+      upgrades.push(body)
+      return { ...body, renamed_by: 'agent', updated_at: new Date().toISOString() }
+    } })
+    const peers = new Map<number, PeerCredentials>()
+    const { hub, done } = startHub(env, service, peers, memoryStore(), 200)
+    await hubListening(env)
+    const child = await registered(env, SESSION, 900499, peerOf(900499, { pid: HARNESS.pid, comm: 'claude', start: HARNESS.start }), peers)
+    try {
+      await until(() => service.batches.length > 0)
+      recordClaudeSessionTitle(SESSION, env, 'Repair the parser')
+      await until(() => upgrades.length === 1)
+      expect(upgrades).toEqual([{ session_id: SESSION, label: 'Repair the parser' }])
+      expect(resolveSessionLabel({ env, sessionId: SESSION })).toMatchObject({ source: 'harness', previousSource: 'fallback' })
+    } finally {
+      child.socket.destroy()
+      hub.requestExit('test')
+      service.release()
+      await done
+    }
+  })
+
   it('runs each session with its own PATH and desktop, never another session\'s', async () => {
     const env = { ...hubEnv(), PATH: '/hub/bin:/usr/bin:/bin', DISPLAY: ':9', WAYLAND_DISPLAY: 'wayland-9' }
     writeDescriptor(env, SESSION)

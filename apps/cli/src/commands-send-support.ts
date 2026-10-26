@@ -7,18 +7,20 @@ import { fetchMediaUrl } from './url-policy.js'
 import { buildSourceContext, inferInvocationContext } from './invocation-context.js'
 import { readSessionState } from './hook-session-state.js'
 import { inferredProjectName } from './project-enablement.js'
-import { readHarnessSessionTitle } from './harness-session-title.js'
+import { readHarnessSessionTitle, recordHarnessTitleEnvironment, type HostTitleSource } from './harness-session-title.js'
 import { type DraftInvocation, type SendFlags } from './send.js'
 import { readLocalImage, type LocalImageType } from './local-input.js'
-import { EXIT, reportError, type CommandDeps } from './commands-core.js'
+import { EXIT, log, reportError, type CommandDeps } from './commands-core.js'
 import type { ActiveHarnessSession } from './commands-harness-context.js'
 
 function managedSessionTitle(
   deps: CommandDeps,
   active: ActiveHarnessSession | null,
+  resolved: (source: HostTitleSource) => void,
 ): string | undefined {
   try {
     return readHarnessSessionTitle(deps.env, active, {
+      resolved,
       ...(deps.orcaSessionTitle === undefined ? {} : { orca: deps.orcaSessionTitle }),
       ...(deps.codexSessionTitle === undefined ? {} : { codex: deps.codexSessionTitle }),
     })
@@ -36,7 +38,8 @@ export function resolveDraftInvocation(
   const cwd = session?.harness === active?.harness ? session?.activation_cwd ?? deps.cwd : deps.cwd
   // Branch and worktree describe this folder; the Project is the one it belongs to.
   const inferred = { ...inferInvocationContext(cwd), project: inferredProjectName(cwd, deps.env) }
-  const sessionTitle = managedSessionTitle(deps, active)
+  let candidateSource: HostTitleSource | 'none' = 'none'
+  const sessionTitle = managedSessionTitle(deps, active, (source) => { candidateSource = source })
   const source = buildSourceContext({
     env: deps.env,
     invocation: inferred,
@@ -53,6 +56,16 @@ export function resolveDraftInvocation(
           },
         }),
     now: (deps.now ?? Date.now)(),
+  })
+  const sessionId = flags.sessionId ?? deps.env['NOTIFAI_SESSION_ID'] ?? active?.sessionId
+  if (sessionId !== undefined && sessionId === active?.sessionId) {
+    try { recordHarnessTitleEnvironment(sessionId, deps.env) } catch { /* Optional local enrichment. */ }
+  }
+  log(deps).bind({ session: sessionId ?? null })
+  if (sessionId !== undefined) log(deps).info('session.label', {
+    candidate_source: flags.sessionLabel !== undefined || deps.env['NOTIFAI_SESSION_LABEL'] !== undefined ? 'explicit' : candidateSource,
+    outcome: !source.ok ? 'rejected' : source.source?.session_label_source === 'fallback' ? 'fallback'
+      : source.source?.session_label_previous_source === 'fallback' ? 'fallback-upgrade' : 'semantic',
   })
   if (!source.ok) return source
   if (source.generatedSessionLabel !== undefined) {

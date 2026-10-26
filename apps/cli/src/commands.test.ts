@@ -1,3 +1,4 @@
+import { createLogger, readLogRecords } from './logging.js'
 import type {
 CompatibilityResponse,
 EvidenceSnapshot,
@@ -386,6 +387,21 @@ function claimedReplyResponse(replies: ReplyView[] = []) {
 }
 
 describe('command contracts', () => {
+  it('finds send records by exact Agent Session without logging its name or content', async () => {
+    const root = mkdtempSync(path.join(os.tmpdir(), 'notifai-send-log-'))
+    const env = isolatedEnv(root)
+    const logger = createLogger({ env })
+    const deps = { ...makeDeps(new CapturedIo(), { submit: async () => receipt } as unknown as ApiClient), cwd: root, env, logger }
+    try {
+      expect(await sendCommand(deps, { kind: 'done', title: 'Completed', body: 'Private result text',
+        sessionId: 'exact-log-session', sessionLabel: 'Private task name' })).toBe(EXIT.ok)
+      const records = readLogRecords(env, { session: 'exact-log-session', limit: 100 }).records
+      expect(records.map(record => record.event)).toEqual(expect.arrayContaining(['session.label', 'send.attempt', 'send.submitted', 'send.outcome']))
+      expect(JSON.stringify(records)).not.toContain('Private task name')
+      expect(JSON.stringify(records)).not.toContain('Private result text')
+    } finally { rmSync(root, { recursive: true, force: true }) }
+  })
+
   it('asks Projectless outside a Project without creating Enablement state', async () => {
     const cwd = mkdtempSync(path.join(os.tmpdir(), 'notifai-projectless-ask-'))
     const io = new CapturedIo()

@@ -80,6 +80,7 @@ const LEVEL_RANK: Record<LogLevel, number> = { off: 0, error: 1, info: 2, debug:
  * existing one, and keep each event answering exactly one question.
  */
 export const LOG_EVENTS = [
+  'session.label',
   /** A CLI invocation began: which command, which flag names, which version. */
   'cli.start',
   /** It ended: exit code and how long it took. */
@@ -487,6 +488,7 @@ export function createLogger(options: LoggerOptions = {}): Logger {
   function write(level: RecordLevel, event: LogEvent, data?: Record<string, unknown>): void {
     if (broken || LEVEL_RANK[settings.level] < LEVEL_RANK[level]) return
     try {
+      const session = typeof data?.['session'] === 'string' ? data['session'] : bindings.session
       const record: LogRecord = {
         v: LOG_SCHEMA_VERSION,
         ts: new Date(now()).toISOString(),
@@ -496,7 +498,7 @@ export function createLogger(options: LoggerOptions = {}): Logger {
         cmd: bindings.cmd ?? 'notifai',
         pid: process.pid,
         ...(bindings.project ? { project: bindings.project } : {}),
-        ...(bindings.session ? { session: bindings.session } : {}),
+        ...(session ? { session } : {}),
         ...(data === undefined ? {} : { data: shape(data) as Record<string, unknown> }),
       }
       const line = serialize(record)

@@ -282,6 +282,7 @@ export async function hermesAttendCommand(deps: CommandDeps, input: Readable, ou
   try {
     await runSessionAttendant({
       sessionId,
+      labelContext: { env: deps.env, harness: 'hermes' },
       incarnation: record.incarnation,
       incarnationNow: () => readSessionIncarnation(sessionId, deps.env)?.incarnation ?? null,
       rotateIncarnation: expected => {
