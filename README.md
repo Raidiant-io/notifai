@@ -56,9 +56,10 @@ irm https://notifai.sh/install.ps1 | iex
 
 The installer doesn't need Node.js. It installs the `notifai` command and runs
 `notifai init`, which signs you in and connects your harnesses. Then get the
-Companion App for [iPhone](https://app.notifai.sh/setup/companion?platform=iphone),
-[Android](https://app.notifai.sh/setup/companion?platform=android) or
-[Mac](https://app.notifai.sh/download/mac) and sign in with the same Account.
+Companion App for [iPhone](https://app.notifai.sh/setup/companion?platform=iphone)
+or [Mac](https://app.notifai.sh/download/mac), or
+[join the free Android test](https://app.notifai.sh/test-android), and sign in
+with the same Account.
 
 ## Pricing
 
@@ -68,7 +69,7 @@ every app. See [pricing](https://app.notifai.sh/pricing).
 ## More
 
 - [Using Notifai](docs/USAGE.md): commands, questions, setup options and updates.
-- [Harness support](docs/HARNESSES.md): what works on which harness and OS, and how the hooks work.
+- [Harness support](docs/HARNESSES.md): what works in each harness, and what setup installs.
 - [The agent skill](skills/notifai/SKILL.md) your agents read.
 - [notifai.sh](https://notifai.sh), the [changelog](https://notifai.sh/changelog) and [support](https://app.notifai.sh/support).
 
