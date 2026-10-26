@@ -1,5 +1,5 @@
 {
-  "current": "bf082e41bceed18cde6015173100dc8d007f50636ea0cd2271741b90c75d3e0a",
+  "current": "5333a94e4cdc86bd79bf04dc32a13bb923ea98350a471091faa1a7d98897bc32",
   "releases": [
     {
       "digest": "3e47b01bc6bbfb43e910c660b9964fab6459d75148c3c02dcbcd0be64cfb2963",
@@ -108,6 +108,10 @@
     {
       "digest": "bf082e41bceed18cde6015173100dc8d007f50636ea0cd2271741b90c75d3e0a",
       "note": "A Codex question card whose question or option is longer than a device question now opens normally: the devices get a shortened question and the Body carries the full wording. A Codex card or Claude Code picker that Notifai still cannot carry is refused with what to fix: fix that and open the card or picker again."
+    },
+    {
+      "digest": "5333a94e4cdc86bd79bf04dc32a13bb923ea98350a471091faa1a7d98897bc32",
+      "note": "Native Codex cards stay usable when capability or answer-control probes fail, and queued device registration is explicitly unconfirmed. OpenCode forms outside device limits stay native; partial device replies preserve unanswered rows. Claude Code, OpenCode and Codex keep shortened choice labels distinct and map answers to the original options. Localized and punctuation-distinguished ask choices work without changing existing unambiguous IDs. Unsupported Node hooks and early-exiting OpenClaw hook children leave the harness running. Existing hand-back guards still prevent duplicate answers."
     }
   ]
 }

@@ -42,7 +42,9 @@ Both OpenCode 1.19.4 and OpenCode 2.1.3 carry free-text questions
 (`options: []`) and forms of 1 to 10 questions. Notifai accepts 2 to 6 choices
 per question, with single or multiple selection. OpenCode 2.1.3's native
 schema has no upper question count or minimum option count; Notifai's
-10-question and 6-choice limits still apply. Notifai accepts
+10-question and 6-choice limits apply to device registration. A native form
+outside those limits, including one suggested choice with custom input, stays
+in OpenCode and opens normally. Notifai accepts
 at most one recommended choice per question; its label ends in
 `(Recommended)`. Several recommendations within one question are refused by
 Notifai's protocol before any form opens; offer one recommendation instead.
@@ -60,6 +62,8 @@ form keeps your turn open and takes whichever answer comes first:
 
 - **A device answer** is the form's own result. The next system context names
   `notifai acknowledge req_…`; run it before the work the answer causes.
+  A partial reply keeps unanswered rows empty; those rows are neither consent
+  nor a selected choice. Only act on what the User answered.
 - **An answer in OpenCode** needs nothing from you. Notifai records it, so the
   devices stop asking.
 - **A form dismissed in OpenCode** withdraws the device question: continue in
@@ -70,7 +74,10 @@ form keeps your turn open and takes whichever answer comes first:
 Closing OpenCode or deleting the session withdraws the device question; a
 later device answer reaches nobody. A form on a signed-out machine, with
 question notifications off, or in a project the User disabled stays in
-OpenCode only and still works there.
+OpenCode only and still works there. Forms outside device limits do too.
+Long or normalized labels that would collide receive distinct numbered
+labels on devices; the Body keeps the full wording, and the answer returns
+the exact original OpenCode label.
 
 ## After a Notifai update
 

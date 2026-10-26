@@ -5,13 +5,14 @@ import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { afterEach,expect,it,vi } from 'vitest'
 import type { ApiClient } from './client.js'
-import { admitBoundNativeAnswer } from './codex-question-bindings.js'
 import type { CommandDeps } from './commands-core.js'
+import { registerQuestion } from './hook-lifecycle.js'
+import { readSessionIncarnation } from './hook-session-state.js'
 import { hookRunCommand } from './commands-hook-run.js'
 import { personalProjectConfigPath } from './config.js'
 import { recordGuidanceGiven } from './guidance-currency.js'
 import { hookAdapterPath,installHookAdapter } from './hook-adapter.js'
-import { beginSessionIncarnation,lifecycleStamp,readSessionIncarnation,readSessionState,writeSessionState } from './hook-session-state.js'
+import { beginSessionIncarnation,lifecycleStamp,readSessionState,writeSessionState } from './hook-session-state.js'
 import { buildHookConfig,codexHookIdentityHash,codexTrustKey,findInstallations } from './install-hooks.js'
 import { currentProcessIdentity } from './process-identity.js'
 import { disableProject,enableProject,projectBinding } from './project-enablement.js'
@@ -80,46 +81,43 @@ it.each([false, true])('returns one card hook document when old guidance needs r
   expect(h.output).toHaveLength(1)
   const decision = JSON.parse(h.output.join('\n')).hookSpecificOutput
   expect(decision.hookEventName).toBe('PreToolUse')
-  expect(decision.permissionDecision).toBe(transport ? undefined : 'deny')
+  expect(decision.permissionDecision).toBeUndefined()
   expect(decision.additionalContext).toContain("Notifai's guidance changed")
-  expect(transport ? decision.additionalContext : decision.permissionDecisionReason).toContain(
-    transport ? 'registers this card' : 'plain conversation',
-  )
+  if (transport) expect(decision.additionalContext).toContain('registers this card')
   h.output.length = 0
   await hookRunCommand(h.deps, 'pre-tool-use', async () => JSON.stringify(h.envelope), 'codex')
-  expect(h.output).toHaveLength(1)
-  expect(JSON.parse(h.output[0]!).hookSpecificOutput.additionalContext ?? '').not.toContain("Notifai's guidance changed")
+  expect(h.output).toHaveLength(transport ? 1 : 0)
+  expect(h.output.join('')).not.toContain("Notifai's guidance changed")
 })
 
-it('registers the card itself and prevents a device-unclosable card while retaining a conversation answer', async () => {
-  const h = setup()
+it('queues only an accepted card and does not claim confirmed device registration', async () => {
+  const h = setup({ transport: true })
   await hookRunCommand(h.deps, 'pre-tool-use', async () => JSON.stringify(h.envelope), 'codex')
+  expect(readSessionState(SESSION, h.env).pending ?? []).toEqual([])
+  expect(h.launch).not.toHaveBeenCalled()
+  h.output.length = 0
+  await hookRunCommand(h.deps, 'post-tool-use', async () => JSON.stringify({ ...h.envelope,
+    hook_event_name: 'PostToolUse', tool_response: { accepted: true } }), 'codex')
   const state = readSessionState(SESSION, h.env)
   expect(state.pending).toHaveLength(1)
   expect(state.pending![0]!.questions).toEqual([{ id: expect.any(String), text: 'Which environment?',
     choices: [{ id: expect.any(String), label: 'Staging' }, { id: expect.any(String), label: 'Production' }] }])
-  const decision = JSON.parse(h.output.join('\n')).hookSpecificOutput
-  expect(decision.permissionDecision).toBe('deny')
-  expect(decision.permissionDecisionReason).toContain('plain conversation')
-  expect(decision.permissionDecisionReason).toContain('notifai close ' + state.pending![0]!.question_id)
-  expect(decision.permissionDecisionReason).toContain('Staging')
-  expect(decision.permissionDecisionReason).toContain('Production')
-  const owner = readSessionIncarnation(SESSION, h.env)!
-  expect(() => admitBoundNativeAnswer(state, state.pending![0]!.question_id!, owner.key,
-    state.pending![0]!.service_identity!, [{ question_id: state.pending![0]!.questions![0]!.id, text: 'Staging' }])).toThrow()
+  expect(h.output.join('')).toContain('delivery is not confirmed yet')
+  expect(h.output.join('')).not.toContain('is registered')
   expect(h.launch).toHaveBeenCalledTimes(1)
 })
 
 it('carries a card question longer than a device question, with its full wording in the Body', async () => {
-  const h = setup()
+  const h = setup({ transport: true })
   const long = 'I found the saved bank and exchange documents and a spreadsheet of card top-ups covering most of the year, ' +
     'but the declaration still needs a few details that only you have. ' +
     'Please send the recipient\'s full legal name, your current address, and the dates and amounts the bank wants covered.'
   expect(long.length).toBeGreaterThan(240)
   const card = { questions: [{ title: long }] }
   await hookRunCommand(h.deps, 'pre-tool-use', async () => JSON.stringify({ ...h.envelope, tool_input: card }), 'codex')
-  const decision = JSON.parse(h.output.join('\n')).hookSpecificOutput
-  expect(decision.permissionDecisionReason).not.toContain('cannot carry')
+  expect(h.output.join('')).not.toContain('permissionDecision')
+  await hookRunCommand(h.deps, 'post-tool-use', async () => JSON.stringify({ ...h.envelope, tool_input: card,
+    hook_event_name: 'PostToolUse', tool_response: { accepted: true } }), 'codex')
   const pending = readSessionState(SESSION, h.env).pending!
   expect(pending).toHaveLength(1)
   expect([...pending[0]!.questions![0]!.text].length).toBeLessThanOrEqual(240)
@@ -127,13 +125,11 @@ it('carries a card question longer than a device question, with its full wording
   expect(pending[0]!.body).toContain(long)
 })
 
-it('names what to fix when a card still cannot be a device question', async () => {
+it('leaves an unrepresentable self-opened card to the native harness', async () => {
   const h = setup()
   const card = { questions: [{ title: 'Which environment?', options: ['Staging', 'Staging'] }] }
   await hookRunCommand(h.deps, 'pre-tool-use', async () => JSON.stringify({ ...h.envelope, tool_input: card }), 'codex')
-  const decision = JSON.parse(h.output.join('\n')).hookSpecificOutput
-  expect(decision.permissionDecision).toBe('deny')
-  expect(decision.permissionDecisionReason).toMatch(/^Notifai cannot carry this card to the User's devices: .+ Fix that and open the card again\.$/su)
+  expect(h.output.join('')).not.toContain('permissionDecision')
   expect(readSessionState(SESSION, h.env).pending ?? []).toEqual([])
 })
 
@@ -143,4 +139,88 @@ it.each(['subagent', 'wrong-process', 'no-model'] as const)('does not take a car
   if (mode === 'wrong-process') h.env.NOTIFAI_HOOK_SOURCE_PID = '1'
   await hookRunCommand(h.deps, 'pre-tool-use', async () => JSON.stringify(envelope), 'codex')
   expect(readSessionState(SESSION, h.env).codex_card_tool).toBeUndefined()
+})
+
+
+it.each(['compatibility', 'control', 'control-null', 'unsupported', 'launch'] as const)(
+  'keeps the native card available without claiming device registration on %s failure', async failure => {
+    const h = setup({ transport: true })
+    if (failure === 'compatibility') h.deps.clientFactory = () => ({ compatibility: async () => { throw new Error('offline') } }) as unknown as ApiClient
+    if (failure === 'unsupported') h.deps.clientFactory = () => ({ compatibility: async () => ({ server_capabilities: [] }) }) as unknown as ApiClient
+    if (failure === 'control') h.deps.codexAnswerControl = async () => { throw new Error('timeout') }
+    if (failure === 'control-null' || failure === 'launch') h.deps.codexAnswerControl = async () => null
+    if (failure === 'launch') h.launch.mockImplementation(() => { throw new Error('spawn failed') })
+    await hookRunCommand(h.deps, 'pre-tool-use', async () => JSON.stringify(h.envelope), 'codex')
+    expect(h.output.join('')).not.toMatch(/"permissionDecision":"deny"|is registered|on the User's devices/)
+    expect(readSessionState(SESSION, h.env).pending ?? []).toEqual([])
+    expect(h.launch).not.toHaveBeenCalled()
+  },
+)
+
+it.each([
+  ['はい', 'いいえ'], ['C++', 'C#'],
+  ['A', 'B'].map(end => 'The same very long option label repeated until its ending ' + end),
+  ['Same  label', 'Same label'], ['Go (Recommended)', 'Go'],
+])('carries distinct native Codex choices without changing their answer mapping: %j', async (...options) => {
+  const h = setup({ transport: true })
+  const envelope = { ...h.envelope, tool_input: { questions: [{ title: 'Which?', options }] } }
+  await hookRunCommand(h.deps, 'pre-tool-use', async () => JSON.stringify(envelope), 'codex')
+  expect(h.output.join('')).not.toContain('"permissionDecision":"deny"')
+  h.output.length = 0
+  await hookRunCommand(h.deps, 'post-tool-use', async () => JSON.stringify({ ...envelope,
+    hook_event_name: 'PostToolUse', tool_response: { accepted: true } }), 'codex')
+  const state = readSessionState(SESSION, h.env)
+  const choices = state.pending![0]!.questions![0]!.choices!
+  expect(new Set(choices.map(choice => choice.label)).size).toBe(options.length)
+  expect(new Set(choices.map(choice => choice.id)).size).toBe(options.length)
+  expect(Object.values(state.codex_question_bindings![0]!.questions[0]!.card!.labels)).toEqual(options)
+  expect(h.output.join('')).not.toContain('is registered')
+})
+
+
+it('keeps an accepted card usable when the settlement process cannot launch', async () => {
+  const h = setup({ transport: true })
+  h.launch.mockImplementation(() => { throw new Error('spawn failed') })
+  await hookRunCommand(h.deps, 'post-tool-use', async () => JSON.stringify({ ...h.envelope,
+    hook_event_name: 'PostToolUse', tool_response: { accepted: true } }), 'codex')
+  expect(h.launch).toHaveBeenCalledTimes(1)
+  expect(h.output.join('')).toContain('delivery is not confirmed yet')
+  expect(h.output.join('')).not.toMatch(/permissionDecision|is registered/)
+  const pending = readSessionState(SESSION, h.env).pending!
+  expect(pending).toHaveLength(1)
+  expect(pending[0]!.request_id).toBeUndefined()
+})
+
+it('leaves an accepted card native-only if its answer control disappears after admission', async () => {
+  const h = setup({ transport: true })
+  await hookRunCommand(h.deps, 'pre-tool-use', async () => JSON.stringify(h.envelope), 'codex')
+  h.output.length = 0
+  h.deps.codexAnswerControl = async () => null
+  await hookRunCommand(h.deps, 'post-tool-use', async () => JSON.stringify({ ...h.envelope,
+    hook_event_name: 'PostToolUse', tool_response: { accepted: true } }), 'codex')
+  expect(h.output.join('')).not.toMatch(/permissionDecision|is registered/)
+  expect(readSessionState(SESSION, h.env).pending ?? []).toEqual([])
+  expect(h.launch).not.toHaveBeenCalled()
+})
+
+
+it.each([false, true])('does not claim an unsubmitted ask hand-back reached devices (mismatch: %s)', async mismatch => {
+  const h = setup({ transport: true })
+  await hookRunCommand(h.deps, 'pre-tool-use', async () => JSON.stringify(h.envelope), 'codex')
+  h.output.length = 0
+  const service = { base_url: 'https://test.notifai.invalid', machine_id: 'mac_test' }
+  const owner = readSessionIncarnation(SESSION, h.env)!
+  registerQuestion(SESSION, h.env, { question: 'Which environment?', summary: 'Which environment?',
+    service_identity: service, questions: [{ id: 'environment', text: 'Which environment?',
+      choices: [{ id: 'staging', label: 'Staging' }, { id: 'production', label: 'Production' }] }],
+  }, Date.now(), { owner_key: owner.key, turn_id: TURN, service,
+    handback: [{ title: 'Which environment?', labels: { staging: 'Staging', production: 'Production' } }],
+  })
+  const envelope = mismatch ? { ...h.envelope, tool_input: { questions: [{ title: 'Something else?' }] } } : h.envelope
+  await hookRunCommand(h.deps, 'pre-tool-use', async () => JSON.stringify(envelope), 'codex')
+  const decision = JSON.parse(h.output.join('\n')).hookSpecificOutput
+  expect(decision.permissionDecision).toBe(mismatch ? 'deny' : undefined)
+  expect(h.output.join('')).toContain('Device delivery is not confirmed yet')
+  expect(h.output.join('')).not.toContain("on the User's devices")
+  expect(readSessionState(SESSION, h.env).pending).toHaveLength(1)
 })

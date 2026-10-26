@@ -1218,6 +1218,7 @@ function runHook(event, envelope) {
       stdout += chunk
     })
     child.stderr?.resume()
+    child.stdin?.on("error", () => finish(null))
     child.on("error", () => finish(null))
     child.on("close", (code) => finish(code === 0 ? stdout : null))
 

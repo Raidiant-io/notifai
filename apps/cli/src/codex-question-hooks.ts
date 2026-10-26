@@ -1,6 +1,6 @@
 /** Codex's structured card is the source of its device question. */
-import { CHOICE_LABEL_MAX_LENGTH, QUESTION_TEXT_MAX_LENGTH } from '@raidiant/notifai-protocol'
-import { fit, oneLine } from './claude-question-bindings.js'
+import { QUESTION_TEXT_MAX_LENGTH } from '@raidiant/notifai-protocol'
+import { fit, fitChoiceLabels, oneLine, withoutRecommendedSuffix } from './claude-question-bindings.js'
 import { matchCodexCardHandback } from './codex-card-handback.js'
 import { buildAskDraft, buildQuestions } from './commands-ask.js'
 import { makeClient, type CommandDeps } from './commands-core.js'
@@ -44,6 +44,8 @@ async function routeCard(deps: CommandDeps, envelope: HookEnvelope, logger: Logg
   const handback = matchCodexCardHandback(sessionId, deps.env, envelope, owner.key, service, accepted, (deps.now ?? Date.now)())
   if (handback !== null) {
     const id = handback.registration.question_id
+    const delivery = handback.registration.confirmed_request_id === undefined
+      ? 'Device delivery is not confirmed yet.' : 'Device registration is confirmed.'
     if (handback.reason !== undefined) {
       if (accepted) return null
       const text = handback.registration.questions.map(({ question }) =>
@@ -51,24 +53,18 @@ async function routeCard(deps: CommandDeps, envelope: HookEnvelope, logger: Logg
       const reason = handback.reason === 'expired' ? `${id} has expired without an answer: carry on without it, or ask in the conversation.`
         : handback.reason === 'answered' ? `${id} was already answered; it arrives as your next input. Do not ask it again.`
         : handback.reason === 'delivered' ? `${id} was already answered, and that answer was delivered to you. Do not ask it again.`
-        : `${handback.reason === 'mismatch' ? 'This card does not match' : 'Open no card for'} the question registered as ${id}, which is on the User's devices with your title, Body and images. Ask it in plain conversation text with these same choices and continue independent work; dependent work waits for the answer. Do not register it again with notifai ask. If the User answers in the conversation, run notifai close ${id} to retire the device question. For a different question, run notifai ask for it.\n\n${text}`
+        : `${handback.reason === 'mismatch' ? 'This card does not match' : 'Open no card for'} the existing question registration ${id}, with your title, Body and images. ${delivery} Ask it in plain conversation text with these same choices and continue independent work; dependent work waits for the answer. Do not register it again with notifai ask. If the User answers in the conversation, run notifai close ${id} to retire the device question. For a different question, run notifai ask for it.\n\n${text}`
       deps.io.out(JSON.stringify({ hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'deny', permissionDecisionReason: reason } }))
       return null
     }
-    const context = `This card is registered as ${id} on the User's devices; never also notifai ask it. Notifai records a terminal answer itself. An answer from a device arrives in the card with its own acknowledgement command; run it before dependent work.`
+    const context = `This card uses the existing registration ${id}. ${delivery} Never also notifai ask it. Notifai records a terminal answer itself. An answer from a device arrives in the card with its own acknowledgement command; run it before dependent work.`
     if (accepted) return context
     deps.io.out(JSON.stringify({ hookSpecificOutput: { hookEventName: 'PreToolUse', additionalContext: context } }))
     return null
   }
   const unsupported = (detail?: string) => {
-    if (!accepted) {
-      logger.info('hook.gate', { stage: 'form-refused-unlinkable', form: 'codex-card', reason: 'unsupported-shape', session: sessionId,
-        ...(detail === undefined ? {} : { detail }) })
-      deps.io.out(JSON.stringify({ hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'deny',
-        permissionDecisionReason: detail === undefined
-          ? "Notifai cannot carry this card to the User's devices. Run notifai ask for this question instead: it registers the question and tells you what to open or ask."
-          : `Notifai cannot carry this card to the User's devices: ${detail} Fix that and open the card again.` } }))
-    }
+    logger.info('hook.gate', { stage: 'form-terminal-only', form: 'codex-card', reason: 'unsupported-shape', session: sessionId,
+      ...(detail === undefined ? {} : { detail }) })
     return null
   }
   const raw = (envelope.tool_input as { questions?: unknown } | null)?.questions
@@ -78,14 +74,27 @@ async function routeCard(deps: CommandDeps, envelope: HookEnvelope, logger: Logg
   // Claude Code picker, the device gets a shortened one and the Body keeps the
   // full wording; the card itself opens unchanged.
   const texts = raw.map(entry => fit(entry.title as string, QUESTION_TEXT_MAX_LENGTH))
-  const labels = raw.map(entry => (entry.options as string[] | undefined)?.map(option => fit(option, CHOICE_LABEL_MAX_LENGTH)))
+  if (raw.some(entry => entry.options !== undefined && new Set(entry.options).size !== entry.options.length)) {
+    return unsupported('duplicate-option')
+  }
+  const recommended = raw.map(entry => (entry.options as string[] | undefined)?.map(withoutRecommendedSuffix))
+  const choices = raw.map((entry, index) => {
+    const options = entry.options as string[] | undefined
+    if (options === undefined) return undefined
+    const markers = recommended[index]!
+    const singleRecommendation = markers.filter(label => label !== null).length === 1
+    const labels = fitChoiceLabels(options.map((option, position) => singleRecommendation ? markers[position] ?? option : option))
+    return labels.map((label, position) => ({ label,
+      ...(singleRecommendation && markers[position] !== null ? { recommended: true } : {}),
+    }))
+  })
   const shortened = raw.some((entry, index) => texts[index] !== (entry.title as string).trim() ||
-    ((entry.options as string[] | undefined) ?? []).some((option, position) => labels[index]![position] !== option))
+    ((entry.options as string[] | undefined) ?? []).some((option, position) => choices[index]![position]!.label !== option))
   const body = shortened ? raw.map(entry => [`**${oneLine(entry.title as string)}**`,
     ...((entry.options as string[] | undefined)?.length ? ['', ...(entry.options as string[]).map(option => `- ${oneLine(option)}`)] : [])].join('\n')).join('\n\n') : undefined
   // A card has no heading and no headers, so the draft titles it by the Agent Session name.
   const form = buildQuestions({ form: JSON.stringify({ summary: texts[0],
-    questions: raw.map((entry, index) => ({ text: texts[index], ...(entry.options === undefined ? {} : { choices: labels[index] }) })),
+    questions: raw.map((_entry, index) => ({ text: texts[index], ...(choices[index] === undefined ? {} : { choices: choices[index] }) })),
     ...(body === undefined ? {} : { body }) }) }, undefined,
   { selfOpened: true })
   if (!form.ok) return unsupported(form.error)
@@ -97,19 +106,24 @@ async function routeCard(deps: CommandDeps, envelope: HookEnvelope, logger: Logg
   if (currentCodexTurn(sessionId, deps.env, owner.key) !== envelope.turn_id) return null
   const [supported, transport] = await Promise.all([
     makeClient(deps, service.base_url, `Bearer nfm_${credential.machineId}.${credential.secret}`, { timeoutMs: 1500 })
-      .compatibility().then(value => value?.server_capabilities?.includes('harness_answers') === true, () => false),
+      .compatibility().then(value => value === null ? null : value.server_capabilities?.includes('harness_answers') === true, () => null),
     (deps.codexAnswerControl ?? connectCodexAnswerControl)(sessionId, envelope.turn_id, deps.env, performance.now() + 3000)
       .then(control => { if (control === null) return false; control.close(); return true }, () => false),
   ])
-  const allow = supported && transport
-  if (!accepted && allow) {
+  // A failed probe is not a capability withdrawal. Both leave a new native
+  // card usable, without creating a competing ordinary device question.
+  if (supported !== true || !transport) {
+    logger.info('hook.gate', { stage: 'form-terminal-only', form: 'codex-card', session: sessionId,
+      reason: supported === null ? 'compatibility-unavailable' : supported === false ? 'harness-answers-unsupported' : 'answer-control-unavailable' })
+    return null
+  }
+  if (!accepted) {
     // Do not publish before acceptance. A device answer must never race a
     // card's creation or a later foreign PreToolUse denial.
     deps.io.out(JSON.stringify({ hookSpecificOutput: { hookEventName: 'PreToolUse',
       additionalContext: 'Notifai registers this card on the User\'s devices once Codex accepts it; never also notifai ask it.' } }))
     return null
   }
-  if (accepted && !allow) return null
   const shown = raw.map((entry, index) => ({ title: entry.title,
     labels: Object.fromEntries((form.questions[index]!.choices ?? []).map((choice, position) => [choice.id, entry.options[position]])) }))
   const { question_id: questionId } = registerQuestion(sessionId, deps.env, {
@@ -119,7 +133,7 @@ async function routeCard(deps: CommandDeps, envelope: HookEnvelope, logger: Logg
     ...(draft.draft.project === undefined ? {} : { project: draft.draft.project }),
     ...(draft.draft.source === undefined ? {} : { source: draft.draft.source }),
   }, (deps.now ?? Date.now)(), { owner_key: owner.key, turn_id: envelope.turn_id, service,
-    card: { call_id: envelope.tool_use_id, shown, allow, ...(accepted ? { accepted: true } : {}) } }, { owner_key: owner.key, machineStillMatches: () => {
+    card: { call_id: envelope.tool_use_id, shown, allow: true, accepted: true } }, { owner_key: owner.key, machineStillMatches: () => {
     const current = deps.store.load()
     return current?.machineId === service.machine_id && current.baseUrl === service.base_url
   } })
@@ -133,14 +147,8 @@ async function routeCard(deps: CommandDeps, envelope: HookEnvelope, logger: Logg
       message: error instanceof Error ? error.message : String(error) })
   }
   logger.info('ask.registered', { session: sessionId, question_id: questionId, origin: 'codex-card', questions: form.questions.length })
-  if (registration.card_allowed === true) {
-    return `This card is registered as ${questionId} on the User's devices; never also notifai ask it. ` +
-        'Notifai records a terminal answer itself. An answer from a device arrives in the card with its own acknowledgement command; run it before dependent work.'
-  }
-  const questionText = raw.map(entry => [entry.title, ...(entry.options ?? []).map((option: string) => `- ${option}`)].join('\n')).join('\n\n')
-  deps.io.out(JSON.stringify({ hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'deny',
-    permissionDecisionReason: `The question is registered as ${questionId} on the User's devices instead of this card. Ask it in plain conversation text with these same choices and continue independent work; dependent work waits for the answer. Do not register it again with notifai ask. If the User answers in the conversation, run notifai close ${questionId} to retire the device question.\n\n${questionText}` } }))
-  return null
+  return `Notifai queued this card as ${questionId} for device registration; delivery is not confirmed yet. Never also notifai ask it. ` +
+    'Keep using the native card. Notifai records a terminal answer itself; a device answer arrives in the card with its own acknowledgement command.'
 }
 
 /**

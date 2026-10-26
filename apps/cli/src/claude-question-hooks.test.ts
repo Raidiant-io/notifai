@@ -609,3 +609,28 @@ describe('Claude Code picker hook entry points', () => {
     expect(h.pendingOf('q_left')).toBeUndefined()
   })
 })
+
+
+it.each([
+  ['A', 'B'].map(end => 'The same very long option label repeated until its ending ' + end),
+  ['Same  label', 'Same label'], ['Go (Recommended)', 'Go'],
+])('keeps distinct Claude labels through shortening and normalization: %j', async (...labels) => {
+  const input = picker([{ question: 'Which?', labels }])
+  const built = pickerForm(pickerQuestions(input)!)
+  expect(built).not.toHaveProperty('error')
+  if ('error' in built) return
+  const choices = built.questions[0]!.choices!
+  expect(new Set(choices.map(choice => choice.label)).size).toBe(labels.length)
+  expect(choices.every(choice => [...choice.label].length <= 40)).toBe(true)
+  expect(Object.values(built.shown[0]!.labels)).toEqual(labels)
+  const h = setup()
+  const outcome = await claudePermissionRequest(h.deps, h.envelope(input), h.logger, {
+    sleep: async () => {
+      if (h.state().waiting_answers?.length) return
+      h.confirm()
+      h.stage([{ question_id: built.questions[0]!.id, choice_ids: [choices[1]!.id] }])
+    },
+  })
+  expect(outcome).toBe('answered')
+  expect(h.decision().hookSpecificOutput.decision).toMatchObject({ behavior: 'allow', updatedInput: { answers: { 'Which?': labels[1] } } })
+})

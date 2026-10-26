@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "behavior_digest": "sha256:5e252bf51b4f88b6c945543278e33206b9378872e6c52020fc29a8bbffb30bbd",
+  "behavior_digest": "sha256:d079a075a53c3c35ba2c37ca496e3c022f9840ee1f11050f2acb7ab48e31d7e8",
   "outcome": "guidance-updated",
   "surfaces_reviewed": [
     "lifecycle-hooks",
@@ -9,5 +9,5 @@
     "cli-readiness",
     "domain-terms"
   ],
-  "reason": "Codex PreToolUse now shortens a card question or option that exceeds the device limits (full wording in the Body) instead of refusing the card, and a Codex card or Claude Code picker that still cannot be carried is refused with the concrete reason and told to fix it and reopen. Updated the Codex and Claude Code harness references to match. Harness setup, CLI readiness and domain terms are unchanged."
+  "reason": "Reviewed all five surfaces. Hooks skip unsupported Node runtimes and OpenClaw stdin errors fail open. Codex new cards remain native on unavailable or unsupported device routes and report queued registration without claiming confirmed delivery; existing hand-back guards remain and distinguish confirmed registration from pending submission. OpenCode native shapes outside device limits proceed terminal-only, partial replies retain unanswered rows, and unrepresentable replies retain recovery state. Shared ask IDs preserve localized choices, and Claude Code, OpenCode and Codex disambiguate shortened labels with original answer mappings. Updated harness and diagnostic references. Setup and readiness need no new configuration or permissions; domain terms remain unchanged."
 }

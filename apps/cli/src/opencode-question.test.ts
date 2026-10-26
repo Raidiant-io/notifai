@@ -308,3 +308,58 @@ it('owes a text-off acknowledgement exactly as shown, never asking for words', (
   expect(owed).toContain('run `notifai acknowledge req_quiet` exactly as shown; this account turned acknowledgement text off')
   expect(owed).not.toMatch(/saying what/)
 })
+
+
+it('delivers a partial device answer with empty unanswered rows', async () => {
+  const t = setup()
+  await t.frame('registered')
+  const first = form().questions[0]!
+  t.answerWith(reply([{ question_id: first.id, choice_ids: [first.choices![1]!.id], text: null }]))
+  const result = await Promise.race([t.frame('answer'), t.frame('done')])
+  t.send({ type: 'applied' })
+  await t.run
+  expect(result).toMatchObject({ type: 'answer', answers: [['Production'], []],
+    acknowledgement_context: expect.stringContaining('Unanswered') })
+  expect(t.closes).toEqual(['deliver'])
+  expect(readSessionState(SESSION, t.env).question_history).toEqual([expect.objectContaining({ state: 'answered' })])
+})
+
+it.each([1, 11])('leaves a native form outside device limits terminal-only (%s)', async count => {
+  const questions = count === 1 ? [{ ...REQUEST.questions[0], options: [{ label: 'Staging' }] }]
+    : Array.from({ length: count }, (_, index) => ({ ...REQUEST.questions[0], question: `Question ${index}?` }))
+  const t = setup({ first: root => formFrame(root, questions) })
+  await t.run
+  expect(t.frames).toEqual([expect.objectContaining({ type: 'terminal', reason: 'unsupported-form' })])
+  expect(t.submitted).toEqual([])
+  expect(readSessionState(SESSION, t.env).pending ?? []).toEqual([])
+})
+
+it('carries distinct long OpenCode labels and returns the exact chosen native label', async () => {
+  const labels = ['A', 'B'].map(end => 'The same very long option label repeated until its ending ' + end)
+  const questions = [{ question: 'Which?', options: labels.map(label => ({ label })) }]
+  const t = setup({ first: root => formFrame(root, questions) })
+  const admitted = await Promise.race([t.frame('accepted'), t.frame('refused'), t.frame('terminal')])
+  if (admitted.type !== 'accepted') { await t.run; expect(admitted.type).toBe('accepted'); return }
+  t.send(opened(questions))
+  await t.frame('registered')
+  const question = t.submitted[0]!.draft.reply!.questions[0]!
+  t.answerWith(reply([{ question_id: question.id, choice_ids: [question.choices![1]!.id], text: null }]))
+  const answer = await Promise.race([t.frame('answer'), t.frame('done')])
+  t.send({ type: 'applied' })
+  await t.run
+  expect(new Set(question.choices!.map(choice => choice.label)).size).toBe(2)
+  expect(answer).toMatchObject({ type: 'answer', answers: [[labels[1]]] })
+})
+
+
+it('preserves an unrepresentable reply for another delivery route without claiming it', async () => {
+  const t = setup()
+  await t.frame('registered')
+  const first = form().questions[0]!
+  t.answerWith(reply([{ question_id: first.id, choice_ids: ['unknown-choice'], text: null }]))
+  await t.run
+  expect(t.frames).toContainEqual({ type: 'done', outcome: 'answer-not-presentable' })
+  expect(t.closes).toEqual([])
+  expect(readSessionState(SESSION, t.env).pending).toEqual([expect.objectContaining({ request_id: 'req_opencode' })])
+  expect(readSessionState(SESSION, t.env).pending![0]!.opencode_form_owner).toBeUndefined()
+})

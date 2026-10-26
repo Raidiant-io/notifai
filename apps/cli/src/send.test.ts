@@ -1,4 +1,6 @@
 import { describe,expect,it } from 'vitest'
+import { parseChoices } from './send.js'
+import { buildQuestions } from './commands-ask.js'
 import {
 BODY_NOTE_LENGTH,
 SUMMARY_NOTE_LENGTH,
@@ -53,4 +55,22 @@ describe('content length notes', () => {
     expect(notes[0]).toContain(`Summary is ${SUMMARY_NOTE_LENGTH} characters`)
     expect(notes[1]).toContain(`Body is ${BODY_NOTE_LENGTH + 1} characters`)
   })
+})
+
+
+it.each([['はい', 'いいえ'], ['C++', 'C#'], ['C++', 'C#', 'c-2'], ['!!!', 'option-1']])(
+  'gives distinct stable IDs to exact ask choices %j', (...labels) => {
+    const parsed = parseChoices(labels)
+    expect(parsed.ok).toBe(true)
+    if (!parsed.ok) return
+    expect(parsed.choices!.map(choice => choice.label)).toEqual(labels)
+    expect(new Set(parsed.choices!.map(choice => choice.id)).size).toBe(labels.length)
+    expect(parseChoices(labels)).toEqual(parsed)
+    expect(buildQuestions({ choice: labels, title: 'Choice' }, 'Which?').ok).toBe(true)
+  },
+)
+
+it('retains existing unambiguous ask IDs and rejects genuinely duplicate labels', () => {
+  expect(parseChoices(['Staging', 'Production'])).toMatchObject({ choices: [{ id: 'staging' }, { id: 'production' }] })
+  expect(parseChoices(['Same', 'Same']).ok).toBe(false)
 })

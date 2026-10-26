@@ -56,3 +56,6 @@ conversation, and again once a compaction has summarized it away. When the
 guidance a conversation read has changed, its next prompt says so once. Changed
 plugin code needs a Gateway reload: keep existing routes until a safe reload,
 then confirm a prompt served by the reloaded plugin.
+
+A hook child that exits before reading its input leaves that optional callback
+unavailable; it does not terminate OpenClaw. Continue in the native session.

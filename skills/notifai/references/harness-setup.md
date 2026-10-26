@@ -194,3 +194,7 @@ harness approval rules do not match a command that starts with a variable.
 `NOTIFAI_CREDENTIALS=file` stores the machine credential in a plaintext file
 rather than the OS keychain — only when the user has asked for it, and never on
 a shared machine.
+
+Node-based hook installations skip optional Notifai callbacks silently when
+Node is below the CLI's runtime minimum. Native prompts and tools continue.
+An explicit `notifai` command still reports the required Node upgrade.

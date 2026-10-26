@@ -4,19 +4,17 @@ import { cursorBareHookRun } from './cursor-imported-hook.js'
 import { grokImportedHookRun } from './grok-imported-hook.js'
 import { belowNodeFloor, nodeFloorMessage } from './node-floor.js'
 
-// Before anything else is parsed. `node-floor.js` imports nothing and uses no
-// syntax newer than the floor it checks, so it can report on the runtimes that
-// would otherwise fail somewhere in a dependency with no mention of Notifai.
+// Imported hook copies are no-ops even when this Node cannot run the CLI.
+if (cursorBareHookRun(process.argv.slice(2), process.env, isatty(0))) process.exit(0)
+if (grokImportedHookRun(process.argv.slice(2), process.env)) process.exit(0)
+
+// Optional hooks must never turn a missing runtime prerequisite into a
+// harness denial (exit 2 blocks prompts and permissions in some harnesses).
+// Explicit commands still explain the prerequisite before loading the CLI.
 if (belowNodeFloor(process.version)) {
+  if (process.argv[2] === 'hook') process.exit(0)
   for (const line of nodeFloorMessage(process.version)) process.stderr.write(`${line}\n`)
   process.exit(2)
 }
-
-// Cursor's copy of a Claude Code hook, with its arguments dropped: nothing to
-// do, so nothing loads, prints or records.
-if (cursorBareHookRun(process.argv.slice(2), process.env, isatty(0))) process.exit(0)
-// Grok's copy of a Claude Code or Cursor hook: its native Grok hook serves the
-// event, so this one ends the same way.
-if (grokImportedHookRun(process.argv.slice(2), process.env)) process.exit(0)
 
 await import('./main-run.js')

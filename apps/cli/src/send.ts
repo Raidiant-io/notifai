@@ -503,9 +503,22 @@ export function parseChoices(
   if (labels.some((label) => label.length === 0) || labels.length < 2 || labels.length > 6) {
     return { ok: false, error: CHOICE_USAGE }
   }
-  const choices: ReplyChoiceT[] = labels.map((label) => ({ id: slugify(label), label }))
-  if (choices.some((choice) => choice.id === '')) return { ok: false, error: CHOICE_USAGE }
-  if (new Set(choices.map((choice) => choice.id)).size !== choices.length) return { ok: false, error: CHOICE_USAGE }
+  if (new Set(labels).size !== labels.length) return { ok: false, error: CHOICE_USAGE }
+  // Keep every existing unambiguous slug. Fallbacks must also avoid slugs
+  // belonging to later labels, e.g. C++, C#, c-2 or !!!, option-1.
+  const slugs = labels.map(slugify)
+  const reserved = new Set(slugs)
+  const used = new Set<string>()
+  const choices: ReplyChoiceT[] = labels.map((label, index) => {
+    let id = slugs[index]!
+    if (id === '' || used.has(id)) {
+      const base = id || 'option'
+      let suffix = index + 1
+      do { id = `${base.slice(0, 26)}-${suffix++}` } while (used.has(id) || reserved.has(id))
+    }
+    used.add(id)
+    return { id, label }
+  })
 
   for (const { after, text } of descriptions) {
     const choice = choices[after - 1]
@@ -543,7 +556,7 @@ function oneLine(text: string): string {
 
 /** Message shared by every surface that accepts choice labels. */
 export const CHOICE_USAGE =
-  'Offer 2-6 answers, one --choice flag per answer, unique once slugified — ' +
+  'Offer 2-6 answers, one --choice flag per answer, with distinct labels — ' +
   "e.g. --choice 'Yes, ship it' --choice 'Not yet'."
 
 const CHOICE_DESCRIPTION_USAGE =

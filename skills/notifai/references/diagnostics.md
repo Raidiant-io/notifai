@@ -37,10 +37,13 @@ Queued-question records (`stage` `queued`) use exactly these reasons:
 `harness-cannot-continue`, `delivery-limit` and `proceeding`. A Claude Code picker or
 OpenCode form that stayed in the terminal logs the stage `picker-terminal-only`
 or `form-terminal-only` with a `reason` of its own, such as `not-signed-in`;
-an OpenCode form refused before it opened logs `form-refused`, or
-`form-refused-unlinkable` for a shape the devices cannot show.
-A routed picker whose shape cannot reach devices logs `form-refused-unlinkable`;
-its tool error names `notifai ask --wait` instead. A waiting hand-back's
+an OpenCode form refused to protect an existing hand-back logs `form-refused`.
+A self-opened OpenCode form outside device limits logs `form-terminal-only`
+with `unsupported-form`. Codex uses `form-terminal-only` with
+`compatibility-unavailable`, `harness-answers-unsupported`,
+`answer-control-unavailable` or `unsupported-shape`: the native card proceeds.
+A routed Claude picker whose shape cannot reach devices logs
+`form-refused-unlinkable`; its tool error states the concrete shape limit. A waiting hand-back's
 different picker logs `picker-refused` and names the exact input to open.
 `question-notifications-off` is the one the user deliberately never sees, which
 is why it is worth ruling out before concluding anything is broken.

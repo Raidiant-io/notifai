@@ -91,10 +91,6 @@ export function opencodeOwedAcknowledgement(requestId: string, command: string, 
     `Before the work it causes, run \`${command}\`${acknowledgementDemand(textRequired)}.${ACKNOWLEDGEMENT_SCOPE}`
 }
 
-/** The tool error for a form Notifai cannot carry, in a session where forms reach the devices. */
-export const OPENCODE_FORM_UNCARRIABLE =
-  'Notifai cannot carry this form to the User\'s devices. To wait for the answer, run `notifai ask --wait`; to keep working, ask in the conversation.'
-
 /** How long the plugin has to send the form after starting this command. */
 const ASK_FRAME_TIMEOUT_MS = 5_000
 
@@ -306,13 +302,14 @@ export function recommendedFirst(questions: readonly QuestionT[]): QuestionT[] {
 /**
  * A device reply as OpenCode's answers: per question, in order, the chosen
  * option labels exactly as OpenCode showed them, then any typed text. Null
- * when the reply does not answer every question of the form.
+ * when an answer cannot be mapped. Omitted rows remain explicitly unanswered.
  */
 export function opencodeDeviceAnswers(form: PickerForm, reply: ReplyView): string[][] | null {
+  if (reply.answers.length === 0 || reply.answers.some(part => !form.questions.some(question => question.id === part.question_id))) return null
   const answers: string[][] = []
   for (const [index, question] of form.questions.entries()) {
     const part = reply.answers.find((entry) => entry.question_id === question.id)
-    if (part === undefined) return null
+    if (part === undefined) { answers.push([]); continue }
     const labels: string[] = []
     for (const id of part.choice_ids) {
       const label = form.shown[index]?.labels[id]
@@ -735,8 +732,7 @@ function admitForm(deps: CommandDeps, form: FormContext): Admission {
       detail: { question_id: latest.question_id } }
   }
   if ('error' in shape) {
-    return { kind: 'refused', reason: 'unlinkable', stage: 'form-refused-unlinkable', message: OPENCODE_FORM_UNCARRIABLE,
-      detail: { shape: shape.error } }
+    return { kind: 'terminal', reason: 'unsupported-form', detail: { shape: shape.error } }
   }
 
   // A form the agent opened itself: titled by its own title, else its headers,
@@ -1073,6 +1069,13 @@ async function runForm(deps: CommandDeps, pipe: PluginPipe): Promise<number> {
         else outcome = verdict?.type === 'applied' ? 'expired' : verdict?.type === 'stale' ? 'form-already-settled' : 'session-closed'
         break
       }
+      // Do not claim an answer that this carrier cannot represent. Keep the
+      // registration for ordinary delivery instead of discarding the reply.
+      const latest = result.response.replies[result.response.replies.length - 1]
+      if (latest === undefined || opencodeDeviceAnswers(registration.form, latest) === null) {
+        outcome = 'answer-not-presentable'
+        break
+      }
       // Close under the reply fence before handing an answer over, so a
       // correction racing the close is the answer that reaches the agent.
       const closed = await registration.client.closeReplies(registration.requestId, 'deliver')
@@ -1085,13 +1088,15 @@ async function runForm(deps: CommandDeps, pipe: PluginPipe): Promise<number> {
       }
       const acknowledgement = acknowledgementCommand(registration.requestId, closed.agent_acknowledgement_text_required,
         closed.agent_acknowledgement, true)
+      const unanswered = answers.flatMap((row, index) => row.length === 0 ? [registration.form.shown[index]!.title] : [])
+      const context = [
+        ...(acknowledgement === null ? [] : [opencodeOwedAcknowledgement(registration.requestId, acknowledgement, closed.agent_acknowledgement_text_required)]),
+        ...(unanswered.length === 0 ? [] : [`Unanswered questions (empty rows are not consent or a choice): ${unanswered.join('; ')}.`]),
+      ].join('\n')
       pipe.send({
         type: 'answer', request_id: registration.requestId, answers,
         acknowledgement: acknowledgement === null ? '' : acknowledgement,
-        ...(acknowledgement === null ? {} : {
-          acknowledgement_context: opencodeOwedAcknowledgement(registration.requestId, acknowledgement,
-            closed.agent_acknowledgement_text_required),
-        }),
+        ...(context === '' ? {} : { acknowledgement_context: context }),
       })
       const verdict = await frame
       if (verdict?.type === 'applied') outcome = 'device-answer-delivered'
@@ -1106,7 +1111,16 @@ async function runForm(deps: CommandDeps, pipe: PluginPipe): Promise<number> {
     await closeQuietly(registration, logger)
   }
   if (outcome === 'device-answer-delivered' || outcome === 'native-answer-recorded') terminal = 'answered'
-  dropPendingQuestion(registration.sessionId, deps.env, registration.entry, terminal)
+  if (outcome === 'answer-not-presentable') {
+    updateSessionState(registration.sessionId, deps.env, state => ({
+      ...state, pending: pendingList(state).map(entry => {
+        if (entry.question_id !== registration.entry.question_id) return entry
+        const retained = { ...entry, request_id: registration.requestId }
+        delete retained.opencode_form_owner
+        return retained
+      }),
+    }))
+  } else dropPendingQuestion(registration.sessionId, deps.env, registration.entry, terminal)
   dropOpenForm(deps.env, registration.requestId)
   logger.info('hook.end', { hook: 'opencode-question', outcome, request_id: registration.requestId,
     question_id: registration.entry.question_id })

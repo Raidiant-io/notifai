@@ -131,6 +131,10 @@ The rules match one plain `notifai …` command written as the skill's Send
 section writes it, including its inline Body heading rule. A leading
 `VAR=value`, or a file written for the command, gets its own approval.
 
+Distinct options stay distinct after device shortening or whitespace
+normalization: colliding labels receive numbered suffixes, the Body keeps the
+full wording, and the answer maps back to the original picker option.
+
 ## After a Notifai update
 
 The hooks call the updated CLI on their next run. When the guidance this Agent

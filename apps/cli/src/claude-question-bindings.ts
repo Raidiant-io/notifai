@@ -187,6 +187,18 @@ export function fit(text: string, max: number): string {
   return `${[...flat].slice(0, max - 1).join('').trimEnd()}…`
 }
 
+/** Preserve distinct native choices when normalization or shortening collides. */
+export function fitChoiceLabels(labels: readonly string[]): string[] {
+  const fitted = labels.map(label => fit(label, CHOICE_LABEL_MAX_LENGTH))
+  if (fitted.includes('') || new Set(fitted).size === fitted.length) return fitted
+  // Number every option only when needed. Unique terminal suffixes cannot
+  // collide with an untouched label that happens to contain the same suffix.
+  return labels.map((label, index) => {
+    const suffix = ` [${index + 1}]`
+    return `${fit(label, CHOICE_LABEL_MAX_LENGTH - suffix.length)}${suffix}`
+  })
+}
+
 /**
  * An option description that fits a device choice. A long one keeps its
  * opening sentence when that fits, otherwise its words up to the limit; the
@@ -279,12 +291,13 @@ export function pickerForm(
     const choices: NonNullable<QuestionT['choices']> = []
     const byId: Record<string, string> = {}
     const recommended = entry.options.filter((option) => withoutRecommendedSuffix(option.label) !== null)
+    // One recommendation is a recommendation; several are just wording.
+    const plainLabels = entry.options.map(option => recommended.length === 1 && recommended[0] === option
+      ? withoutRecommendedSuffix(option.label)! : option.label)
+    const fittedLabels = fitChoiceLabels(plainLabels)
     for (const [position, option] of entry.options.entries()) {
-      // One recommendation is a recommendation; several are just wording.
-      const plain = recommended.length === 1 && recommended[0] === option
-        ? withoutRecommendedSuffix(option.label)!
-        : option.label
-      const label = fit(plain, CHOICE_LABEL_MAX_LENGTH)
+      const plain = plainLabels[position]!
+      const label = fittedLabels[position]!
       if (label === '') return { error: 'empty-option' }
       if (label !== plain) detailed = true
       const description = option.description === undefined ? undefined : fitDescription(option.description)
