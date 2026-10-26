@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "behavior_digest": "sha256:d079a075a53c3c35ba2c37ca496e3c022f9840ee1f11050f2acb7ab48e31d7e8",
+  "behavior_digest": "sha256:6f8cdd0d18055d0e489eeda334795b0e75cb63fa43718b264f3123590434dfef",
   "outcome": "guidance-updated",
   "surfaces_reviewed": [
     "lifecycle-hooks",
@@ -9,5 +9,5 @@
     "cli-readiness",
     "domain-terms"
   ],
-  "reason": "Reviewed all five surfaces. Hooks skip unsupported Node runtimes and OpenClaw stdin errors fail open. Codex new cards remain native on unavailable or unsupported device routes and report queued registration without claiming confirmed delivery; existing hand-back guards remain and distinguish confirmed registration from pending submission. OpenCode native shapes outside device limits proceed terminal-only, partial replies retain unanswered rows, and unrepresentable replies retain recovery state. Shared ask IDs preserve localized choices, and Claude Code, OpenCode and Codex disambiguate shortened labels with original answer mappings. Updated harness and diagnostic references. Setup and readiness need no new configuration or permissions; domain terms remain unchanged."
+  "reason": "The skill description now leads with notifications and questions through the CLI and separates User-response, substantial-outcome and Agent Session rename triggers. Recent User activity and no explicit Notifai mention remain triggers. Lifecycle root and worker context and the skill body already carry parent ownership, explicit delegation and first-use guidance, so those instructions leave the discovery description. Reviewed harness setup and CLI readiness: installation, routing, permissions and commands are unchanged. User and Agent Session retain their domain meanings."
 }

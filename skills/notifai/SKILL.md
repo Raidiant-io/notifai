@@ -1,6 +1,6 @@
 ---
 name: notifai
-description: Use when work needs a User decision, approval, sign-in, credential setup or physical action, substantial work finishes or fails, or the Agent Session changes jobs and needs renaming, even if the User was recently active or does not mention Notifai. For Notification Request owners; parent owns by default, workers only by explicit delegation, and an agent that briefs a session is its parent. Run `notifai guidance` before the first Notification Request.
+description: Send notifications and questions to the User's phone and other devices through the `notifai` CLI. Use when work needs a User response (decision, approval, sign-in, credential setup or physical action). Use when substantial work finishes or fails. Use when the Agent Session changes jobs and needs renaming. Applies even if the User was recently active or did not mention Notifai.
 ---
 
 # Notifai

@@ -1,5 +1,5 @@
 {
-  "current": "5333a94e4cdc86bd79bf04dc32a13bb923ea98350a471091faa1a7d98897bc32",
+  "current": "dfb2b88235e661d5b99f2a7ea626787fcc7d16ee60109076718934542cc9907c",
   "releases": [
     {
       "digest": "3e47b01bc6bbfb43e910c660b9964fab6459d75148c3c02dcbcd0be64cfb2963",
@@ -112,6 +112,10 @@
     {
       "digest": "5333a94e4cdc86bd79bf04dc32a13bb923ea98350a471091faa1a7d98897bc32",
       "note": "Native Codex cards stay usable when capability or answer-control probes fail, and queued device registration is explicitly unconfirmed. OpenCode forms outside device limits stay native; partial device replies preserve unanswered rows. Claude Code, OpenCode and Codex keep shortened choice labels distinct and map answers to the original options. Localized and punctuation-distinguished ask choices work without changing existing unambiguous IDs. Unsupported Node hooks and early-exiting OpenClaw hook children leave the harness running. Existing hand-back guards still prevent duplicate answers."
+    },
+    {
+      "digest": "dfb2b88235e661d5b99f2a7ea626787fcc7d16ee60109076718934542cc9907c",
+      "note": "The skill description now explains notifications and questions through the CLI, with separate triggers for User responses, substantial work finishing or failing, and a change of Agent Session job. Recent User activity or no mention of Notifai still does not suppress these triggers. Ownership and first-use guidance instructions remain in the skill body and lifecycle context."
     }
   ]
 }
