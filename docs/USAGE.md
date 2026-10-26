@@ -1,8 +1,8 @@
 # Using Notifai
 
 The [README](../README.md) covers the quickest setup. This page has the
-details: install options, setup, the Companion Apps, commands, questions and
-the agent skill. For what works on each harness and how the hooks behave, see
+details: installing, setup, the Companion Apps, commands, questions and the
+agent skill. For what works in each harness, see
 [Harness support](HARNESSES.md).
 
 ## Installing
@@ -23,79 +23,57 @@ irm https://notifai.sh/install.ps1 | iex
 See [installation and migration](../skills/notifai/references/installation.md) for agent-safe script inspection,
 platform prerequisites, channel selection and legacy npm migration.
 
-Optional Node/npm launcher:
+You can also start from npm. This installs a small launcher (Node.js 20.12 or
+newer), which then installs the same native runtime:
 
 ```sh
 npx --yes @raidiant/notifai@latest init
 # Or: npm install -g @raidiant/notifai, then notifai init
 ```
 
-Requires Node.js 20.12 or newer for this launcher. npm updates/removes only the
-launcher; `notifai uninstall` removes the runtime after its safety checks.
-Existing native versions and channels survive launcher changes. `@version`
-selects launcher code, not a command to replace an existing runtime.
+npm updates or removes only the launcher; `notifai uninstall` removes the
+runtime after its safety checks.
 
 ## Updates
 
-Notifai installs its own native runtime and, on macOS and Linux, keeps it
-updated by itself (`notifai config set updates.automatic off --yes` turns that
-off); `notifai update` updates it on demand. Updating never waits for or drops
-a waiting question: the shared hub restarts seamlessly, and only an update that
-would change hook definitions Codex would make you approve again waits.
+On macOS and Linux, Notifai checks for a new release once a day and installs it
+by itself (`notifai config set updates.automatic off --yes` turns that off).
+`notifai update` updates on demand. An update never drops a waiting question.
+It waits only when it would change hook definitions that Codex would make you
+approve again.
 
 ## Setup and Machine approval
 
-`notifai init` is one setup flow and is safe to resume. Setup defaults to QR
-approval with your signed-in Companion App; notification and browser approval
-are selectable alternatives.
+`notifai init` is one setup flow and is safe to run again. It signs you in,
+connects your harnesses, and checks that your devices can receive.
 
-On an unapproved machine, `notifai init` starts one Machine approval and shows
-its QR and matching code. Scan it to review the Account and computer in a
-signed-in Companion App; no additional email code is needed while its Auth
-Session is valid. Approval is reusable until revoked. QR setup asks for no
-email, opens no browser, and sends no invitation. Select
-`--approval notification --approval-email <email>` for an Account-targeted
-invitation, or `--approval browser` for browser approval. Each route requires
-explicit review and approval of the same pairing.
+Setup approves this computer with a QR code: scan it with a signed-in Companion
+App, check the Account and computer, and approve. No email or browser is
+needed. Alternatives are `--approval browser`, or
+`--approval notification --approval-email <email>` to get the approval request
+as a notification. Approval lasts until you revoke the machine.
 
-At a human terminal the command waits until approval or expiry. An agent run
-polls once and returns; the next run resumes the same approval, including an
-approval given after the first run ended. `notifai init --json` never prompts:
-progress goes to stderr, while stdout contains one final readiness object
-whose `credential` state carries the local `qr_path`, code, and browser
-alternative. The QR and approval link carry sensitive one-time proof: show them
-locally, never include them in Notification Request fields or media. At a human terminal,
-choosing iPhone or Android opens its setup steps and starts a bounded wait;
-Ctrl-C stops the wait, and expiry offers more time.
+At a human terminal `init` waits for approval. An agent's run checks once and
+returns; running it again picks up the same approval. `notifai init --json`
+never prompts: progress goes to stderr and stdout holds one final readiness
+object. The QR code and approval link are one-time proof, so show them only on
+this computer.
 
 ## Companion Apps
 
 Install the Companion App, open it once, sign in with the same Account as the
 CLI, and allow notifications.
 
-- iPhone: from the App Store, linked from
+- **iPhone:** from the App Store, linked from
   <https://app.notifai.sh/setup/companion?platform=iphone>.
-- Android: a directly downloadable signed APK from
-  <https://app.notifai.sh/download/android>, for a compatible device with
-  Google Play services. Invited testers can use Google Play closed testing
-  instead; the [installation instructions](https://app.notifai.sh/support)
-  explain how to join with your invited Google account. Test enrollment is
-  separate from Notifai Account access.
-- Mac: a signed, notarized app from <https://app.notifai.sh/download/mac>.
-
-The sending CLI runs on macOS, Linux, and Windows. The public protocol and CLI
-model Android as a first-class surface (`android:fcm`), including capability
-inspection, Device Installation filtering, authoring, and offline validation.
-
-Android support starts at Android 6/API 23 and requires Google Play services:
-a physical supported device has the Google Play Store, while emulators use a
-Google APIs image. There is no non-GMS compatibility promise.
-
-The desktop Companion App presents requests in its own on-screen Edge rather
-than through operating-system notifications, over its own connection to the
-service (the `stream` provider and `GET /api/v1/companion/changes`), so desktop
-drafts take only a `sound` option. It ships for macOS; Windows and Linux
-versions are in development.
+- **Android:** join the free test at <https://app.notifai.sh/test-android>.
+  You ask to join with the Google account on your phone; once you're approved,
+  that page shows how to opt in and install Notifai from Google Play. It needs
+  Android 6 or newer with Google Play services.
+- **Mac:** a signed, notarized app from <https://app.notifai.sh/download/mac>.
+  It shows notifications and questions in its own Edge at the side of your
+  screen rather than as system notifications. Windows and Linux versions are
+  in development.
 
 ## Commands
 
@@ -112,28 +90,26 @@ notifai config unset <key>   # return a setting to its inherited/default value
 notifai project status       # show whether Notifai is on for this Project
 notifai project enable       # turn Notifai on for this Project
 notifai project disable      # turn it off: nothing from this Project reaches your devices
+notifai guidance show        # how agents write notifications, and your overrides
 notifai devices              # list Device Installations and delivery readiness
+notifai logs                 # what this machine recorded, for this Project
 notifai doctor               # check every part of the setup
 notifai update               # update the CLI this shell and the hooks use
 ```
 
-The `project` group controls User-owned Project Enablement: an enabled Project
-gets Notifai's guidance, and nothing from a disabled one reaches your devices.
-The first send, ask or setup in a Project with no decision enables it; only
-`notifai project enable` turns a disabled one back on. It is separate from
-hook installation. `devices` accepts
-`--platform <ios|android|macos|windows|linux>` and `--json`; send routing still uses
-the per-request device flags documented by `notifai send --help`.
+`notifai project` controls Project Enablement. An enabled Project gets
+Notifai's guidance; nothing from a disabled one reaches your devices. The first
+send, ask or setup in a Project with no decision enables it; only
+`notifai project enable` turns a disabled one back on. Installing hooks does
+not enable anything.
 
 Anywhere that is not a terminal (a script, a CI job, an agent) `notifai`
-prints help instead of prompting, output stays uncoloured, and `--json` is
-available on the commands that report. Nothing in the CLI ever waits on stdin
-unless a human is demonstrably there.
+prints help instead of prompting, and `--json` is available on the commands
+that report. Every command takes `--help`.
 
 ## Questions and acknowledgements
 
-Agents ask through `notifai ask`, read the answer, and send the required Agent
-Acknowledgement without any interactive prompt:
+Agents ask through `notifai ask`, read the answer, and acknowledge it:
 
 ```sh
 # the positional question is the exact answerable question; --title names the decision
@@ -147,59 +123,46 @@ notifai replies req_example --json
 notifai close req_example --json
 ```
 
-Every presented answer submission is acknowledged, so the user learns that an agent
-read their answer. A held `ask --wait`, `replies`, and `close` expose
-`agent_acknowledgement_required`, the current `agent_acknowledgement`, and
-`acknowledgement_command` while it is still absent.
-
-The one account setting governs the agent's brief written reply, not the
-acknowledgement itself: when `agent_acknowledgement_text_required` is false the
-printed command carries no `--text`, and `notifai acknowledge <request_id>`
+Every answer is acknowledged, so you learn that the agent read it and what it
+will do. An Account setting decides whether the acknowledgement carries the
+agent's short written reply; without it, `notifai acknowledge <request_id>`
 records the receipt on its own.
 
-When `ask` returns an optional `native_question`, follow its exact titles and
-instructions. Notifai records an answer given in that bound native form
-itself, so the devices stop asking. Keep the original app answer window;
-distinct native and app submissions remain separate in history. Native form
-closure is capability-dependent.
+Where the harness has its own question form (Claude Code's picker, Codex's
+question card, OpenCode's question form), `ask` can hand that form back for the
+agent to open. You can then answer in the terminal or on your phone, and both
+close.
 
 Where no later answer can reach the asking Agent Session, `notifai ask --wait`
-holds the question in its foreground process and the service ends the
-question's answer window at the wait's deadline, so a killed command leaves
-nothing open on the devices. The wait is the harness's command limit minus
-10 s, or the answer window outside any harness; no flag sets it. It exits 0
-with the answer, 3 when it ended unanswered (the question is withdrawn), or
-5 when the service was unreachable at the end, naming `notifai replies` for an
-answer that may still be waiting. A question you dismiss on a device ends like
-one whose window ran out: a held `ask --wait` stops waiting (exit 3), and a
-registered question is retired, with no answer delivered.
+waits in the command until the answer arrives or the wait ends. The wait is the
+harness's command limit minus 10 seconds, or the question's answer window
+outside a harness. It exits 0 with the answer, 3 when the question ended
+unanswered (it is withdrawn from your devices), or 5 when the service was
+unreachable at the end; then `notifai replies` may still find an answer.
+Dismissing a question on a device ends it the same way.
 
 ## Projects and settings
 
-Project identity is inferred from the Agent Session's activation checkout when
-available, otherwise from Git at the current directory. A directory outside Git
-does not create an inferred Project; explicit configuration and Project
-overrides still apply. Ordinary setup writes nothing into the repository.
-Machine settings live in the user's configuration directory; Project
-Overrides live there too and are shared across linked worktrees. Only the
-user's own settings and guidance customize Notifai: a repository cannot supply
-either, and nothing committed to a checkout is read as configuration.
+Notifai infers the Project from the Agent Session's checkout, or from Git at
+the current directory. A directory outside Git has no inferred Project.
+Setup writes nothing into the repository. Machine settings and per-Project
+settings (`--local`) live in your configuration directory, and per-Project
+settings are shared across linked worktrees. Only your own settings and
+guidance customize Notifai: a repository cannot supply either.
 
 ## The agent skill
 
-The Notifai agent guidance skill lives in [`skills/notifai/`](../skills/notifai/SKILL.md)
-and is never installed by default. `notifai init` coordinates sign-in, optional
-harness hooks, and device readiness. Harness hooks have no scope to ask about:
-they are installed once per harness for this machine. Installing the skill does
-place files elsewhere, so at a human terminal that, and only that, asks once
-whether it is for this project or for this machine.
+The Notifai agent skill lives in [`skills/notifai/`](../skills/notifai/SKILL.md)
+and is not installed by default. Hooks are installed once per machine;
+the skill can go to one project or to the whole machine, so at a human terminal
+setup asks which.
 
 `notifai init --skills` installs the complete first-party skill bundled with
-this CLI. It verifies the file list and content digest and copies only that
-skill to the selected harnesses. Every `notifai` skill directory a harness loads
-is Notifai's: setup and refresh rewrite any copy that differs from the bundled
-skill. Customise guidance with Guidance Topics, not by editing the skill.
-Installation does not run npm, npx, Git, or a separate skill manager.
+this CLI. It checks the skill's files against the bundled list and digest, then
+copies it to the harnesses you choose. Any `notifai` skill directory a harness
+loads belongs to Notifai: setup and `notifai update --refresh-skill` replace a
+copy that differs. Customize guidance with `notifai guidance set`, not by
+editing the skill.
 
 For unattended setup, choose both scope and harnesses, for example:
 
@@ -207,18 +170,11 @@ For unattended setup, choose both scope and harnesses, for example:
 notifai init --skills --skills-scope global --skills-harness claude-code,codex --json
 ```
 
-The scope applies to guidance placement, independently of lifecycle wiring.
-Subsequent `notifai update --refresh-skill` rewrites every outdated copy in place.
-Directory presence and content verification do not override a harness's trust,
-profile, or skill-discovery settings.
-
 ## Subscription
 
-Notifai is a paid service. One individual subscription covers the dashboard,
-this CLI, and the Companion Apps on a single Account, with a free trial offered
-once per person. Subscribe from the dashboard or the iPhone Companion App; the CLI never
-takes a payment. Prices, renewal, cancellation, and where the service is sold
-are on the pricing page.
+Notifai is a paid subscription with a free trial. One plan covers the CLI and
+every Companion App on one Account. Subscribe from the dashboard or the iPhone
+app; the CLI never takes a payment.
 
 - Pricing: <https://app.notifai.sh/pricing>
 - Terms of Service: <https://app.notifai.sh/terms>
@@ -228,6 +184,5 @@ are on the pricing page.
 ## Versions
 
 `@raidiant/notifai` and `@raidiant/notifai-protocol` version independently.
-Released clients keep ordinary notification workflows during the documented
-compatibility window; newer work is negotiated as named capabilities instead of
-making every version mismatch a product-wide failure.
+Older CLI releases keep working with the service for ordinary notifications;
+newer features are negotiated as named capabilities.
