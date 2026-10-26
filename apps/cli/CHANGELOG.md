@@ -8,6 +8,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 This project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 and [Conventional Commits](https://www.conventionalcommits.org/en/v1.0.0/).
 
+## [14.3.0](https://github.com/Raidiant-io/notifai/compare/v14.2.6...v14.3.0) (2026-10-26)
+
+### Features
+
+* `notifai init` asks one question, which agent apps to connect (`--apps <ids>` or `detected`), then installs hooks, the skill and command approval for those apps; the answer is remembered.
+* Computer approval opens the approval page in the browser and keeps the same code open while setup waits; approval codes now stay valid for 30 minutes.
+* `notifai init --json --wait <seconds>` lets an agent's run wait for the User's step and report only new messages; setup messages are shorter.
+* After approval, the phone step follows the browser's setup page, including phone sign-in by QR; the plan step comes only when it is needed, and the setup notification is sent at most once.
+
+### Bug Fixes
+
+* An Agent Session takes its real name from T3 Code and from Codex's named threads, and a generated placeholder name is replaced as soon as a real one exists, without waiting for another notification.
+
+### Documentation
+
+* The Notifai skill runs setup as one waiting loop with a single apps question.
+
 ## [14.2.6](https://github.com/Raidiant-io/notifai/compare/v14.2.5...v14.2.6) (2026-10-26)
 
 ### Documentation
