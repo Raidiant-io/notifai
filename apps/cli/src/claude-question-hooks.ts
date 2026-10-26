@@ -48,6 +48,7 @@ import {
   pickerForm,
   pickerHeading,
   pickerQuestions,
+  pickerRefusal,
   reserveClaudeQuestion,
   type PickerQuestion,
 } from './claude-question-bindings.js'
@@ -628,8 +629,10 @@ export async function claudePermissionRequest(
   if (handedBack === 'refused') return 'refused'
   const shape = picker === null ? null : pickerForm(picker)
   if (picker === null || digest === null || shape === null || 'error' in shape) {
-    deps.io.out(pickerDeniedDecision('Notifai cannot carry this picker to the User\'s devices. Run `notifai ask --wait` for this question instead: it registers the question and tells you how to wait.'))
-    logger.info('hook.gate', { hook: 'permission-request', reason: 'unsupported-picker', stage: 'form-refused-unlinkable' })
+    deps.io.out(pickerDeniedDecision(shape !== null && 'error' in shape ? pickerRefusal(shape.error)
+      : 'Notifai cannot carry this picker to the User\'s devices. Run `notifai ask --wait` for this question instead: it registers the question and tells you how to wait.'))
+    logger.info('hook.gate', { hook: 'permission-request', reason: 'unsupported-picker', stage: 'form-refused-unlinkable',
+      ...(shape !== null && 'error' in shape ? { detail: shape.error } : {}) })
     return 'refused'
   }
   const registered = handedBack ?? registerPickerQuestion(deps, envelope, sessionId, incarnation.key, picker, logger)

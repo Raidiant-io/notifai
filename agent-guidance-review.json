@@ -1,7 +1,7 @@
 {
   "version": 1,
-  "behavior_digest": "sha256:05e2f55e8329316b9b6e7636cd35851e26e896fb62441e4777280a46f06077cd",
-  "outcome": "reviewed-no-impact",
+  "behavior_digest": "sha256:5e252bf51b4f88b6c945543278e33206b9378872e6c52020fc29a8bbffb30bbd",
+  "outcome": "guidance-updated",
   "surfaces_reviewed": [
     "lifecycle-hooks",
     "notifai-skill",
@@ -9,5 +9,5 @@
     "cli-readiness",
     "domain-terms"
   ],
-  "reason": "Reviewed lifecycle hooks, the Notifai skill, harness setup, CLI readiness and domain terms against a docs/USAGE.md wording fix: automatic updates wait for Codex and Claude Code hook definition changes, matching activation-plan.ts. No hook, setup step, readiness check, skill rule or domain term changes."
+  "reason": "Codex PreToolUse now shortens a card question or option that exceeds the device limits (full wording in the Body) instead of refusing the card, and a Codex card or Claude Code picker that still cannot be carried is refused with the concrete reason and told to fix it and reopen. Updated the Codex and Claude Code harness references to match. Harness setup, CLI readiness and domain terms are unchanged."
 }

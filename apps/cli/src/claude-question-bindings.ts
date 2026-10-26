@@ -164,7 +164,7 @@ function chars(text: string): number {
   return [...text].length
 }
 
-function oneLine(text: string): string {
+export function oneLine(text: string): string {
   return text.replace(/\s+/gu, ' ').trim()
 }
 
@@ -173,7 +173,7 @@ function oneLine(text: string): string {
  * ends with the question itself, so the closing sentences are kept; the whole
  * text goes into the body.
  */
-function fit(text: string, max: number): string {
+export function fit(text: string, max: number): string {
   const flat = oneLine(text)
   if (chars(flat) <= max) return flat
   const sentences = flat.match(/[^.!?]+[.!?]+(?=\s|$)|[^.!?]+$/gu) ?? []
@@ -326,6 +326,20 @@ export function pickerForm(
   })
   if (sections.length === 0) return { questions, ...title, summary, shown }
   return { questions, ...title, summary, body: sections.join('\n\n'), shown }
+}
+
+/** Why a picker cannot be a device question, in words the agent can act on. */
+export function pickerRefusal(error: string): string {
+  const max = Math.min(PICKER_MAX_QUESTIONS, REPLY_MAX_QUESTIONS)
+  const why = error === 'unsupported-question-count' ? `a device question holds 1-${max} questions.`
+    : error === 'duplicate-question' ? 'two questions have the same wording.'
+      : error === 'empty-question' ? 'a question is empty.'
+        : error === 'unsupported-option-count' ? `a choice question needs ${PICKER_MIN_OPTIONS}-${REPLY_MAX_CHOICES} options, and a text question none.`
+          : error === 'unsupported-question-kind' ? 'a question is of a kind the devices cannot show.'
+            : error === 'duplicate-option' ? 'two options of one question read the same on a device.'
+              : error === 'empty-option' ? 'an option label is empty.'
+                : 'its shape is not one Notifai knows.'
+  return `Notifai cannot carry this picker to the User's devices: ${why} Fix that and open the picker again.`
 }
 
 /**

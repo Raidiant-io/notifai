@@ -11,6 +11,7 @@ claudeTerminalAnswers,
 pickerForm,
 pickerHeading,
 pickerQuestions,
+pickerRefusal,
 type PickerForm
 } from './claude-question-bindings.js'
 import {
@@ -219,6 +220,8 @@ describe('a Claude Code picker as a device question', () => {
     expect(pickerForm(pickerQuestions({ questions: [{ question: 'When?', kind: 'date' }] })!)).toEqual({ error: 'unsupported-question-kind' })
     expect(pickerQuestions({ questions: [{ question: 'Q?', options: 'A, B' }] })).toBeNull()
     expect(pickerQuestions('not a picker')).toBeNull()
+    // The refusal names what to fix, so the agent can open the picker again.
+    expect(pickerRefusal('duplicate-option')).toBe("Notifai cannot carry this picker to the User's devices: two options of one question read the same on a device. Fix that and open the picker again.")
   })
 })
 

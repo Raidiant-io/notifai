@@ -1,4 +1,6 @@
 /** Codex's structured card is the source of its device question. */
+import { CHOICE_LABEL_MAX_LENGTH, QUESTION_TEXT_MAX_LENGTH } from '@raidiant/notifai-protocol'
+import { fit, oneLine } from './claude-question-bindings.js'
 import { matchCodexCardHandback } from './codex-card-handback.js'
 import { buildAskDraft, buildQuestions } from './commands-ask.js'
 import { makeClient, type CommandDeps } from './commands-core.js'
@@ -58,22 +60,35 @@ async function routeCard(deps: CommandDeps, envelope: HookEnvelope, logger: Logg
     deps.io.out(JSON.stringify({ hookSpecificOutput: { hookEventName: 'PreToolUse', additionalContext: context } }))
     return null
   }
-  const unsupported = () => {
+  const unsupported = (detail?: string) => {
     if (!accepted) {
-      logger.info('hook.gate', { stage: 'form-refused-unlinkable', form: 'codex-card', reason: 'unsupported-shape', session: sessionId })
+      logger.info('hook.gate', { stage: 'form-refused-unlinkable', form: 'codex-card', reason: 'unsupported-shape', session: sessionId,
+        ...(detail === undefined ? {} : { detail }) })
       deps.io.out(JSON.stringify({ hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'deny',
-        permissionDecisionReason: "Notifai cannot carry this card to the User's devices. Run notifai ask for this question instead: it registers the question and tells you what to open or ask." } }))
+        permissionDecisionReason: detail === undefined
+          ? "Notifai cannot carry this card to the User's devices. Run notifai ask for this question instead: it registers the question and tells you what to open or ask."
+          : `Notifai cannot carry this card to the User's devices: ${detail} Fix that and open the card again.` } }))
     }
     return null
   }
   const raw = (envelope.tool_input as { questions?: unknown } | null)?.questions
   if (!Array.isArray(raw) || raw.length === 0 || !raw.every(entry => typeof entry?.title === 'string' &&
       (entry.options === undefined || (Array.isArray(entry.options) && entry.options.every((option: unknown) => typeof option === 'string'))))) return unsupported()
+  // A card question or option can be longer than a device holds. As for a
+  // Claude Code picker, the device gets a shortened one and the Body keeps the
+  // full wording; the card itself opens unchanged.
+  const texts = raw.map(entry => fit(entry.title as string, QUESTION_TEXT_MAX_LENGTH))
+  const labels = raw.map(entry => (entry.options as string[] | undefined)?.map(option => fit(option, CHOICE_LABEL_MAX_LENGTH)))
+  const shortened = raw.some((entry, index) => texts[index] !== (entry.title as string).trim() ||
+    ((entry.options as string[] | undefined) ?? []).some((option, position) => labels[index]![position] !== option))
+  const body = shortened ? raw.map(entry => [`**${oneLine(entry.title as string)}**`,
+    ...((entry.options as string[] | undefined)?.length ? ['', ...(entry.options as string[]).map(option => `- ${oneLine(option)}`)] : [])].join('\n')).join('\n\n') : undefined
   // A card has no heading and no headers, so the draft titles it by the Agent Session name.
-  const form = buildQuestions({ form: JSON.stringify({ summary: raw[0].title,
-    questions: raw.map(entry => ({ text: entry.title, ...(entry.options === undefined ? {} : { choices: entry.options }) })) }) }, undefined,
+  const form = buildQuestions({ form: JSON.stringify({ summary: texts[0],
+    questions: raw.map((entry, index) => ({ text: texts[index], ...(entry.options === undefined ? {} : { choices: labels[index] }) })),
+    ...(body === undefined ? {} : { body }) }) }, undefined,
   { selfOpened: true })
-  if (!form.ok) return unsupported()
+  if (!form.ok) return unsupported(form.error)
   const source = resolveDraftInvocation({ ...deps, cwd }, {}, { harness: 'codex', label: 'Codex', sessionId })
   if (!source.ok) return null
   const draft = buildAskDraft(config, form, {}, source.invocation, [])

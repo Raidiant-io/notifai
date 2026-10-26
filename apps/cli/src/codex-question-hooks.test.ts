@@ -110,6 +110,33 @@ it('registers the card itself and prevents a device-unclosable card while retain
   expect(h.launch).toHaveBeenCalledTimes(1)
 })
 
+it('carries a card question longer than a device question, with its full wording in the Body', async () => {
+  const h = setup()
+  const long = 'I found the saved bank and exchange documents and a spreadsheet of card top-ups covering most of the year, ' +
+    'but the declaration still needs a few details that only you have. ' +
+    'Please send the recipient\'s full legal name, your current address, and the dates and amounts the bank wants covered.'
+  expect(long.length).toBeGreaterThan(240)
+  const card = { questions: [{ title: long }] }
+  await hookRunCommand(h.deps, 'pre-tool-use', async () => JSON.stringify({ ...h.envelope, tool_input: card }), 'codex')
+  const decision = JSON.parse(h.output.join('\n')).hookSpecificOutput
+  expect(decision.permissionDecisionReason).not.toContain('cannot carry')
+  const pending = readSessionState(SESSION, h.env).pending!
+  expect(pending).toHaveLength(1)
+  expect([...pending[0]!.questions![0]!.text].length).toBeLessThanOrEqual(240)
+  expect(pending[0]!.questions![0]!.text).toContain('dates and amounts the bank wants covered.')
+  expect(pending[0]!.body).toContain(long)
+})
+
+it('names what to fix when a card still cannot be a device question', async () => {
+  const h = setup()
+  const card = { questions: [{ title: 'Which environment?', options: ['Staging', 'Staging'] }] }
+  await hookRunCommand(h.deps, 'pre-tool-use', async () => JSON.stringify({ ...h.envelope, tool_input: card }), 'codex')
+  const decision = JSON.parse(h.output.join('\n')).hookSpecificOutput
+  expect(decision.permissionDecision).toBe('deny')
+  expect(decision.permissionDecisionReason).toMatch(/^Notifai cannot carry this card to the User's devices: .+ Fix that and open the card again\.$/su)
+  expect(readSessionState(SESSION, h.env).pending ?? []).toEqual([])
+})
+
 it.each(['subagent', 'wrong-process', 'no-model'] as const)('does not take a card callback as proof: %s', async mode => {
   const h = setup()
   const envelope = mode === 'subagent' ? { ...h.envelope, agent_id: 'child' } : mode === 'no-model' ? { ...h.envelope, model: undefined } : h.envelope

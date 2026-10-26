@@ -1,5 +1,5 @@
 {
-  "current": "2d5c646ab1f7321eb28516d43ffa7a43f98d138c0d26f172eb048be42877b64b",
+  "current": "bf082e41bceed18cde6015173100dc8d007f50636ea0cd2271741b90c75d3e0a",
   "releases": [
     {
       "digest": "3e47b01bc6bbfb43e910c660b9964fab6459d75148c3c02dcbcd0be64cfb2963",
@@ -104,6 +104,10 @@
     {
       "digest": "2d5c646ab1f7321eb28516d43ffa7a43f98d138c0d26f172eb048be42877b64b",
       "note": "A note or Answer Edit that an ended Agent Session, or one whose harness process is gone, still owed an acknowledgement now stays on this computer for 30 days and is then dropped without being acknowledged. An acknowledgement the service recorded after its session ended now clears that session's local obligation."
+    },
+    {
+      "digest": "bf082e41bceed18cde6015173100dc8d007f50636ea0cd2271741b90c75d3e0a",
+      "note": "A Codex question card whose question or option is longer than a device question now opens normally: the devices get a shortened question and the Body carries the full wording. A Codex card or Claude Code picker that Notifai still cannot carry is refused with what to fix: fix that and open the card or picker again."
     }
   ]
 }

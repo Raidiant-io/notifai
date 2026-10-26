@@ -60,8 +60,8 @@ says Notifai registered it; then never also `ask` it. With question
 notifications off, or in a project the User disabled, the card is your
 question and stays in the terminal, as a card on a signed-out machine does; it
 still works there. Any other card without that context stays on this machine:
-if it is still unanswered, `ask` the question too. A card Notifai cannot carry is refused;
-follow its tool context to ask the question.
+if it is still unanswered, `ask` the question too. A card Notifai cannot carry is refused
+with what to fix: fix that and open the card again.
 
 The card closes on the first answer:
 

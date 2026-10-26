@@ -94,7 +94,7 @@ The picker takes whichever answer comes first and closes:
 A picker stays in the terminal when question notifications are off, the
 machine is not signed in, or the User disabled this project; it still works
 there. Otherwise a picker Notifai cannot carry is refused before
-it opens: run `notifai ask --wait` for that question instead.
+it opens with what to fix: fix that and open the picker again.
 `notifai logs --event hook.gate` shows why a picker stayed in the terminal
 (`picker-terminal-only` and its `reason`) and how it closed.
 
