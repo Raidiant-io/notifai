@@ -7,6 +7,7 @@ export * from './compatibility.js'
 export * from './capabilities.js'
 export * from './api.js'
 export * from './sessions.js'
+export * from './setup.js'
 // Push envelope assembly. Everything these encode is observable on any device
 // that receives a notification; exporting them lets the service render from
 // the same code offline pre-flight estimates with, instead of a mirror.
