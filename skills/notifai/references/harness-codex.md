@@ -12,7 +12,8 @@ approves or enables the Notifai handlers in `/hooks` in a Codex session using
 the same `CODEX_HOME`, including the
 `PostToolUse` handler that hands answers and notes into a working turn; `/hooks`
 is authoritative when it disagrees with doctor. Send them the gap's `message`
-as written ([What to tell the User](harness-setup.md#what-to-tell-the-user)).
+as written ([What to tell the User](harness-setup.md#what-to-tell-the-user));
+at the end of setup, the done message carries it.
 
 Then start one fresh Agent Session, send one prompt, and run `notifai doctor`. If
 doctor finds no SessionStart, reinstall the current hooks and start a fresh
@@ -131,7 +132,9 @@ Codex's default sandbox has no network, and outside full-access mode Codex
 asks before running a command outside it. A question, its wake-up and its
 acknowledgement are all commands, so an away User's first question can wait
 at a terminal approval nobody sees. Readiness reports this as
-`codex-commands` once Codex is wired; it never blocks setup. On the User's yes:
+`codex-commands` once Codex is wired; it never blocks setup. Setup writes the
+rule when the User picks Codex among the agent apps to connect. Otherwise, on
+the User's yes:
 
 ```bash
 notifai init --codex-commands --json
@@ -142,7 +145,7 @@ That writes `rules/notifai.rules` in the Codex home (`~/.codex`, or
 `status`, `replies`, `close`, `guidance` and `session rename` only. Setup,
 configuration and guidance edits keep their prompt.
 `notifai hooks uninstall --harness codex` removes the file. Never write it
-unasked, and never edit Codex rules by hand.
+without one of those, and never edit Codex rules by hand.
 
 The rule has three limits, and readiness names each:
 

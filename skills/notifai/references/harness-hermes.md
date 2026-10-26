@@ -12,8 +12,10 @@ successfully reports another version, `notifai doctor` reports a limit with
 nothing for Notifai to repair, so leave the User's Hermes as it is. If the
 version cannot be read, follow doctor's diagnostic and remedy; it still checks
 whether the plugin is enabled. Start a fresh local classic CLI Agent Session after
-installation. The Hermes plugin carries no copy of the Notifai skill: install
-it with `notifai init --skills --skills-scope <project|global> --skills-harness hermes --json`.
+installation. The Hermes plugin carries no copy of the Notifai skill: setup
+installs it when the User picks Hermes among the agent apps to connect, and
+`notifai init --skills --skills-scope global --skills-harness hermes --json`
+installs it otherwise.
 
 The plugin checks Project Enablement and gives root or worker guidance, the
 same session guidance other harnesses receive, in two system prompt sections:

@@ -112,7 +112,8 @@ setup.
 Only in `bypassPermissions`, which runs every command unasked, are the rules
 not needed: there `claude-commands` reads `not needed` with no remedy. In every
 other mode, outside Claude Code, and during first-time setup, it carries a
-remedy. On the User's yes:
+remedy. Setup adds the rules when the User picks Claude Code among the agent
+apps to connect. Otherwise, on the User's yes:
 
 ```bash
 notifai init --claude-commands --json
@@ -122,7 +123,7 @@ That adds allow rules to the User's Claude Code settings for `send`, `ask`,
 `receive`, `acknowledge`, `status`, `replies`, `close`, `guidance` and
 `session rename` only. Setup, configuration, guidance edits, logs and sign-out
 keep their prompt. `notifai hooks uninstall` removes the rules with the wiring.
-Never add them unasked, and never edit Claude Code's permission settings by hand.
+Never add them without one of those, and never edit Claude Code's permission settings by hand.
 If setup reports that the rules were not added, it says why in one line: relay
 that to the User and do not retry. `dontAsk` refuses the setup command itself:
 give it to the User to run in a terminal.

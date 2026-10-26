@@ -250,31 +250,30 @@ satisfy a harness permission prompt.
 Run every command you can run yourself; hand the User only human-only steps.
 
 “Notifai me” or “use notifai” authorizes durable enablement for this Project;
-do not ask again. Run the send. If setup is missing, run `notifai init --json`
-and retry the exact send. Projectless requests never enable a Project.
+do not ask again. Run the send. If setup is missing, run setup as below and
+retry the exact send. Projectless requests never enable a Project.
 
-`init --json` names each gap and gives the exact `message` to send the User.
-[Harness setup and recovery](references/harness-setup.md) opens with what to
-say at each step that needs the User, then covers
-signing in, hooks and their trust, and recovery; read it before your first
-setup message to the User. Only the User approves a computer in the browser or
-companion app, signs in to a Companion App, or grants notification permission: never emulate
-those, claim to approve hooks yourself, or claim an unlisted harness.
-
-Two independent decisions remain, both the User's; ask both together:
-
-- **Hooks.** With them, Notifai activates in their Agent Sessions in the
-  projects where it is on, questions reach their devices and answers come
-  back. To keep questions in the terminal, they turn off “Send questions to
-  my devices” (`ask_notifications`) instead.
-- **Skill scope:** this project or every project here.
-
-Lifecycle wiring has no scope: one install per harness for this machine;
-`notifai project enable` is the per-project switch. Then run:
+Setup is one command, rerun until it is done; it waits for each User step
+itself, so never ask the User to tell you when a step is done:
 
 ```bash
-notifai init <--hooks|--no-hooks> [--skills --skills-scope <project|global> --skills-harness <harnesses>] --json
+notifai init --json --wait 240
 ```
+
+[Harness setup and recovery](references/harness-setup.md) opens with what to
+say and how to run that loop, then covers signing in, hooks and their trust,
+and recovery; read it before your first setup message to the User. Only the
+User approves a computer in the browser or companion app, signs in to a
+Companion App, or grants notification permission: never emulate those, claim
+to approve hooks yourself, or claim an unlisted harness.
+
+The User makes one decision: which agent apps to connect. The first run asks
+it as the `apps` gap; ask once, then rerun with `--apps <ids>`. Setup installs
+hooks, this skill (machine-wide) and command approval into those apps. Hooks
+let Notifai activate in their Agent Sessions where it is on, send questions to
+their devices and bring answers back; to keep questions in the terminal, they
+turn off “Send questions to my devices” (`ask_notifications`) instead.
+`notifai project enable` and `disable` are the per-project switch.
 
 Branch on `states`, `can_send` and `question_routing_ready`; a nonzero exit is
 a gap to close, never to bypass. A state marked `informational` is not a gap:
@@ -282,7 +281,7 @@ leave User choices and harness limits as they are. After a successful `init --js
 `ask` checks its own route. Run `notifai doctor` to verify a fresh session
 after installing hooks, or to diagnose a failure.
 
-On `no_active_devices`, run `notifai init --json`, close its gap, then repeat
+On `no_active_devices`, run setup until its gap is closed, then repeat
 the exact original send with `--retry`. A verification Notification does not
 deliver the original Agent Event.
 

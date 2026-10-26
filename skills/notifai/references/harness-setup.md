@@ -1,72 +1,133 @@
 # Harness setup and recovery
 
-Choose the branch for the reported gap: sign-in, hook installation and trust,
-or bounded recovery. Settings follow the steps. Whatever the branch, talk to
-the User as below.
+Run setup with the loop below and talk to the User as it says. Then come
+sign-in, hook installation and trust, bounded recovery, and settings.
 
 ## What to tell the User
 
-The User may be new to Notifai and to agent tooling. Send one message per
-moment in the conversation, keep its words, and add nothing before or after.
-When it asks for something, end your turn and continue from their reply. These
-messages stay in the conversation, never in a Notification Request.
+The User may be new to Notifai and to agent tooling. Send each message as
+written, with nothing before or after it, and never send the same message
+twice. Never ask the User to tell you when a step is done: setup watches for
+it. Messages stay in the conversation: never put a QR, link or code in a
+Notification Request.
 
-**Every gap in `init --json` carries `message`.** Close a gap yourself when
-its remedy is a command you can run. When it needs the User, send its
-`message` exactly as written. For a pending approval, show the QR first (see
-below). If you cannot show it, say **approve-link** instead. If a gap has no
-`message`, your Notifai is older than this guidance: say what `remedy.summary`
-asks, in plain words.
+Setup writes its own messages: `init --json` carries `message` when it has
+something new to say. A gap with no `message` comes from an older Notifai: say
+what `remedy.summary` asks, in plain words.
 
-The `proof` state is the setup notification. It confirms that setup worked
-and is never a setup step: setup is done without it, and you never wait for it,
-run setup again for it, or ask the User about it. Only a test notification that
-could not be sent or was rejected is a `proof` gap with a `message`; send that
-one. An older Notifai can report `proof` as a gap with no `message` and
-`ready: false` because of it alone; setup is done all the same.
+A few moments have no message from setup:
 
-The moments that are not gaps:
+**install**, before you install Notifai:
 
-| Moment | When | Say |
-| --- | --- | --- |
-| install | before the installer runs | I'll install Notifai on this computer so your agents can reach your phone. Your agent app may ask you to allow a download and a few commands; please allow them. |
-| installer-needs-you | the installer reports a `user_action`, or the OS shows a permission prompt | Installing Notifai needs one thing from you: {user_action_message, or "please review the prompt on your screen"}. Tell me when it's done. |
-| approve-link | a pending approval whose QR you cannot show | To connect this computer to Notifai, open {approve_url} and sign in with your email if it asks. Check that the code shown is **{code}**, then approve it within a few minutes. Tell me when you've approved it. |
-| choices | before `init --hooks`/`--no-hooks`, unless already chosen | Should your agents' questions also reach your phone, so you can answer them while you're away? And should I teach agents in every project on this computer how to use Notifai, only in this project, or skip that? |
-| claude-session | after hooks are installed for Claude Code | Notifai is connected to Claude Code. It starts working in new sessions, so the next Claude Code session you open will use it. |
-| done | `ready: true`, `question_routing_ready: true` | Notifai is set up. Your agents can now notify you, and you can answer their questions from your phone. |
-| done-no-questions | `ready: true`, questions not routed | Notifai is set up. Your agents can now notify you; their questions still come to this conversation. |
-| cloud | your commands run in a cloud or temporary session | I can't set up Notifai from here: my commands run on a temporary machine, not your computer. Run `curl -fsSL https://notifai.sh/install.sh \| sh` in a terminal on the computer where your agents run (Windows PowerShell: `irm https://notifai.sh/install.ps1 \| iex`), or ask an agent there to follow notifai.sh/setup. |
-| which-computer | you cannot tell where your commands run | Notifai connects the computer where your agents run, and I can't tell if that's where my commands run. Is this the computer (or server) you want to connect? |
+> Installing Notifai so your agents can reach your phone. **Allow the prompts** as they come up.
 
-`choices` adds one sentence for each harness whose command approval is still
-open (`claude-commands`, `codex-commands`): "Can {Claude Code or Codex} run
-Notifai's own commands without asking you each time? Otherwise a question can
-sit waiting for your OK while you're away."
+**cloud**, when your commands run on a cloud or temporary machine:
+
+> I can't set up Notifai from here: I'm on a temporary machine. On your computer, run:
+> `curl -fsSL https://notifai.sh/install.sh | sh`
+> or ask an agent there to follow **notifai.sh/setup**.
+
+**which-computer**, when you can't tell where your commands run; carry on on
+a yes, otherwise say **cloud**:
+
+> Is this the computer your agents run on? That's the one Notifai connects.
+
+**installer-needs-you**, when the installer reports a `user_action` or the OS
+shows a permission prompt:
+
+> **Installing Notifai needs you:** {the `user_action` message, or "check the prompt on your screen"}. Tell me when it's done.
+
+**done**, when setup is done and gave no message (an older Notifai):
+
+> ✅ **Notifai is set up.** Your agents can notify you.
+
+## Running setup
+
+```bash
+notifai init --json --wait 240
+```
+
+Run it in the foreground with a tool timeout of at least 5 minutes; if your
+tool can't wait that long, lower `--wait` to fit. It never prompts. Progress
+goes to stderr; stdout is one JSON object, and exit 1 with JSON is a normal
+outcome. Setup opens the browser itself when the User has a step there.
+
+After each run, send `message` unless you already sent it (with the QR,
+below), then:
+
+| Result | What you do |
+| --- | --- |
+| `waiting: true` | Send `message` if present, then rerun at once; say nothing else. |
+| `stopped: true`, or the User declined this computer (`credential` gap, `technical.pairing_outcome` is `denied`) | End your turn. Run setup again only when the User asks. |
+| `ready: true`, or no gap left | Setup is done: its message says so. If it gave none, say **done**. |
+| first gap is `apps` | Ask which agent apps to connect (below). |
+| first gap is `server`, or `credential` with `pairing_outcome` `not_started` or absent | Wait 10 seconds and rerun; if it repeats, send its `message` and stop. |
+| first gap is `auth`, not about a plan | Rerun once; if it repeats, send its `message` and stop. |
+| first gap is `contract`, `cli-bin` with status `gap`, or has `remedy.by` `cli` | Run `remedy.command`, then rerun. |
+| any other gap | A step only the User can do: approve this computer, get the phone app, allow notifications, choose a plan. Rerun at once: setup watches for it. |
+
+The first gap is the first `states` entry with `"status": "gap"`, skipping
+`skill`, `question-routing-settings`, `claude-commands`, `codex-commands`,
+any `hooks`/`hooks-*` entry with no `remedy.user_action`, and `proof` with no
+`message`. `cli-bin` with status `optional-gap` is not a gap: keep using the
+verified absolute command and the installer's PATH remedy.
+
+If a rerun comes back at once with the same gap, no `waiting` and nothing new
+to send, setup isn't watching that step: end your turn and rerun when the
+User replies. A run cut off by your tool's timeout is harmless: rerun it. If
+the User says they're done, rerun; if they say later or stop, end your turn.
+
+**Which agent apps.** The first run asks it as the `apps` gap: its `message`
+is the question, `technical.supported` lists every app (`id`, `name`) and
+`technical.detected` the ids found on this computer. Ask it once, in your
+harness's question tool as a multi-select with the found apps preselected if
+it has one, otherwise as written. Then rerun with `--apps <ids>`
+(comma-separated, or `detected`) and keep `--apps` on every later run. Setup
+installs hooks, the skill (machine-wide) and command approval into those apps
+without asking anything else. If the User wants none, rerun with
+`--no-hooks --no-skills` instead.
+
+The `proof` state is the test notification. It confirms that setup worked and
+is never a setup step: never wait for it, run setup again for it, or ask the
+User about it. Only a test notification that could not be sent or was
+rejected is a `proof` gap with a `message`. Sending and Question Routing
+(`question_routing_ready`) are separate; claim only what the JSON shows.
+
+**An older Notifai.** If `init` exits 2 with `unknown option '--wait'` (or
+`'--apps'`) and no JSON, run `notifai update --json`, which keeps the saved
+channel, and start again. If it still doesn't know them, ask which agent apps
+to connect yourself, then run
+`notifai init --json --hooks --skills --skills-scope global --skills-harness <ids>`,
+adding `--claude-commands` and `--codex-commands` when those apps are chosen.
+It doesn't wait: send the first gap's `message`, end your turn, and rerun when
+the User replies.
 
 ## Signing this machine in
 
-Run `notifai init --json` yourself. An unapproved Machine starts one approval,
-defaults to QR without asking for email, polls once, and returns. Progress is
-on stderr and final readiness on stdout. The `credential` state's
-`technical.pairing` holds protected local `qr_path` and `qr_text_path` artifacts,
-the `approve_url`, the matching `code` and the prepared `message`. Present the
-QR first: show the local image where supported, or read `qr_text_path` and
-reproduce the library-generated QR verbatim in a fenced text block in a
-terminal/text-only harness. Then send `message` in the conversation as written,
-and end your turn. Never include the QR, the message or
-the proof-bearing link in any Notification Request field or media. Only the
-User can approve; opening review never approves automatically. If the harness
-cannot display the local QR, use the `approve-link` script rather than claiming
-a QR was shown.
+Setup starts one approval for an unapproved Machine and opens the approval
+page in this computer's browser, except over SSH. Its `message` carries the
+code to compare and the link. The `credential` state's `technical.pairing`
+holds protected local `qr_path` and `qr_text_path` artifacts, the
+`approve_url` and the `code`.
 
-Only when the User chooses an approval notification, ask for their Account
-email; never infer it from other services or files. Run `notifai init --approval notification --approval-email <email>
---json`. Requested delivery is not confirmed delivery. `--approval browser`
-opens the approval page in this machine's browser: use it when the User is at
-this machine. Every route resumes the same pending approval. When the User
-says it is approved, run setup again. If it reports a new code, relay that code. A timeout or closed
-shell does not strand an approval already given.
+Show the QR with each new approval `message`, where the message points (after
+"scan this with the Notifai app:"). In a terminal or text-only harness, read
+`qr_text_path` and reproduce the library-generated QR verbatim in a fenced
+text block; where the harness displays local images, show `qr_path`. A file
+path alone shows nothing; if you cannot show it, send the message alone and
+never claim a QR was shown. Never include the QR, the message or the
+proof-bearing link in any Notification Request field or media. Only the User
+can approve; opening review never approves automatically.
+
+While setup waits, an expiring code is extended, so the open page and the QR
+keep working; a new code comes with a new `message`. A timeout or closed shell
+does not strand an approval already given.
+
+Only when the User asks for an approval notification instead, ask for their
+Account email; never infer it from other services or files. Add
+`--approval notification --approval-email <email>` to the setup command.
+Requested delivery is not confirmed delivery. Every route resumes the same
+pending approval.
 
 `--name <name>` sets the Machine name; the hostname is the default.
 `notifai logout` discards the saved credential and any pending approval and QR;
@@ -79,27 +140,23 @@ are worth separating before you report either as broken.
 
 ## Installing hooks and trust
 
-After the User chooses hooks, install the lifecycle wiring.
-There is no scope to ask about: Notifai installs
-one lifecycle mechanism per harness, for this machine.
+Setup installs hooks, the skill and command approval into the agent apps the
+User chose with `--apps`. There is no scope to ask about: Notifai installs one
+lifecycle mechanism per harness, for this machine, and the skill machine-wide.
+To connect another app later, rerun setup with the new `--apps` list. Codex
+also asks the User to approve the Notifai hooks in `/hooks`; setup's done
+message says so.
+
+Only when the User asks for the skill in this project alone:
 
 ```bash
-notifai init --hooks --json
+notifai init --skills --skills-scope project --skills-harness <comma-separated-harnesses> --json
 ```
 
-Installing the agent guidance skill keeps its own independent placement choice,
-which belongs to the User and says nothing about where hooks land:
-
-```bash
-notifai init --skills --skills-scope <project|global> --skills-harness <comma-separated-harnesses> --json
-```
-
-Choose only the intended harnesses; without `--skills-harness`, the harnesses
-that already load the skill keep it. Placing in one scope removes those
-harnesses' copies from the other, and every other Notifai skill copy is brought
-current. Project placement for OpenClaw requires a single, concrete configured
-agent workspace that matches the command directory. Use global scope when that
-workspace is ambiguous.
+Placing in one scope removes those harnesses' copies from the other, and every
+other Notifai skill copy is brought current. Project placement for OpenClaw
+requires a single, concrete configured agent workspace that matches the
+command directory.
 
 A machine-wide Notifai skill is guidance, not routing evidence. The active
 harness needs its installed hook and a current session pointer.
