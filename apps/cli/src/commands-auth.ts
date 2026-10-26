@@ -57,12 +57,14 @@ export function pairingApprovalUrl(approveUrl: string, confirmationSecret: strin
 export type LoginBlockedSink = (blocker: ReadinessState) => void
 
 /**
- * The longest one approval wait may run by this computer's own clock. The
- * service owns the approval's lifetime (ten minutes), but its expiry is a
- * timestamp from the service's clock: a computer whose clock is hours behind,
- * with the service unreachable, would otherwise keep waiting for those hours.
+ * The longest one approval wait may run by this computer's own clock, and the
+ * approval lifetime this computer asks the service for. The service owns the
+ * lifetime (thirty minutes; ten for a service that predates the request), but
+ * its expiry is a timestamp from the service's clock: a computer whose clock
+ * is hours behind, with the service unreachable, would otherwise keep waiting
+ * for those hours.
  */
-const PAIRING_WAIT_CEILING_MS = 10 * 60 * 1000
+const PAIRING_WAIT_CEILING_MS = 30 * 60 * 1000
 
 /** Why a machine approval is not (yet) a credential, as an agent reads it. */
 export type PairingOutcome = 'pending' | 'denied' | 'expired' | 'not_started'
@@ -208,6 +210,7 @@ export async function loginCommand(
         credential_hash: sha256Hex(secret),
         poll_verifier_hash: sha256Hex(pollVerifier),
         confirmation_hash: sha256Hex(confirmationSecret),
+        lifetime_seconds: PAIRING_WAIT_CEILING_MS / 1000,
       })
     } catch (err) {
       const code = reportError(deps, err)

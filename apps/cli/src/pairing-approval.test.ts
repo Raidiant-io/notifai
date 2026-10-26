@@ -78,4 +78,19 @@ describe('QR-first computer approval', () => {
     expect(test.targeted).toHaveLength(2); expect(test.targeted[1]?.email).toBe('two@example.com')
     expect(test.begins()).toBe(1); expect(test.opened).toEqual([])
   })
+  it('asks for a thirty-minute approval and a person at the terminal is waited for that long', async () => {
+    const test = ceremony()
+    let clock = 0; const requested: unknown[] = []; const polledAt: number[] = []
+    const client = { ...test.client,
+      beginPairing: async (body: unknown) => { requested.push(body); return { pairing_id: 'pair_1', code: 'ABC-234',
+        approve_url: 'https://app.notifai.sh/approve?code=ABC-234',
+        expires_at: new Date(30 * 60_000).toISOString(), poll_interval_seconds: 60 } },
+      pollPairing: async () => { polledAt.push(clock); return { status: 'pending' } },
+    } as unknown as ApiClient
+    const deps: CommandDeps = { ...test.deps, now: () => clock, clientFactory: () => client,
+      sleep: async (ms: number) => { clock += ms }, io: { ...test.deps.io, interactive: true } }
+    expect(await loginCommand(deps, {})).toBe(EXIT.auth)
+    expect(requested).toEqual([expect.objectContaining({ lifetime_seconds: 30 * 60 })])
+    expect(Math.max(...polledAt)).toBe(30 * 60_000)
+  })
 })

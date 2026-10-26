@@ -160,6 +160,15 @@ export const BeginPairingRequest = Type.Object(
     poll_verifier_hash: Type.String({ pattern: '^[a-f0-9]{64}$' }),
     /** SHA-256 hex of the one-time browser confirmation secret. */
     confirmation_hash: Type.String({ pattern: '^[a-f0-9]{64}$' }),
+    /**
+     * How long this client keeps the handshake to collect an approval. The
+     * service grants up to its own maximum and reports the result as
+     * `expires_at`. Omitted, the approval lasts ten minutes: clients that
+     * predate this field stop waiting then and discard the handshake, so a
+     * later approval would create an Approved Machine nobody holds. No upper
+     * bound here, so a later client asking for more is clamped, not refused.
+     */
+    lifetime_seconds: Type.Optional(Type.Integer({ minimum: 60 })),
   },
   { additionalProperties: false },
 )

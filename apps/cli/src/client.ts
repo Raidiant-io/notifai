@@ -95,6 +95,7 @@ export interface ApiClient {
     credential_hash: string
     poll_verifier_hash: string
     confirmation_hash: string
+    lifetime_seconds?: number
   }): Promise<BeginPairingResponse>
   pollPairing(pairingId: string, pollVerifier: string): Promise<PollPairingResponse>
   requestPairingNotification(pairingId: string, pollVerifier: string, email: string): Promise<{ status: 'requested' }>
