@@ -50,19 +50,20 @@ or PR gates. Run them for an actual release or the maintainer's explicit
 full-suite request. The exact-SHA release workflow still owns its full gates.
 
 GitHub-hosted CI is release evidence, not the development feedback loop. It
-runs only when release automation explicitly dispatches an exact-SHA candidate,
-and scans that candidate's current tree and full Git history after proving
+runs only when the maintainer dispatches a workflow at an exact SHA, and scans that candidate's current tree and full Git history after proving
 redacted detection with ephemeral positive controls. Routine commits, pull
 requests, and pushes do not start hosted workflows. The one clock is the daily
 Codex card canary (`.github/workflows/codex-card-canary.yml`): it watches the
 newest published Codex, an external dependency, rather than re-checking this
-tree; `docs/CODEX-CARD-CANARY.md` owns what it proves. Local
+tree; `docs/CODEX-CARD-CANARY.md` owns what it proves. The hub runs a similar
+local check of Codex's shared server, described in
+`docs/CODEX-ATTACH-CANARY.md`. Local
 `pnpm check:secrets` retains the same tree/history evidence for ordinary work.
 
 Before pushing to the public `origin`, use the repository-owned `pre-push`
 hook in `scripts/githooks`. It requires a clean checkout at the exact pushed
-commit and runs the boundary self-test, boundary scan, secret controls plus
-tree/history scans, and machine-path scan. A missing scanner blocks the push.
+commit and runs the agent guidance review check, boundary self-test, boundary
+scan, secret controls plus tree/history scans, and machine-path scan. A missing scanner blocks the push.
 Set `core.hooksPath` to `scripts/githooks` in a standalone clone; the private
 root bootstrap installs it in the canonical public clone. The hook is a local
 gate, so review the public PR diff and its authored text before merge too.
@@ -74,8 +75,8 @@ justify it in the commit message. When in doubt, it stays private.
 ## Releasing is not yours to decide
 
 This repository is published, and `@raidiant/notifai` and
-`@raidiant/notifai-protocol` are on npm as of 2026-08-05. That does not
-make the next release routine.
+`@raidiant/notifai-protocol` are on npm. That does not make the next release
+routine.
 
 Before choosing a channel, dispatching release automation, merging a Release
 PR, or publishing, read `docs/RELEASING.md`: it owns the beta-first default,
@@ -94,33 +95,26 @@ installation path.
 
 `dist/` is generated and ignored, so nothing in Git records what a publish
 sent. `prepack` rebuilds before packing and every build starts by clearing
-`dist/`, which together make the packed tree a pure function of the source in
-whatever directory publishing runs from. `check:release` then proves the
-repository `src/` and packed `dist/` correspond module for module without
-shipping source or test files.
+`dist/`, which together make the packed tree a pure function of the source.
+`check:release` then proves the repository `src/` and packed `dist/`
+correspond module for module without shipping source or test files.
 
-Before publishing, `pnpm check:packed` installs the packed tarballs in an
-isolated directory outside the workspace, registry-shaped, and runs the
-installed bin. It also proves the tarball contains the verified bundled skill.
-Workspace linking always resolves the adjacent protocol; the isolated packed
-gate verifies the exact dependency pin users receive.
+The npm `@raidiant/notifai` package is a bundled launcher with no
+dependencies; it installs the signed native runtime. `pnpm check:packed`
+installs the packed tarballs in an isolated directory outside the workspace
+and checks the launcher route and the native product's bundled skill.
 
 When the native skills adapter, placement logic, or packaged skill bundle
-changes, or when collecting release evidence, run
-`pnpm check:packed-skill-smoke`. This separate integration smoke proves
-placement from the packed production adapter with an empty PATH, preserves
-user edits, and checks owned update integration. Package preparation uses
-bounded subprocesses; skill placement runs no external installer. Release CI
-runs it with `--if-changed`; publication checks the exact packed tarballs.
+changes, run `pnpm check:packed-skill-smoke`. It proves placement from the
+packed production adapter with an empty PATH, preserves user edits, and checks
+owned update integration.
 
-After publishing, run `pnpm check:published`. It downloads the tarball npm is
-serving and compares it against the local checkout: the compiled files byte
-for byte, and the manifest metadata installs resolve from (dependencies, bin,
-exports, engines). Pre-publish gates can only ever vouch for the tree they ran
-in; this is the only check that vouches for the artifact users install. A
-publication is not verified until it passes. Report the verified channel and
-remaining validation, promotion or communication work explicitly; artifact
-verification alone does not finish the overall release.
+`publish.yml` verifies what it published: it downloads the tarball npm is
+serving and compares it with the candidate (`scripts/verify-published.mjs`),
+then installs it fresh on six targets. Pre-publish gates only vouch for the
+tree they ran in; this is the check that vouches for the artifact users
+install. Report the verified channel and any remaining validation, promotion
+or communication work explicitly.
 
 ## npm credentials
 
@@ -141,6 +135,7 @@ uses OIDC trusted publishing or a workflow secret — never anything in-tree.
 - `skills/notifai` — the agent skill: when to notify, how to write for a
   lock-screen banner.
 - `docs/BOUNDARY.md` — the boundary policy the gates enforce.
-- `docs/RELEASING.md` — SemVer, Conventional Commits, commitlint, release-please.
+- `docs/RELEASING.md` — the CLI and protocol release procedure.
+- `docs/STANDALONE.md` — building, installing and updating the native CLI.
 
 `CLAUDE.md` is a symlink to this file; keep them one document.
