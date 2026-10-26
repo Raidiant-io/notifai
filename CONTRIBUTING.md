@@ -9,20 +9,21 @@ repository.
 
 This repository is the **client surface** of Notifai: the `notifai` CLI,
 the wire contract it speaks, and the agent skill. The service and the
-companion apps are developed separately and are not part of this tree.
+Companion Apps are developed separately and are not part of this tree.
 
-- **`apps/cli`** — the `notifai` command-line tool (`@raidiant/notifai`).
+- **`apps/cli`** — the `notifai` command-line tool (`@raidiant/notifai`),
+  its native launcher, and the npm launcher.
 - **`packages/protocol`** — the client-visible wire contract
   (`@raidiant/notifai-protocol`): notification draft schemas, REST v1
   request/response types, the status vocabulary, and capability
   negotiation. The CLI validates drafts offline against the same bundled
   capability documents the service enforces.
-- **`skills/notifai`** — the agent guidance skill: when to notify and how
-  to write notifications that work on a lock screen.
+- **`skills/notifai`** — the agent skill: when to notify, how to write
+  notifications and questions, and how to set up and check each harness.
 
-Everything the CLI sends and receives crosses the documented `/api/v1`
-contract in `packages/protocol`; nothing in this repository depends on
-private code.
+Everything the CLI exchanges with the Notifai service crosses the documented
+`/api/v1` contract in `packages/protocol`; nothing in this repository depends
+on private code.
 
 That split is a security posture, not an accident, so it is the one
 thing a pull request cannot negotiate. The service must stay secure when
@@ -32,7 +33,8 @@ advisory.
 
 ## Getting set up
 
-Requires Node >= 20.12 and pnpm. Release evidence runs on Node 24.
+Requires Node >= 20.12 and pnpm. Release checks run on Node 24. The pre-push
+hook also needs [gitleaks](https://github.com/gitleaks/gitleaks) on `PATH`.
 
 ```sh
 pnpm install
@@ -40,27 +42,32 @@ pnpm build         # protocol first; the CLI resolves its built exports
 git config core.hooksPath scripts/githooks
 ```
 
-The CLI binary builds to `apps/cli/dist/main.js`. The CLI source builds both
-the native product and the optional same-name npm launcher artifact. See
-[standalone distribution](docs/STANDALONE.md) for the candidate lifecycle
-contract; candidate documentation does not prove publication.
+`pnpm build` produces the development CLI at `apps/cli/dist/main.js`. The
+shipped product is a native build; see
+[standalone CLI development](docs/STANDALONE.md) to build and check one.
 
 ## Before you open a pull request
 
+Build, typecheck, lint and test the packages you changed and their consumers.
+Run the related tests rather than the whole suite; the CLI test wrapper
+forwards selectors:
+
 ```sh
-pnpm check:boundary:self-test
-pnpm check:boundary   # structural allowlist + forbidden-content scan
+pnpm check:boundary
 pnpm build
-pnpm -r test          # no Docker, no network
+pnpm --filter @raidiant/notifai test -- src/trust-policy.test.ts
 pnpm lint && pnpm -r typecheck
-pnpm check:commit     # commitlint on the last commit
-pnpm check:release    # package allowlist, metadata, docs, and licenses
 ```
 
-All gates must pass. The test suite needs neither a network nor a container
-runtime, so a failure is a real failure. CI additionally runs a pinned gitleaks
-binary across the working tree and full history; its job first proves both
-scanner paths against ephemeral canaries.
+Run `pnpm check:boundary:self-test` when you change the boundary scanner or
+its allowlist. Changes to shipped agent guidance (the skill, hooks, setup
+output, or the README, `docs/USAGE.md`, `docs/HARNESSES.md` and
+`docs/TRUST.md`) need a refreshed review record: see
+[`docs/AGENT-GUIDANCE-REVIEW.md`](docs/AGENT-GUIDANCE-REVIEW.md).
+
+The complete suite (`pnpm -r test`, `pnpm check:release`, `pnpm check:packed`)
+runs for releases. Pull requests don't start hosted CI; the maintainer runs
+the release checks.
 
 ## Commit messages
 
@@ -73,16 +80,14 @@ feat(cli): wake Claude sessions through the inbox socket
 fix(protocol): reject an empty question set
 ```
 
-`pnpm check:commit` lints the last commit. Point `core.hooksPath` at
-`scripts/githooks` so the `commit-msg` hook runs commitlint and the public
-`origin` pre-push hook checks the boundary, secrets, and machine paths. The
-pre-push hook requires a clean checkout of the exact commit being pushed.
+With `core.hooksPath` set to `scripts/githooks`, the `commit-msg` hook runs
+commitlint and the `pre-push` hook checks the boundary, secrets, machine paths
+and the guidance review record before a push to `origin`. The pre-push hook
+requires a clean checkout of the exact commit being pushed.
 
-Use a Conventional Commit for the pull request title too. CI validates the
-title because GitHub squash-merges every pull request and uses that title as
-the commit subject on `main`. Branch commits remain conventional and pass the
-existing commit-range check; the single squash commit is the public history
-and the input to release-please.
+Use a Conventional Commit for the pull request title too. Pull requests are
+squash-merged, so the title becomes the commit subject on `main` and the input
+to release-please.
 
 ## What makes a change easy to accept
 
@@ -95,7 +100,7 @@ before the fix is worth more than three that exercise the happy path.
 
 **A flag combination that parses but does nothing is a bug.** If an
 option can be passed in a way that silently has no effect, make it a
-usage error instead. Two of those have shipped here already.
+usage error instead.
 
 **Keep the CLI silent unless it has something to say.** It runs inside
 agent harnesses where every line competes with the user's actual work.
