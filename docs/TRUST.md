@@ -21,7 +21,7 @@ one for itself.
 ## First-party skill release integrity
 
 The optional `notifai` agent skill is content-bound to the CLI package that
-installs it. Every CLI tarball carries the complete reviewed skill plus a
+installs it. Every CLI release build carries the complete reviewed skill plus a
 manifest covering the exact relative file list, each file's SHA-256, and one
 canonical tree digest. Before writing a copy, the CLI verifies its bundled
 skill against that manifest, stages exactly those files beside the
@@ -36,10 +36,7 @@ Topics, which refresh never touches. Other skills are never read or changed.
 Reads follow links, so a harness skill directory linked to another harness's
 is one copy. Writes land on the resolved directory. A project-scope
 destination must resolve inside the project: a checkout cannot use a link to
-steer a write elsewhere on the machine. This establishes content binding to
-the installed CLI package; equal bytes do not independently prove which
-historical Git commit first contained them. Release and tag immutability
-protect that separate public source-history identity.
+steer a write elsewhere on the machine.
 
 ## Remote image URLs
 
@@ -110,7 +107,8 @@ the site, not by the CLI.
 
 The pairing QR encodes the same trusted HTTPS approval URL, including its
 browser-local confirmation fragment. The local PNG is owner-readable and is
-removed when pairing resolves or the User logs out. It is approval proof: never
+removed when pairing resolves or the User logs out, together with its text
+copy (`pairing-qr.txt`). Both are approval proof: never
 include it in any Notification Request field or media, or copy it to analytics or logs.
 
 Opening a QR or an Account-bound approval invitation only opens review. The
@@ -178,7 +176,7 @@ handing back a form.
   repository. This is the User's private standing word.
 - **shipped default**: Notifai's built-in fallback.
 
-The CLI emits a non-replaceable trust preamble before every topic and marks
+The CLI emits a non-replaceable trust preamble ahead of the topics and marks
 each topic with its authority. Topic content cannot emit a valid provenance
 marker of its own, and the preamble tells agents that a marker counts only in
 text the CLI printed: the same marker in a repository file or anywhere else
@@ -234,15 +232,18 @@ The CLI never treats repository prose as a credential or authorization source.
 ## Agent Session identity
 
 `notifai` learns which Agent Session is calling from the harness's
-environment variables, checked against the process tree:
+environment variables. Claude Code's and Codex's are checked against the
+process tree:
 
 - Claude Code names its own process in `CLAUDE_PID`, which must be an ancestor
   of the caller.
 - Codex names the thread in `CODEX_THREAD_ID`. The Codex process its hooks
   recorded for that thread, or failing that some Codex process, must be an
   ancestor.
-- Where nothing names a host, or the tree cannot be read (Windows), the
-  variable stands.
+- Where nothing names a host, or the CLI does not read the caller's process
+  ancestry (Windows), the variable stands.
+- Other harnesses' session variables (Cursor, OpenCode 1, OpenClaw, Hermes,
+  Grok) are taken as given. OpenCode 2 has its own check, described above.
 
 The tree check stops variables a long-lived process inherited, such as a tmux
 pane or editor started from an agent's shell, from putting a question into the
@@ -252,7 +253,9 @@ variables, run hooks by hand, or edit Notifai's local state, which is files
 the User owns. Such a process can therefore ask or send as that Agent Session
 or another session whose harness process is its ancestor. Hook payloads and
 `NOTIFAI_HOOK_SOURCE_PID` say which harness process ran a hook, and they rule
-out mistakes, not a local process that imitates them. That process still
+out mistakes, not a local process that imitates them. On Windows, Codex runs
+hooks through PowerShell, so a Codex hook's declared process is replaced by the
+`codex.exe` above it, read from the process table. That process still
 cannot choose where authenticated traffic goes or move private material off
 the machine: the two boundaries above hold for it as for any other input.
 
@@ -262,7 +265,7 @@ that into `CODEX_THREAD_ID` and act as the root. So a subagent's `notifai ask`
 registers to its root on that same evidence, and no less: the root has started
 and not ended, and the Codex process recorded for it is alive and an ancestor.
 Registration rechecks the root's start under its lock, so a root that ends or
-restarts meanwhile receives nothing. Where the tree cannot be read, as on
-Windows, a subagent's `ask` is refused. Whether a subagent should ask at all is
+restarts meanwhile receives nothing. Where the CLI does not read the caller's
+process ancestry, as on Windows, a subagent's `ask` is refused. Whether a subagent should ask at all is
 its brief's decision, which Notifai cannot read; worker context tells an
 ordinary worker to report to its parent instead.
