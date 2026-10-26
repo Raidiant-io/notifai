@@ -189,6 +189,28 @@ export const PollPairingRequest = Type.Object(
 )
 export type PollPairingRequestT = Static<typeof PollPairingRequest>
 
+/**
+ * Keeps a waiting approval open: `POST /api/v1/pairings/:id/extend`. Only the
+ * initiator can extend, proved by the same poll verifier it polls with. The
+ * code and the approval link stay the same, so an open approval page and a QR
+ * on screen keep working. Allowed while the approval is still waiting (also
+ * just after it lapsed) and for up to two hours after it began; the service
+ * answers `pairing_not_pending` once it was approved, denied or stopped, and
+ * `pairing_too_old` after that. Omitted, `lifetime_seconds` asks for the
+ * longest lifetime the service grants.
+ */
+export const ExtendPairingRequest = Type.Object(
+  {
+    poll_verifier: Type.String({ minLength: 32, maxLength: 128 }),
+    lifetime_seconds: Type.Optional(Type.Integer({ minimum: 60 })),
+  },
+  { additionalProperties: false },
+)
+export type ExtendPairingRequestT = Static<typeof ExtendPairingRequest>
+
+/** The extended approval, in the same shape `POST /api/v1/pairings` returns. */
+export type ExtendPairingResponse = BeginPairingResponse
+
 /** The initiator explicitly selects Account-email targeting; response is non-enumerating. */
 export const PairingNotificationRequest = Type.Object(
   {

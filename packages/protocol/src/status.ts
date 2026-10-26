@@ -84,6 +84,10 @@ export const ERROR_CODES = [
   'pairing_not_found',
   'pairing_expired',
   'pairing_already_used',
+  /** An extend found the approval already approved, denied or stopped. */
+  'pairing_not_pending',
+  /** An extend came more than two hours after the approval began. */
+  'pairing_too_old',
   'rate_limited',
   'usage_limit_reached',
   'billing_unavailable',
