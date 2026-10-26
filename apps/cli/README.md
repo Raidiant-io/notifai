@@ -2,13 +2,15 @@
 
 Your agents can reach you, and you can answer from your phone. The answer goes
 back to the exact Agent Session that asked, in whichever harness it runs:
-Claude Code, Codex, Cursor, OpenCode, OpenClaw, Hermes or Grok.
+Claude Code, Codex, Cursor, OpenCode, OpenClaw, Hermes or Grok. T3 Code and
+Orca work too.
 
-An agent working while you are away has no way to reach you, so it either
-guesses or sits blocked in a terminal nobody is watching. `notifai` gives
-it a way to tell you something finished, and a way to ask you a question
-and get your answer back as a banner on your phone. Notifications name the
-Project and Agent Session they come from, so you know which one needs you.
+Know which one needs you. Notifications name the Project and Agent Session
+they come from, so several agents at once never blur into one generic bell.
+
+<p align="center">
+  <img src="https://raw.githubusercontent.com/Raidiant-io/notifai/main/docs/images/companion-home.jpg" width="250" alt="Notifai iPhone app home screen: several projects, each with agent sessions running in different harnesses">
+</p>
 
 Your agent sets it up. Paste this into any agent:
 
@@ -16,185 +18,46 @@ Your agent sets it up. Paste this into any agent:
 Set up Notifai: https://app.notifai.sh/setup.md
 ```
 
-Website: <https://notifai.sh>
+## Install it yourself
 
-To do it yourself, use the native installer for your computer; it installs Notifai and starts setup.
-No Node.js or npm needed.
+On macOS, Linux or WSL:
 
 ```sh
-# macOS / Linux / WSL
 curl -fsSL https://notifai.sh/install.sh | sh
 ```
 
+On Windows, in PowerShell:
+
 ```powershell
-# Windows PowerShell
 irm https://notifai.sh/install.ps1 | iex
 ```
 
-Setup defaults to QR approval with your signed-in Companion App; notification
-and browser approval are selectable alternatives. Run `notifai init` to resume.
-See [installation and migration](https://github.com/Raidiant-io/notifai/blob/main/skills/notifai/references/installation.md) for agent-safe script inspection,
-platform prerequisites, channel selection and legacy npm migration.
+The installer doesn't need Node.js. It installs the `notifai` command and runs
+`notifai init`, which signs you in and connects your harnesses.
 
-Optional Node/npm launcher, once its replacement package and matching native
-release are verified as published:
+This npm package is an optional launcher (Node.js 20.12 or newer) that installs
+the same native runtime:
 
 ```sh
 npx --yes @raidiant/notifai@latest init
-# Or: npm install -g @raidiant/notifai, then notifai init
 ```
 
-Requires Node.js 20.12 or newer for this launcher. Notifai installs its own native
-runtime. Use `notifai update` for runtime updates. npm updates/removes only the
-launcher; `notifai uninstall` removes the runtime after its safety checks.
-Existing native versions and channels survive launcher changes. `@version`
-selects launcher code, not a command to replace an existing runtime.
+Then get the Companion App for
+[iPhone](https://app.notifai.sh/setup/companion?platform=iphone) or
+[Mac](https://app.notifai.sh/download/mac), or
+[join the free Android test](https://app.notifai.sh/test-android), and sign in
+with the same Account.
 
-Run `notifai doctor` or `notifai update --check --json` to check for a newer
-CLI and inspect release notes, guidance, and session requirements. Enabled
-Projects give root agents a quiet update offer at most once every seven days
-across the machine. A release does not install itself or restart an Agent
-Session automatically. The package includes its changelog.
+## Pricing
 
-Use `notifai update` for later global updates. It repairs the installation the
-shell actually selects and keeps the stable hook adapter on that same CLI. It
-fails instead of moving the command to a different PATH slot when it cannot
-verify the selected installation or retarget an existing adapter safely.
+Notifai is a paid subscription with a free trial. One plan covers the CLI and
+every app. See [pricing](https://app.notifai.sh/pricing).
 
-`init` walks the setup one step at a time and tells you the single next
-thing to do. Run it again after each step; it works out what remains.
+## More
 
-At a human terminal, `init` asks once whether this setup is for this project
-or for every project on this machine. That answer is skill, hooks, and
-config together. Pairing, devices, and credentials stay on this machine
-either way. An unattended caller passes the same choice as a flag:
-`notifai init --setup-scope project` or `notifai init --setup-scope global`.
-`--skills-scope` is an alias of that flag when `--skills` is set. Shared
-project config may live in the repo; personal project preferences live under
-the user config directory and never require a `.gitignore` edit.
-
-## Telling you something happened
-
-```sh
-notifai send --kind done \
-  --title "Deploy finished" \
-  --summary "The staging deployment is live." \
-  --body "The staging deployment is live and ready for review."
-```
-
-Write a brief title whose substance is immediately understandable; type lives
-in `--kind`, and Project identity is inferred from the invocation directory.
-Every Notification Request has a purpose-written, one-line plain-text Summary
-for native banners and list views. It is required and limited to 240 Unicode
-characters. Body is optional standalone Markdown for focused detail; when it is
-absent, the focused view shows Summary. Use `--body-file <path|->` for long
-content. Repeat `--image` for an ordered image
-collection (up to eight) and pair each with `--image-alt`. Every attached
-image appears in the gallery; to place one where the words refer to it, write
-Markdown image syntax with its 1-based position, `![what it shows](media:1)`.
-A bare `media:1` or a link to it is refused before sending.
-
-## Asking you a question
-
-```sh
-notifai ask "Deploy the migration to production?" \
-  --choice Yes --choice No
-```
-
-The agent registers the question and starts background submission immediately;
-it can continue independent work while your answer is outstanding. Registration
-alone does not prove Provider Acceptance. Question Routing keeps the exact
-Agent Session's answer path for the complete answer window. Claude Code and
-Codex observe answers out of band. Codex queues a wake-up, then drains current
-notes and answers together at a supported hook or `notifai receive` boundary.
-Queue success proves wake storage, not presentation.
-
-By default submission begins without waiting for the turn to end
-(`ask_grace_seconds = 0`). Set a positive grace period for a terminal-only
-answer window first.
-
-When you answer, the agent acknowledges it before it does anything else, so you
-find out your reply landed and what it set in motion — not just that you sent
-it. Answering from your phone and wondering whether anything happened is the
-whole problem this solves.
-
-For a harness that cannot resume an idle agent turn, `notifai ask --wait`
-waits for the answer in the foreground, for the harness's command limit minus
-10 s or the answer window outside any harness, and the service ends the
-question at that deadline. It exits 0 with the answer, 3 when it ended
-unanswered and the question is off the devices, or 5 when the service was
-unreachable at the end; then an answer may still be waiting for
-`notifai replies <request_id>` until the deadline. Never ask a duplicate.
-
-## Agent harnesses
-
-The CLI and managed hook adapters support macOS, Linux, and Windows. iPhone
-and Android Companion Apps are both active: Android is distributed as a
-directly downloadable signed APK, with Google Play closed Alpha for invited
-testers. Native desktop Companion
-Apps are not shipped.
-
-```sh
-notifai hooks install
-```
-
-Wires lifecycle hooks into every supported harness detected on this
-machine (Claude Code, Codex, Cursor, OpenCode, OpenClaw, Grok). `notifai init` does the
-same and, at a terminal, lets you keep the detected set, pick a subset,
-or add one it did not see. This is what lets an agent's question reach
-your phone without the agent having to cooperate — no question detection,
-no state in a context window that compaction will eat. Grok's managed hooks
-observe lifecycle events and hold Stop through the complete answer window,
-then return the answer to the same Agent Session. They cannot inject activation
-guidance; load the Notifai skill directly. Exact Source Context comes from
-`GROK_SESSION_ID`.
-
-Every harness definition calls one stable user-level adapter under the account
-home (`~/.notifai/bin/hook-adapter` on macOS/Linux and the corresponding user
-profile path on Windows). The adapter resolves the stable native command; npm
-prefixes, NPX caches and repository paths do not own hook execution. Runtime
-updates use retained native generations and preserve the managed definition's
-identity where possible. Legacy Node-based hook migration follows the native
-installer's explicit ownership and pending-work checks.
-Codex SessionStart guidance stays within Codex's built-in inline-context budget,
-so its stable definition does not need an output-limit override that would
-create a different approval identity.
-Claude Code Stop returns immediately into the live inbox route: a socket on
-macOS and Linux, a named pipe on Windows. The first migration may
-require one Codex `/hooks` approval; later repairs keep the same source and
-definition identity.
-Codex's Stop definition declares the full-window timeout explicitly; that
-one-time definition change is why the migration needs approval. Prompt-submit
-and session-end retain fixed short limits.
-
-`notifai doctor` compares Codex trust on a best-effort basis against Codex's
-current persisted representation. Notifai never writes that trust store;
-Codex's `/hooks` review is authoritative if the diagnostic and UI disagree.
-
-Uninstall removes only the selected harness definition. It intentionally keeps
-the shared adapter because definitions for other harnesses or projects may
-still invoke it and cannot all be discovered from one working directory.
-
-## Checking it works
-
-```sh
-notifai doctor
-```
-
-Reports every part of the setup and names where to start if something is
-wrong. Any `FAIL` line makes the command exit nonzero; informational `--` lines
-do not. `--json` emits the same result with an explicit `exit_code`.
-
-## Reference
-
-`notifai <command> --help` is the exhaustive and current flag surface.
-Everything useful is possible non-interactively, so an agent never
-reaches a prompt and hangs.
-
-Source, issues and the public/private boundary policy:
-<https://github.com/Raidiant-io/notifai>
-
-The URL, self-host exception, guidance-authority and non-exfiltration policy is
-documented in [`docs/TRUST.md`](https://github.com/Raidiant-io/notifai/blob/main/docs/TRUST.md).
+- [Using Notifai](https://github.com/Raidiant-io/notifai/blob/main/docs/USAGE.md): commands, questions, setup options and updates.
+- [Harness support](https://github.com/Raidiant-io/notifai/blob/main/docs/HARNESSES.md): what works in each harness.
+- [Source and issues](https://github.com/Raidiant-io/notifai) on GitHub.
+- [notifai.sh](https://notifai.sh), the [changelog](https://notifai.sh/changelog) and [support](https://app.notifai.sh/support).
 
 Apache-2.0.
