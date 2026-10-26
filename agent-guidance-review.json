@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "behavior_digest": "sha256:52b1b55933291b816712f5215c17a19aa1cf40c798129f2fbad40e72d596283c",
+  "behavior_digest": "sha256:8f44ed8991ca23c396ce6120568ba589fbcc2b72c4d84ef209b2c62608966a75",
   "outcome": "reviewed-no-impact",
   "surfaces_reviewed": [
     "lifecycle-hooks",
@@ -9,5 +9,5 @@
     "cli-readiness",
     "domain-terms"
   ],
-  "reason": "Reviewed lifecycle hooks, the Notifai skill, harness setup, CLI readiness and domain terms against a change to local session-state housekeeping: acknowledgement obligations the service recorded after a session ended now clear through a removal-only path that never recreates state, and Session Message debt of an ended session, or one whose harness process is gone, is dropped after 30 days without acknowledging it, leaving a text-free local trail. No hook output, skill rule, setup step, readiness line or domain term changes, and no message text leaves the machine."
+  "reason": "Reviewed lifecycle hooks, the Notifai skill, harness setup, CLI readiness and domain terms against a README-only change: a \"Works with\" row showing the logos of the harnesses the README already lists (Claude Code, Codex, Cursor, OpenCode, OpenClaw, Hermes, Grok). No harness is added or removed, and no hook, setup step, readiness check, skill rule or domain term changes."
 }
