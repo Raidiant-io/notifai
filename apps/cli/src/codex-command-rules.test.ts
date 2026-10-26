@@ -103,12 +103,12 @@ function execpolicy(files: readonly string[], command: readonly string[]): { dec
 }
 
 describe('Codex command rules file', () => {
-  it('allows sending, asking, reading and acknowledging, and nothing that changes setup', () => {
-    for (const command of ['send', 'ask', 'receive', 'acknowledge', 'status', 'replies', 'close']) {
+  it('allows sending, asking, reading, acknowledging and rerunning setup, and nothing that changes configuration', () => {
+    for (const command of ['send', 'ask', 'receive', 'acknowledge', 'status', 'replies', 'close', 'init']) {
       expect(CODEX_ALLOWED_COMMANDS).toContain(command)
     }
     const body = renderCodexCommandRules()
-    for (const command of ['init', 'config', 'logout', 'auth', 'hooks', 'logs', 'update', 'project', 'doctor', 'uninstall', 'install']) {
+    for (const command of ['config', 'logout', 'auth', 'hooks', 'logs', 'update', 'project', 'doctor', 'uninstall', 'install']) {
       expect(body).not.toMatch(new RegExp(`"${command}"`))
     }
     expect(body.startsWith(`${CODEX_COMMAND_RULES_HEADER}\n`)).toBe(true)
@@ -194,7 +194,6 @@ describe('skill examples under the Codex rule', () => {
       ['bash', '-lc', 'notifai replies --pending --json > out.json'],
       ['/usr/local/bin/notifai', 'send', '--kind', 'done', '--title', 'A', '--summary', 'B'],
       ['node', 'dist/main.js', 'send', '--kind', 'done', '--title', 'A', '--summary', 'B'],
-      ['notifai', 'init', '--hooks', '--json'],
       ['notifai', 'config', 'set', 'ask_notifications', 'false'],
       ['notifai', 'hooks', 'uninstall', '--harness', 'codex'],
       ['notifai', 'update'],

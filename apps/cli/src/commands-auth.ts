@@ -26,6 +26,13 @@ import {
   type PendingPairing,
 } from './pending-pairing.js'
 import type { ReadinessState } from './readiness.js'
+import {
+  NOT_YOUR_ACCOUNT_LINE,
+  approveMessage,
+  renewedApproveMessage,
+  approveTerminalLines,
+  connectedTerminalLine,
+} from './setup-journey.js'
 
 // ---------------------------------------------------------------------------
 // login / logout / auth status
@@ -67,20 +74,47 @@ export type LoginBlockedSink = (blocker: ReadinessState) => void
 const PAIRING_WAIT_CEILING_MS = 30 * 60 * 1000
 
 /** Why a machine approval is not (yet) a credential, as an agent reads it. */
-export type PairingOutcome = 'pending' | 'denied' | 'expired' | 'not_started'
+export type PairingOutcome = 'pending' | 'denied' | 'expired' | 'not_started' | 'stopped'
+
+/** A waiting approval is kept open once less than this is left of it. */
+const EXTEND_WHEN_LEFT_MS = 60 * 1000
+
+/**
+ * How `init` runs an approval: it opens the approval page, keeps the approval
+ * open while it waits, and stops after a bounded time instead of handing out
+ * code after code. `notifai login` on its own keeps its earlier behavior.
+ */
+export interface GuidedApproval {
+  /** Open the approval page in this computer's browser, once per approval. */
+  open: boolean
+  /**
+   * How long setup waits for one approval before it stops. It counts from
+   * when the approval began (a replacement code keeps the original start),
+   * kept with the handshake on disk, so reruns and pauses between them never
+   * restart it. Only a run after setup stopped starts a new wait.
+   */
+  stopAfterMs: number
+  /**
+   * Unattended runs only: until when to keep polling a pending approval. It
+   * sees the state an agent would relay, so a message the User has not been
+   * given yet returns at once.
+   */
+  waitUntil?: (pending: ReadinessState) => number
+  /**
+   * The approval landed; `email` is the Account it joined, when known, and
+   * `browserOpened` says setup had opened the approval page in this
+   * computer's browser.
+   */
+  onConnected?: (email: string | null, browserOpened: boolean) => void
+}
 
 /**
  * The conversation message an agent sends the User as written. It carries the
- * proof-bearing link, so it never belongs in a Notification Request.
+ * proof-bearing link and QR, so it never belongs in a Notification Request.
  */
-export function pairingApprovalMessage(pairing: Pick<PendingPairing, 'code' | 'approve_url'>, qrShown: boolean): string {
-  const open = qrShown
-    ? 'scan the QR code above with your phone\'s camera'
-    : `open ${pairing.approve_url}`
-  return `To connect this computer to Notifai, ${open} and sign in with your email if it asks. ` +
-    `Check that the code shown is **${pairing.code}**, then approve it within a few minutes. ` +
-    (qrShown ? `No phone handy? Open ${pairing.approve_url} instead. ` : '') +
-    'Tell me when you\'ve approved it.'
+export function pairingApprovalMessage(pairing: Pick<PendingPairing, 'code' | 'approve_url' | 'browser_opened' | 'renewed'>): string {
+  const options = { code: pairing.code, url: pairing.approve_url, opened: pairing.browser_opened === true }
+  return pairing.renewed === true ? renewedApproveMessage(options) : approveMessage(options)
 }
 
 /**
@@ -116,7 +150,7 @@ export function pendingApprovalBlocker(pairing: PendingPairing, env?: NodeJS.Pro
         alternatives: ['qr', 'notification', 'browser'],
         code: pairing.code,
         expires_at: pairing.expires_at,
-        message: pairingApprovalMessage(pairing, env !== undefined),
+        message: pairingApprovalMessage(pairing),
       },
     },
     remedy: {
@@ -149,7 +183,9 @@ export function pairingOutcomeBlocker(
       summary:
         outcome === 'denied'
           ? 'approval was denied; start setup again only if you want to connect this computer'
-          : 'start machine approval again',
+          : outcome === 'stopped'
+            ? 'nobody approved this computer in 90 minutes; start setup again when the User asks'
+            : 'start machine approval again',
       command: SETUP_COMMAND,
       interactive: true,
     },
@@ -180,7 +216,7 @@ export function pairingOutcomeBlocker(
  */
 export async function loginCommand(
   deps: CommandDeps,
-  flags: { name?: string; baseUrl?: string; open?: boolean; approval?: string; approvalEmail?: string },
+  flags: { name?: string; baseUrl?: string; open?: boolean; approval?: string; approvalEmail?: string; guided?: GuidedApproval },
   onBlocked?: LoginBlockedSink,
 ): Promise<number> {
   if (flags.approval !== undefined && !['qr', 'notification', 'browser'].includes(flags.approval)) {
@@ -243,6 +279,7 @@ export async function loginCommand(
       poll_verifier: pollVerifier,
       expires_at: begin.expires_at,
       poll_interval_seconds: begin.poll_interval_seconds,
+      wait_started_at: new Date(now()).toISOString(),
     }
     writePendingPairing(deps.env, started)
     return started
@@ -290,7 +327,31 @@ export async function loginCommand(
   }
 
   /** `settled` when the approval resolved, or its wait ended, while the User was being asked. */
+  const announceGuided = async (pairing: PendingPairing, guidance: GuidedApproval): Promise<void> => {
+    const file = await renderPairingQr(deps.env, pairing.approve_url)
+    // The approval notification is its own route: nothing opens here.
+    if (guidance.open && route !== 'notification' && pairing.browser_opened !== true) {
+      deps.io.openUrl(pairing.approve_url)
+      pairing.browser_opened = true
+      writePendingPairing(deps.env, pairing)
+    }
+    const opened = pairing.browser_opened === true
+    if (interactive) {
+      for (const line of approveTerminalLines({ code: pairing.code, url: pairing.approve_url, opened, renewed: pairing.renewed === true })) deps.io.out(line)
+      deps.io.out('  Or scan this with the Notifai app:')
+      deps.io.out(await terminalPairingQr(pairing.approve_url))
+      return
+    }
+    deps.io.out(`Pairing code: ${pairing.code}`)
+    deps.io.out(`${opened ? 'Opened the approval page' : 'Approval page'}: ${pairing.approve_url}`)
+    deps.io.out(`Local QR image: ${file}`)
+  }
+
   const announce = async (pairing: PendingPairing, resumed: boolean): Promise<'ready' | 'blocked' | 'settled'> => {
+    if (flags.guided !== undefined) {
+      await announceGuided(pairing, flags.guided)
+      return route === 'notification' ? await requestNotification(pairing) : 'ready'
+    }
     const file = await renderPairingQr(deps.env, pairing.approve_url)
     deps.io.out(`Pairing code: ${pairing.code}`)
     if (route === 'qr') {
@@ -314,29 +375,32 @@ export async function loginCommand(
     }
     deps.io.out(`Browser alternative: ${pairing.approve_url}`)
     if (route === 'browser' && flags.open !== false) deps.io.openUrl(pairing.approve_url)
-    if (route === 'notification') {
-      let typed: string | null = null
-      if (flags.approvalEmail === undefined && interactive && deps.io.text) {
-        const io = deps.io
-        const entry = await askWhileWatching(async (signal) => await io.text?.('Account email', signal) ?? null)
-        if (entry === 'settled') return 'settled'
-        typed = entry.answer
-      }
-      const email = (flags.approvalEmail ?? typed)?.trim()
-      if (!email) {
-        deps.io.err('For an approval notification, run `notifai init --approval notification --approval-email <email>`; QR and browser approval use the same pairing.')
-        return 'blocked'
-      }
-      if (email.toLowerCase() !== pairing.approval_email?.toLowerCase()) {
-        try { await client.requestPairingNotification(pairing.pairing_id, pairing.poll_verifier, email) }
-        catch (err) { reportError(deps, err); return 'blocked' }
-        pairing.approval_email = email
-        writePendingPairing(deps.env, pairing)
-      }
-      deps.io.out('Approval invitation requested. Review it if it arrives; QR and browser approval remain available.')
-    }
+    if (route === 'notification') return await requestNotification(pairing)
     // The default QR does not open a browser or send an approval notification.
     void resumed
+    return 'ready'
+  }
+
+  async function requestNotification(pairing: PendingPairing): Promise<'ready' | 'blocked' | 'settled'> {
+    let typed: string | null = null
+    if (flags.approvalEmail === undefined && interactive && deps.io.text) {
+      const io = deps.io
+      const entry = await askWhileWatching(async (signal) => await io.text?.('Account email', signal) ?? null)
+      if (entry === 'settled') return 'settled'
+      typed = entry.answer
+    }
+    const email = (flags.approvalEmail ?? typed)?.trim()
+    if (!email) {
+      deps.io.err('For an approval notification, run `notifai init --approval notification --approval-email <email>`; QR and browser approval use the same pairing.')
+      return 'blocked'
+    }
+    if (email.toLowerCase() !== pairing.approval_email?.toLowerCase()) {
+      try { await client.requestPairingNotification(pairing.pairing_id, pairing.poll_verifier, email) }
+      catch (err) { reportError(deps, err); return 'blocked' }
+      pairing.approval_email = email
+      writePendingPairing(deps.env, pairing)
+    }
+    deps.io.out('Approval invitation requested. Review it if it arrives; QR and browser approval remain available.')
     return 'ready'
   }
 
@@ -360,9 +424,49 @@ export async function loginCommand(
   let expiresAt = Date.parse(active.expires_at)
   let intervalMs = Math.max(active.poll_interval_seconds, 1) * 1000
   let waitStartedAt = now()
+  const guided = flags.guided
+  // The User asked again after setup stopped waiting (or the handshake
+  // predates the record): a new wait for the same code starts now.
+  if (guided !== undefined && (active.wait_started_at === undefined || active.wait_stopped === true)) {
+    active.wait_started_at = new Date(now()).toISOString()
+    delete active.wait_stopped
+    writePendingPairing(deps.env, active)
+  }
+  /** When setup stops waiting for this approval. */
+  const stopAt = (): number => {
+    const since = Date.parse(active.wait_started_at ?? '')
+    return (Number.isNaN(since) ? waitStartedAt : since) + (guided?.stopAfterMs ?? 0)
+  }
+  // A guided approval is kept open while it is waited for; an older service
+  // that cannot do that ends the wait at the approval's expiry.
+  let canExtend = guided !== undefined
   // When this run stops waiting: the approval's expiry, or the ceiling.
-  const waitEndsAt = (): number => Math.min(expiresAt, waitStartedAt + PAIRING_WAIT_CEILING_MS)
+  const waitEndsAt = (): number => guided === undefined
+    ? Math.min(expiresAt, waitStartedAt + PAIRING_WAIT_CEILING_MS)
+    : canExtend ? stopAt() : Math.min(expiresAt, stopAt())
+
+  /** Keep the approval open, with the same code, once it is about to expire. */
+  const extendIfDue = async (force = false): Promise<boolean> => {
+    if (!canExtend) return false
+    if (!force && expiresAt - now() > EXTEND_WHEN_LEFT_MS) return false
+    try {
+      const extended = await client.extendPairing(active.pairing_id, active.poll_verifier, PAIRING_WAIT_CEILING_MS / 1000)
+      active.expires_at = extended.expires_at
+      active.poll_interval_seconds = extended.poll_interval_seconds
+      expiresAt = Date.parse(extended.expires_at)
+      intervalMs = Math.max(extended.poll_interval_seconds, 1) * 1000
+      writePendingPairing(deps.env, active)
+      return true
+    } catch (err) {
+      // Unreachable now is retried at the next check. Anything else is final
+      // for this approval: an older service without extension, an approval
+      // that is no longer pending, or one too old to keep open.
+      if (!(err instanceof NetworkError || isRetryableReplyPollError(err))) canExtend = false
+      return false
+    }
+  }
   const approvalWaitMessage = (): string => {
+    if (guided !== undefined) return `Waiting… code ${active.code}`
     const remainingSec = Math.max(0, Math.ceil((expiresAt - now()) / 1000))
     const minutes = Math.floor(remainingSec / 60)
     const seconds = remainingSec % 60
@@ -396,6 +500,41 @@ export async function loginCommand(
     waitStartedAt = now()
     announced = false
     return true
+  }
+
+  /** A guided approval that expired anyway gets a new code, while the run still waits. */
+  const renew = async (): Promise<boolean> => {
+    progress.spinner?.stop(`Code ${active.code} expired`)
+    progress.spinner = null
+    const since = active.wait_started_at
+    clearPendingPairing(deps.env)
+    const started = await startPairing()
+    if (typeof started === 'number') return false
+    active = started
+    active.renewed = true
+    // A new code, the same wait: the stop still counts from the first one.
+    if (since !== undefined) active.wait_started_at = since
+    writePendingPairing(deps.env, active)
+    resumed = false
+    canExtend = true
+    expiresAt = Date.parse(active.expires_at)
+    intervalMs = Math.max(active.poll_interval_seconds, 1) * 1000
+    announced = false
+    return true
+  }
+
+  /**
+   * Nobody approved within the bounded wait. The handshake stays saved, so an
+   * approval given after this is collected by the next run.
+   */
+  const stopWaiting = (): number => {
+    progress.spinner?.error('Not approved in 90 minutes')
+    progress.spinner = null
+    active.wait_stopped = true
+    writePendingPairing(deps.env, active)
+    if (interactive) deps.io.err("This computer wasn't approved in 90 minutes, so setup stopped. Run `notifai init` again when you want to try again.")
+    onBlocked?.(pairingOutcomeBlocker('stopped', 'nobody approved this computer in 90 minutes'))
+    return EXIT.auth
   }
 
   for (;;) {
@@ -447,7 +586,21 @@ export async function loginCommand(
       // reaches the service the way this sign-in just did.
       await notifyCredentialChanged(deps.env)
       await adoptHubNetwork(deps.env)
-      if (onBlocked !== undefined) {
+      if (guided !== undefined) {
+        // Name the Account: a signed-in app that is not the User's own could
+        // have scanned the QR.
+        let email: string | null = null
+        try {
+          email = (await makeClient(deps, baseUrl, `Bearer nfm_${poll.machine_id}.${active.secret}`).accessStatus()).email ?? null
+        } catch {
+          // Best-effort: the line still says the computer is connected.
+        }
+        const connected = connectedTerminalLine(email, active.machine_name)
+        if (progress.spinner) progress.spinner.stop(connected)
+        else deps.io.out(connected)
+        if (interactive) deps.io.out(NOT_YOUR_ACCOUNT_LINE)
+        guided.onConnected?.(email, active.browser_opened === true)
+      } else if (onBlocked !== undefined) {
         // Inside setup, which carries on and closes with what is now true:
         // where the credential lives is a detail no one acts on here.
         const connected = `This computer is connected to your account as "${active.machine_name}".`
@@ -491,6 +644,14 @@ export async function loginCommand(
       return EXIT.auth
     }
     if (poll.status === 'expired') {
+      if (guided !== undefined) {
+        // The service keeps an expired approval for a while; reopening it
+        // keeps the code the User may be looking at.
+        if (await extendIfDue(true)) continue
+        if (now() >= stopAt()) return stopWaiting()
+        if (await renew()) continue
+        return EXIT.auth
+      }
       if (await replaceStale()) continue
       break
     }
@@ -499,6 +660,22 @@ export async function loginCommand(
     if (announcement === 'blocked') {
       onBlocked?.(pendingApprovalBlocker(active, deps.env))
       return EXIT.auth
+    }
+    if (guided !== undefined) {
+      if (now() >= stopAt()) return stopWaiting()
+      // A person here is waited for until the run stops; an agent until its
+      // own wait is up, or at once when it has something new to relay.
+      const until = interactive
+        ? stopAt()
+        : Math.min(guided.waitUntil?.(pendingApprovalBlocker(active, deps.env)) ?? now(), stopAt())
+      if (now() >= until) {
+        onBlocked?.(pendingApprovalBlocker(active, deps.env))
+        return EXIT.auth
+      }
+      await extendIfDue()
+      progress.spinner?.message(approvalWaitMessage())
+      await sleep(Math.min(intervalMs, until - now()))
+      continue
     }
     // Still pending. Nobody at this terminal means nobody to wait for: hand
     // the errand back and let the next run resume the same handshake.

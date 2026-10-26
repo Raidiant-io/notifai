@@ -417,14 +417,14 @@ function isNoActivePlanError(err: unknown): err is ApiCallError {
  * The one no-plan line. Setup needs no plan; delivering notifications does,
  * so this gap comes last, after the app is in, and replaces the proof.
  */
-function noPlanGap(baseUrl: string): ReadinessState {
+function noPlanGap(baseUrl: string, email: string | null = null): ReadinessState {
   const next = `Choose one at ${plansUrl(baseUrl)}`
   return {
     id: 'auth',
     title: 'Plan',
     status: 'gap',
     detail: NO_ACTIVE_PLAN_LINE,
-    technical: { plan_required: true, access_url: plansUrl(baseUrl), next_action: next },
+    technical: { plan_required: true, access_url: plansUrl(baseUrl), next_action: next, account_email: email },
     remedy: { by: 'user-elsewhere', summary: next },
   }
 }
@@ -478,7 +478,7 @@ async function probeAccount(
       email,
       devices,
       lookupFailed: devices === null,
-      auth: noPlanGap(baseUrl),
+      auth: noPlanGap(baseUrl, email),
     }
   }
 
@@ -494,6 +494,7 @@ async function probeAccount(
         detail: email
           ? `machine ${credential.machineId} accepted (${email})`
           : `machine ${credential.machineId} accepted`,
+        technical: { account_email: email },
       },
     }
   }
@@ -765,6 +766,7 @@ export async function assessReadiness(
               install_urls: COMPANION_INSTALL_URLS,
               account_email: accountEmail,
               devices: devices.map((d) => ({
+                device_id: d.device_id,
                 display_name: d.display_name,
                 platform: d.platform,
                 permission_status: d.permission_status,
@@ -893,6 +895,31 @@ async function setupProofState(
 
   const deviceName =
     companions.find((device) => device.device_id === proof.device_id)?.display_name ?? proof.device_id
+
+  // Refused by the push service: never re-sent on a whim. Setup sends it once
+  // more after the device is seen again, and that is the last time.
+  if (proof.rejected !== undefined && proof.companion_receipt.state !== 'observed') {
+    return proof.rejected.retried
+      ? {
+          id: 'proof',
+          title: 'Test notification',
+          status: 'optional-gap',
+          detail: `${deviceName} could not receive the test notification, twice; setup does not send it again`,
+          technical: { rejected: true, retried: true },
+        }
+      : {
+          id: 'proof',
+          title: 'Test notification',
+          status: 'optional-gap',
+          detail: `${deviceName} could not receive the test notification; setup sends it once more after the app reconnects`,
+          technical: { rejected: true, retried: false },
+          remedy: {
+            by: 'cli',
+            summary: `setup retries once, after ${deviceName} reconnects`,
+            command: 'notifai init',
+          },
+        }
+  }
 
   const readyFromObservation = (
     observedAt: string,

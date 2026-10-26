@@ -6,9 +6,11 @@
  * acknowledgement are all commands, so without a rule the first one waits at a
  * terminal nobody is watching and nothing reaches a device.
  *
- * The rule is the User's to grant: setup offers it and writes it only on a
- * yes. It covers sending, asking, reading and acknowledging. Setup,
- * configuration, guidance edits, logs and sign-out keep their prompt.
+ * Setup adds it, without asking, for a User who connects Codex, and says so in
+ * its last message; `--no-codex-commands` leaves it out. It covers sending,
+ * asking, reading, acknowledging, and rerunning setup, which an agent does
+ * repeatedly while it waits for the User's steps. Configuration, guidance
+ * edits, logs and sign-out keep their prompt.
  *
  * What Codex documents about rules, and what this module does with it:
  *
@@ -50,6 +52,7 @@ export const CODEX_ALLOWED_COMMANDS: readonly string[] = [
   'status',
   'replies',
   'close',
+  'init',
 ]
 
 /** First line of the file; ownership evidence, since Codex rules carry no marker. */
@@ -78,7 +81,7 @@ export function renderCodexCommandRules(): string {
   return [
     CODEX_COMMAND_RULES_HEADER,
     '# Lets Codex run the Notifai commands an away User depends on outside its sandbox without asking first.',
-    '# Setup, configuration and guidance edits keep their prompt. Rules match a literal `notifai …` argument list only.',
+    '# Rerunning setup is allowed; configuration and guidance edits keep their prompt. Rules match a literal `notifai …` argument list only.',
     'prefix_rule(',
     `    pattern = ["notifai", [${CODEX_ALLOWED_COMMANDS.map((command) => JSON.stringify(command)).join(', ')}]],`,
     '    decision = "allow",',
@@ -92,11 +95,11 @@ export function renderCodexCommandRules(): string {
       'notifai status q_123 --json',
       'notifai replies --pending --json',
       'notifai close --pending',
+      'notifai init --json --wait 240 --apps claude-code,codex',
     ], '        '),
     '    ],',
     '    not_match = [',
     starlarkList([
-      'notifai init --hooks --json',
       'notifai config set ask_notifications false',
       'notifai hooks uninstall --harness codex',
       'notifai update',

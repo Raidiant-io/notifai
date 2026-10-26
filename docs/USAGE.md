@@ -45,20 +45,41 @@ running sessions at once. `notifai update` installs it when you're ready.
 
 ## Setup and Machine approval
 
-`notifai init` is one setup flow and is safe to run again. It signs you in,
-connects your harnesses, and checks that your devices can receive.
+`notifai init` is one setup flow and is safe to run again. It asks one
+question, which agent apps to connect (every supported app is listed, the ones
+found on this computer preselected), then installs hooks, the Notifai skill
+(machine-wide; `--skills-scope project` keeps it to one Project) and command
+approval for Claude Code and Codex into those apps without asking anything
+else. `--apps <ids>` answers the question up front: comma-separated ids
+(`claude-code`, `codex`, `cursor`, `opencode`, `openclaw`, `hermes`, `grok`) or
+`detected`. The answer is remembered, so a later run never asks again, even
+when it was none.
 
-Setup approves this computer with a QR code: scan it with a signed-in Companion
-App, check the Account and computer, and approve. No email or browser is
-needed. Alternatives are `--approval browser`, or
-`--approval notification --approval-email <email>` to get the approval request
-as a notification. Approval lasts until you revoke the machine.
+To connect this computer, setup opens the approval page in your browser and
+shows a QR that a signed-in Companion App can scan instead. Check that the code
+matches, then approve. Over SSH, or with `--no-open`, it prints the link to open
+on your own computer. The approval stays open with the same code while setup
+waits, for up to 90 minutes from when the approval began; approval lasts until you revoke the machine. Once
+connected, setup names the Account; `notifai logout --revoke` disconnects a
+computer approved by the wrong Account. The page that approved it then walks
+your phone's sign-in. `--approval notification --approval-email <email>` still
+sends the approval request as a notification, and opens no page.
 
-At a human terminal `init` waits for approval. An agent's run checks once and
-returns; running it again picks up the same approval. `notifai init --json`
-never prompts: progress goes to stderr and stdout holds one final readiness
-object. The QR code and approval link are one-time proof, so show them only on
-this computer.
+A computer that is already connected but has no phone signed in opens the
+browser's phone steps instead. Setup then waits for the phone, its
+notifications and, last, a plan, and sends a test notification, once: not
+again on a rerun, and not when the browser's setup page already sent it. A
+phone whose notifications stay off does not hold setup up: it finishes and says
+so. A step with no progress for 30 minutes ends the wait with what is left.
+
+At a human terminal `init` waits in-process. `notifai init --json` never
+prompts: progress goes to stderr and stdout holds one readiness object with a
+`message` to relay. An agent adds `--wait <seconds>` (only with `--json`) and reruns while the
+result says `waiting: true`; each result carries `message` only when it is new
+for this setup run, and `stopped: true` when a wait ended. Without `--apps`, a
+computer with no agent app connected yet first returns an `apps` gap with the
+question. The QR code and approval link are one-time proof, so show them only
+on this computer.
 
 ## Companion Apps
 
@@ -165,7 +186,8 @@ loads belongs to Notifai: setup and `notifai update --refresh-skill` replace a
 copy that differs. Customize guidance with `notifai guidance set`, not by
 editing the skill.
 
-For unattended setup, choose both scope and harnesses, for example:
+Setup places it machine-wide by default. To choose the scope and harnesses
+yourself, for example:
 
 ```sh
 notifai init --skills --skills-scope global --skills-harness claude-code,codex --json

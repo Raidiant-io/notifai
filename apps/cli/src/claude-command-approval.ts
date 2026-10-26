@@ -10,9 +10,11 @@
  * terminal nobody is watching, or never run, and nothing reaches a device. A
  * matching rule runs the command at once in all of these modes.
  *
- * The rules are the User's to grant: setup offers them and writes them only on
- * a yes. They cover sending, asking, reading and acknowledging. Setup,
- * configuration, guidance edits, logs and sign-out keep their prompt.
+ * Setup adds them, without asking, for a User who connects Claude Code, and
+ * says so in its last message; `--no-claude-commands` leaves them out. They
+ * cover sending, asking, reading, acknowledging, and rerunning setup, which an
+ * agent does repeatedly while it waits for the User's steps. Configuration,
+ * guidance edits, logs and sign-out keep their prompt.
  *
  * The offer is made at a terminal outside Claude Code, and inside a Claude
  * Code session unless the session is known to run in bypassPermissions mode,
@@ -40,6 +42,8 @@ export const CLAUDE_COMMAND_RULES: readonly string[] = [
   'Bash(notifai close *)',
   'Bash(notifai guidance)',
   'Bash(notifai session rename *)',
+  'Bash(notifai init)',
+  'Bash(notifai init *)',
 ]
 
 function proseList(items: readonly string[]): string {

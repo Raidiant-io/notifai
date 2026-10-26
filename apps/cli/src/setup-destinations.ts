@@ -12,12 +12,27 @@
  * the paths where it does not, and they must stay spelled the same.
  */
 
+import { setupPhoneUrl as protocolSetupPhoneUrl } from '@raidiant/notifai-protocol'
+
 /** The two platforms that can receive a notification. Mac is not one. */
 export const COMPANION_PLATFORMS = ['iphone', 'android'] as const
 export type CompanionPlatform = (typeof COMPANION_PLATFORMS)[number]
 
-export function companionPlatformLabel(platform: CompanionPlatform): string {
-  return platform === 'iphone' ? 'iPhone' : 'Android'
+/**
+ * What the User calls the device a Companion App runs on: the one noun every
+ * setup line uses. Takes a device's platform (`ios`, `android`, `macos`, …)
+ * or a store platform (`iphone`).
+ */
+export function deviceNoun(platform: string): string {
+  switch (platform) {
+    case 'ios':
+    case 'iphone': return 'iPhone'
+    case 'android': return 'Android phone'
+    case 'macos': return 'Mac'
+    case 'windows':
+    case 'linux': return 'computer'
+    default: return 'device'
+  }
 }
 
 /**
@@ -69,4 +84,15 @@ export function setupCompanionUrl(baseUrl: string, platform?: CompanionPlatform)
 /** General help: billing, policies, and everything setup is not. */
 export function supportPageUrl(baseUrl: string): string {
   return `${dashboardOrigin(baseUrl)}/support`
+}
+
+/**
+ * The guided phone steps for a computer that is already connected: sign the
+ * phone in by QR, allow notifications, choose a plan if needed. `email` lets
+ * the page catch a browser signed in to another Account; `machine` names the
+ * computer whose test notification the page sends when it is done, and
+ * `name` is that computer's name, for the page to show.
+ */
+export function setupPhoneUrl(baseUrl: string, email: string | null, machineId: string | null, machineName: string | null = null): string {
+  return protocolSetupPhoneUrl(dashboardOrigin(baseUrl), { email, machineId, machineName })
 }

@@ -7,6 +7,8 @@ import type {
   AlphaAccessRequestResponse,
   AccountAccessResponse,
   BeginPairingResponse,
+  ExtendPairingResponse,
+  MachineSetupNotificationResponse,
   CapabilityDocument,
   CreateMediaUploadRequestT,
   CreateMediaUploadResponse,
@@ -99,8 +101,12 @@ export interface ApiClient {
   }): Promise<BeginPairingResponse>
   pollPairing(pairingId: string, pollVerifier: string): Promise<PollPairingResponse>
   requestPairingNotification(pairingId: string, pollVerifier: string, email: string): Promise<{ status: 'requested' }>
+  /** Keep a waiting approval open; same code and confirmation secret, new `expires_at`. */
+  extendPairing(pairingId: string, pollVerifier: string, lifetimeSeconds?: number): Promise<ExtendPairingResponse>
   /** Revoke the calling machine's own credential; it stops working on the next request. */
   revokeMachine(): Promise<{ ok: true }>
+  /** When this computer's Setup notification last went out (past 24 hours), from here or the browser. */
+  setupNotification(): Promise<MachineSetupNotificationResponse>
   accessStatus(): Promise<AccountAccessResponse>
   /**
    * Read-only. There is no client-side write: filing this errand is the
@@ -348,8 +354,14 @@ export function createClient(
       call('POST', `/api/v1/pairings/${encodeURIComponent(pairingId)}/poll`, {
         poll_verifier: pollVerifier,
       }),
+    extendPairing: (pairingId, pollVerifier, lifetimeSeconds) =>
+      call('POST', `/api/v1/pairings/${encodeURIComponent(pairingId)}/extend`, {
+        poll_verifier: pollVerifier,
+        ...(lifetimeSeconds === undefined ? {} : { lifetime_seconds: lifetimeSeconds }),
+      }),
     requestPairingNotification: (pairingId, pollVerifier, email) => call('POST', `/api/v1/pairings/${encodeURIComponent(pairingId)}/notification`, { poll_verifier: pollVerifier, email }),
     revokeMachine: () => call('POST', '/api/v1/machine/revoke'),
+    setupNotification: () => call('GET', '/api/v1/machine/setup-notification'),
     accessStatus: () => call('GET', '/api/v1/account/access'),
     accessRequest: () => call('GET', '/api/v1/account/alpha-access-request'),
     listDevices: () => call('GET', '/api/v1/devices'),

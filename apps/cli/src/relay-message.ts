@@ -1,5 +1,5 @@
 import type { ReadinessState } from './readiness.js'
-import { NO_ACTIVE_PLAN_LINE } from './setup-destinations.js'
+import { DENIED_MESSAGE, expiredStopMessage, planMessage } from './setup-journey.js'
 
 /**
  * What an agent says to the User about one readiness state, word for word.
@@ -22,9 +22,8 @@ export function relayMessage(state: ReadinessState): string | null {
   switch (state.id) {
     case 'credential':
       if (typeof technical.pairing?.message === 'string') return technical.pairing.message
-      if (technical.pairing_outcome === 'denied') {
-        return "You declined connecting this computer, so I've stopped. Ask me again whenever you want to set it up."
-      }
+      if (technical.pairing_outcome === 'denied') return DENIED_MESSAGE
+      if (technical.pairing_outcome === 'stopped') return expiredStopMessage()
       if (technical.pairing_outcome === 'expired') {
         return "That code expired before it was approved, so I'll get you a new one."
       }
@@ -34,7 +33,7 @@ export function relayMessage(state: ReadinessState): string | null {
       return UNREACHABLE
     case 'auth':
       if (typeof technical.access_url === 'string') {
-        return `${NO_ACTIVE_PLAN_LINE} Choose one at ${technical.access_url}, then ask me to finish setting up.`
+        return planMessage(technical.access_url)
       }
       break
   }

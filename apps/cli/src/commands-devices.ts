@@ -10,9 +10,10 @@ import {
 } from './commands-core.js'
 import {
   COMPANION_INSTALL_URLS,
-  companionPlatformLabel,
+  deviceNoun,
   type CompanionPlatform,
 } from './setup-destinations.js'
+import { noPhoneMessage, notificationSettingsPath, phoneKind } from './setup-journey.js'
 
 // ---------------------------------------------------------------------------
 // devices / capabilities
@@ -148,7 +149,7 @@ export function deviceInstallRemedy(options: {
   if (options.devices.length === 0) {
     const from = options.platform === undefined
       ? `get Notifai on your phone (${installLinks()})`
-      : `get Notifai on your ${companionPlatformLabel(options.platform)} at ${COMPANION_INSTALL_URLS[options.platform]}`
+      : `get Notifai on your ${deviceNoun(options.platform)} at ${COMPANION_INSTALL_URLS[options.platform]}`
     return `${from}, ${sameEmail}, and allow notifications`
   }
   if (options.devices.some((d) => d.support?.state === 'must_update' && d.support.affected_operation === 'receive_notifications')) {
@@ -176,40 +177,20 @@ function installLinks(): string {
  */
 export function deviceRelayMessage(options: { email: string | null; devices: readonly RoutableDevice[] }): string {
   const { devices } = options
-  if (devices.length === 0) {
-    return 'Now get the Notifai app on your phone: iPhone from the App Store at ' +
-      `${COMPANION_INSTALL_URLS.iphone}, or Android through the free test at ${COMPANION_INSTALL_URLS.android}. ` +
-      `Sign in with ${options.email ?? 'the email you approved this computer with'}, and allow notifications ` +
-      "when it asks. Tell me when it's in."
-  }
+  if (devices.length === 0) return noPhoneMessage(options.email)
   const device = (pick: (d: RoutableDevice) => boolean) => devices.find(pick)
   const updating = device((d) => d.support?.state === 'must_update' && d.support.affected_operation === 'receive_notifications')
-  if (updating) return `Update the Notifai app on your ${deviceNoun(updating)}, then tell me when that's done.`
+  if (updating) return `**Update the Notifai app** on your ${deviceNoun(updating.platform)}.\n\n_I'll carry on once it's updated._`
   const denied = device((d) => d.permission_status === 'denied')
   if (denied) {
-    const where = denied.platform === 'ios'
-      ? 'Settings → Notifai → Notifications'
-      : denied.platform === 'android'
-        ? 'Settings → Apps → Notifai → Notifications'
-        : 'its notification settings'
-    return `Notifications are off for Notifai on your ${deviceNoun(denied)}. Turn them on in ${where}, ` +
-      "then tell me when that's done."
+    return `**Notifications are off** for Notifai on your ${deviceNoun(denied.platform)}. ` +
+      `Turn them on: ${notificationSettingsPath(phoneKind(denied.platform))}.\n\n_I'll carry on once they're on._`
   }
   const undecided = device((d) => d.permission_status === 'not_determined')
   if (undecided) {
-    return `Open Notifai on your ${deviceNoun(undecided)} and allow notifications when it asks. ` +
-      "Tell me when that's done."
+    return `Open Notifai on your ${deviceNoun(undecided.platform)} and **allow notifications**.\n\n_I'll carry on once they're on._`
   }
-  return `Open Notifai on your ${deviceNoun(devices[0]!)} so it can finish connecting, then tell me when that's done.`
-}
-
-export function deviceNoun(device: RoutableDevice): string {
-  switch (device.platform) {
-    case 'ios': return 'iPhone'
-    case 'android': return 'phone'
-    case 'macos': return 'Mac'
-    default: return 'computer'
-  }
+  return `**Open Notifai** on your ${deviceNoun(devices[0]!.platform)} so it can finish connecting.\n\n_I'll carry on once it's connected._`
 }
 
 export function deviceCanReceive(device: RoutableDevice): boolean {

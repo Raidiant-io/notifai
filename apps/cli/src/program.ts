@@ -351,6 +351,9 @@ export function buildProgram(deps: CommandDeps, options: BuildProgramOptions = {
     )
     .option('--project-id <id>', 'Project identifier slug, saved for this project on this machine (default: derived from the directory name)')
     .option('--json', 'machine-readable final readiness; never prompts')
+    .option('--apps <ids>', 'agent apps to connect: comma-separated ids (claude-code, codex, cursor, opencode, openclaw, hermes, grok) or `detected`; hooks, the skill and command approval go into them without asking')
+    .option('--wait <seconds>', 'with --json: keep waiting up to this long while the next step is the User\'s (approval, phone, notifications, plan)')
+    .option('--no-open', 'never open a setup page in this computer\'s browser')
     .option('--approval <route>', 'computer approval route: qr (default), notification, or browser')
     .option('--approval-email <email>', 'Account email for the selected notification approval route')
     .option('--skills', 'install/update the agent skill bundled with this CLI')
@@ -368,6 +371,9 @@ export function buildProgram(deps: CommandDeps, options: BuildProgramOptions = {
     .option('--no-codex-commands', 'leave Codex command approval as it is without being asked')
     .action(
       async (opts: {
+        apps?: string
+        wait?: string
+        open?: boolean
         approval?: string
         approvalEmail?: string
         projectId?: string

@@ -25,6 +25,11 @@ export interface SetupProofRecord {
   companion_receipt:
     | { state: 'unknown'; observed_at: null }
     | { state: 'observed'; observed_at: string }
+  /**
+   * The push service refused it. Setup sends it once more, after the device
+   * is seen again (`retried`), and never a third time.
+   */
+  rejected?: { at: string; retried: boolean }
 }
 
 function setupProofPath(deps: CommandDeps): string | null {
@@ -62,11 +67,15 @@ export function readSetupProof(deps: CommandDeps): SetupProofRecord | null {
         ? { state: 'observed' as const, observed_at: receipt.observed_at }
         : null
     if (companionReceipt === null) return null
+    const rejected = parsed.rejected
     return {
       request_id: parsed.request_id,
       device_id: parsed.device_id,
       started_at: parsed.started_at,
       companion_receipt: companionReceipt,
+      ...(typeof rejected?.at === 'string' && typeof rejected.retried === 'boolean'
+        ? { rejected: { at: rejected.at, retried: rejected.retried } }
+        : {}),
     }
   } catch {
     // Corrupt local evidence is not readiness. A fresh proof replaces it.

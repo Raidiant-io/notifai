@@ -32,6 +32,18 @@ export interface PendingPairing {
   poll_verifier: string
   expires_at: string
   poll_interval_seconds: number
+  /** Setup opened `approve_url` in this computer's browser; it is not opened again. */
+  browser_opened?: boolean
+  /** Setup started this approval because an earlier code could not be kept open. */
+  renewed?: boolean
+  /**
+   * When setup's current wait for this approval began: when the approval
+   * (or the code it replaced) was created, or when a run after a stop started
+   * waiting again. Setup stops 90 minutes after it.
+   */
+  wait_started_at?: string
+  /** Setup stopped waiting for this approval; the next run waits afresh. */
+  wait_stopped?: boolean
 }
 
 export function pendingPairingPath(

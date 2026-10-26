@@ -657,10 +657,10 @@ it('resumes the same init after a required CLI update becomes current', async ()
 
 
 
-  it('asks about hooks, command approval and the skill before the setup notification', async () => {
+  it('asks only which agent apps to connect, then sets them up without asking before the setup notification', async () => {
     const cwd = mkdtempSync(path.join(os.tmpdir(), 'init-offers-before-proof-'))
     const io = new InteractiveIo()
-    io.confirmAnswer = false
+    io.multiselectAnswer = ['claude-code']
     const client = {
       health: async () => true,
       compatibility: async () => currentCompatibility,
@@ -673,21 +673,21 @@ it('resumes the same init after a required CLI update becomes current', async ()
       evidence: async () =>
         setupEvidence('req_offers', { state: 'observed', observed_at: '2026-08-18T18:00:02.000Z', latency_ms: 1_000 }),
     } as unknown as ApiClient
-    const deps = { ...makeDeps(io, client), cwd, env: isolatedEnv(cwd) }
+    const env = isolatedEnv(cwd)
+    const deps = { ...makeDeps(io, client), cwd, env }
 
-    await initCommand(deps, {})
+    // This test build has no bundled skill installer; the skill is covered elsewhere.
+    expect(await initCommand(deps, { skills: false })).toBe(EXIT.ok)
 
-    const proof = io.prompts.indexOf('<proof sent>')
-    const hooks = io.prompts.findIndex((prompt) => prompt.startsWith('Connect your agents to Notifai'))
-    const skill = io.prompts.findIndex((prompt) => prompt.startsWith('Give your agents the Notifai skill'))
-    expect(hooks).toBeGreaterThanOrEqual(0)
-    expect(skill).toBeGreaterThan(hooks)
-    expect(proof).toBeGreaterThan(skill)
-    // Each question once: a no is never asked again later in the run.
-    expect(io.prompts.filter((prompt) => prompt.startsWith('Connect your agents to Notifai'))).toHaveLength(1)
-    expect(io.prompts.filter((prompt) => prompt.startsWith('Give your agents the Notifai skill'))).toHaveLength(1)
-    // A no in this run is not offered straight back by the close.
-    expect(io.outLines.join('\n')).not.toContain('install the skill')
+    // One question, before anything else, and nothing asked after it.
+    expect(io.prompts).toEqual(['Connect Notifai to which agent apps?', '<proof sent>'])
+    expect(findInstallations(env, deps.hookAdapterHome).map((item) => item.harness)).toEqual(['claude-code'])
+    const settings = JSON.parse(readFileSync(settingsFile('claude-code', env), 'utf8')) as { permissions?: { allow?: string[] } }
+    expect(settings.permissions?.allow).toContain('Bash(notifai init *)')
+    const done = io.notes.find((note) => note.title === 'Notifai is set up for user@example.test')
+    expect(done?.message).toContain('To start: Claude Code: open a new session')
+    expect(done?.message).toContain("Claude Code can now run Notifai's commands without asking.")
+    expect(io.outros).toEqual(['All set ✨'])
   })
 
   /** A phone that is installed during the run once `installed` returns true. */
@@ -723,30 +723,32 @@ it('resumes the same init after a required CLI update becomes current', async ()
     return { io, deps, clock: () => clock }
   }
 
-  it('asks about hooks and the skill before the phone step and the setup notification, once each', async () => {
+  it('sends an already connected computer to the browser\'s phone steps, after the apps question', async () => {
     let clockAtStart: (() => number) | null = null
     const { io, deps, clock } = phoneStepInit(() => clockAtStart !== null && clockAtStart() > 0)
     clockAtStart = clock
+    io.multiselectAnswer = []
     await initCommand(deps, {})
-    const platform = io.prompts.indexOf('Where do you want to receive notifications?')
     const phone = io.prompts.indexOf('<phone ready>')
-    const hooks = io.prompts.findIndex((prompt) => prompt.startsWith('Connect your agents to Notifai'))
     const proof = io.prompts.indexOf('<proof sent>')
-    expect(io.notes.some((note) => note.title === 'Get Notifai on your iPhone')).toBe(true)
-    expect(hooks).toBeGreaterThanOrEqual(0)
-    expect(platform).toBeGreaterThan(hooks)
-    expect(phone).toBeGreaterThan(platform)
+    expect(io.prompts[0]).toBe('Connect Notifai to which agent apps?')
+    expect(io.prompts).not.toContain('Where do you want to receive notifications?')
+    expect(io.openedUrls).toEqual(['https://test.notifai.invalid/setup/phone?email=user%40example.test&machine=mac_test&name=test-machine'])
+    expect(io.outLines).toContain('Opened your browser to set up your phone.')
+    expect(phone).toBeGreaterThan(0)
     expect(proof).toBeGreaterThan(phone)
-    expect(io.prompts.filter((prompt) => prompt.startsWith('Connect your agents to Notifai'))).toHaveLength(1)
   })
 
-  it('still asks about hooks and the skill when the phone step is left unfinished', async () => {
-    const { io, deps } = phoneStepInit(() => false)
-    await initCommand(deps, {})
-    expect(io.prompts.some((prompt) => prompt.startsWith('Keep waiting'))).toBe(true)
-    expect(io.prompts.filter((prompt) => prompt.startsWith('Connect your agents to Notifai'))).toHaveLength(1)
+  it('stops waiting for the phone after 30 minutes without progress and says what is left', async () => {
+    const { io, deps, clock } = phoneStepInit(() => false)
+    io.multiselectAnswer = []
+    expect(await initCommand(deps, {})).toBe(EXIT.failed)
+    expect(clock()).toBeGreaterThanOrEqual(30 * 60_000)
+    expect(clock()).toBeLessThan(31 * 60_000)
+    expect(io.prompts.some((prompt) => prompt.startsWith('Keep waiting'))).toBe(false)
     expect(io.prompts).not.toContain('<proof sent>')
-    expect(io.outLines.join('\n')).toContain('Next: Your devices')
+    const left = io.notes.find((note) => note.title === 'Almost there. Set up for user@example.test, except your phone.')
+    expect(left?.message).toContain('https://test.notifai.invalid/setup/phone?email=user%40example.test&machine=mac_test')
   })
 
   it('reports a rejected setup notification instead of claiming setup is done', async () => {
@@ -768,7 +770,65 @@ it('resumes the same init after a required CLI update becomes current', async ()
     expect(result.ready).toBe(false)
     const proof = result.states.find((state) => state.id === 'proof')
     expect(proof?.status).toBe('gap')
-    expect(proof?.message).toContain("couldn't receive a test notification")
+    expect(proof?.message).toContain("couldn't get the test notification")
+  })
+
+  it('sends a refused setup notification once more only after the phone reconnects, and never a third time', async () => {
+    const cwd = mkdtempSync(path.join(os.tmpdir(), 'init-rejected-retry-'))
+    const io = new CapturedIo()
+    let clock = Date.parse('2026-08-05T18:00:00.000Z')
+    let device = { ...readyIphone }
+    const submit = vi.fn(async () => ({ ...setupReceipt('req_rejected'), overall: 'provider_rejected_all' }))
+    const client = {
+      health: async () => true,
+      compatibility: async () => currentCompatibility,
+      listDevices: async () => ({ devices: [device] }),
+      accessStatus: async () => ({ status: 'active', reason: 'alpha_grant', expires_at: null, email: 'user@example.test' }),
+      setupNotification: async () => ({ sent_at: submit.mock.calls.length > 0 ? new Date(clock).toISOString() : null }),
+      submit,
+    } as unknown as ApiClient
+    const deps = { ...makeDeps(io, client), cwd, env: isolatedEnv(cwd), now: () => clock, sleep: async (ms: number) => { clock += ms } }
+    const run = async () => {
+      io.outLines.length = 0
+      await initCommand(deps, { hooks: false, skills: false, json: true, wait: 120 })
+      return JSON.parse(io.outLines.at(-1) ?? '{}') as { waiting: boolean; message: string | null }
+    }
+    const first = await run()
+    expect(first.message).toContain("couldn't get the test notification. **Open Notifai on it**")
+    expect(submit).toHaveBeenCalledTimes(1)
+    // Reruns and minutes of waiting send nothing while the phone stays away.
+    expect(await run()).toMatchObject({ waiting: true, message: null })
+    expect(submit).toHaveBeenCalledTimes(1)
+    // The phone reconnects: one retry.
+    device = { ...readyIphone, last_seen_at: new Date(clock + 1_000).toISOString() }
+    clock += 2_000
+    const retried = await run()
+    expect(submit).toHaveBeenCalledTimes(2)
+    expect(retried.waiting).toBe(false)
+    device = { ...readyIphone, last_seen_at: new Date(clock + 1_000).toISOString() }
+    clock += 2_000
+    await run()
+    expect(submit).toHaveBeenCalledTimes(2)
+  })
+
+  it('sends no setup notification when the browser already sent one for this computer', async () => {
+    const cwd = mkdtempSync(path.join(os.tmpdir(), 'init-sent-elsewhere-'))
+    const io = new CapturedIo()
+    const submit = vi.fn(async () => setupReceipt('req_never'))
+    const client = {
+      health: async () => true,
+      compatibility: async () => currentCompatibility,
+      listDevices: async () => ({ devices: [readyIphone] }),
+      accessStatus: async () => ({ status: 'active', reason: 'alpha_grant', expires_at: null, email: 'user@example.test' }),
+      setupNotification: async () => ({ sent_at: '2026-08-05T17:59:00.000Z' }),
+      submit,
+    } as unknown as ApiClient
+    const deps = { ...makeDeps(io, client), cwd, env: isolatedEnv(cwd) }
+    expect(await initCommand(deps, { hooks: false, skills: false, json: true, wait: 30 })).toBe(EXIT.ok)
+    const result = JSON.parse(io.outLines.at(-1) ?? '{}') as { message: string; states: { id: string; status: string }[] }
+    expect(submit).not.toHaveBeenCalled()
+    expect(result.states.find((state) => state.id === 'proof')?.status).toBe('ready')
+    expect(result.message).toContain('✅ **Notifai is set up**')
   })
 
   /** A ready phone whose app never confirms the setup notification. */
@@ -929,13 +989,17 @@ it('resumes the same init after a required CLI update becomes current', async ()
     expect(submit).not.toHaveBeenCalled()
   })
 
-  it('asks about hooks, command approval and the skill before stopping at the plan', async () => {
+  it('waits for the plan at the terminal, then stops after 30 minutes with what is left', async () => {
     const io = new InteractiveIo()
-    io.confirmAnswer = false
+    io.multiselectAnswer = []
     const { submit, deps } = noPlanInit([readyIphone], io)
-    await initCommand(deps, {})
-    expect(io.prompts.some((prompt) => prompt.startsWith('Connect your agents to Notifai'))).toBe(true)
-    expect(io.outLines.join('\n')).toContain('Next: Plan')
+    let clock = 0
+    const timed = { ...deps, now: () => clock, sleep: async (ms: number) => { clock += ms } }
+    expect(await initCommand(timed, {})).toBe(EXIT.failed)
+    expect(io.outLines).toContain('Last step: choose a plan in the Notifai app on your phone.')
+    expect(io.spinnerEvents).toContain('start:Waiting for your plan…')
+    expect(clock).toBeGreaterThanOrEqual(30 * 60_000)
+    expect(io.notes.some((note) => note.title === 'Almost there. Set up for new@example.com, except your plan.')).toBe(true)
     expect(submit).not.toHaveBeenCalled()
   })
 
@@ -950,6 +1014,316 @@ it('resumes the same init after a required CLI update becomes current', async ()
   })
 })
 
+describe('guided setup', () => {
+  const phone = {
+    device_id: 'dev_iphone', display_name: 'iPhone', platform: 'ios' as const, permission_status: 'authorized',
+    registration_healthy: true, app_version: '1.1.3', app_build: '1', os_version: '19.0', capabilities: ['answer'] as const,
+    support: currentSupport, support_state: 'current' as const, derived_status: 'working' as const, status_message: null,
+    last_seen_at: '2026-10-26T12:00:00.000Z',
+  }
+
+  /** A computer setup run from scratch against a fake service with a clock. */
+  function journey(options: { connected?: boolean; devices?: () => unknown[]; plan?: () => boolean; approveAt?: number | null; tooOld?: boolean } = {}) {
+    const cwd = mkdtempSync(path.join(os.tmpdir(), 'init-guided-'))
+    const env = isolatedEnv(cwd)
+    let clock = Date.parse('2026-10-26T12:00:00.000Z')
+    let credential: { machineId: string; secret: string; baseUrl: string; machineName: string } | null = options.connected === true
+      ? { machineId: 'mac_test', secret: 'test-secret', baseUrl: 'https://test.notifai.invalid', machineName: 'MacBook Pro' }
+      : null
+    const begun: unknown[] = []
+    const extended: number[] = []
+    let expiresAt = clock + 30 * 60_000
+    const startedAt = clock
+    const client = {
+      health: async () => true,
+      compatibility: async () => currentCompatibility,
+      beginPairing: async (body: unknown) => {
+        begun.push(body)
+        expiresAt = clock + 30 * 60_000
+        return { pairing_id: 'pair_1', code: 'W5Z-CZN', approve_url: 'https://app.notifai.sh/approve?code=W5Z-CZN',
+          expires_at: new Date(expiresAt).toISOString(), poll_interval_seconds: 3 }
+      },
+      extendPairing: async () => {
+        if (options.tooOld === true) throw new ApiCallError(410, 'pairing_too_old', 'This approval is too old to keep open.')
+        extended.push(clock)
+        expiresAt = clock + 30 * 60_000
+        return { pairing_id: 'pair_1', code: 'W5Z-CZN', approve_url: 'https://app.notifai.sh/approve?code=W5Z-CZN',
+          expires_at: new Date(expiresAt).toISOString(), poll_interval_seconds: 3 }
+      },
+      pollPairing: async () => {
+        if (options.approveAt !== undefined && options.approveAt !== null && clock - startedAt >= options.approveAt) {
+          return { status: 'approved', machine_id: 'mac_test' }
+        }
+        return { status: clock > expiresAt ? 'expired' : 'pending' }
+      },
+      listDevices: async () => ({ devices: options.devices?.() ?? [] }),
+      accessStatus: async () => ({
+        status: options.plan?.() === false ? 'no_active_plan' : 'active',
+        reason: 'alpha_grant', expires_at: null, email: 'you@example.com',
+      }),
+      submit: async () => ({ ...receipt, request_id: 'req_setup' }),
+      evidence: async () => { throw new NetworkError('offline') },
+      requestPairingNotification: async () => ({ ok: true }),
+    } as unknown as ApiClient
+    const io = new CapturedIo()
+    const deps: CommandDeps = {
+      ...makeDeps(io, client),
+      cwd,
+      env,
+      store: {
+        load: () => credential,
+        save: (saved) => { credential = saved },
+        clear: () => { credential = null },
+        describe: () => 'test credential store',
+      },
+      now: () => clock,
+      sleep: async (ms: number) => { clock += Math.max(ms, 1) },
+    }
+    const run = async (flags: Record<string, unknown> = {}) => {
+      io.outLines = []
+      const code = await initCommand(deps, { json: true, hooks: false, skills: false, ...flags })
+      return { code, result: JSON.parse(io.outLines.join('\n')) as {
+        ready: boolean; message: string | null; waiting: boolean; stopped: boolean
+        states: { id: string; status: string; technical: Record<string, unknown> | null }[]
+      } }
+    }
+    return { io, deps, run, begun, extended, elapsed: () => clock - startedAt, later: (ms: number) => { clock += ms } }
+  }
+
+  it('asks which agent apps to connect before anything else, once, and never for an agent that chose the older flags', async () => {
+    const { deps, io } = journey({ connected: true, devices: () => [phone] })
+    mkdirSync(path.join(deps.env['HOME']!, '.codex'), { recursive: true })
+    await initCommand(deps, { json: true })
+    const result = JSON.parse(io.outLines.join('\n')) as { message: string; states: { id: string; status: string; technical: unknown }[] }
+    expect(result.states[0]).toMatchObject({ id: 'apps', status: 'gap', technical: {
+      supported: expect.arrayContaining([{ id: 'claude-code', name: 'Claude Code' }, { id: 'codex', name: 'Codex' }]),
+      detected: ['codex'],
+    } })
+    expect(result.message).toBe('Connect Notifai to these agent apps? Found on this computer: Codex. Keep these or pick others.')
+
+    io.outLines = []
+    await initCommand(deps, { json: true, hooks: false, skills: false })
+    const legacy = JSON.parse(io.outLines.join('\n')) as { states: { id: string }[] }
+    expect(legacy.states.map((state) => state.id)).not.toContain('apps')
+
+    // "No apps" is an answer: a later plain run does not ask again.
+    io.outLines = []
+    await initCommand(deps, { json: true })
+    const later = JSON.parse(io.outLines.join('\n')) as { states: { id: string }[] }
+    expect(later.states.map((state) => state.id)).not.toContain('apps')
+  })
+
+  it('opens the approval page once, says so once, and keeps the same code open while the agent waits', async () => {
+    const test = journey()
+    const first = await test.run({ wait: 240 })
+    expect(first.result.waiting).toBe(true)
+    expect(first.result.message).toBe('**Connect this computer**: code **W5Z-CZN**\n\n' +
+      'Finish in the browser I opened ([link](https://app.notifai.sh/approve?code=W5Z-CZN#confirmation_secret=' +
+      `${first.result.message!.match(/confirmation_secret=([^)]+)\)/)![1]}) if it didn't open), or scan this with the Notifai app:`)
+    const pairing = first.result.states.find((state) => state.id === 'credential')!.technical!['pairing'] as Record<string, unknown>
+    expect(pairing['qr_text_path']).toEqual(expect.any(String))
+    expect(test.io.openedUrls).toHaveLength(1)
+
+    // Reruns wait out their --wait without repeating anything, renewing before the code lapses.
+    for (let i = 0; i < 10; i += 1) {
+      const again = await test.run({ wait: 240 })
+      expect(again.result).toMatchObject({ waiting: true, message: null, stopped: false })
+    }
+    expect(test.elapsed()).toBeGreaterThanOrEqual(40 * 60_000)
+    expect(test.extended.length).toBeGreaterThanOrEqual(1)
+    expect(test.begun).toHaveLength(1)
+    expect(test.io.openedUrls).toHaveLength(1)
+  })
+
+  it('stops after 90 minutes without approval, with the "almost there" message', async () => {
+    const test = journey()
+    await test.run({ wait: 3600 })
+    let last = await test.run({ wait: 3600 })
+    let reruns = 1
+    while (!last.result.stopped && reruns < 5) { last = await test.run({ wait: 3600 }); reruns += 1 }
+    expect(reruns).toBe(2)
+    expect(last.result).toMatchObject({ stopped: true, waiting: false,
+      message: "This computer wasn't approved in 90 minutes, so I've stopped. **Tell me when you want to try again.**" })
+    expect(test.elapsed()).toBeLessThanOrEqual(91 * 60_000)
+  })
+
+  it('counts the 90 minutes from when the approval began, through a paused agent, and waits afresh when asked again', async () => {
+    const test = journey()
+    await test.run({ wait: 60 })
+    // Long enough for the agent's setup run to start over; the approval's wait does not.
+    test.later(80 * 60_000)
+    // A fresh run says the code again, then waits only what is left of the 90 minutes.
+    await test.run({ wait: 3600 })
+    const stopped = await test.run({ wait: 3600 })
+    expect(stopped.result.stopped).toBe(true)
+    expect(test.elapsed()).toBeLessThanOrEqual(91 * 60_000)
+    // The User asks again: the same code, a new wait.
+    const again = await test.run({ wait: 0 })
+    expect(again.result).toMatchObject({ stopped: false, waiting: true })
+    expect(again.result.message).toContain('code **W5Z-CZN**')
+    expect(test.begun).toHaveLength(1)
+  })
+
+  it('refuses --wait without --json, where it would do nothing', async () => {
+    const test = journey()
+    expect(await initCommand(test.deps, { wait: 60 })).toBe(EXIT.usage)
+    expect(test.io.errLines.join('\n')).toContain('`--wait` works with `--json`')
+    expect(test.begun).toHaveLength(0)
+  })
+
+  it('names a replacement code once at the terminal', async () => {
+    const test = journey({ tooOld: true })
+    const io = new InteractiveIo()
+    io.multiselectAnswer = []
+    await initCommand({ ...test.deps, io }, { skills: false })
+    expect(test.begun.length).toBeGreaterThanOrEqual(2)
+    expect(io.outLines.filter((line) => /(Code|New one): W5Z-CZN/.test(line))).toHaveLength(test.begun.length)
+    expect(io.outLines.filter((line) => line.startsWith('That code expired. New one: W5Z-CZN'))).toHaveLength(test.begun.length - 1)
+  })
+
+  it('ends a terminal setup whose phone has notifications off with the same done message an agent gets', async () => {
+    const denied = { ...phone, permission_status: 'denied' }
+    const test = journey({ connected: true, devices: () => [denied] })
+    const io = new InteractiveIo()
+    io.multiselectAnswer = []
+    await initCommand({ ...test.deps, io }, { skills: false })
+    const done = io.notes.find((note) => note.title === 'Notifai is set up for you@example.com')
+    expect(done?.message).toContain('⚠ Notifications are off on your iPhone: Settings → Notifai → Notifications')
+    expect(io.notes.find((note) => note.title === 'Ready')).toBeUndefined()
+  })
+
+  it('names the Account once approved, then leaves the phone to the approval page it opened', async () => {
+    const test = journey({ approveAt: 60_000 })
+    await test.run({ wait: 240 })
+    const connected = await test.run({ wait: 240 })
+    expect(connected.result.message).toBe("✓ **Connected** to **you@example.com**.\n\n_Not your Account? Tell me and I'll disconnect it._\n\n" +
+      'Now your phone: follow the page in your browser.')
+    expect(connected.result.waiting).toBe(true)
+    // The approval page already walks the phone steps: no second page.
+    expect(test.io.openedUrls).toHaveLength(1)
+  })
+
+  it('gives the store links after an approval no browser page of its own walks on', async () => {
+    const test = journey({ approveAt: 60_000 })
+    await test.run({ wait: 240, open: false })
+    const connected = await test.run({ wait: 240, open: false })
+    expect(connected.result.message).toBe("✓ **Connected** to **you@example.com**.\n\n_Not your Account? Tell me and I'll disconnect it._\n\n" +
+      '**Now get Notifai on your phone**\n\n- iPhone: [App Store](https://apps.apple.com/app/id6799027730)\n' +
+      '- Android: [free test](https://app.notifai.sh/test-android)\n\nSign in as **you@example.com** and allow notifications.\n\n' +
+      "_I'll carry on once your phone is connected._")
+  })
+
+  it('opens nothing for an approval notification', async () => {
+    const test = journey()
+    const result = (await test.run({ wait: 0, approval: 'notification', approvalEmail: 'you@example.com' })).result
+    expect(test.io.openedUrls).toEqual([])
+    expect(result.message).toContain('Open this on your computer: [link](https://app.notifai.sh/approve?code=W5Z-CZN')
+  })
+
+  it('replaces a code it can no longer keep open with the expired message, in a new tab', async () => {
+    const test = journey({ tooOld: true })
+    await test.run({ wait: 0 })
+    test.later(31 * 60_000)
+    const renewed = (await test.run({ wait: 60 })).result
+    expect(test.begun).toHaveLength(2)
+    expect(renewed.message).toMatch(/^That code expired\. New one: \*\*W5Z-CZN\*\*\. Finish in the browser tab I just opened \(\[link\]\(https:\/\/app\.notifai\.sh\/approve\?code=W5Z-CZN#confirmation_secret=[^)]+\) if it didn't open\)\.\n\n_Or scan this with the Notifai app:_$/)
+    expect(test.io.openedUrls).toHaveLength(2)
+  })
+
+  it('opens the phone steps for an already connected computer, once, and stops after 30 minutes with what is left', async () => {
+    const test = journey({ connected: true })
+    const first = await test.run({ wait: 240 })
+    const url = 'https://test.notifai.invalid/setup/phone?email=you%40example.com&machine=mac_test&name=MacBook+Pro'
+    expect(test.io.openedUrls).toEqual([url])
+    expect(first.result.message).toBe(`**This computer is already connected** to **you@example.com**. Now your phone: finish in the browser I opened ([link](${url}) if it didn't open).\n\n_I'll carry on once it's done._`)
+    let last = await test.run({ wait: 240 })
+    expect(last.result).toMatchObject({ waiting: true, message: null })
+    while (!last.result.stopped) last = await test.run({ wait: 240 })
+    expect(test.elapsed()).toBeLessThanOrEqual(31 * 60_000)
+    expect(last.result.message).toContain('**Almost there.** This computer and your agent apps are set up for **you@example.com**.')
+    // Finishing later in the app sends nothing, so the stop promises nothing.
+    expect(last.result.message).not.toContain('test notification')
+    expect(test.io.openedUrls).toEqual([url])
+    // The next run starts fresh and says it again.
+    expect((await test.run({ wait: 0 })).result.message).toContain('This computer is already connected')
+  })
+
+  it('never opens a page over SSH or with --no-open, and says where to open it instead', async () => {
+    const test = journey()
+    test.deps.env['SSH_CONNECTION'] = '10.0.0.2 50000 10.0.0.3 22'
+    const result = (await test.run({ wait: 0 })).result
+    expect(test.io.openedUrls).toEqual([])
+    expect(result.message).toContain('Open this on your computer: [link](https://app.notifai.sh/approve?code=W5Z-CZN')
+    const local = journey()
+    await local.run({ wait: 0, open: false })
+    expect(local.io.openedUrls).toEqual([])
+  })
+
+  it('waits for a phone that is deciding on notifications, then finishes without them and says so', async () => {
+    const undecided = { ...phone, permission_status: 'not_determined' }
+    const test = journey({ connected: true, devices: () => [undecided] })
+    const first = await test.run({ wait: 240 })
+    expect(first.result).toMatchObject({ waiting: true, message: "Open Notifai on your iPhone and **allow notifications**.\n\n_I'll carry on once they're on._" })
+    const done = await test.run({ wait: 240 })
+    expect(test.elapsed()).toBeGreaterThanOrEqual(2 * 60_000)
+    expect(done.result.ready).toBe(true)
+    expect(done.result.waiting).toBe(false)
+    expect(done.result.message).toContain('⚠️ **Notifications are off on your iPhone**, so nothing will pop up. Turn them on: Settings → Notifai → Notifications.')
+  })
+
+  it('waits for the plan and ends with the done message once it is active', async () => {
+    let active = false
+    const test = journey({ connected: true, devices: () => [phone], plan: () => active })
+    const first = await test.run({ wait: 240 })
+    expect(first.result.message).toContain('**Last step: choose a plan** in the Notifai app on your phone.')
+    active = true
+    const done = await test.run({ wait: 240 })
+    expect(done.result.ready).toBe(true)
+    expect(done.result.message).toMatch(/^✅ \*\*Notifai is set up\*\* for \*\*you@example.com\*\*\. You can answer your agents from your phone\.$/)
+  })
+
+  it('walks a person at the terminal through approval and the phone, naming the Account', async () => {
+    const test = journey({ approveAt: 30_000 })
+    const io = new InteractiveIo()
+    io.selectAnswer = 'iphone'
+    io.multiselectAnswer = []
+    const deps = { ...test.deps, io }
+    await initCommand(deps, { skills: false })
+    expect(io.openedUrls[0]).toMatch(/^https:\/\/app\.notifai\.sh\/approve\?code=W5Z-CZN#confirmation_secret=/)
+    expect(io.outLines).toContain('Opened your browser to connect this computer. Code: W5Z-CZN')
+    expect(io.spinnerEvents).toContain('stop:Connected to you@example.com as "' + defaultMachineName(os.hostname()) + '".')
+    expect(io.outLines).toContain('  Not your Account? Run notifai logout --revoke')
+    expect(io.prompts).not.toContain('How do you want to approve it?')
+    // Approved on the page setup opened: that page walks the phone, so no store QR here.
+    expect(io.outLines).toContain('Now your phone: follow the page in your browser.')
+    expect(io.prompts).not.toContain('Where do you want to receive notifications?')
+    expect(io.notes.find((n) => n.title === 'Get Notifai on your iPhone')).toBeUndefined()
+    expect(io.openedUrls).toHaveLength(1)
+
+    // Nothing opened (SSH, --no-open): the phone app comes from the store QR.
+    const remote = journey({ approveAt: 30_000 })
+    const remoteIo = new InteractiveIo()
+    remoteIo.selectAnswer = 'iphone'
+    remoteIo.multiselectAnswer = []
+    await initCommand({ ...remote.deps, io: remoteIo }, { skills: false, open: false })
+    const note = remoteIo.notes.find((n) => n.title === 'Get Notifai on your iPhone')
+    expect(note?.message).toContain((await terminalQr(COMPANION_INSTALL_URLS.iphone)).trimEnd())
+  })
+
+  it('moves a terminal on to the plan once a Companion App is only waiting for it', async () => {
+    let calls = 0
+    // A desktop app allowed notifications but cannot finish connecting without a plan.
+    const desktop = { ...phone, device_id: 'dev_desktop', display_name: 'Mac app', platform: 'macos' as const, registration_healthy: false }
+    const test = journey({ connected: true, plan: () => false, devices: () => (++calls > 3 ? [desktop] : []) })
+    const io = new InteractiveIo()
+    io.multiselectAnswer = []
+    await initCommand({ ...test.deps, io }, { skills: false })
+    expect(io.spinnerEvents).toContain('stop:Mac app is set up; it receives once your plan is active')
+    expect(io.outLines).toContain('Last step: choose a plan in the Notifai app on your phone.')
+    expect(io.spinnerEvents.some((event) => event.startsWith('error:Stopped waiting for your phone'))).toBe(false)
+  })
+})
+
 describe('the phone install hand-off', () => {
   const noDevicesClient = () => ({
     health: async () => true,
@@ -957,32 +1331,6 @@ describe('the phone install hand-off', () => {
     listDevices: async () => ({ devices: [] }),
     accessStatus: async () => ({ status: 'active', reason: 'alpha_grant', expires_at: null, email: 'user@example.test' }),
   }) as unknown as ApiClient
-
-  it('shows a QR straight to the store and opens nothing on this computer', async () => {
-    const cwd = mkdtempSync(path.join(os.tmpdir(), 'init-phone-qr-'))
-    const io = new InteractiveIo()
-    io.selectAnswer = 'iphone'
-    io.confirmAnswer = false
-    let clock = 0
-    const deps = {
-      ...makeDeps(io, noDevicesClient()),
-      cwd,
-      env: isolatedEnv(cwd),
-      now: () => clock,
-      sleep: async (ms: number) => { clock += ms },
-    }
-
-    await initCommand(deps, {})
-
-    expect(io.openedUrls).toEqual([])
-    const note = io.notes.find((n) => n.title === 'Get Notifai on your iPhone')
-    expect(note).toBeDefined()
-    const lines = note!.message.split('\n')
-    expect(lines.at(-1)).toBe(
-      "Scan with your phone's camera to get Notifai, then sign in with user@example.test and allow notifications.",
-    )
-    expect(note!.message).toContain((await terminalQr(COMPANION_INSTALL_URLS.iphone)).trimEnd())
-  })
 
   it('gives every gap in init --json the exact line to relay', async () => {
     const cwd = mkdtempSync(path.join(os.tmpdir(), 'init-relay-messages-'))
@@ -1015,19 +1363,21 @@ describe('the phone install hand-off', () => {
     expect(deviceRelayMessage({ email: null, devices: [phone({ platform: 'ios', permission_status: 'denied' })] }))
       .toContain('Settings → Notifai → Notifications')
     expect(deviceRelayMessage({ email: null, devices: [phone({ permission_status: 'not_determined' })] }))
-      .toBe("Open Notifai on your phone and allow notifications when it asks. Tell me when that's done.")
+      .toBe("Open Notifai on your Android phone and **allow notifications**.\n\n_I'll carry on once they're on._")
     expect(deviceRelayMessage({ email: null, devices: [phone({ registration_healthy: false })] }))
-      .toBe("Open Notifai on your phone so it can finish connecting, then tell me when that's done.")
+      .toBe("**Open Notifai** on your Android phone so it can finish connecting.\n\n_I'll carry on once it's connected._")
   })
 
   it('relays the prepared lines a gap already carries, and says something for any other gap', () => {
     expect(relayMessage({ id: 'credential', title: 'This machine', status: 'gap', detail: 'x', technical: { pairing: { message: 'Scan it.' } } }))
       .toBe('Scan it.')
     expect(relayMessage({ id: 'credential', title: 'This machine', status: 'gap', detail: 'x', technical: { pairing_outcome: 'denied' } }))
-      .toContain('You declined')
+      .toBe('Stopped: you declined this computer. Ask me anytime to try again.')
+    expect(relayMessage({ id: 'credential', title: 'This machine', status: 'gap', detail: 'x', technical: { pairing_outcome: 'stopped' } }))
+      .toContain("wasn't approved in 90 minutes")
     expect(relayMessage({ id: 'server', title: 'Service', status: 'gap', detail: 'x' })).toContain("I can't reach Notifai")
-    expect(relayMessage({ id: 'auth', title: 'Plan', status: 'gap', detail: 'x', technical: { plan_required: true, access_url: 'https://plans.example' } }))
-      .toBe('Notifai needs an active plan to deliver notifications. Choose one at https://plans.example, then ask me to finish setting up.')
+    expect(relayMessage({ id: 'auth', title: 'Plan', status: 'gap', detail: 'x', technical: { plan_required: true, access_url: 'https://app.example/plans' } }))
+      .toBe('**Last step: choose a plan** in the Notifai app on your phone.\n\n_Or on the web: [app.example/plans](https://app.example/plans)_\n\nI\'ll send you a test notification as soon as it\'s active.')
     expect(relayMessage({
       id: 'hooks-codex', title: 'Codex', status: 'optional-gap', detail: 'x',
       remedy: { by: 'user-here', summary: 's', command: 'c', user_action: { code: 'c', harness: 'codex', action: 'a', message: 'Type /hooks.' } },

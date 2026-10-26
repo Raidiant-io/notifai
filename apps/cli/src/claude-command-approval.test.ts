@@ -6,11 +6,11 @@ claudeCommandReadiness
 } from './claude-command-approval.js'
 
 describe('Claude Code command rules', () => {
-  it('covers sending, asking, reading and acknowledging, and nothing that changes setup', () => {
-    for (const command of ['send', 'ask', 'receive', 'acknowledge', 'status', 'replies', 'close']) {
+  it('covers sending, asking, reading, acknowledging and rerunning setup, and nothing that changes configuration', () => {
+    for (const command of ['send', 'ask', 'receive', 'acknowledge', 'status', 'replies', 'close', 'init']) {
       expect(CLAUDE_COMMAND_RULES.some((rule) => rule.startsWith(`Bash(notifai ${command}`))).toBe(true)
     }
-    for (const command of ['init', 'config', 'logout', 'auth', 'hooks', 'logs', 'update', 'project', 'guidance set', 'doctor']) {
+    for (const command of ['config', 'logout', 'auth', 'hooks', 'logs', 'update', 'project', 'guidance set', 'doctor']) {
       expect(CLAUDE_COMMAND_RULES.some((rule) => rule.startsWith(`Bash(notifai ${command} `) || rule === `Bash(notifai ${command})`)).toBe(false)
     }
     expect(CLAUDE_COMMAND_RULES.every((rule) => /^Bash\(notifai [a-z ]+( \*)?\)$/.test(rule))).toBe(true)
