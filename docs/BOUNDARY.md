@@ -8,29 +8,29 @@ everything in this repository is fully known.**
 
 ## What belongs here
 
-- `apps/cli` — CLI source, its unit tests, hook adapters for agent
-  harnesses, configuration and credential-store handling, and user-facing
-  documentation.
+- `apps/cli` — CLI source, its native launcher (`apps/cli/launcher`), unit
+  tests, hook adapters for agent harnesses, configuration and credential-store
+  handling, and user-facing documentation.
+- `apps/cli/npm` — the npm launcher. Its generated `dist/npm/notifai` package
+  uses the existing `@raidiant/notifai` name, bundles only release verification
+  and acquisition, and hands product commands to the native runtime. No npm
+  lifecycle script runs.
 - `packages/protocol` — client-visible request/response types and schemas
   for `/api/v1`, stable status vocabulary, capability documents and draft
   validation, and the small hashing helper shared with clients.
-- `apps/cli/npm` — canonical npm acquisition/launch adapter. Its generated
-  `dist/npm/notifai` artifact uses the existing `@raidiant/notifai` identity,
-  bundles only release verification/acquisition, and delegates product commands
-  to the independently managed native runtime. No npm lifecycle script runs.
-- Public docs, fixtures, and the boundary tooling itself.
-- `distribution` — reviewed public CLI redistribution materials, release
-  material hashes, and the standalone Bun runtime entitlement profile.
-  CLI signing workflows may reference protected CI secret names. They must
-  never contain a certificate, private key, provisioning profile or credential.
+- `skills/notifai` — the agent skill.
+- `distribution` — reviewed public redistribution materials for the native
+  runtime, release material hashes, and the standalone Bun runtime entitlement
+  profile. CLI signing workflows may reference protected CI secret names. They
+  must never contain a certificate, private key, provisioning profile or
+  credential.
+- Public docs, fixtures, scripts, CI workflows, release configuration, and the
+  boundary tooling itself.
 
 `packages/protocol/src/apns.ts` and `packages/protocol/src/fcm.ts` model the
 application-visible notification envelopes so offline validation can estimate
 payload size against each provider limit. Their content is fully observable on
-any device that receives a notification, so they reveal no server secret. They
-are exported so the service renders from the same code the estimate runs;
-whether they should leave the public source entirely (at the cost of offline
-size pre-flight) is an open decision tracked privately.
+any device that receives a notification, so they reveal no server secret.
 
 ## What must never enter this repository
 
@@ -59,43 +59,44 @@ size pre-flight) is an open decision tracked privately.
 
 ## Enforcement
 
-`pnpm check:boundary` (also intended as a CI gate) fails the tree on:
+`pnpm check:boundary` fails the tree on:
 
 1. Top-level entries outside the allowlist.
 2. Workspace packages other than `apps/cli` and `packages/protocol`.
 3. File names matching private-material patterns (key/profile/config
    extensions, platform manifests, dotenv files).
-4. Source imports of private packages, testcontainers, or any relative
-   path escaping the repository.
+4. Source that imports private packages, private server modules or
+   testcontainers, or that imports through a relative path into private
+   workspace directories.
 
-`pnpm check:packed` applies the boundary again to the exact npm tarballs after
-their generated `dist/` files exist. It rejects private-package and hosting
-identifiers, private-material filenames, owner-specific absolute home paths,
-links or unsafe archive paths, source maps with embedded `sourcesContent`, and
-source-map paths that are absolute URLs or resolve outside the package. Its
-tests include a canary that exists only in generated packed output, so a clean
-source tree cannot make this release path silently disappear.
+The release workflows run it too. They also scan the exact npm tarballs after
+their generated `dist/` files exist (`scripts/check-packed-boundary.mjs`, with
+gitleaks). That scan rejects private-package and hosting identifiers,
+private-material filenames, owner-specific absolute home paths, links or unsafe
+archive paths, source maps with embedded `sourcesContent`, and source-map paths
+that are absolute URLs or resolve outside the package. Its tests include a
+canary that exists only in generated packed output, so a clean source tree
+cannot make this check silently disappear.
 
 The private repository additionally scans this tree with patterns derived
 from its own deployment configuration before advancing its submodule pointer.
-It scans the canonical remote's advertised HEAD, branches, and tags as well as
-the local candidate. That second check intentionally lives outside this
-repository so its patterns do not become public.
+That second check intentionally lives outside this repository so its patterns
+do not become public.
 
-Before a push to the public `origin`, `scripts/githooks/pre-push` runs the
-boundary self-test and scan, gitleaks positive controls and current-tree/full-
-history scans, and `pnpm check:machine-paths`. The last check rejects the
-current machine's absolute home path in the index, worktree, or reachable Git
-history, including commit messages. The hook fails closed when a required
-tool is unavailable and requires a clean checkout at the exact pushed commit.
-Install it with `git config core.hooksPath scripts/githooks`; the private
-bootstrap configures the canonical public clone automatically. The hook is
-local, so PR review still checks public wording and any machine details that
-automatic patterns cannot recognize.
+Before a push to a remote named `origin`, `scripts/githooks/pre-push` runs the
+agent guidance review check, the boundary self-test and scan, gitleaks positive
+controls and current-tree/full-history scans, and `pnpm check:machine-paths`.
+The last check rejects the current machine's absolute home path in the index,
+worktree, or reachable Git history, including commit messages. The hook needs
+`gitleaks` on `PATH`, fails closed when a required tool is unavailable, and
+requires a clean checkout at the exact pushed commit. Install it with
+`git config core.hooksPath scripts/githooks`. The hook is local, so PR review
+still checks public wording and any machine details that automatic patterns
+cannot recognize.
 
 ## Adding something new
 
-If a change needs a new top-level directory, a new workspace package, or a
-new kind of file, extend the allowlist in `scripts/check-boundary.mjs` in
-the same change and say in the commit message why the addition is
-client-surface material. When in doubt, it stays private.
+If a change needs a new top-level entry or a new workspace package, extend the
+allowlist in `scripts/check-boundary.mjs` in the same change and say in the
+commit message why the addition is client-surface material. When in doubt, it
+stays private.
