@@ -39,8 +39,9 @@ runtime after its safety checks.
 On macOS and Linux, Notifai checks for a new release once a day and installs it
 by itself (`notifai config set updates.automatic off --yes` turns that off).
 `notifai update` updates on demand. An update never drops a waiting question.
-It waits only when it would change hook definitions that Codex would make you
-approve again.
+It waits when it would change Codex or Claude Code hook definitions, because
+Codex makes you approve changed hooks again and Claude Code applies them to
+running sessions at once. `notifai update` installs it when you're ready.
 
 ## Setup and Machine approval
 

@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "behavior_digest": "sha256:1af257b92eb50cd19a75a77b710e2f5f6d2408d40d194c4a90e51fce80fa7b49",
+  "behavior_digest": "sha256:05e2f55e8329316b9b6e7636cd35851e26e896fb62441e4777280a46f06077cd",
   "outcome": "reviewed-no-impact",
   "surfaces_reviewed": [
     "lifecycle-hooks",
@@ -9,5 +9,5 @@
     "cli-readiness",
     "domain-terms"
   ],
-  "reason": "Reviewed lifecycle hooks, the Notifai skill, harness setup, CLI readiness and domain terms against a documentation audit that changes only human-facing docs to match shipped 14.2.3 behavior. docs/HARNESSES.md is rewritten around the notifai.sh feature table and drops stale hook internals (Windows pickers and cards now link, Cursor notes and OpenCode 2 shipped); docs/USAGE.md points Android at the free test, describes the open_form hand-back instead of the retired native_question output, and drops protocol internals; the README links the Android free test; docs/TRUST.md says the skill ships in the native release build, names the QR text copy as approval proof, limits process-tree checks to Claude Code and Codex variables, and describes the Windows Codex hook mapping. No hook, skill text, setup step, readiness check or domain term changes, and no shipped agent text links to these docs; code comments still cite TRUST.md sections that keep their names."
+  "reason": "Reviewed lifecycle hooks, the Notifai skill, harness setup, CLI readiness and domain terms against a docs/USAGE.md wording fix: automatic updates wait for Codex and Claude Code hook definition changes, matching activation-plan.ts. No hook, setup step, readiness check, skill rule or domain term changes."
 }
