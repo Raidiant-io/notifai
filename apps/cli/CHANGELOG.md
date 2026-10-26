@@ -8,6 +8,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 This project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 and [Conventional Commits](https://www.conventionalcommits.org/en/v1.0.0/).
 
+## [14.2.5](https://github.com/Raidiant-io/notifai/compare/v14.2.4...v14.2.5) (2026-10-26)
+
+### Bug Fixes
+
+* Keep an OpenCode device answer that covers only some questions of a form, instead of dropping it.
+* Keep the OpenClaw plugin running when a Notifai hook exits before reading its input.
+* Let hooks step aside on a Node.js older than Notifai supports, instead of blocking the harness.
+* Give choices that differ only in non-Latin letters or punctuation, such as `C++` and `C#`, their own answers.
+* Leave a Codex question card in the terminal when Notifai cannot reach the service, instead of refusing it.
+* Let an OpenCode form that cannot become a device question stay in the terminal.
+* Keep shortened choice labels distinct, so long options that differ only near the end are still offered.
+
 ## [14.2.4](https://github.com/Raidiant-io/notifai/compare/v14.2.3...v14.2.4) (2026-10-26)
 
 ### Bug Fixes
