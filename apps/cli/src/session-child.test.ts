@@ -6,6 +6,7 @@
  */
 import type { AttendanceBatchRequestT,AttendanceBatchResponse } from '@raidiant/notifai-protocol'
 import { execFileSync,spawn,spawnSync,type ChildProcess } from 'node:child_process'
+import { once } from 'node:events'
 import { mkdirSync,mkdtempSync,readFileSync,rmSync,writeFileSync } from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -35,8 +36,26 @@ beforeAll(() => {
 }, 120_000)
 afterAll(() => { if (build !== '') rmSync(build, { recursive: true, force: true }) })
 
-const cleanups: (() => void)[] = []
-afterEach(() => { for (const cleanup of cleanups.splice(0).reverse()) cleanup() })
+// Stop every writer (harness, attend hook, hub) before removing its scratch
+// directory; a failed stop keeps the directory and the primary failure.
+const cleanups: (() => void | Promise<unknown>)[] = []
+const directories: string[] = []
+afterEach(async (context) => {
+  const errors: unknown[] = []
+  for (const cleanup of cleanups.splice(0).reverse()) {
+    try { await cleanup() } catch (error) { errors.push(error) }
+  }
+  if (errors.length === 0) {
+    for (const root of directories.splice(0)) {
+      try { rmSync(root, { recursive: true, force: true, maxRetries: 3, retryDelay: 50 }) } catch (error) { errors.push(error) }
+    }
+  } else {
+    console.error('Retaining scratch directories because writers did not stop:', directories.splice(0))
+  }
+  if (errors.length === 0) return
+  if (context.task.result?.state === 'fail') console.error('Session Child cleanup failed:', errors)
+  else throw new AggregateError(errors, 'Session Child cleanup failed')
+})
 
 /** A stand-in for one Claude Code process: descriptor, inbox socket, and the attend hook. */
 const HARNESS_SCRIPT = `
@@ -82,7 +101,7 @@ async function until(check: () => boolean, timeoutMs = 10_000): Promise<void> {
 
 function scratch(): { root: string; env: NodeJS.ProcessEnv } {
   const root = mkdtempSync(path.join('/tmp', 'b3child-'))
-  cleanups.push(() => rmSync(root, { recursive: true, force: true }))
+  directories.push(root)
   mkdirSync(path.join(root, 'claude'), { recursive: true })
   writeFileSync(path.join(root, 'harness.mjs'), HARNESS_SCRIPT)
   return { root, env: { ...process.env, XDG_STATE_HOME: path.join(root, 'state'), XDG_CONFIG_HOME: path.join(root, 'config'),
@@ -102,7 +121,18 @@ async function startHarness(root: string, env: NodeJS.ProcessEnv, mode: 'direct'
       buffered = buffered.slice(newline + 1)
     }
   })
-  cleanups.push(() => { try { child.kill('SIGKILL') } catch { /* gone */ } })
+  const closed = once(child, 'close')
+  cleanups.push(async () => {
+    if (child.exitCode === null && child.signalCode === null) child.kill('SIGKILL')
+    await closed
+    // The attend hook can outlive its harness long enough to write an end
+    // record; wait until each has exited (a zombie cannot write).
+    const pids = harness.lines.flatMap(line => typeof line['spawned'] === 'number' ? [line['spawned']] : [])
+    await until(() => pids.every(pid => {
+      const state = spawnSync('ps', ['-o', 'stat=', '-p', String(pid)], { encoding: 'utf8', timeout: 1_000 })
+      return state.status === 1 || (state.status === 0 && state.stdout.trim().startsWith('Z'))
+    }))
+  })
   child.once('exit', (code) => harness.lines.push({ exited: code }))
   await until(() => harness.lines.some((line) => 'ready' in line || 'exited' in line))
   if (harness.lines.some((line) => 'exited' in line)) throw new Error(`harness exited: ${JSON.stringify(harness.lines)}`)
@@ -156,8 +186,8 @@ function startHub(env: NodeJS.ProcessEnv, fake: Service, options: Partial<HubOpt
     env, cwd: '/tmp', logger: nullLogger(), clientFactory: () => fake.client,
   }
   const hub = new Hub(deps, { deps, verifyPeer: peerVerifierFor(launcher), bootIdentity: () => null, endConfirmMs: 500, ...options })
-  cleanups.push(() => hub.requestExit('test-cleanup'))
   const done = hub.run()
+  cleanups.push(async () => { hub.requestExit('test-cleanup'); await done })
   return { hub, done, stop: () => { hub.requestExit('test-done'); return done } }
 }
 

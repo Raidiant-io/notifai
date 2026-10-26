@@ -9,7 +9,7 @@ import { spawn,type ChildProcess } from 'node:child_process'
 import { mkdirSync,mkdtempSync,readFileSync,rmSync,writeFileSync } from 'node:fs'
 import { createConnection,createServer,type Socket } from 'node:net'
 import path from 'node:path'
-import { afterEach,describe,expect,it,vi } from 'vitest'
+import { afterEach,beforeEach,describe,expect,it,vi } from 'vitest'
 import { claudeDescriptorDir } from './claude-wake.js'
 import { ApiCallError,type ApiClient } from './client.js'
 import type { CodexWakeAdapters } from './codex-wake.js'
@@ -192,11 +192,14 @@ async function until(check: () => boolean, timeoutMs = 3_000): Promise<void> {
   const deadline = Date.now() + timeoutMs
   while (!check()) {
     if (Date.now() > deadline) throw new Error('condition not reached')
-    await new Promise((resolve) => setTimeout(resolve, 5))
+    if (vi.isFakeTimers()) await vi.advanceTimersByTimeAsync(5)
+    else await new Promise((resolve) => setTimeout(resolve, 5))
   }
 }
 
 describe('hub exchange driver', () => {
+  beforeEach(() => vi.useFakeTimers())
+  afterEach(() => vi.useRealTimers())
   it('renews every session in one batch, then holds one long-poll behind one cursor', async () => {
     const service = fakeService()
     const sessions = [new FakeSession(SESSION), new FakeSession(OTHER)]
@@ -238,7 +241,7 @@ describe('hub exchange driver', () => {
     const running = driver.run()
     await until(() => host.unauthorizedCount === 1)
     const sent = service.batches.length
-    await new Promise((resolve) => setTimeout(resolve, 50))
+    await vi.advanceTimersByTimeAsync(50)
     expect(service.batches.length).toBe(sent)
     driver.stop()
     await running
