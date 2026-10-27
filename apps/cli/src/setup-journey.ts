@@ -18,7 +18,7 @@ import path from 'node:path'
 import { atomicWriteFileSync } from './atomic-file.js'
 import { stateDir } from './config.js'
 import { HARNESS_LABELS, HOOK_INSTALLABLE_HARNESSES, type HookInstallableHarness } from './harnesses.js'
-import { COMPANION_INSTALL_URLS, deviceNoun } from './setup-destinations.js'
+import { COMPANION_INSTALL_URLS, deviceNoun, MAC_DOWNLOAD_URL } from './setup-destinations.js'
 
 /** A wait with nothing changing ends here, with what is left. */
 export const NO_PROGRESS_STOP_MS = 30 * 60 * 1000
@@ -163,8 +163,8 @@ const NEXT_STEP: Record<HookInstallableHarness, string> = {
 /** The one question an agent asks: which agent apps to connect. */
 export function appsQuestionMessage(detected: readonly HookInstallableHarness[]): string {
   return detected.length === 0
-    ? 'Connect Notifai to which agent apps? I found none on this computer. Pick the ones you use.'
-    : `Connect Notifai to these agent apps? Found on this computer: ${appNames(detected)}. Keep these or pick others.`
+    ? '**Which agent apps should Notifai connect?**\n\nI found none on this computer. Pick the ones you use.'
+    : `**Which agent apps should Notifai connect?**\n\nFound on this computer: ${appNames(detected)}. Keep these, or pick others.`
 }
 
 export const APPS_QUESTION = 'Connect Notifai to which agent apps?'
@@ -172,12 +172,16 @@ export const APPS_QUESTION = 'Connect Notifai to which agent apps?'
 /**
  * The approval message. The QR itself is not part of it: the agent shows the
  * one at `technical.pairing.qr_text_path` (or the image) right after it.
+ *
+ * Agent messages keep one idea per paragraph, separated by a blank line: a
+ * single line break renders as a space in Markdown, so the code and the
+ * action would run together.
  */
 export function approveMessage(options: { code: string; url: string; opened: boolean }): string {
-  const finish = options.opened
-    ? `Finish in the browser I opened ([link](${options.url}) if it didn't open)`
-    : `Open this on your computer: [link](${options.url})`
-  return `**Connect this computer**: code **${options.code}**\n\n${finish}, or scan this with the Notifai app:`
+  const open = options.opened
+    ? `**Connect this computer** in the browser I opened.\n\nCheck the code: **${options.code}**\n\nDidn't open? [Open the approval page](${options.url})`
+    : `**Connect this computer:** [open the approval page](${options.url}) on your computer.\n\nCheck the code: **${options.code}**`
+  return `${open}\n\nOr scan this with the Notifai app:`
 }
 
 /**
@@ -185,10 +189,10 @@ export function approveMessage(options: { code: string; url: string; opened: boo
  * open page cannot follow a new code, so setup opened the new one.
  */
 export function renewedApproveMessage(options: { code: string; url: string; opened: boolean }): string {
-  const finish = options.opened
-    ? `Finish in the browser tab I just opened ([link](${options.url}) if it didn't open).`
-    : `Open this on your computer: [link](${options.url}).`
-  return `That code expired. New one: **${options.code}**. ${finish}\n\n_Or scan this with the Notifai app:_`
+  const open = options.opened
+    ? `**That code expired.** I opened a new approval page.\n\nCheck the new code: **${options.code}**\n\nDidn't open? [Open the approval page](${options.url})`
+    : `**That code expired.** [Open the new approval page](${options.url}) on your computer.\n\nCheck the new code: **${options.code}**`
+  return `${open}\n\nOr scan this with the Notifai app:`
 }
 
 /** The terminal's approval lines; a replacement code is named once, as the new one. */
@@ -216,28 +220,28 @@ export function connectedTerminalLine(email: string | null, machine: string): st
 export const NOT_YOUR_ACCOUNT_LINE = '  Not your Account? Run notifai logout --revoke'
 
 export function expiredStopMessage(): string {
-  return "This computer wasn't approved in 90 minutes, so I've stopped. **Tell me when you want to try again.**"
+  return "**Setup stopped:** this computer wasn't approved within 90 minutes.\n\nAsk me any time to try again."
 }
 
-export const DENIED_MESSAGE = 'Stopped: you declined this computer. Ask me anytime to try again.'
+export const DENIED_MESSAGE = '**Setup stopped:** you declined this computer.\n\nAsk me any time to try again.'
 
 export function phoneWebMessage(email: string | null, url: string, opened: boolean): string {
   const account = email === null ? '' : ` to **${email}**`
   const next = opened
-    ? `Now your phone: finish in the browser I opened ([link](${url}) if it didn't open).`
-    : `Now your phone: open this on your computer: [link](${url}).`
-  return `**This computer is already connected**${account}. ${next}\n\n_I'll carry on once it's done._`
+    ? `**Now your phone:** follow the page I opened in your browser.\n\nDidn't open? [Open the phone setup page](${url})`
+    : `**Now your phone:** [open the phone setup page](${url}) on your computer.`
+  return `This computer is already connected${account}.\n\n${next}`
 }
 
 /** Right after a browser approval: the page that approved walks the phone steps. */
-export const PHONE_IN_BROWSER_MESSAGE = 'Now your phone: follow the page in your browser.'
+export const PHONE_IN_BROWSER_MESSAGE = '**Now your phone:** follow the page in your browser.'
+export const PHONE_IN_BROWSER_TERMINAL_LINE = 'Now your phone: follow the page in your browser.'
 
 export function noPhoneMessage(email: string | null): string {
-  return '**Now get Notifai on your phone**\n\n' +
-    `- iPhone: [App Store](${COMPANION_INSTALL_URLS.iphone})\n` +
-    `- Android: [free test](${COMPANION_INSTALL_URLS.android})\n\n` +
-    `Sign in as **${email ?? 'the email you approved this computer with'}** and allow notifications.\n\n` +
-    "_I'll carry on once your phone is connected._"
+  return '**Now set up your phone**\n\n' +
+    `1. Get the Notifai app: [iPhone](${COMPANION_INSTALL_URLS.iphone}) or [Android (free test)](${COMPANION_INSTALL_URLS.android})\n` +
+    `2. Sign in as **${email ?? 'the email you approved this computer with'}**\n` +
+    '3. Allow notifications'
 }
 
 function linkText(url: string): string {
@@ -251,8 +255,8 @@ function linkText(url: string): string {
 
 export function planMessage(plansUrl: string): string {
   return '**Last step: choose a plan** in the Notifai app on your phone.\n\n' +
-    `_Or on the web: [${linkText(plansUrl)}](${plansUrl})_\n\n` +
-    "I'll send you a test notification as soon as it's active."
+    `Or on the web: [${linkText(plansUrl)}](${plansUrl})\n\n` +
+    "I'll send a test notification once it's active."
 }
 
 export type PhoneKind = 'iphone' | 'android' | 'other'
@@ -278,17 +282,22 @@ export interface DoneFacts {
   codexNeedsApproval: boolean
   /** Apps that now run Notifai's commands without asking. */
   commandApps: readonly HookInstallableHarness[]
+  /** This computer is a Mac, so the desktop app can run here too. */
+  mac?: boolean
 }
+
+export const MAC_APP_LINE = `Want notifications on your Mac? [Download the desktop app here](${MAC_DOWNLOAD_URL})`
 
 /** Codex runs no Notifai hook until the User approves them in `/hooks`; setup warns, never waits. */
 export const CODEX_HOOKS_WARNING = "⚠️ **Codex won't use Notifai until you approve it:** type `/hooks` in Codex and approve the Notifai hooks."
 
+/** Codex's step in the done message carries its `/hooks` approval, so it reads as a step, not a footnote. */
+const CODEX_NEXT_STEP_WITH_APPROVAL = 'open a new session, type `/hooks` and **approve the Notifai hooks**'
+
 export function appsBlock(facts: Pick<DoneFacts, 'apps' | 'codexNeedsApproval' | 'commandApps'>): string {
   if (facts.apps.length === 0) return ''
-  return '**To start using it:**\n' + facts.apps.map((app) => `- **${HARNESS_LABELS[app]}**: ${NEXT_STEP[app]}`).join('\n') +
-    (facts.apps.includes('codex') && facts.codexNeedsApproval
-      ? `\n\n${CODEX_HOOKS_WARNING}`
-      : '') +
+  const step = (app: HookInstallableHarness) => app === 'codex' && facts.codexNeedsApproval ? CODEX_NEXT_STEP_WITH_APPROVAL : NEXT_STEP[app]
+  return '**To start:**\n\n' + facts.apps.map((app) => `- **${HARNESS_LABELS[app]}**: ${step(app)}`).join('\n') +
     (facts.commandApps.length > 0 ? `\n\n_${appNames(facts.commandApps)} can now run Notifai's commands without asking._` : '')
 }
 
@@ -296,9 +305,10 @@ export function doneMessage(facts: DoneFacts): string {
   const account = facts.email === null ? '' : ` for **${facts.email}**`
   const warning = facts.notificationsOff === null
     ? ''
-    : `⚠️ **Notifications are off on your ${deviceNoun(facts.notificationsOff)}**, so nothing will pop up. ` +
-      `Turn them on: ${notificationSettingsPath(facts.notificationsOff)}.\n\n`
-  return `✅ **Notifai is set up**${account}. You can answer your agents from your phone.\n\n${warning}${appsBlock(facts)}`.trimEnd()
+    : `⚠️ **Notifications are off on your ${deviceNoun(facts.notificationsOff)}.** ` +
+      `Turn them on in ${notificationSettingsPath(facts.notificationsOff)}.\n\n`
+  const mac = facts.mac === true ? `\n\n${MAC_APP_LINE}` : ''
+  return `✅ **Notifai is set up**${account}.\n\nYou can answer your agents from your phone.\n\n${warning}${appsBlock(facts)}`.trimEnd() + mac
 }
 
 export function doneTerminalLines(facts: DoneFacts): { title: string; lines: string[] } {
@@ -313,6 +323,7 @@ export function doneTerminalLines(facts: DoneFacts): { title: string; lines: str
     lines.push("⚠ Codex won't use Notifai until you approve it: type /hooks in Codex and approve the Notifai hooks.")
   }
   if (facts.commandApps.length > 0) lines.push(`${appNames(facts.commandApps)} can now run Notifai's commands without asking.`)
+  if (facts.mac === true) lines.push(`Want notifications on your Mac? Download the desktop app: ${MAC_DOWNLOAD_URL}`)
   return { title: facts.email === null ? 'Notifai is set up' : `Notifai is set up for ${facts.email}`, lines }
 }
 
@@ -322,13 +333,13 @@ export type Leftover = 'phone' | 'plan' | 'notifications' | 'test-notification'
 export function partialMessage(left: Leftover, email: string | null, phoneUrl: string): string {
   const account = email === null ? '' : ` for **${email}**`
   const body = left === 'plan'
-    ? `**Almost there.** Everything is set up${account} except your plan.\n\n` +
-      'Choose one in the Notifai app on your phone and your agents can reach you right away.'
+    ? `**Almost there:** everything is set up${account} except your plan.\n\n` +
+      '**Choose a plan** in the Notifai app on your phone, and your agents can reach you.'
     : left === 'phone'
-      ? `**Almost there.** This computer and your agent apps are set up${account}. Your phone is the only thing left.\n\n` +
-        `Finish it any time at [${linkText(phoneUrl)}](${phoneUrl}).`
-      : `**Almost there.** Everything is set up${account} except your phone, which can't receive yet.\n\n` +
-        'Open Notifai on it so it can reconnect.'
+      ? `**Almost there:** this computer and your agent apps are set up${account}. Only your phone is left.\n\n` +
+        `Finish it any time: [${linkText(phoneUrl)}](${phoneUrl})`
+      : `**Almost there:** everything is set up${account}, but your phone can't receive yet.\n\n` +
+        '**Open Notifai on your phone** so it can reconnect.'
   // No promise of a test notification: finishing later in the app, or over
   // SSH, sends none (only the browser's setup page does).
   return body

@@ -69,6 +69,9 @@ export const COMPANION_INSTALL_URLS: Readonly<Record<CompanionPlatform, string>>
   android: 'https://app.notifai.sh/test-android',
 })
 
+/** The desktop Companion App for Mac, always its current release. */
+export const MAC_DOWNLOAD_URL = 'https://app.notifai.sh/download/mac'
+
 /** Getting this Account access to Notifai, and nothing else. */
 export function setupAccessUrl(baseUrl: string, platform?: CompanionPlatform): string {
   const base = `${dashboardOrigin(baseUrl)}/setup/access`

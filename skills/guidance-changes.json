@@ -1,5 +1,5 @@
 {
-  "current": "705a4cd0472b8ef9d16ff77309a395ec6b6e864da4b57c3d51a3866d44f0c77f",
+  "current": "e578a0220e5a4b90010e468b76abd69ead05214be35835e65d002cd7fd066c87",
   "releases": [
     {
       "digest": "3e47b01bc6bbfb43e910c660b9964fab6459d75148c3c02dcbcd0be64cfb2963",
@@ -124,6 +124,10 @@
     {
       "digest": "705a4cd0472b8ef9d16ff77309a395ec6b6e864da4b57c3d51a3866d44f0c77f",
       "note": "Agent Sessions can discover names from exact T3 native-session mappings and Codex named-thread metadata when the title index has no entry. Generated fallbacks are checked during attendance and upgraded when a usable host name arrives and the service supports the guarded upgrade route. Existing explicit names, semantic names, and User renames stay authoritative. Keep passing the same concise --session-label on sends and asks; use session rename only when the job changes. Local session-filtered diagnostics now include name-resolution outcomes and sends without recording title text."
+    },
+    {
+      "digest": "e578a0220e5a4b90010e468b76abd69ead05214be35835e65d002cd7fd066c87",
+      "note": "Setup messages now put one idea per paragraph: the approval code, the link to open and the next step each stand out, and links have names. Send each message exactly as written as your whole reply. Keep its words, line breaks, blank lines and Markdown, don't quote it or put it in a code block, and add nothing except its QR. The install line no longer asks the User to allow prompts, and no setup message asks the User to report a step. On a Mac, the done message ends with a link to the desktop app."
     }
   ]
 }

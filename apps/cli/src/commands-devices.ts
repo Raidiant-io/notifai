@@ -180,17 +180,17 @@ export function deviceRelayMessage(options: { email: string | null; devices: rea
   if (devices.length === 0) return noPhoneMessage(options.email)
   const device = (pick: (d: RoutableDevice) => boolean) => devices.find(pick)
   const updating = device((d) => d.support?.state === 'must_update' && d.support.affected_operation === 'receive_notifications')
-  if (updating) return `**Update the Notifai app** on your ${deviceNoun(updating.platform)}.\n\n_I'll carry on once it's updated._`
+  if (updating) return `**Update the Notifai app** on your ${deviceNoun(updating.platform)}.`
   const denied = device((d) => d.permission_status === 'denied')
   if (denied) {
-    return `**Notifications are off** for Notifai on your ${deviceNoun(denied.platform)}. ` +
-      `Turn them on: ${notificationSettingsPath(phoneKind(denied.platform))}.\n\n_I'll carry on once they're on._`
+    return `**Notifications are off** for Notifai on your ${deviceNoun(denied.platform)}.\n\n` +
+      `Turn them on in ${notificationSettingsPath(phoneKind(denied.platform))}.`
   }
   const undecided = device((d) => d.permission_status === 'not_determined')
   if (undecided) {
-    return `Open Notifai on your ${deviceNoun(undecided.platform)} and **allow notifications**.\n\n_I'll carry on once they're on._`
+    return `Open Notifai on your ${deviceNoun(undecided.platform)} and **allow notifications**.`
   }
-  return `**Open Notifai** on your ${deviceNoun(devices[0]!.platform)} so it can finish connecting.\n\n_I'll carry on once it's connected._`
+  return `**Open Notifai** on your ${deviceNoun(devices[0]!.platform)} so it can finish connecting.`
 }
 
 export function deviceCanReceive(device: RoutableDevice): boolean {

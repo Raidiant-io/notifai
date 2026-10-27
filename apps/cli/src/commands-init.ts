@@ -95,6 +95,7 @@ import {
   expiredStopMessage,
   CODEX_HOOKS_WARNING,
   PHONE_IN_BROWSER_MESSAGE,
+  PHONE_IN_BROWSER_TERMINAL_LINE,
   freshSetupRun,
   isSshSession,
   loadAppsChoice,
@@ -478,7 +479,7 @@ async function waitForReadyDevice(
   } else if (needsPhone && run.phone_in_browser === true) {
     // The approval page this setup opened walks the phone steps with its
     // own sign-in QR; a store QR here would be a second, competing one.
-    deps.io.out(PHONE_IN_BROWSER_MESSAGE)
+    deps.io.out(PHONE_IN_BROWSER_TERMINAL_LINE)
   } else {
     const platform = needsPhone ? await askCompanionPlatform(deps) : null
     if (needsPhone && platform === null) return 'pending'
@@ -801,7 +802,7 @@ function proofRejectedState(device: RoutableDevice): ReadinessState {
     title: 'Test notification',
     status: 'gap',
     detail: `${device.display_name} could not receive the test notification: its push delivery was rejected`,
-    message: `Your ${deviceNoun(device.platform)} couldn't get the test notification. **Open Notifai on it** and I'll retry once it reconnects.`,
+    message: `Your ${deviceNoun(device.platform)} couldn't get the test notification.\n\n**Open Notifai on it**, and I'll try again.`,
     remedy: {
       by: 'user-elsewhere',
       summary: `open Notifai on ${device.display_name} so it can reconnect, then run setup again`,
@@ -1458,7 +1459,6 @@ function accountEmail(readiness: Readiness): string | null {
 }
 
 function doneFacts(readiness: Readiness, apps: readonly HookInstallableHarness[], deps: CommandDeps): DoneFacts {
-  void deps
   const devices = readiness.states.find((state) => state.id === 'devices')
   const off = (devices?.technical as { notifications_off?: PhoneKind } | undefined)?.notifications_off
   const status = (id: string) => readiness.states.find((state) => state.id === id)?.status
@@ -1469,6 +1469,7 @@ function doneFacts(readiness: Readiness, apps: readonly HookInstallableHarness[]
     codexNeedsApproval: status('hooks-trust') !== 'ready',
     commandApps: apps.filter((app) => (app === 'claude-code' && status(CLAUDE_COMMANDS_STATE_ID) === 'ready') ||
       (app === 'codex' && status(CODEX_COMMANDS_STATE_ID) === 'ready')),
+    mac: (deps.hookPlatform ?? process.platform) === 'darwin',
   }
 }
 

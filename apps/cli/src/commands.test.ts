@@ -810,7 +810,7 @@ it('resumes the same init after a required CLI update becomes current', async ()
       return JSON.parse(io.outLines.at(-1) ?? '{}') as { waiting: boolean; message: string | null }
     }
     const first = await run()
-    expect(first.message).toContain("couldn't get the test notification. **Open Notifai on it**")
+    expect(first.message).toContain("couldn't get the test notification.\n\n**Open Notifai on it**")
     expect(submit).toHaveBeenCalledTimes(1)
     // Reruns and minutes of waiting send nothing while the phone stays away.
     expect(await run()).toMatchObject({ waiting: true, message: null })
@@ -1039,7 +1039,7 @@ describe('guided setup', () => {
   }
 
   /** A computer setup run from scratch against a fake service with a clock. */
-  function journey(options: { connected?: boolean; devices?: () => unknown[]; plan?: () => boolean; approveAt?: number | null; tooOld?: boolean } = {}) {
+  function journey(options: { connected?: boolean; devices?: () => unknown[]; plan?: () => boolean; approveAt?: number | null; tooOld?: boolean; platform?: NodeJS.Platform } = {}) {
     const cwd = mkdtempSync(path.join(os.tmpdir(), 'init-guided-'))
     const env = isolatedEnv(cwd)
     let clock = Date.parse('2026-10-26T12:00:00.000Z')
@@ -1094,6 +1094,7 @@ describe('guided setup', () => {
       },
       now: () => clock,
       sleep: async (ms: number) => { clock += Math.max(ms, 1) },
+      hookPlatform: options.platform ?? 'linux',
     }
     const run = async (flags: Record<string, unknown> = {}) => {
       io.outLines = []
@@ -1115,7 +1116,7 @@ describe('guided setup', () => {
       supported: expect.arrayContaining([{ id: 'claude-code', name: 'Claude Code' }, { id: 'codex', name: 'Codex' }]),
       detected: ['codex'],
     } })
-    expect(result.message).toBe('Connect Notifai to these agent apps? Found on this computer: Codex. Keep these or pick others.')
+    expect(result.message).toBe('**Which agent apps should Notifai connect?**\n\nFound on this computer: Codex. Keep these, or pick others.')
 
     io.outLines = []
     await initCommand(deps, { json: true, hooks: false, skills: false })
@@ -1133,9 +1134,9 @@ describe('guided setup', () => {
     const test = journey()
     const first = await test.run({ wait: 240 })
     expect(first.result.waiting).toBe(true)
-    expect(first.result.message).toBe('**Connect this computer**: code **W5Z-CZN**\n\n' +
-      'Finish in the browser I opened ([link](https://app.notifai.sh/approve?code=W5Z-CZN#confirmation_secret=' +
-      `${first.result.message!.match(/confirmation_secret=([^)]+)\)/)![1]}) if it didn't open), or scan this with the Notifai app:`)
+    expect(first.result.message).toBe('**Connect this computer** in the browser I opened.\n\nCheck the code: **W5Z-CZN**\n\n' +
+      "Didn't open? [Open the approval page](https://app.notifai.sh/approve?code=W5Z-CZN#confirmation_secret=" +
+      `${first.result.message!.match(/confirmation_secret=([^)]+)\)/)![1]})\n\nOr scan this with the Notifai app:`)
     const pairing = first.result.states.find((state) => state.id === 'credential')!.technical!['pairing'] as Record<string, unknown>
     expect(pairing['qr_text_path']).toEqual(expect.any(String))
     expect(test.io.openedUrls).toHaveLength(1)
@@ -1159,7 +1160,7 @@ describe('guided setup', () => {
     while (!last.result.stopped && reruns < 5) { last = await test.run({ wait: 3600 }); reruns += 1 }
     expect(reruns).toBe(2)
     expect(last.result).toMatchObject({ stopped: true, waiting: false,
-      message: "This computer wasn't approved in 90 minutes, so I've stopped. **Tell me when you want to try again.**" })
+      message: "**Setup stopped:** this computer wasn't approved within 90 minutes.\n\nAsk me any time to try again." })
     expect(test.elapsed()).toBeLessThanOrEqual(91 * 60_000)
   })
 
@@ -1176,7 +1177,7 @@ describe('guided setup', () => {
     // The User asks again: the same code, a new wait.
     const again = await test.run({ wait: 0 })
     expect(again.result).toMatchObject({ stopped: false, waiting: true })
-    expect(again.result.message).toContain('code **W5Z-CZN**')
+    expect(again.result.message).toContain('Check the code: **W5Z-CZN**')
     expect(test.begun).toHaveLength(1)
   })
 
@@ -1213,7 +1214,7 @@ describe('guided setup', () => {
     await test.run({ wait: 240 })
     const connected = await test.run({ wait: 240 })
     expect(connected.result.message).toBe("✓ **Connected** to **you@example.com**.\n\n_Not your Account? Tell me and I'll disconnect it._\n\n" +
-      'Now your phone: follow the page in your browser.')
+      '**Now your phone:** follow the page in your browser.')
     expect(connected.result.waiting).toBe(true)
     // The approval page already walks the phone steps: no second page.
     expect(test.io.openedUrls).toHaveLength(1)
@@ -1224,16 +1225,16 @@ describe('guided setup', () => {
     await test.run({ wait: 240, open: false })
     const connected = await test.run({ wait: 240, open: false })
     expect(connected.result.message).toBe("✓ **Connected** to **you@example.com**.\n\n_Not your Account? Tell me and I'll disconnect it._\n\n" +
-      '**Now get Notifai on your phone**\n\n- iPhone: [App Store](https://apps.apple.com/app/id6799027730)\n' +
-      '- Android: [free test](https://app.notifai.sh/test-android)\n\nSign in as **you@example.com** and allow notifications.\n\n' +
-      "_I'll carry on once your phone is connected._")
+      '**Now set up your phone**\n\n' +
+      '1. Get the Notifai app: [iPhone](https://apps.apple.com/app/id6799027730) or [Android (free test)](https://app.notifai.sh/test-android)\n' +
+      '2. Sign in as **you@example.com**\n3. Allow notifications')
   })
 
   it('opens nothing for an approval notification', async () => {
     const test = journey()
     const result = (await test.run({ wait: 0, approval: 'notification', approvalEmail: 'you@example.com' })).result
     expect(test.io.openedUrls).toEqual([])
-    expect(result.message).toContain('Open this on your computer: [link](https://app.notifai.sh/approve?code=W5Z-CZN')
+    expect(result.message).toContain('**Connect this computer:** [open the approval page](https://app.notifai.sh/approve?code=W5Z-CZN')
   })
 
   it('replaces a code it can no longer keep open with the expired message, in a new tab', async () => {
@@ -1242,7 +1243,7 @@ describe('guided setup', () => {
     test.later(31 * 60_000)
     const renewed = (await test.run({ wait: 60 })).result
     expect(test.begun).toHaveLength(2)
-    expect(renewed.message).toMatch(/^That code expired\. New one: \*\*W5Z-CZN\*\*\. Finish in the browser tab I just opened \(\[link\]\(https:\/\/app\.notifai\.sh\/approve\?code=W5Z-CZN#confirmation_secret=[^)]+\) if it didn't open\)\.\n\n_Or scan this with the Notifai app:_$/)
+    expect(renewed.message).toMatch(/^\*\*That code expired\.\*\* I opened a new approval page\.\n\nCheck the new code: \*\*W5Z-CZN\*\*\n\nDidn't open\? \[Open the approval page\]\(https:\/\/app\.notifai\.sh\/approve\?code=W5Z-CZN#confirmation_secret=[^)]+\)\n\nOr scan this with the Notifai app:$/)
     expect(test.io.openedUrls).toHaveLength(2)
   })
 
@@ -1251,12 +1252,12 @@ describe('guided setup', () => {
     const first = await test.run({ wait: 240 })
     const url = 'https://test.notifai.invalid/setup/phone?email=you%40example.com&machine=mac_test&name=MacBook+Pro'
     expect(test.io.openedUrls).toEqual([url])
-    expect(first.result.message).toBe(`**This computer is already connected** to **you@example.com**. Now your phone: finish in the browser I opened ([link](${url}) if it didn't open).\n\n_I'll carry on once it's done._`)
+    expect(first.result.message).toBe(`This computer is already connected to **you@example.com**.\n\n**Now your phone:** follow the page I opened in your browser.\n\nDidn't open? [Open the phone setup page](${url})`)
     let last = await test.run({ wait: 240 })
     expect(last.result).toMatchObject({ waiting: true, message: null })
     while (!last.result.stopped) last = await test.run({ wait: 240 })
     expect(test.elapsed()).toBeLessThanOrEqual(31 * 60_000)
-    expect(last.result.message).toContain('**Almost there.** This computer and your agent apps are set up for **you@example.com**.')
+    expect(last.result.message).toContain('**Almost there:** this computer and your agent apps are set up for **you@example.com**.')
     // Finishing later in the app sends nothing, so the stop promises nothing.
     expect(last.result.message).not.toContain('test notification')
     expect(test.io.openedUrls).toEqual([url])
@@ -1269,7 +1270,7 @@ describe('guided setup', () => {
     test.deps.env['SSH_CONNECTION'] = '10.0.0.2 50000 10.0.0.3 22'
     const result = (await test.run({ wait: 0 })).result
     expect(test.io.openedUrls).toEqual([])
-    expect(result.message).toContain('Open this on your computer: [link](https://app.notifai.sh/approve?code=W5Z-CZN')
+    expect(result.message).toContain('**Connect this computer:** [open the approval page](https://app.notifai.sh/approve?code=W5Z-CZN')
     const local = journey()
     await local.run({ wait: 0, open: false })
     expect(local.io.openedUrls).toEqual([])
@@ -1279,12 +1280,12 @@ describe('guided setup', () => {
     const undecided = { ...phone, permission_status: 'not_determined' }
     const test = journey({ connected: true, devices: () => [undecided] })
     const first = await test.run({ wait: 240 })
-    expect(first.result).toMatchObject({ waiting: true, message: "Open Notifai on your iPhone and **allow notifications**.\n\n_I'll carry on once they're on._" })
+    expect(first.result).toMatchObject({ waiting: true, message: 'Open Notifai on your iPhone and **allow notifications**.' })
     const done = await test.run({ wait: 240 })
     expect(test.elapsed()).toBeGreaterThanOrEqual(2 * 60_000)
     expect(done.result.ready).toBe(true)
     expect(done.result.waiting).toBe(false)
-    expect(done.result.message).toContain('⚠️ **Notifications are off on your iPhone**, so nothing will pop up. Turn them on: Settings → Notifai → Notifications.')
+    expect(done.result.message).toContain('⚠️ **Notifications are off on your iPhone.** Turn them on in Settings → Notifai → Notifications.')
   })
 
   it('waits for the plan and ends with the done message once it is active', async () => {
@@ -1295,7 +1296,15 @@ describe('guided setup', () => {
     active = true
     const done = await test.run({ wait: 240 })
     expect(done.result.ready).toBe(true)
-    expect(done.result.message).toMatch(/^✅ \*\*Notifai is set up\*\* for \*\*you@example.com\*\*\. You can answer your agents from your phone\.$/)
+    expect(done.result.message).toMatch(/^✅ \*\*Notifai is set up\*\* for \*\*you@example.com\*\*\.\n\nYou can answer your agents from your phone\.$/)
+  })
+
+  it('offers the desktop app last, only on a Mac', async () => {
+    const mac = await journey({ connected: true, devices: () => [phone], platform: 'darwin' }).run({ wait: 240 })
+    expect(mac.result.ready).toBe(true)
+    expect(mac.result.message).toMatch(/\n\nWant notifications on your Mac\? \[Download the desktop app here\]\(https:\/\/app\.notifai\.sh\/download\/mac\)$/)
+    const linux = await journey({ connected: true, devices: () => [phone], platform: 'linux' }).run({ wait: 240 })
+    expect(linux.result.message).not.toContain('Mac')
   })
 
   it('walks a person at the terminal through approval and the phone, naming the Account', async () => {
@@ -1379,27 +1388,27 @@ describe('the phone install hand-off', () => {
     expect(deviceRelayMessage({ email: null, devices: [phone({ platform: 'ios', permission_status: 'denied' })] }))
       .toContain('Settings → Notifai → Notifications')
     expect(deviceRelayMessage({ email: null, devices: [phone({ permission_status: 'not_determined' })] }))
-      .toBe("Open Notifai on your Android phone and **allow notifications**.\n\n_I'll carry on once they're on._")
+      .toBe('Open Notifai on your Android phone and **allow notifications**.')
     expect(deviceRelayMessage({ email: null, devices: [phone({ registration_healthy: false })] }))
-      .toBe("**Open Notifai** on your Android phone so it can finish connecting.\n\n_I'll carry on once it's connected._")
+      .toBe('**Open Notifai** on your Android phone so it can finish connecting.')
   })
 
   it('relays the prepared lines a gap already carries, and says something for any other gap', () => {
     expect(relayMessage({ id: 'credential', title: 'This machine', status: 'gap', detail: 'x', technical: { pairing: { message: 'Scan it.' } } }))
       .toBe('Scan it.')
     expect(relayMessage({ id: 'credential', title: 'This machine', status: 'gap', detail: 'x', technical: { pairing_outcome: 'denied' } }))
-      .toBe('Stopped: you declined this computer. Ask me anytime to try again.')
+      .toBe('**Setup stopped:** you declined this computer.\n\nAsk me any time to try again.')
     expect(relayMessage({ id: 'credential', title: 'This machine', status: 'gap', detail: 'x', technical: { pairing_outcome: 'stopped' } }))
-      .toContain("wasn't approved in 90 minutes")
+      .toContain("wasn't approved within 90 minutes")
     expect(relayMessage({ id: 'server', title: 'Service', status: 'gap', detail: 'x' })).toContain("I can't reach Notifai")
     expect(relayMessage({ id: 'auth', title: 'Plan', status: 'gap', detail: 'x', technical: { plan_required: true, access_url: 'https://app.example/plans' } }))
-      .toBe('**Last step: choose a plan** in the Notifai app on your phone.\n\n_Or on the web: [app.example/plans](https://app.example/plans)_\n\nI\'ll send you a test notification as soon as it\'s active.')
+      .toBe('**Last step: choose a plan** in the Notifai app on your phone.\n\nOr on the web: [app.example/plans](https://app.example/plans)\n\nI\'ll send a test notification once it\'s active.')
     expect(relayMessage({
       id: 'hooks-codex', title: 'Codex', status: 'optional-gap', detail: 'x',
       remedy: { by: 'user-here', summary: 's', command: 'c', user_action: { code: 'c', harness: 'codex', action: 'a', message: 'Type /hooks.' } },
     })).toBe('Type /hooks.')
     expect(relayMessage({ id: 'contract', title: 'Update', status: 'gap', detail: 'too old', remedy: { by: 'user-here', summary: 'update Notifai', command: 'notifai update' } }))
-      .toBe('I couldn\'t finish setting up Notifai. It said: "too old". Update Notifai.')
+      .toBe('**I couldn\'t finish setting up Notifai.**\n\nIt said: "too old". Update Notifai.')
     expect(relayMessage({ id: 'skill', title: 'Skill', status: 'optional-gap', detail: 'x' })).toBeNull()
   })
 })

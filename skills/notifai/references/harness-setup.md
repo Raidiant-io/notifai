@@ -5,11 +5,13 @@ sign-in, hook installation and trust, bounded recovery, and settings.
 
 ## What to tell the User
 
-The User may be new to Notifai and to agent tooling. Send each message as
-written, with nothing before or after it, and never send the same message
-twice. Never ask the User to tell you when a step is done: setup watches for
-it. Messages stay in the conversation: never put a QR, link or code in a
-Notification Request.
+The User may be new to Notifai and to agent tooling. Send each message
+exactly as written, as your whole reply: the same words, line breaks, blank
+lines and Markdown (bold, links, numbered steps). Don't rephrase, shorten or
+join its lines, don't put it in a quote or code block, and add nothing before
+or after it except its QR. Never send the same message twice. Never ask the
+User to tell you when a step is done: setup watches for it. Messages stay in
+the conversation: never put a QR, link or code in a Notification Request.
 
 Setup writes its own messages: `init --json` carries `message` when it has
 something new to say. A gap with no `message` comes from an older Notifai: say
@@ -19,13 +21,17 @@ A few moments have no message from setup:
 
 **install**, before you install Notifai:
 
-> Installing Notifai so your agents can reach your phone. **Allow the prompts** as they come up.
+> Installing Notifai so your agents can reach your phone.
 
 **cloud**, when your commands run on a cloud or temporary machine:
 
-> I can't set up Notifai from here: I'm on a temporary machine. On your computer, run:
+> **I can't set up Notifai here:** this is a temporary machine.
+>
+> On your computer, run:
+>
 > `curl -fsSL https://notifai.sh/install.sh | sh`
-> or ask an agent there to follow **notifai.sh/setup**.
+>
+> Or ask an agent there to follow **notifai.sh/setup**.
 
 **which-computer**, when you can't tell where your commands run; carry on on
 a yes, otherwise say **cloud**:
@@ -35,7 +41,7 @@ a yes, otherwise say **cloud**:
 **installer-needs-you**, when the installer reports a `user_action` or the OS
 shows a permission prompt:
 
-> **Installing Notifai needs you:** {the `user_action` message, or "check the prompt on your screen"}. Tell me when it's done.
+> **Installing Notifai needs you:** {the `user_action` message, or "check the prompt on your screen"}.
 
 **done**, when setup is done and gave no message (an older Notifai):
 

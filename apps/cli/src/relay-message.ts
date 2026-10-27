@@ -25,7 +25,7 @@ export function relayMessage(state: ReadinessState): string | null {
       if (technical.pairing_outcome === 'denied') return DENIED_MESSAGE
       if (technical.pairing_outcome === 'stopped') return expiredStopMessage()
       if (technical.pairing_outcome === 'expired') {
-        return "That code expired before it was approved, so I'll get you a new one."
+        return "**That code expired.** I'll get you a new one."
       }
       if (technical.pairing_outcome === 'not_started') return UNREACHABLE
       break
@@ -41,11 +41,11 @@ export function relayMessage(state: ReadinessState): string | null {
 }
 
 const UNREACHABLE =
-  "I can't reach Notifai from this computer right now. I'll try again when you ask; nothing you set up so far is lost."
+  "**I can't reach Notifai from this computer right now.**\n\nNothing you set up so far is lost. Ask me any time to try again."
 
 /** Any other gap: what Notifai said, and what it asks for. */
 function stuck(state: ReadinessState): string {
   const summary = state.remedy?.summary
   const next = summary ? ` ${summary.charAt(0).toUpperCase()}${summary.slice(1).replace(/\.$/, '')}.` : ''
-  return `I couldn't finish setting up Notifai. It said: "${state.detail}".${next}`
+  return `**I couldn't finish setting up Notifai.**\n\nIt said: "${state.detail}".${next}`
 }
