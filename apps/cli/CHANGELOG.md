@@ -8,6 +8,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 This project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 and [Conventional Commits](https://www.conventionalcommits.org/en/v1.0.0/).
 
+## [14.4.2-beta.1](https://github.com/Raidiant-io/notifai/compare/v14.4.1...v14.4.2-beta.1) (2026-10-27)
+
+### Bug Fixes
+
+* A Codex thread whose Notifai hooks Codex skips, such as one started with its own `CODEX_HOME` for another account, now shows as running in the Notifai apps once it sends. Until its hooks are approved in that home it takes no notes and can't ask questions.
+* The agent in such a thread is told once to remind you to approve the hooks, and the reminder names the step that works for that home: run `CODEX_HOME=<home> codex` in a terminal, then type `/hooks`.
+
 ## [14.4.1](https://github.com/Raidiant-io/notifai/compare/v14.4.0...v14.4.1) (2026-10-27)
 
 ### Bug Fixes
