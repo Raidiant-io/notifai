@@ -3,9 +3,9 @@ import { REPLY_MAX_QUESTIONS } from './notification.js'
 import {
   PutAgentAcknowledgementRequest,
   ReplyAnswer,
-  type AgentAcknowledgementView,
+  AgentAcknowledgementView,
   type PutAgentAcknowledgementResponse,
-  type ReplyAnswerView,
+  ReplyAnswerView,
 } from './api.js'
 
 /**
@@ -529,8 +529,7 @@ const sessionMessageFields = {
   // Unknown reasons have always been rendered generically by clients.
   not_delivered_reason: Type.Union([Type.String(), Type.Null()]),
   agent_acknowledgement_text_required: Type.Boolean(),
-  // Nested acknowledgement/answers are object-checked, not deeply decoded here.
-  agent_acknowledgement: Type.Union([Type.Unsafe<AgentAcknowledgementView>(Type.Object({})), Type.Null()]),
+  agent_acknowledgement: Type.Union([AgentAcknowledgementView, Type.Null()]),
   created_at: Type.String(),
   handed_off_at: Type.Union([Type.String(), Type.Null()]),
   /** Opaque change position; equal revisions mean an unchanged message. */
@@ -539,7 +538,7 @@ const sessionMessageFields = {
 export const SessionMessageView = Type.Union([
   Type.Object({ ...sessionMessageFields, kind: Type.Literal('note'), body: Type.String(), request_id: Type.Null() }),
   Type.Object({ ...sessionMessageFields, kind: Type.Literal('answer_edit'), request_id: Type.String(),
-    answers: Type.Array(Type.Unsafe<ReplyAnswerView>(Type.Object({}))), text: Type.String() }),
+    answers: Type.Array(ReplyAnswerView), text: Type.String() }),
 ])
 export type SessionMessageView = Static<typeof SessionMessageView>
 
@@ -620,31 +619,29 @@ export type CreateAnswerEditRequestT = Static<typeof CreateAnswerEditRequest>
  * answer was dropped and is never delivered later. Post-delivery edits carry
  * their Session Message state.
  */
-export type AnswerVersionStatus = 'superseded' | 'current' | 'delivered' | 'presented' | SessionMessageState
+export type AnswerVersionStatus = AnswerVersionView['status']
 
-export interface AnswerVersionView {
-  origin: 'companion' | 'harness'
-  /** An explicit agent report does not attest which native UI control was used. */
-  provenance: 'agent-reported' | null
-  /** The exact version explicitly corrected, or null for an independent answer. */
-  base_version: string | null
-  /** `reply_id` for a reply, `message_id` for a post-delivery edit; `base_version` names it. */
-  version_id: string
-  /** `edit` when written through answer-edits, before or after delivery. */
-  source: 'reply' | 'edit'
-  status: AnswerVersionStatus
-  not_delivered_reason: SessionMessageNotDeliveredReason | null
-  /** The complete answer as of this version. */
-  answers: ReplyAnswerView[]
-  text: string
-  device_id: string | null
-  created_at: string
-  /**
-   * This version's own acknowledgement: the request acknowledgement attaches
-   * to the `delivered` version only, an edit's to that edit only.
-   */
-  agent_acknowledgement: AgentAcknowledgementView | null
-}
+/** Retained answer output; unknown delivery reasons render generically. */
+export const AnswerVersionView = Type.Object({
+  origin: Type.Union([Type.Literal('companion'), Type.Literal('harness')]),
+  /** An agent report does not attest which native control was used. */
+  provenance: Type.Union([Type.Literal('agent-reported'), Type.Null()]),
+  /** The exact version corrected, or null for an independent answer. */
+  base_version: Type.Union([Type.String(), Type.Null()]),
+  /** Reply id or post-delivery edit message id; base_version names it. */
+  version_id: Type.String(),
+  source: Type.Union([Type.Literal('reply'), Type.Literal('edit')]),
+  status: Type.Union(['superseded', 'current', 'delivered', 'presented', ...SESSION_MESSAGE_STATES].map(value => Type.Literal(value))),
+  not_delivered_reason: Type.Union([Type.String(), Type.Null()]),
+  /** Complete answer at this version, not just the edited questions. */
+  answers: Type.Array(ReplyAnswerView),
+  text: Type.String(),
+  device_id: Type.Union([Type.String(), Type.Null()]),
+  created_at: Type.String(),
+  /** This version's acknowledgement; never borrowed from another edit. */
+  agent_acknowledgement: Type.Union([AgentAcknowledgementView, Type.Null()]),
+})
+export type AnswerVersionView = Static<typeof AnswerVersionView>
 
 export interface CreateAnswerEditResponse {
   /** True when `client_edit_id` returned a previously accepted edit. */

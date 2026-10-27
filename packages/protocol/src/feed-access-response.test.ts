@@ -5,7 +5,7 @@ import { isCompanionChangesPage } from './changes.js'
 const access = { status: 'active', reason: 'alpha_grant', expires_at: null, email: null, public_v1_cutover: false }
 const row = {
   request_id: 'opaque/request', revision: 'opaque/revision', accepted_at: 'time', native_expires_at: 'time',
-  retained_until: 'time', insertable: true, has_body: false, draft: { kind: 'done', future: true },
+  retained_until: 'time', insertable: true, has_body: false, draft: { schema_version: 1, kind: 'done', presentation: { title: 'T', summary: 'S' }, targets: { mode: 'all' }, delivery: { ttl_seconds: 60, collapse_key: null }, future: true },
   project_name: null, delivery_id: null, reply_expires_at: null, retired_at: null, retirement: null,
   read_at: null, agent_acknowledgement_required: false, latest_reply: null, agent_acknowledgement: null,
 }
@@ -61,7 +61,7 @@ describe('canonical response boundaries', () => {
   ])('rejects malformed nested object boundaries %j', notification => {
     expect(isCompanionChangesPage({ ...page, notifications: [notification] })).toBe(false)
   })
-  it('documents bounded depth: nested historical content is not a submission validator', () => {
-    expect(isCompanionChangesPage({ ...page, notifications: [{ ...row, latest_reply: {}, answer_versions: [{}] }] })).toBe(true)
+  it('rejects missing nested response fields', () => {
+    expect(isCompanionChangesPage({ ...page, notifications: [{ ...row, latest_reply: {}, answer_versions: [{}] }] })).toBe(false)
   })
 })

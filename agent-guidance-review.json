@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "behavior_digest": "sha256:11aa777a15969ffe3fc66d7365aa206c9a0c6aaa65e6717c18595c6bd1d5ba51",
+  "behavior_digest": "sha256:3b517275b1e60993414fef36a7aefaea64bb89f54bee9bfa83015f0ddb907a05",
   "outcome": "reviewed-no-impact",
   "surfaces_reviewed": [
     "lifecycle-hooks",
@@ -9,5 +9,5 @@
     "cli-readiness",
     "domain-terms"
   ],
-  "reason": "Reviewed access and changes-feed response schemas against lifecycle hooks, the Notifai skill, harness setup, CLI readiness and domain terms. CLI accessStatus retains its existing call path and wire fields; the new exported guards are not invoked by CLI commands or harness integrations. Required feed row schemas preserve optional metadata and additive fields, and do not change attendance, readiness, session lifecycle or user instructions. Nested historical content remains explicitly outside deep response validation. No agent guidance text changes are needed."
+  "reason": "Reviewed the retained draft, reply, acknowledgement and answer schemas against lifecycle hooks, the Notifai skill, harness setup, CLI readiness and domain terms. The CLI uses the unchanged reply and answer structures as types; no CLI command or hook invokes these feed decoders. Output schemas preserve optional metadata and additive fields, and do not alter submission validators, attendance, readiness or instruction text. Deep validation of retained feed content needs no agent guidance changes."
 }
