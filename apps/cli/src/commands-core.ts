@@ -96,6 +96,8 @@ export interface CommandDeps {
   hookInstallTarget?: HookAdapterTarget
   /** Test seam; production uses process.platform for adapter format and quoting. */
   hookPlatform?: NodeJS.Platform
+  /** Test seam; production looks for the Notifai Mac app in the Applications folders. */
+  macAppInstalled?: boolean
   /** Test seam; production uses this build's package version. */
   runningVersion?: string | null
   /** Test seam; production uses fetch against base_url. */

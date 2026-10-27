@@ -1039,7 +1039,7 @@ describe('guided setup', () => {
   }
 
   /** A computer setup run from scratch against a fake service with a clock. */
-  function journey(options: { connected?: boolean; devices?: () => unknown[]; plan?: () => boolean; approveAt?: number | null; tooOld?: boolean; platform?: NodeJS.Platform } = {}) {
+  function journey(options: { connected?: boolean; devices?: () => unknown[]; plan?: () => boolean; approveAt?: number | null; tooOld?: boolean; platform?: NodeJS.Platform; macApp?: boolean } = {}) {
     const cwd = mkdtempSync(path.join(os.tmpdir(), 'init-guided-'))
     const env = isolatedEnv(cwd)
     let clock = Date.parse('2026-10-26T12:00:00.000Z')
@@ -1095,6 +1095,7 @@ describe('guided setup', () => {
       now: () => clock,
       sleep: async (ms: number) => { clock += Math.max(ms, 1) },
       hookPlatform: options.platform ?? 'linux',
+      macAppInstalled: options.macApp ?? false,
     }
     const run = async (flags: Record<string, unknown> = {}) => {
       io.outLines = []
@@ -1299,12 +1300,14 @@ describe('guided setup', () => {
     expect(done.result.message).toMatch(/^✅ \*\*Notifai is set up\*\* for \*\*you@example.com\*\*\.\n\nYou can answer your agents from your phone\.$/)
   })
 
-  it('offers the desktop app last, only on a Mac', async () => {
+  it('offers the desktop app last, only on a Mac without it', async () => {
     const mac = await journey({ connected: true, devices: () => [phone], platform: 'darwin' }).run({ wait: 240 })
     expect(mac.result.ready).toBe(true)
     expect(mac.result.message).toMatch(/\n\nWant notifications on your Mac\? \[Download the desktop app here\]\(https:\/\/app\.notifai\.sh\/download\/mac\)$/)
     const linux = await journey({ connected: true, devices: () => [phone], platform: 'linux' }).run({ wait: 240 })
     expect(linux.result.message).not.toContain('Mac')
+    const installed = await journey({ connected: true, devices: () => [phone], platform: 'darwin', macApp: true }).run({ wait: 240 })
+    expect(installed.result.message).not.toContain('Mac')
   })
 
   it('walks a person at the terminal through approval and the phone, naming the Account', async () => {

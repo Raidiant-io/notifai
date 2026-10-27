@@ -1469,8 +1469,22 @@ function doneFacts(readiness: Readiness, apps: readonly HookInstallableHarness[]
     codexNeedsApproval: status('hooks-trust') !== 'ready',
     commandApps: apps.filter((app) => (app === 'claude-code' && status(CLAUDE_COMMANDS_STATE_ID) === 'ready') ||
       (app === 'codex' && status(CODEX_COMMANDS_STATE_ID) === 'ready')),
-    mac: (deps.hookPlatform ?? process.platform) === 'darwin',
+    mac: (deps.hookPlatform ?? process.platform) === 'darwin' && !(deps.macAppInstalled ?? macAppInstalled(deps.env)),
   }
+}
+
+const MAC_APP_BUNDLE_ID = 'sh.notifai.desktop'
+
+/** The Notifai Mac app sits in /Applications or ~/Applications, where its installer puts it. */
+function macAppInstalled(env: NodeJS.ProcessEnv): boolean {
+  const folders = ['/Applications', ...(env.HOME ? [path.join(env.HOME, 'Applications')] : [])]
+  return folders.some((folder) => {
+    try {
+      return readFileSync(path.join(folder, 'Notifai.app', 'Contents', 'Info.plist')).includes(MAC_APP_BUNDLE_ID)
+    } catch {
+      return false
+    }
+  })
 }
 
 type JourneyView =
