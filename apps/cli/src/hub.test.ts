@@ -16,7 +16,7 @@ import type { CodexWakeAdapters } from './codex-wake.js'
 import type { CommandDeps } from './commands-core.js'
 import { hookRunCommand } from './commands-hook-run.js'
 import type { CredentialStore,MachineCredential } from './credentials.js'
-import { beginSessionIncarnation,lifecycleStamp,readSessionEndMarker,readSessionIncarnation,readSessionState,recordSessionNotified,updateSessionState } from './hook-session-state.js'
+import { beginSessionIncarnation,lifecycleStamp,markSessionEnded,readSessionEndMarker,readSessionIncarnation,readSessionState,recordSessionNotified,updateSessionState } from './hook-session-state.js'
 import { ExchangeDriver,type AttendedSession,type ExchangeHost } from './hub-exchange.js'
 import { credentialGenerationPath,encodeFrame,ensurePrivateDirectory,FrameDecoder,hubLockPath,hubSocketPath,requestHub } from './hub-ipc.js'
 import { HUB_WRITE_MARGIN_MS,SessionLease } from './hub-lease.js'
@@ -25,7 +25,7 @@ import { recordClaudeSessionTitle } from './harness-session-title.js'
 import { resolveSessionLabel } from './session-labels.js'
 import { nullLogger } from './logging.js'
 import { pidExists,processStartTime } from './process-identity.js'
-import { attendantStatusPath,readAttendantEndingLease,readAttendantLease,recordTurnEnd,recordTurnStart } from './session-attendant-state.js'
+import { attendantClaimPath,attendantStatusPath,readAttendantEndingLease,readAttendantLease,recordTurnEnd,recordTurnStart } from './session-attendant-state.js'
 import { hasSessionInputs,stageSessionMessages } from './session-inputs.js'
 import { runWakeCommand } from './wake-support.js'
 
@@ -263,6 +263,67 @@ describe('hub exchange driver', () => {
     ok.release()
     await run2
   })
+
+  const STOPPED_HOLD = ['session_attendance', 'session_attendance_batch', 'session_stopped_hold']
+  const unique = (body: AttendanceBatchRequestT): boolean => new Set(body.sessions.map((entry) => entry.session_id)).size === body.sessions.length
+
+  it('names each session once per batch: an owed end goes first, a later incarnation of it in the next exchange', async () => {
+    const service = fakeService({ capabilities: STOPPED_HOLD, batch: (body) => unique(body)
+      ? { message_cursor: 'c1', sessions: body.sessions.map((entry) => entry.state === 'stopped'
+        ? { session_id: entry.session_id, status: 'stopped' as const, generation: entry.generation!, message_cursor: 'c1', messages: [] }
+        : { session_id: entry.session_id, status: 'withdrawn' as const }) }
+      : new ApiCallError(422, 'invalid_request', 'Each session_id may appear once per batch.') })
+    // A swept end of one incarnation, and the same session adopted again as stopped.
+    const ended = new FakeSession(SESSION)
+    ended.ready = false
+    ended.lease.generation = 1
+    ended.lease.final = 'ended'
+    const adopted = new FakeSession(SESSION)
+    adopted.lease.incarnation = 'inc_adopted000001'
+    adopted.lease.generation = 2
+    adopted.lease.holdStopped = true
+    const driver = new ExchangeDriver(driverHost(service, [ended, adopted]))
+    const running = driver.run()
+    await until(() => ended.outcomes.includes('reported') && adopted.outcomes.includes('stopped'))
+    expect(service.batches.every(({ body }) => unique(body))).toBe(true)
+    expect(service.batches[0]!.body.sessions).toEqual([{ session_id: SESSION, incarnation: ended.lease.incarnation, generation: 1, state: 'ended' }])
+    expect(service.batches[1]!.body.sessions).toEqual([{ session_id: SESSION, incarnation: 'inc_adopted000001', generation: 2, state: 'stopped' }])
+    driver.stop()
+    service.release()
+    await running
+  })
+
+  it('never resends a refused body: sets the refused entry aside, attends the rest, and backs off across rediscovery', async () => {
+    const THIRD = '33333333-4444-5555-6666-777777777777'
+    const service = fakeService({ capabilities: STOPPED_HOLD, batch: (body) => body.sessions.some((entry) => entry.session_id !== SESSION)
+      ? new ApiCallError(422, 'invalid_request', 'Refused.')
+      : { message_cursor: 'c1', sessions: body.sessions.map((entry) => ({ session_id: entry.session_id, status: 'attending' as const,
+        generation: entry.generation ?? 1, lease_remaining_ms: 120_000, message_cursor: 'c1', messages: [] })) } })
+    const good = new FakeSession(SESSION)
+    const bad = [new FakeSession(OTHER), new FakeSession(THIRD)]
+    for (const session of bad) {
+      session.lease.generation = 2
+      session.lease.holdStopped = true
+    }
+    const pauses: number[] = []
+    const host = driverHost(service, [good, ...bad])
+    const sleep = host.sleep
+    host.sleep = (ms, signal) => { pauses.push(ms); return sleep(ms, signal) }
+    const driver = new ExchangeDriver(host)
+    const running = driver.run()
+    await until(() => good.lease.phase === 'attending')
+    // Well past every backoff, well inside the time a refused entry sits out.
+    await vi.advanceTimersByTimeAsync(60_000)
+    // The whole batch once, then each entry alone once: never the same body twice.
+    expect(service.batches.slice(0, 4).map(({ body }) => body.sessions.map((entry) => entry.session_id)))
+      .toEqual([[SESSION, OTHER, THIRD], [SESSION], [OTHER], [THIRD]])
+    expect(service.batches.slice(4).every(({ body }) => body.sessions.every((entry) => entry.session_id === SESSION))).toBe(true)
+    // Only a successful exchange resets the backoff; rediscovery after each refusal does not.
+    expect(pauses).toEqual([1_000, 1_000, 2_000])
+    driver.stop()
+    service.release()
+    await running
+  })
 })
 
 // ---------------------------------------------------------------------------
@@ -491,6 +552,61 @@ describe('hub', () => {
     service.release()
     await second.done
   })
+
+  it('reports a swept end before the same conversation, resumed, is attended again: never one id twice in a batch', async () => {
+    const env = hubEnv()
+    writeDescriptor(env, SESSION)
+    recordSessionNotified(SESSION, env, Date.now())
+    let up = true
+    const service = fakeService({ batch: (body) => {
+      if (!up) return new Error('offline')
+      // The service refuses a batch that names one session twice.
+      if (new Set(body.sessions.map((entry) => entry.session_id)).size !== body.sessions.length) {
+        return new ApiCallError(422, 'invalid_request', 'Each session_id may appear once per batch.')
+      }
+      return { message_cursor: 'c1', sessions: body.sessions.map((entry) => entry.state === 'running'
+        ? { session_id: entry.session_id, status: 'attending' as const, generation: entry.generation ?? 1, lease_remaining_ms: 120_000, message_cursor: 'c1', messages: [] }
+        : { session_id: entry.session_id, status: 'withdrawn' as const }) }
+    } })
+    const peers = new Map<number, PeerCredentials>()
+    const first = startHub(env, service, peers)
+    await hubListening(env)
+    const peer = (pid: number) => peerOf(pid, { pid: HARNESS.pid, comm: 'claude', start: HARNESS.start })
+    const child = await registered(env, SESSION, 900011, peer(900011), peers)
+    await until(() => service.batches.length >= 2)
+    expect(readAttendantEndingLease(SESSION, env)).toMatchObject({ generation: 1 })
+    // The hub and the child go away together; the conversation is closed while no hub runs.
+    first.hub.requestExit('test-crash')
+    service.release()
+    await first.done
+    child.socket.destroy()
+    rmSync(attendantClaimPath(SESSION, env), { force: true })
+    markSessionEnded(SESSION, env, Date.now())
+    // The User resumes it: its child starts a hub, whose start sweep owes the old end.
+    up = false
+    const batchesBefore = service.batches.length
+    // Long enough an idle exit that the resumed child finds this hub again.
+    const second = startHub(env, service, peers, memoryStore(), undefined, {}, { idleExitMs: 10_000 })
+    await hubListening(env)
+    const resumed = await registered(env, SESSION, 900012, peer(900012), peers, { source: 'resume' })
+    up = true
+    const sent = (): AttendanceBatchRequestT[] => service.batches.slice(batchesBefore).map((batch) => batch.body)
+    const reportedEnd = (): boolean => sent().some((body) => body.sessions.length === 1 && body.sessions[0]!.state === 'ended')
+    const duplicate = (): boolean => sent().some((body) => new Set(body.sessions.map((entry) => entry.session_id)).size !== body.sessions.length)
+    await until(() => reportedEnd() || duplicate(), 10_000)
+    expect(duplicate()).toBe(false)
+    // The resumed child waited for the old end; it comes back and is attended.
+    expect(resumed.frames[0]).toEqual({ type: 'refused', reason: 'session-ending', retry: true })
+    await until(() => second.hub.status()['pending_end_reports'] === 0)
+    const again = await registered(env, SESSION, 900013, peer(900013), peers, { source: 'resume' })
+    expect(again.frames[0]).toMatchObject({ type: 'registered' })
+    await until(() => sent().some((body) => body.sessions.some((entry) => entry.state === 'running')))
+    expect(duplicate()).toBe(false)
+    again.socket.destroy()
+    second.hub.requestExit('test')
+    service.release()
+    await second.done
+  }, 20_000)
 
   it('sends nothing with the old credential after acknowledging a credential change', async () => {
     const env = hubEnv()

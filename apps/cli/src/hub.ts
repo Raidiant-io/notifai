@@ -1951,6 +1951,9 @@ export class Hub {
       this.addWriter(existing, { child: link, harnessProcess: registration.harnessProcess, registration, env })
       return existing
     }
+    // An earlier incarnation swept as ended still owes its report: one owner
+    // per session id, so the child comes back once that report has gone.
+    if (this.ended.has(registration.sessionId)) return 'session-ending'
     // A stopped conversation this hub has not taken back yet: never into a scripted run.
     if (!placeReceives(registration.place) && stoppedOnDisk(registration.sessionId, env)) return 'place-receives-nothing'
     const starting = registration.hookEvent === 'SessionStart' || registration.source !== null
@@ -2845,7 +2848,7 @@ export class Hub {
    * exited, so no later hub start reports that end again.
    */
   endReported(session: EndedSession): void {
-    this.ended.delete(session.id)
+    if (this.ended.get(session.id) === session) this.ended.delete(session.id)
     try {
       const file = attendantStatusPath(session.id, this.env)
       const status = JSON.parse(readFileSync(file, 'utf8')) as Record<string, unknown>
@@ -3088,8 +3091,8 @@ export class Hub {
     session.transcriptGone()
     session.claimToken = await this.takeClaim(session)
     if (session.claimToken === null) return
-    if (this.sessions.has(sessionId) || this.exiting) {
-      // A child registered it meanwhile, or this hub is leaving.
+    if (this.sessions.has(sessionId) || this.ended.has(sessionId) || this.exiting) {
+      // A child registered it meanwhile, a sweep found it ended, or this hub is leaving.
       releaseClaimFile(attendantClaimPath(sessionId, env), session.claimToken)
       return
     }
@@ -3143,7 +3146,7 @@ export class Hub {
     session.lease.holdStopped = true
     session.claimToken = await this.takeClaim(session)
     if (session.claimToken === null) return
-    if (this.sessions.has(sessionId) || this.exiting) {
+    if (this.sessions.has(sessionId) || this.ended.has(sessionId) || this.exiting) {
       releaseClaimFile(attendantClaimPath(sessionId, env), session.claimToken)
       return
     }

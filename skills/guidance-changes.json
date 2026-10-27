@@ -1,5 +1,5 @@
 {
-  "current": "2b5326e38cb12c1e06fad0f95f72ac8ff06dd9147fa28384344847979c152d49",
+  "current": "0538e6688415037dc6c9bd85b1663d36c9384e66024e2bfb797fee89a87d7119",
   "releases": [
     {
       "digest": "3e47b01bc6bbfb43e910c660b9964fab6459d75148c3c02dcbcd0be64cfb2963",
@@ -132,6 +132,10 @@
     {
       "digest": "2b5326e38cb12c1e06fad0f95f72ac8ff06dd9147fa28384344847979c152d49",
       "note": "Codex hook approval is now worded for the Codex surface you run in: `/hooks` in the Codex CLI, the Review hooks icon in the message box of the ChatGPT desktop app and the Codex IDE extension, or both when Notifai can't tell. Never wait for that approval or ask the User to tell you when it's done: carry on, and end your reply with the reminder doctor or ask gives (`message`, or `user_action.message`) as written. When `ask` is refused with `codex_hook_approval_required`, nothing was registered: ask the question in the conversation instead and carry on. The apps question names Codex \"Codex (CLI, IDE or ChatGPT app)\"; elsewhere call it Codex."
+    },
+    {
+      "digest": "0538e6688415037dc6c9bd85b1663d36c9384e66024e2bfb797fee89a87d7119",
+      "note": "The hub no longer resends an attendance exchange the service refused, so a resumed conversation can no longer keep it retrying about once a second. Existing agent guidance is unchanged."
     }
   ]
 }

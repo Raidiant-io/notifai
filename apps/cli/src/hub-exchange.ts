@@ -27,6 +27,11 @@ const MAX_NETWORK_BACKOFF_MS = 30_000
 const MAX_EXCHANGES_PER_SECOND = 8
 /** How often an unsupported service is asked again. */
 const UNSUPPORTED_RECHECK_MS = 30 * 60_000
+/** How long a session whose entry the service refused on its own sits out before it is offered again. */
+export const REFUSED_ENTRY_RETRY_MS = 10 * 60_000
+
+type Kind = 'final' | 'running' | 'stopped'
+interface Chosen { session: AttendedSession; entry: AttendanceBatchEntryT; kind: Kind }
 
 export interface HubClock {
   monotonic(): number
@@ -61,6 +66,11 @@ export interface ExchangeHost {
 
 type Mode = 'unknown' | 'batch' | 'per-session' | 'unsupported'
 
+/** The service refused the request itself: resending it unchanged gets the same answer. */
+function refusal(err: unknown): err is ApiCallError {
+  return err instanceof ApiCallError && (err.status === 400 || err.status === 422)
+}
+
 export class ExchangeDriver {
   private mode: Mode = 'unknown'
   private cursor: string | undefined
@@ -74,8 +84,13 @@ export class ExchangeDriver {
   private readonly wakers = new Set<() => void>()
   private readonly stopping = new AbortController()
   private readonly perSession = new Map<string, Promise<void>>()
+  /** Grows with each failed exchange; only a successful attendance exchange resets it. */
   private backoff = 1_000
   private unsupportedUntil = 0
+  /** After a refused batch: these sessions go one per exchange, so one bad entry cannot hold up the rest. */
+  private readonly isolating = new Set<AttendedSession>()
+  /** Sessions whose entry the service refused on its own, and when they may be offered again. */
+  private readonly setAside = new Map<AttendedSession, number>()
   /** What the service said it offers at the last discovery. */
   private capabilities: ReadonlySet<string> = new Set()
   /** Requests sent, for status (and the W1-R counts). */
@@ -121,6 +136,9 @@ export class ExchangeDriver {
     this.mode = 'unknown'
     this.capabilities = new Set()
     this.cursor = undefined
+    // What one service refused says nothing about another credential's.
+    this.isolating.clear()
+    this.setAside.clear()
     // A credential change ends every exchange, held or not.
     for (const exchange of this.inFlight) exchange.abort()
     this.poke()
@@ -197,7 +215,8 @@ export class ExchangeDriver {
   private async discover(client: ApiClient): Promise<void> {
     try {
       const capabilities = (await client.compatibility()).server_capabilities as readonly string[]
-      this.backoff = 1_000
+      // Discovery alone never resets the backoff: a service that keeps refusing
+      // the exchange after a successful discovery must still slow the hub down.
       this.capabilities = new Set(capabilities)
       if (capabilities.includes('session_attendance_batch')) this.mode = 'batch'
       else if (capabilities.includes('session_attendance')) this.mode = 'per-session'
@@ -230,29 +249,45 @@ export class ExchangeDriver {
   private async batchOnce(client: ApiClient): Promise<void> {
     const now = this.host.clock.monotonic()
     const sessions = this.host.sessions()
-    const finals: { session: AttendedSession; entry: AttendanceBatchEntryT }[] = []
-    const running: { session: AttendedSession; entry: AttendanceBatchEntryT }[] = []
-    const stopped: { session: AttendedSession; entry: AttendanceBatchEntryT }[] = []
+    for (const [session, until] of this.setAside) if (until <= now || !sessions.includes(session)) this.setAside.delete(session)
+    const finals: Chosen[] = []
+    const running: Chosen[] = []
+    const stopped: Chosen[] = []
     for (const session of sessions) {
+      if (this.setAside.has(session)) continue
       const final = session.lease.finalEntry(session.id, this.offers('session_confirmed_end'))
       const stop = final === null ? this.stoppedEntry(session) : null
-      if (final !== null) finals.push({ session, entry: final })
-      else if (stop !== null) { if (now >= session.lease.pausedUntil) stopped.push({ session, entry: stop }) }
+      if (final !== null) finals.push({ session, entry: final, kind: 'final' })
+      else if (stop !== null) { if (now >= session.lease.pausedUntil) stopped.push({ session, entry: stop, kind: 'stopped' }) }
       else if (session.runnable(now)) {
-        running.push({ session, entry: session.lease.runningEntry(session.id, session.activity(), session.acceptsMessages()) })
+        running.push({ session, entry: session.lease.runningEntry(session.id, session.activity(), session.acceptsMessages()), kind: 'running' })
       }
     }
-    if (finals.length === 0 && running.length === 0 && stopped.length === 0) {
-      const next = Math.min(...sessions.map((s) => s.lease.pausedUntil).filter((at) => at > now))
+    // One entry per Agent Session: finals first, so an earlier incarnation's
+    // end goes before a later incarnation of the same session, which waits for
+    // the next exchange.
+    const ids = new Set<string>()
+    const candidates: Chosen[] = []
+    for (const item of [...finals, ...running, ...stopped]) {
+      if (ids.has(item.session.id)) continue
+      ids.add(item.session.id)
+      candidates.push(item)
+    }
+    const deferred = candidates.length < finals.length + running.length + stopped.length
+    for (const session of this.isolating) if (!candidates.some((item) => item.session === session)) this.isolating.delete(session)
+    const isolated = candidates.find((item) => this.isolating.has(item.session))
+    if (candidates.length === 0) {
+      const next = Math.min(...sessions.map((s) => s.lease.pausedUntil).filter((at) => at > now), ...this.setAside.values())
       await this.nextChange(Number.isFinite(next) ? next - now : undefined)
       return
     }
-    const chosen = [...finals, ...running, ...stopped].slice(0, ATTENDANCE_BATCH_MAX_SESSIONS)
+    if (isolated !== undefined) this.isolating.delete(isolated.session)
+    const chosen = isolated !== undefined ? [isolated] : candidates.slice(0, ATTENDANCE_BATCH_MAX_SESSIONS)
     // A session held as stopped stays in the exchange only to see notes sent
     // to it; once the service holds it, it never cuts a held exchange short.
-    const hold = this.cursor !== undefined && finals.length === 0 &&
-      [...running, ...stopped].every(({ session }) => !session.lease.needsFresh && session.lease.messageRetries === 0) &&
-      chosen.length === finals.length + running.length + stopped.length
+    const hold = this.cursor !== undefined && isolated === undefined && !deferred &&
+      chosen.every(({ session, kind }) => kind !== 'final' && !session.lease.needsFresh && session.lease.messageRetries === 0) &&
+      chosen.length === candidates.length
     const current = new AbortController()
     this.inFlight.add(current)
     if (hold) this.held.add(current)
@@ -278,7 +313,9 @@ export class ExchangeDriver {
         this.mode = 'per-session'
         return
       }
-      if (this.refusedShape(err, [...finals, ...stopped].map(({ entry }) => entry))) {
+      if (refusal(err)) {
+        this.refusedBatch(err, chosen)
+        this.refusedShape(err, chosen.filter(({ kind }) => kind !== 'running').map(({ entry }) => entry))
         await this.pause(this.backoff)
         this.backoff = Math.min(this.backoff * 2, MAX_NETWORK_BACKOFF_MS)
         return
@@ -292,15 +329,35 @@ export class ExchangeDriver {
     this.held.delete(current)
     this.backoff = 1_000
     this.lastSuccessAt = this.host.clock.wall()
-    this.cursor = response.message_cursor
+    // An exchange that carried one isolated session says nothing for the
+    // others: the next full batch answers at once instead of holding on it.
+    if (isolated === undefined) this.cursor = response.message_cursor
     const byId = new Map(response.sessions.map((result) => [result.session_id, result]))
-    const finalIds = new Set(finals.map(({ session }) => session.id))
-    const stoppedIds = new Set(stopped.map(({ session }) => session.id))
-    await Promise.all(chosen.map(async ({ session }) => {
+    await Promise.all(chosen.map(async ({ session, kind }) => {
       const result = byId.get(session.id)
       if (result === undefined) return
-      await this.applyResult(session, result, sentAt, sentEpoch, credential, finalIds.has(session.id), stoppedIds.has(session.id))
+      await this.applyResult(session, result, sentAt, sentEpoch, credential, kind === 'final', kind === 'stopped')
     }))
+  }
+
+  /**
+   * The service refused the whole exchange (400/422). The same body is never
+   * sent again: a batch is split into one exchange per session, and a
+   * session refused on its own sits out for a while, so the others go on.
+   */
+  private refusedBatch(err: ApiCallError, chosen: readonly Chosen[]): void {
+    this.host.logger.info('hub.exchange', { event: 'refused', status: err.status, code: err.code, message: err.message,
+      sessions: chosen.length })
+    // The cursor is the one part of the body every split exchange would share.
+    this.cursor = undefined
+    if (chosen.length > 1) {
+      for (const { session } of chosen) this.isolating.add(session)
+      return
+    }
+    for (const { session } of chosen) {
+      this.setAside.set(session, this.host.clock.monotonic() + REFUSED_ENTRY_RETRY_MS)
+      this.host.logger.info('hub.exchange', { event: 'set-aside', session: session.id, retry_in_ms: REFUSED_ENTRY_RETRY_MS })
+    }
   }
 
   /**
@@ -309,7 +366,7 @@ export class ExchangeDriver {
    * what it offers, so nothing it no longer knows is sent again.
    */
   private refusedShape(err: unknown, entries: readonly AttendanceBatchEntryT[]): boolean {
-    if (!(err instanceof ApiCallError) || (err.status !== 400 && err.status !== 422)) return false
+    if (!refusal(err)) return false
     if (!entries.some((entry) => entry.state === 'stopped' || ('end_reason' in entry && entry.end_reason !== undefined))) return false
     this.host.logger.info('hub.exchange', { event: 'transport', mode: 'unknown', reason: `refused-${err.status}` })
     this.mode = 'unknown'
@@ -393,6 +450,7 @@ export class ExchangeDriver {
       try {
         const response = await client.attend(session.id, body, { waitSeconds: hold ? ATTENDANCE_MAX_WAIT_SECONDS : 0, signal: current.signal })
         backoff = 1_000
+        this.backoff = 1_000
         this.lastSuccessAt = this.host.clock.wall()
         await this.applyResult(session, response, sentAt, sentEpoch, credential, final !== null, stop !== null)
       } catch (err) {
@@ -407,7 +465,16 @@ export class ExchangeDriver {
             final !== null && refusal === 'unknown_successor', false)
           continue
         }
-        if (this.refusedShape(err, [entry])) { await this.pause(backoff); return }
+        if (refusal(err)) {
+          this.host.logger.info('hub.exchange', { event: 'refused', status: err.status, code: err.code, message: err.message, session: session.id })
+          if (this.refusedShape(err, [entry])) {
+            // Rediscovery starts a new loop: the driver's backoff carries over, so a refusal that recurs slows down.
+            const wait = Math.max(backoff, this.backoff)
+            this.backoff = Math.min(wait * 2, MAX_NETWORK_BACKOFF_MS)
+            await this.pause(wait)
+            return
+          }
+        }
         await this.pause(backoff)
         backoff = Math.min(backoff * 2, MAX_NETWORK_BACKOFF_MS)
       } finally {
