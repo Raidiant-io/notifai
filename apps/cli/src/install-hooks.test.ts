@@ -21,6 +21,7 @@ codexProjectRoot,
 codexRoutingTrustProblems,
 codexTrustProblems,
 detectedHarnesses,
+handlerCommandLine,
 handlerEvent,
 hookCommand,
 loadSettings,
@@ -48,6 +49,51 @@ describe('hook config', () => {
     const cmd = hookCommand('/tmp/$(touch /tmp/pwned)/hook-adapter', 'stop')
     expect(cmd).toBe("'/tmp/$(touch /tmp/pwned)/hook-adapter' hook stop --owner notifai")
     expect(hookCommand("/it's/here", 'stop')).toContain(`'/it'\\''s/here'`)
+  })
+
+  it('names every handler in Claude Code and Codex, and never in Grok, which rejects the field', () => {
+    const names = (harness: 'claude-code' | 'codex' | 'grok', platform: NodeJS.Platform, claudeForm?: 'exec') =>
+      Object.entries(buildHookConfig({ adapterPath: ADAPTER, harness, platform, ...(claudeForm ? { claudeForm } : {}) }))
+        .flatMap(([event, groups]) => groups.flatMap(group => group.hooks.map(handler =>
+          `${event} ${handlerEvent(handlerCommandLine(handler))}: ${handler.statusMessage}`)))
+    const shared = [
+      'SessionStart session-start: Loading Notifai for this session',
+      'SessionStart attend: Keeping Notifai connected',
+      'SubagentStart subagent-start: Loading Notifai for this subagent',
+      'UserPromptSubmit user-prompt-submit: Updating Notifai session',
+      'UserPromptSubmit attend: Keeping Notifai connected',
+      'Stop stop: Sending questions and answers through Notifai',
+      'Stop attend: Keeping Notifai connected',
+      'SessionEnd session-end: Closing Notifai session',
+    ]
+    const codex = [...shared,
+      'PreToolUse pre-tool-use: Sending this question to Notifai',
+      'PostToolUse post-tool-use: Checking Notifai for notes and answers',
+      'Interrupt attend: Recording the interrupt for Notifai',
+    ]
+    const claude = [...shared,
+      'PermissionRequest permission-request: Waiting for your answer in Notifai',
+      'PostToolUse post-tool-use: Recording your answer for Notifai',
+    ]
+    for (const platform of ['darwin', 'win32'] as const) {
+      expect(names('codex', platform).sort(), platform).toEqual(codex.sort())
+      expect(names('claude-code', platform).sort(), platform).toEqual(claude.sort())
+    }
+    expect(names('claude-code', 'darwin', 'exec').sort()).toEqual(claude.sort())
+    expect(JSON.stringify(buildHookConfig({ adapterPath: ADAPTER, harness: 'grok', platform: 'darwin' }))).not.toContain('statusMessage')
+  })
+
+  it('pins the Codex definition: Codex skips every changed handler until the User approves it again', () => {
+    // A deliberate Codex hook change regenerates this fixture; review it as a
+    // change every Codex User must approve in /hooks.
+    const golden = JSON.parse(readFileSync(new URL('./fixtures/codex-hooks-golden.json', import.meta.url), 'utf8')) as Record<string, string>
+    for (const platform of ['darwin', 'linux', 'win32'] as const) {
+      const adapterPath = platform === 'win32' ? 'C:\\Users\\Example User\\.notifai\\bin\\notifai.exe' : '/home/example user/.notifai/bin/notifai'
+      for (const scope of ['', 'codex:/home/example user/.codex']) {
+        expect(JSON.stringify(buildHookConfig({ adapterPath, harness: 'codex', platform, integrationScope: scope }), null, 2), `${platform} ${scope}`)
+          .toBe(golden[`${platform}|${scope}`])
+      }
+    }
   })
 })
 

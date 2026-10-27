@@ -353,6 +353,53 @@ function commandOptionsFrom(options: BuildOptions): HookCommandOptions {
   }
 }
 
+/**
+ * Harnesses that show a handler's `statusMessage` to the User. Codex titles
+ * each row of `/hooks` and the ChatGPT app's hook review with it, and Claude
+ * Code shows it as the spinner text while the handler runs. Grok 1.0.70
+ * records a load error for a non-empty `statusMessage`, so it never gets one.
+ * Older Codex and Claude Code versions ignore the field.
+ */
+export function writesHookStatusMessages(harness: HookInstallableHarness | undefined): boolean {
+  return harness === 'claude-code' || harness === 'codex'
+}
+
+/**
+ * The User-facing name of one Notifai handler. Hook lists do not say who owns
+ * a hook, so each name says Notifai.
+ */
+export function hookStatusMessage(
+  harness: HookInstallableHarness | undefined,
+  documentEvent: string,
+  event: string | null,
+): string | undefined {
+  if (!writesHookStatusMessages(harness)) return undefined
+  switch (event) {
+    case 'session-start': return 'Loading Notifai for this session'
+    case 'subagent-start': return 'Loading Notifai for this subagent'
+    case 'user-prompt-submit': return 'Updating Notifai session'
+    // Codex's Interrupt copy only records that the turn ended.
+    case 'attend': return documentEvent === 'Interrupt' ? 'Recording the interrupt for Notifai' : 'Keeping Notifai connected'
+    case 'stop': return 'Sending questions and answers through Notifai'
+    case 'pre-tool-use': return 'Sending this question to Notifai'
+    case 'post-tool-use':
+      return harness === 'claude-code' ? 'Recording your answer for Notifai' : 'Checking Notifai for notes and answers'
+    case 'permission-request': return 'Waiting for your answer in Notifai'
+    case 'session-end': return 'Closing Notifai session'
+    default: return undefined
+  }
+}
+
+function withStatusMessages(hooks: HookConfig, harness: HookInstallableHarness | undefined): HookConfig {
+  for (const [event, groups] of Object.entries(hooks)) {
+    for (const handler of groups.flatMap(group => group.hooks)) {
+      const message = hookStatusMessage(harness, event, handlerEvent(handlerCommandLine(handler)))
+      if (message !== undefined) handler.statusMessage = message
+    }
+  }
+  return hooks
+}
+
 export function buildHookConfig(options: BuildOptions): HookConfig {
   const { adapterPath } = options
   const commandOptions = commandOptionsFrom(options)
@@ -437,9 +484,14 @@ export function buildHookConfig(options: BuildOptions): HookConfig {
     }
   }
   // An install that already carries a revision keeps it, so every handler
-  // Codex approved keeps its exact bytes.
-  if (options.harness === 'codex' && options.integrationRevision === undefined) return hooks
-  return stampHookDefinition(hooks, options.integrationScope ?? '', options.integrationRevision)
+  // Codex approved keeps its exact bytes: a name would make Codex ask for
+  // approval again. Fresh Codex installs carry no revision and get names.
+  if (options.harness === 'codex') {
+    return options.integrationRevision === undefined
+      ? withStatusMessages(hooks, options.harness)
+      : stampHookDefinition(hooks, options.integrationScope ?? '', options.integrationRevision)
+  }
+  return stampHookDefinition(withStatusMessages(hooks, options.harness), options.integrationScope ?? '', options.integrationRevision)
 }
 
 export interface CursorHookHandler {

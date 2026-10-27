@@ -1,5 +1,5 @@
 {
-  "current": "531afbf75881c1ff25c9f2e927dbbd457786ade7211e6e98c7d7cfe55be4e6a4",
+  "current": "187988579987f310e2d13fc03c8bac30c748885717b7d45198f48b7205bc8dfa",
   "releases": [
     {
       "digest": "3e47b01bc6bbfb43e910c660b9964fab6459d75148c3c02dcbcd0be64cfb2963",
@@ -192,6 +192,10 @@
     {
       "digest": "531afbf75881c1ff25c9f2e927dbbd457786ade7211e6e98c7d7cfe55be4e6a4",
       "note": "Each question of a `notifai ask --form`/`--form-json` form can now carry an optional `\"detail\"`: short Markdown (at most 500 characters, no images) explaining why that question is asked and what rides on it. The User's devices show it under the question's text in a quieter style, and the question's `\"title\"` above it. The `questions` guidance now says to keep each question's text to the question and put its own reasoning in its `\"detail\"`, not in the text or the form's Body; the form's Body stays for context every question shares. A `\"detail\"` that is too long, empty or holds an image is refused with what to change. A question `\"title\"` longer than 40 characters still heads the terminal form, and the CLI notes that devices leave it out. Nothing else changes: single questions keep `--title`, the Summary and `--body`."
+    },
+    {
+      "digest": "187988579987f310e2d13fc03c8bac30c748885717b7d45198f48b7205bc8dfa",
+      "note": "Notifai's hooks now have short names. Claude Code shows a hook's name while it runs. Codex shows the names in `/hooks` and the ChatGPT app's hook review for installs that carry no integration revision (fresh installs since 14.4.2-beta.4); Codex treats those renamed hooks as changed, so the User approves them once. Codex installs that carry a revision keep their approved hooks byte-for-byte and need no new approval. Grok, Cursor, OpenCode, OpenClaw and Hermes are unchanged. Nothing changes in what agents do."
     }
   ]
 }
