@@ -4,7 +4,7 @@ type ReplyView,
 type SubmissionReceipt,
 type SubmitNotificationRequestT
 } from '@raidiant/notifai-protocol'
-import { execFileSync } from 'node:child_process'
+import { execFileSync,spawn } from 'node:child_process'
 import {
 existsSync,
 mkdirSync,
@@ -44,6 +44,8 @@ import {
 writeProjectSession
 } from './hook-project-sessions.js'
 import { acquireClaimFile } from './hook-question-lock.js'
+import { hubHeartbeatPath } from './hub-ipc.js'
+import { processStartTime } from './process-identity.js'
 import { inspectQuestionState } from './hook-question-state.js'
 import {
 writeSessionState as persistSessionState,
@@ -905,6 +907,41 @@ describe('session-end hook', () => {
 })
 
 describe('two hooks racing one question', () => {
+
+  it('takes the wake route from a hub whose exchange loop stopped moving, and leaves it to one whose heartbeat is fresh', async () => {
+    // A live process stands in for the hub: alive, holding the question, and (in the incident) waking nobody.
+    const hub = spawn('sleep', ['60'], { stdio: 'ignore' })
+    try {
+      let start: string | null = null
+      for (let tries = 0; start === null && tries < 200; tries += 1) {
+        start = processStartTime(hub.pid!)
+        if (start === null) await new Promise((resolve) => setTimeout(resolve, 10))
+      }
+      const h = harness([reply({ text: 'Continue' })])
+      writeSessionState('hub-stalled', h.env, { last_prompt_at: AWAY })
+      registerQuestion('hub-stalled', h.env, { question: 'Ship it?', question_id: 'q_hub' })
+      const heartbeat = hubHeartbeatPath(h.env, hub.pid!)
+      mkdirSync(path.dirname(heartbeat), { recursive: true })
+      writeFileSync(heartbeat, `${hub.pid}\n`)
+      const claim = path.join(stateDir(h.env), 'sessions', `${sanitizeSessionId('hub-stalled')}.claim`)
+      writeFileSync(claim, JSON.stringify({ pid: hub.pid, start, at: Date.now(), token: 'hub-token', pending_question_ids: ['q_hub'],
+        owner_role: 'hub', yields: true, heartbeat }))
+
+      // A hub whose loop moves on owns the question: this Stop leaves it alone.
+      await hookRunCommand(h.deps, 'stop', stdin({ session_id: 'hub-stalled' }))
+      expect(h.recorder.submitted.filter((entry) => isQuestionSubmit(entry))).toHaveLength(0)
+      expect(JSON.parse(readFileSync(claim, 'utf8'))).toMatchObject({ token: 'hub-token' })
+
+      // Its loop stops moving: the claim is as good as gone, and this Stop asks and hands the answer back itself.
+      const stale = new Date(Date.now() - 10 * 60_000)
+      utimesSync(heartbeat, stale, stale)
+      await hookRunCommand(h.deps, 'stop', stdin({ session_id: 'hub-stalled' }))
+      expect(h.recorder.submitted.filter((entry) => isQuestionSubmit(entry))).toHaveLength(1)
+      expect(h.io.outLines.join('\n')).toContain('Continue')
+    } finally {
+      hub.kill('SIGKILL')
+    }
+  })
 
   it('settles a stopped session once a guard nobody can name ages out, not never', async () => {
     const h = harness([reply({ text: 'Continue' })])

@@ -6,9 +6,10 @@
  * `hello` naming its role and IPC version; nothing secret crosses it. The
  * native child computes the same paths (`launcher/session-child.h`).
  */
-import { lstatSync, chmodSync, mkdirSync, readFileSync } from 'node:fs'
+import { lstatSync, chmodSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, utimesSync, writeFileSync } from 'node:fs'
 import { createConnection, type Socket } from 'node:net'
 import path from 'node:path'
+import { ATTENDANCE_MAX_WAIT_SECONDS } from '@raidiant/notifai-protocol'
 import { atomicWriteFileSync } from './atomic-file.js'
 import { stateDir } from './config.js'
 
@@ -54,6 +55,57 @@ export function hubLockPath(env: NodeJS.ProcessEnv): string {
 
 export function hubStatusPath(env: NodeJS.ProcessEnv): string {
   return path.join(hubRunDir(env), 'hub-status.json')
+}
+
+/**
+ * How long the hub's exchange loop may go without moving on before it counts
+ * as stuck: three times the longest healthy exchange (the service's long-poll
+ * plus the client's 20 s request budget). The hub restarts a loop stuck this
+ * long, and its question claims stop counting as held.
+ */
+export const HUB_EXCHANGE_STALL_MS = 3 * (ATTENDANCE_MAX_WAIT_SECONDS * 1_000 + 20_000)
+
+const HEARTBEAT_PREFIX = 'heartbeat-'
+
+/** One hub process's heartbeat: its modification time is when its exchange loop last moved on. */
+export function hubHeartbeatPath(env: NodeJS.ProcessEnv, pid = process.pid): string {
+  return path.join(hubRunDir(env), `${HEARTBEAT_PREFIX}${pid}`)
+}
+
+/** Move the heartbeat to `at`. Only its time changes, which a full disk still allows. */
+export function beatHubHeartbeat(file: string, at: number): void {
+  try {
+    utimesSync(file, at / 1_000, at / 1_000)
+    return
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code !== 'ENOENT') return
+  }
+  try { writeFileSync(file, `${process.pid}\n`, { mode: 0o600 }) } catch { /* Claims naming it count as gone until it exists. */ }
+}
+
+/**
+ * Whether the hub `pid` named by a claim still moves its exchange loop. A
+ * heartbeat that is missing, another process's, or older than the stall bound
+ * means its claims are no longer held.
+ */
+export function hubHeartbeatFresh(file: string, pid: number, now: number): boolean {
+  if (path.basename(file) !== `${HEARTBEAT_PREFIX}${pid}`) return false
+  try {
+    return now - statSync(file).mtimeMs < HUB_EXCHANGE_STALL_MS
+  } catch {
+    return false
+  }
+}
+
+/** Remove heartbeats left by hubs that no longer run. */
+export function pruneHubHeartbeats(env: NodeJS.ProcessEnv, running: (pid: number) => boolean): void {
+  let names: string[]
+  try { names = readdirSync(hubRunDir(env)) } catch { return }
+  for (const name of names) {
+    if (!name.startsWith(HEARTBEAT_PREFIX)) continue
+    const pid = Number(name.slice(HEARTBEAT_PREFIX.length))
+    if (Number.isSafeInteger(pid) && pid > 0 && pid !== process.pid && !running(pid)) rmSync(path.join(hubRunDir(env), name), { force: true })
+  }
 }
 
 export function hubHistoryPath(env: NodeJS.ProcessEnv): string {

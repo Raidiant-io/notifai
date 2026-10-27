@@ -113,14 +113,18 @@ function fakeService(options: {
   batch?: (body: AttendanceBatchRequestT) => AttendanceBatchResponse | Error
   single?: (sessionId: string, body: AttendanceRequestT) => AttendanceResponse
   upgrade?: (body: { session_id: string; label: string }) => Promise<unknown>
+  /** True: this exchange never settles, abort or not (a wedged transport). */
+  stall?: () => boolean
 } = {}): FakeService {
   const batches: FakeService['batches'] = []
   const single: FakeService['single'] = []
   const held = new Set<() => void>()
   const hold = (waitSeconds: number, signal?: AbortSignal): Promise<void> => waitSeconds === 0 && !service.hold ? Promise.resolve() : new Promise((resolve, reject) => {
-    const done = (): void => { held.delete(done); resolve() }
+    // Like the service, a long-poll answers by its wait at the latest.
+    const timer = waitSeconds > 0 ? setTimeout(() => done(), waitSeconds * 1_000) : undefined
+    const done = (): void => { clearTimeout(timer); held.delete(done); resolve() }
     held.add(done)
-    signal?.addEventListener('abort', () => { held.delete(done); reject(new Error('aborted')) }, { once: true })
+    signal?.addEventListener('abort', () => { clearTimeout(timer); held.delete(done); reject(new Error('aborted')) }, { once: true })
   })
   const defaultBatch = (body: AttendanceBatchRequestT): AttendanceBatchResponse => ({
     message_cursor: 'c1',
@@ -139,6 +143,7 @@ function fakeService(options: {
       if (property === 'attendBatch') {
         return async (body: AttendanceBatchRequestT, { waitSeconds, signal }: { waitSeconds: number; signal?: AbortSignal }) => {
           batches.push({ body: structuredClone(body), waitSeconds })
+          if (options.stall?.() === true) return new Promise(() => undefined)
           await hold(waitSeconds, signal)
           const result = (options.batch ?? defaultBatch)(body)
           if (result instanceof Error) throw result
@@ -288,6 +293,31 @@ describe('hub exchange driver', () => {
     expect(service.batches.every(({ body }) => unique(body))).toBe(true)
     expect(service.batches[0]!.body.sessions).toEqual([{ session_id: SESSION, incarnation: ended.lease.incarnation, generation: 1, state: 'ended' }])
     expect(service.batches[1]!.body.sessions).toEqual([{ session_id: SESSION, incarnation: 'inc_adopted000001', generation: 2, state: 'stopped' }])
+    driver.stop()
+    service.release()
+    await running
+  })
+
+  it('keeps attending after local bookkeeping fails inside an exchange (a full disk), instead of stopping for good', async () => {
+    // The incident: a full disk made a file-lock mkdir fail inside the exchange.
+    // The throw ended the loop while the process (and its claims) lived on.
+    let refusals = 1
+    const service = fakeService({ batch: (body) => ({ message_cursor: 'c1', sessions: body.sessions.map((entry) => refusals-- > 0
+      ? { session_id: entry.session_id, status: 'withdrawn' as const }
+      : { session_id: entry.session_id, status: 'attending' as const, generation: entry.generation ?? 1, lease_remaining_ms: 120_000,
+        message_cursor: 'c1', messages: [] }) }) })
+    const full = Object.assign(new Error("ENOSPC: no space left on device, mkdir 'session.json.lock'"), { code: 'ENOSPC' })
+    let rotations = 0
+    const session = new FakeSession(SESSION)
+    const other = new FakeSession(OTHER)
+    ;(session as { lease: SessionLease }).lease = new SessionLease('inc_aaaaaaaaaaaa', () => { rotations += 1; if (rotations === 1) throw full; return null })
+    const driver = new ExchangeDriver(driverHost(service, [session, other]))
+    let failed: unknown = null
+    const running = driver.run().catch((err: unknown) => { failed = err })
+    await until(() => rotations >= 1)
+    await until(() => other.lease.phase === 'attending' && service.batches.length >= 3)
+    expect(failed).toBeNull()
+    expect(driver.stopped).toBe(false)
     driver.stop()
     service.release()
     await running
@@ -795,6 +825,61 @@ describe('hub end confirmation and writers', () => {
     expect(ended(service)).toBe(false)
     expect(readSessionEndMarker(SESSION, env)).toBeNull()
     expect(readSessionState(SESSION, env).pending).toHaveLength(1)
+    child.socket.destroy()
+    hub.requestExit('test')
+    service.release()
+    await done
+  })
+
+  it('recovers a wedged exchange and re-adopts the conversation a new process continues: its end reported first, one owner per id', async () => {
+    const env = env0 = hubEnv()
+    recordSessionNotified(SESSION, env, Date.now())
+    const first = await standIn()
+    describeHost(env, first)
+    // One exchange never settles and ignores its abort: the transport the incident's hub was stuck on.
+    let wedge = false
+    const service = fakeService({ stall: () => { if (!wedge) return false; wedge = false; return true } })
+    const peers = new Map<number, PeerCredentials>()
+    const { hub, done } = startHub(env, service, peers, memoryStore(), 100, {}, { watchdogTickMs: 50, exchangeStallMs: 1_500 })
+    await hubListening(env)
+    const a = await writerChild(env, peers, 900230, first)
+    await until(() => service.batches.length >= 2)
+    wedge = true
+    service.release()
+    await until(() => !wedge)
+    const wedgedAt = service.batches.length
+    // The conversation ends while the exchange is wedged: its end is owed and cannot go.
+    await requestHub(env, { type: 'session-end', session_id: SESSION })
+    await until(() => hub.sessions.get(SESSION)?.ending != null)
+    first.process.kill('SIGKILL')
+    a.socket.destroy()
+    // The User continues it in a new process: same id, its first registration waits for that end.
+    const second = await standIn()
+    describeHost(env, second)
+    const peer = peerOf(900231, { pid: second.pid, comm: 'claude', start: second.start })
+    const register = (): Promise<FakeChild> => registered(env, SESSION, 900231, peer, peers,
+      { harness_pid: second.pid, harness_start: second.start, stamp_wall: Date.now(), source: 'resume' })
+    let child = await register()
+    expect(child.frames[0]).toEqual({ type: 'refused', reason: 'session-ending', retry: true })
+    expect(service.batches.length).toBe(wedgedAt)
+    // The watchdog restarts the loop; the child, as a real one does, comes back after a passing refusal.
+    const deadline = Date.now() + 8_000
+    while (child.frames[0]?.['type'] !== 'registered') {
+      expect(child.frames[0]).toEqual({ type: 'refused', reason: 'session-ending', retry: true })
+      if (Date.now() > deadline) throw new Error('the conversation was never adopted again')
+      child.socket.destroy()
+      await new Promise((resolve) => setTimeout(resolve, 100))
+      child = await register()
+    }
+    await until(() => service.batches.slice(wedgedAt).some(({ body }) => body.sessions.some((entry) => entry.state === 'running')))
+    const after = service.batches.slice(wedgedAt).map(({ body }) => body.sessions.filter((entry) => entry.session_id === SESSION))
+    expect(after.every((entries) => entries.length <= 1)).toBe(true)
+    const endAt = after.findIndex((entries) => entries[0]?.state === 'ended')
+    const runAt = after.findIndex((entries) => entries[0]?.state === 'running')
+    expect(endAt).toBeGreaterThanOrEqual(0)
+    expect(runAt).toBeGreaterThan(endAt)
+    expect(after[runAt]![0]!.incarnation).not.toBe(after[endAt]![0]!.incarnation)
+    expect(hub.sessions.get(SESSION)?.harnessProcess.pid).toBe(second.pid)
     child.socket.destroy()
     hub.requestExit('test')
     service.release()

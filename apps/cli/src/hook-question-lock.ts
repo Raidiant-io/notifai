@@ -18,7 +18,7 @@ import {
 } from 'node:fs'
 import path from 'node:path'
 import { sanitizeSessionId, stateDir } from './config.js'
-import { formerHubPids } from './hub-ipc.js'
+import { formerHubPids, hubHeartbeatFresh, hubHeartbeatPath } from './hub-ipc.js'
 import { pendingList, readSessionState } from './hook-session-state.js'
 import type { PendingQuestion } from './hook-types.js'
 import { currentProcessIdentity, pidExists, processIdentityLiveness } from './process-identity.js'
@@ -90,6 +90,8 @@ export function claimQuestionPush(
       ...(version === null ? {} : { runtime_version: version }),
       // This owner watches its claim and steps aside when asked (`questionPushHeld`).
       yields: true,
+      // The hub holds it only while its exchange loop moves on (`claimHolderMayRun`).
+      ...(role === 'hub' ? { heartbeat: hubHeartbeatPath(env) } : {}),
     },
     now,
     beforeStaleReplace,
@@ -303,13 +305,19 @@ export function readClaimFile(file: string): Record<string, unknown> | null {
   }
 }
 
-/** Whether a recorded holder could still be running. Unknown liveness counts as running. */
+/**
+ * Whether a recorded holder could still be running. Unknown liveness counts as
+ * running. A holder that names a heartbeat (the hub) holds the claim only
+ * while that heartbeat is fresh: a hub whose exchange loop stopped moving can
+ * no longer wake anyone, so its claim is as good as gone.
+ */
 export function claimHolderMayRun(
   held: Record<string, unknown> | null,
   now: number = Date.now(),
 ): boolean {
   if (held === null) return false
   if (typeof held['pid'] === 'number') {
+    if (typeof held['heartbeat'] === 'string' && !hubHeartbeatFresh(held['heartbeat'], held['pid'], now)) return false
     if (typeof held['start'] === 'string') {
       return processIdentityLiveness({ pid: held['pid'], start: held['start'] }) !== 'gone'
     }

@@ -16,7 +16,7 @@ import {
   type AttendanceResponse,
   type SessionActivity,
 } from '@raidiant/notifai-protocol'
-import { ApiCallError, type ApiClient } from './client.js'
+import { ApiCallError, DEFAULT_TIMEOUT_MS, type ApiClient } from './client.js'
 import { HUB_MESSAGE_RETRY_MS, HUB_UNKNOWN_SESSION_RETRY_MS, type LeaseOutcome, type SessionLease } from './hub-lease.js'
 import type { Logger } from './logging.js'
 
@@ -29,6 +29,17 @@ const MAX_EXCHANGES_PER_SECOND = 8
 const UNSUPPORTED_RECHECK_MS = 30 * 60_000
 /** How long a session whose entry the service refused on its own sits out before it is offered again. */
 export const REFUSED_ENTRY_RETRY_MS = 10 * 60_000
+/** An idle loop looks again at least this often, so a healthy loop always shows progress. */
+export const HUB_IDLE_RECHECK_MS = 30_000
+/** A service call the transport did not end by its own deadline is abandoned this much later. */
+const HARD_TIMEOUT_GRACE_MS = 5_000
+
+/** A service call that outlived its own deadline (a transport that ignored its timeout). */
+class ExchangeTimeoutError extends Error {}
+
+function message(err: unknown): string {
+  return err instanceof Error ? err.message : String(err)
+}
 
 type Kind = 'final' | 'running' | 'stopped'
 interface Chosen { session: AttendedSession; entry: AttendanceBatchEntryT; kind: Kind }
@@ -62,6 +73,8 @@ export interface ExchangeHost {
   clock: HubClock
   logger: Logger
   sleep(ms: number, signal: AbortSignal): Promise<void>
+  /** The exchange loop moved on (the hub's heartbeat). */
+  progressed?(): void
 }
 
 type Mode = 'unknown' | 'batch' | 'per-session' | 'unsupported'
@@ -96,10 +109,25 @@ export class ExchangeDriver {
   /** Requests sent, for status (and the W1-R counts). */
   requests = 0
   lastSuccessAt: number | null = null
+  /** Which loop is current: a restarted loop's predecessor stops at its next step. */
+  private loop = 0
+  /** Monotonic time the current loop last moved on; every step it waits on is bounded. */
+  private progressAt: number
 
   constructor(private readonly host: ExchangeHost) {
     this.lastWall = host.clock.wall()
     this.lastMono = host.clock.monotonic()
+    this.progressAt = this.lastMono
+  }
+
+  /** How long the current loop has gone without moving on. */
+  stalledFor(now = this.host.clock.monotonic()): number {
+    return Math.max(0, now - this.progressAt)
+  }
+
+  private progress(): void {
+    this.progressAt = this.host.clock.monotonic()
+    this.host.progressed?.()
   }
 
   get currentEpoch(): number {
@@ -150,6 +178,19 @@ export class ExchangeDriver {
     this.poke()
   }
 
+  /**
+   * Start a fresh loop in place of one that stopped moving: whatever the old
+   * one waits on is cut, and it stops at its next step without applying
+   * anything. Sessions, leases and cursor carry over.
+   */
+  restart(): Promise<void> {
+    for (const exchange of this.inFlight) exchange.abort()
+    this.inFlight.clear()
+    this.held.clear()
+    this.poke()
+    return this.run()
+  }
+
   get stopped(): boolean {
     return this.stopping.signal.aborted
   }
@@ -173,36 +214,83 @@ export class ExchangeDriver {
     return true
   }
 
-  async run(): Promise<void> {
-    while (!this.stopping.signal.aborted) {
-      // Yield to I/O between exchanges: a service answering at once must
-      // never starve the children's IPC; past the budget, slow down.
-      await new Promise<void>((resolve) => setImmediate(resolve))
-      await this.pace()
-      this.checkClock()
-      const client = this.host.client()
-      if (client === null) {
-        await this.nextChange()
-        continue
+  /**
+   * The exchange loop. It never ends on an error: a step that throws (a
+   * full disk under a session's bookkeeping, a transport bug) is logged and
+   * the loop goes on after a backoff. Only `stop` or a `restart` ends it.
+   */
+  run(): Promise<void> {
+    const loop = ++this.loop
+    this.progress()
+    return this.runLoop(loop)
+  }
+
+  private current(loop: number): boolean {
+    return loop === this.loop && !this.stopping.signal.aborted
+  }
+
+  private async runLoop(loop: number): Promise<void> {
+    while (this.current(loop)) {
+      this.progress()
+      try {
+        await this.step(loop)
+      } catch (err) {
+        if (!this.current(loop)) break
+        this.host.logger.error('hub.exchange', { event: 'step-failed', message: message(err) })
+        await this.pause(this.backoff)
+        this.backoff = Math.min(this.backoff * 2, MAX_NETWORK_BACKOFF_MS)
       }
-      const now = this.host.clock.monotonic()
-      if (this.mode === 'unsupported' && now < this.unsupportedUntil) {
-        await this.nextChange(this.unsupportedUntil - now)
-        continue
-      }
-      if (this.mode === 'unknown' || this.mode === 'unsupported') {
-        if (!this.work(now).some(Boolean)) { await this.nextChange(); continue }
-        await this.discover(client)
-        continue
-      }
-      if (this.mode === 'per-session') {
-        this.superviseSessions(client)
-        await this.nextChange(5_000)
-        continue
-      }
-      await this.batchOnce(client)
     }
-    await Promise.allSettled([...this.perSession.values()])
+    if (loop === this.loop) await Promise.allSettled([...this.perSession.values()])
+  }
+
+  private async step(loop: number): Promise<void> {
+    // Yield to I/O between exchanges: a service answering at once must
+    // never starve the children's IPC; past the budget, slow down.
+    await new Promise<void>((resolve) => setImmediate(resolve))
+    await this.pace()
+    this.checkClock()
+    const client = this.host.client()
+    if (client === null) {
+      await this.nextChange()
+      return
+    }
+    const now = this.host.clock.monotonic()
+    if (this.mode === 'unsupported' && now < this.unsupportedUntil) {
+      await this.nextChange(this.unsupportedUntil - now)
+      return
+    }
+    if (this.mode === 'unknown' || this.mode === 'unsupported') {
+      if (!this.work(now).some(Boolean)) { await this.nextChange(); return }
+      await this.discover(client)
+      return
+    }
+    if (this.mode === 'per-session') {
+      this.superviseSessions(client)
+      await this.nextChange(5_000)
+      return
+    }
+    await this.batchOnce(client, loop)
+  }
+
+  /** A service call bounded even when the transport ignores its own deadline. */
+  private bounded<T>(call: Promise<T>, waitSeconds: number): Promise<T> {
+    const limitMs = waitSeconds * 1_000 + DEFAULT_TIMEOUT_MS + HARD_TIMEOUT_GRACE_MS
+    let timer: ReturnType<typeof setTimeout> | undefined
+    const deadline = new Promise<never>((_resolve, reject) => {
+      timer = setTimeout(() => reject(new ExchangeTimeoutError(`the service call did not settle within ${limitMs} ms`)), limitMs)
+    })
+    return Promise.race([call, deadline]).finally(() => clearTimeout(timer))
+  }
+
+  /** One session's own step, so a failure in its bookkeeping holds up no other session. */
+  private guarded<T>(session: AttendedSession, what: string, fn: () => T): T | undefined {
+    try {
+      return fn()
+    } catch (err) {
+      this.host.logger.error('hub.exchange', { event: 'session-step-failed', session: session.id, step: what, message: message(err) })
+      return undefined
+    }
   }
 
   /** Whether there is anything to send: [final reports, runnable sessions, stopped sessions the service might hold]. */
@@ -214,7 +302,7 @@ export class ExchangeDriver {
 
   private async discover(client: ApiClient): Promise<void> {
     try {
-      const capabilities = (await client.compatibility()).server_capabilities as readonly string[]
+      const capabilities = (await this.bounded(client.compatibility(), 0)).server_capabilities as readonly string[]
       // Discovery alone never resets the backoff: a service that keeps refusing
       // the exchange after a successful discovery must still slow the hub down.
       this.capabilities = new Set(capabilities)
@@ -246,7 +334,7 @@ export class ExchangeDriver {
     return false
   }
 
-  private async batchOnce(client: ApiClient): Promise<void> {
+  private async batchOnce(client: ApiClient, loop: number): Promise<void> {
     const now = this.host.clock.monotonic()
     const sessions = this.host.sessions()
     for (const [session, until] of this.setAside) if (until <= now || !sessions.includes(session)) this.setAside.delete(session)
@@ -255,13 +343,15 @@ export class ExchangeDriver {
     const stopped: Chosen[] = []
     for (const session of sessions) {
       if (this.setAside.has(session)) continue
-      const final = session.lease.finalEntry(session.id, this.offers('session_confirmed_end'))
-      const stop = final === null ? this.stoppedEntry(session) : null
-      if (final !== null) finals.push({ session, entry: final, kind: 'final' })
-      else if (stop !== null) { if (now >= session.lease.pausedUntil) stopped.push({ session, entry: stop, kind: 'stopped' }) }
-      else if (session.runnable(now)) {
-        running.push({ session, entry: session.lease.runningEntry(session.id, session.activity(), session.acceptsMessages()), kind: 'running' })
-      }
+      this.guarded(session, 'select', () => {
+        const final = session.lease.finalEntry(session.id, this.offers('session_confirmed_end'))
+        const stop = final === null ? this.stoppedEntry(session) : null
+        if (final !== null) finals.push({ session, entry: final, kind: 'final' })
+        else if (stop !== null) { if (now >= session.lease.pausedUntil) stopped.push({ session, entry: stop, kind: 'stopped' }) }
+        else if (session.runnable(now)) {
+          running.push({ session, entry: session.lease.runningEntry(session.id, session.activity(), session.acceptsMessages()), kind: 'running' })
+        }
+      })
     }
     // One entry per Agent Session: finals first, so an earlier incarnation's
     // end goes before a later incarnation of the same session, which waits for
@@ -296,15 +386,18 @@ export class ExchangeDriver {
     const credential = this.host.credentialKey()
     this.counted()
     let response
+    const waitSeconds = hold ? ATTENDANCE_MAX_WAIT_SECONDS : 0
     try {
-      response = await client.attendBatch(
+      response = await this.bounded(client.attendBatch(
         { ...(this.cursor === undefined ? {} : { message_cursor: this.cursor }), sessions: chosen.map(({ entry }) => entry) },
-        { waitSeconds: hold ? ATTENDANCE_MAX_WAIT_SECONDS : 0, signal: current.signal },
-      )
+        { waitSeconds, signal: current.signal },
+      ), waitSeconds)
     } catch (err) {
       this.inFlight.delete(current)
       this.held.delete(current)
-      if (this.stopping.signal.aborted || current.signal.aborted) return
+      const timedOut = err instanceof ExchangeTimeoutError
+      if (timedOut) current.abort()
+      if (!this.current(loop) || (!timedOut && current.signal.aborted)) return
       if (this.isUnauthorized(err)) return
       if (err instanceof ApiCallError && (err.status === 404 || (err.status === 409 && err.code === 'feature_unavailable'))) {
         // The service lost the batch route (rollback, or a capability list that
@@ -320,13 +413,16 @@ export class ExchangeDriver {
         this.backoff = Math.min(this.backoff * 2, MAX_NETWORK_BACKOFF_MS)
         return
       }
-      this.host.logger.info('hub.exchange', { event: 'failed', message: err instanceof Error ? err.message : String(err) })
+      this.host.logger.info('hub.exchange', { event: 'failed', message: message(err) })
       await this.pause(this.backoff)
       this.backoff = Math.min(this.backoff * 2, MAX_NETWORK_BACKOFF_MS)
       return
     }
     this.inFlight.delete(current)
     this.held.delete(current)
+    // A restarted loop took over meanwhile: it sends again; this answer is not applied twice.
+    if (!this.current(loop)) return
+    this.progress()
     this.backoff = 1_000
     this.lastSuccessAt = this.host.clock.wall()
     // An exchange that carried one isolated session says nothing for the
@@ -336,7 +432,12 @@ export class ExchangeDriver {
     await Promise.all(chosen.map(async ({ session, kind }) => {
       const result = byId.get(session.id)
       if (result === undefined) return
-      await this.applyResult(session, result, sentAt, sentEpoch, credential, kind === 'final', kind === 'stopped')
+      try {
+        await this.applyResult(session, result, sentAt, sentEpoch, credential, kind === 'final', kind === 'stopped')
+      } catch (err) {
+        // Nothing is handed in for it this time; the next exchange asks again.
+        this.host.logger.error('hub.exchange', { event: 'session-step-failed', session: session.id, step: 'apply', message: message(err) })
+      }
     }))
   }
 
@@ -415,7 +516,11 @@ export class ExchangeDriver {
   private superviseSessions(client: ApiClient): void {
     for (const session of this.host.sessions()) {
       if (this.perSession.has(session.id)) continue
-      const task = this.perSessionLoop(client, session).finally(() => this.perSession.delete(session.id))
+      // A loop that fails ends alone; the next supervision starts it again.
+      const task = this.perSessionLoop(client, session)
+        .catch((err: unknown) => this.host.logger.error('hub.exchange', { event: 'session-step-failed', session: session.id, step: 'per-session',
+          message: message(err) }))
+        .finally(() => this.perSession.delete(session.id))
       this.perSession.set(session.id, task)
     }
   }
@@ -448,14 +553,16 @@ export class ExchangeDriver {
       const credential = this.host.credentialKey()
       this.requests += 1
       try {
-        const response = await client.attend(session.id, body, { waitSeconds: hold ? ATTENDANCE_MAX_WAIT_SECONDS : 0, signal: current.signal })
+        const waitSeconds = hold ? ATTENDANCE_MAX_WAIT_SECONDS : 0
+        const response = await this.bounded(client.attend(session.id, body, { waitSeconds, signal: current.signal }), waitSeconds)
         backoff = 1_000
         this.backoff = 1_000
         this.lastSuccessAt = this.host.clock.wall()
         await this.applyResult(session, response, sentAt, sentEpoch, credential, final !== null, stop !== null)
       } catch (err) {
         if (this.stopping.signal.aborted) return
-        if (current.signal.aborted) continue
+        if (err instanceof ExchangeTimeoutError) current.abort()
+        else if (current.signal.aborted) continue
         if (this.isUnauthorized(err)) return
         if (err instanceof ApiCallError && err.status === 404) {
           // A continued end whose successor the service does not know is a 404 here.
@@ -516,15 +623,17 @@ export class ExchangeDriver {
     this.recent.push(this.host.clock.monotonic())
   }
 
-  private async nextChange(timeoutMs?: number): Promise<void> {
+  /** Wait for a poke, never longer than `timeoutMs` or `HUB_IDLE_RECHECK_MS`. */
+  private async nextChange(requestedMs?: number): Promise<void> {
     if (this.stopping.signal.aborted) return
+    const timeoutMs = Math.min(requestedMs ?? HUB_IDLE_RECHECK_MS, HUB_IDLE_RECHECK_MS)
     await new Promise<void>((resolve) => {
       const done = (): void => {
-        if (timer !== undefined) clearTimeout(timer)
+        clearTimeout(timer)
         this.wakers.delete(done)
         resolve()
       }
-      const timer = timeoutMs === undefined ? undefined : setTimeout(done, Math.max(0, timeoutMs))
+      const timer = setTimeout(done, Math.max(0, timeoutMs))
       this.wakers.add(done)
     })
   }

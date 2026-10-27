@@ -97,6 +97,10 @@ import {
   hubSettlementsDir,
   hubSocketPath,
   hubStatusPath,
+  beatHubHeartbeat,
+  HUB_EXCHANGE_STALL_MS,
+  hubHeartbeatPath,
+  pruneHubHeartbeats,
   readShutdownMarker,
   SHUTDOWN_MARKER_FRESH_MS,
   shutdownMarkerPath,
@@ -178,6 +182,11 @@ export const HUB_CRASH_WINDOW_MS = 10 * 60_000
 const IDLE_BEFORE_WAKE_REPLACEMENT_MS = 30_000
 /** Safety re-read of activity and pending input; events do the ordinary work. */
 const SAFETY_TICK_MS = 15_000
+const WATCHDOG_TICK_MS = 5_000
+/** At most this often the heartbeat's time is moved. */
+const HEARTBEAT_EVERY_MS = 5_000
+/** How long a leaving hub waits for its exchange loop to finish before it goes anyway. */
+const SHUTDOWN_EXCHANGE_WAIT_MS = 5_000
 /**
  * How often an open question's conversation on Codex's shared server is
  * checked for a closed terminal (Codex reports none), and how long one
@@ -260,6 +269,9 @@ export interface HubOptions {
   handleSignals?: boolean
   /** Test seam; production re-reads every 15 s. */
   safetyTickMs?: number
+  /** Test seams; production checks every 5 s for an exchange loop stuck `HUB_EXCHANGE_STALL_MS`. */
+  watchdogTickMs?: number
+  exchangeStallMs?: number
   /** Test seam; production waits END_CONFIRM_MS. */
   endConfirmMs?: number
   /** Test seam; production waits at most HANDOVER_DRAIN_MS for work in flight. */
@@ -970,7 +982,6 @@ class HubSession implements AttendedSession {
     const phase = `${this.lease.phase}|${this.lease.reason}|${this.lease.generation}|${this.activityValue}|${this.writerAvailable()}|` +
       `${Math.floor(this.lastActivity / 60_000)}|${this.transcriptSeen}|${this.endCandidate?.since ?? null}|${this.harnessProcess.pid}|${this.stopped?.cause ?? null}`
     if (!force && phase === this.lastPhaseWritten) return
-    this.lastPhaseWritten = phase
     try {
       writeAttendantStatus(this.id, this.env, {
         // A stopped session reads as exited to a hub from an earlier build, so
@@ -984,8 +995,10 @@ class HubSession implements AttendedSession {
         updated_at: this.hub.clock.wall(),
         adoption: this.adoptionRecord(),
       })
+      // Only a written state counts: one a full disk refused is written at the next chance.
+      this.lastPhaseWritten = phase
     } catch {
-      // Status is diagnostic; attendance continues without it.
+      // Status is diagnostic and the next hub's adoption record; attendance continues without it.
     }
     this.hub.statusChanged()
   }
@@ -1106,6 +1119,15 @@ export class Hub {
   private exiting = false
   private exitResolve: (() => void) | null = null
   private safetyTimer: ReturnType<typeof setInterval> | null = null
+  private watchdogTimer: ReturnType<typeof setInterval> | null = null
+  /** The current exchange loop; replaced when the watchdog restarts it. */
+  private exchange: Promise<void> = Promise.resolve()
+  /** The current loop ended while the hub still runs (it never should). */
+  private exchangeEnded = false
+  /** Monotonic time of the watchdog's last restart of the loop. */
+  private exchangeRestartedAt: number | null = null
+  private readonly heartbeatFile: string
+  private lastBeat = -Infinity
   private statusTimer: ReturnType<typeof setTimeout> | null = null
   private readonly startedAt: number
   private crashes = 0
@@ -1169,7 +1191,9 @@ export class Hub {
         const timer = setTimeout(resolve, ms)
         signal.addEventListener('abort', () => { clearTimeout(timer); resolve() }, { once: true })
       }),
+      progressed: () => this.beat(),
     })
+    this.heartbeatFile = hubHeartbeatPath(this.env)
   }
 
   get env(): NodeJS.ProcessEnv {
@@ -1200,6 +1224,8 @@ export class Hub {
       return EXIT.ok
     }
     this.writeHistory({ starts: [...recent, { at: now, pid: process.pid, clean: false, boot }].slice(-20) })
+    pruneHubHeartbeats(this.env, pidExists)
+    this.beat(true)
     try {
       await this.listen()
     } catch (err) {
@@ -1221,15 +1247,20 @@ export class Hub {
     this.watchPower()
     this.reopen?.prune()
     const signals = this.options.handleSignals === true ? this.installSignals() : null
-    const exchange = this.driver.run().catch((err: unknown) => {
-      this.logger.error('hub.exchange', { event: 'stopped', message: err instanceof Error ? err.message : String(err) })
-    })
+    this.track(this.driver.run())
+    this.watchdogTimer = setInterval(() => this.watchExchange(), this.options.watchdogTickMs ?? WATCHDOG_TICK_MS)
+    this.watchdogTimer.unref?.()
     this.sweep()
     // What the previous hub held: sessions no child brings back, and the answer owners it ran.
     void this.restore().catch((err: unknown) => {
       this.logger.error('hub.session', { event: 'restore-failed', message: err instanceof Error ? err.message : String(err) })
     })
-    this.safetyTimer = setInterval(() => this.safetyTick(), this.options.safetyTickMs ?? SAFETY_TICK_MS)
+    this.safetyTimer = setInterval(() => {
+      // A tick that fails (a full disk under a session's records) must not take the hub down: the next one runs again.
+      try { this.safetyTick() } catch (err) {
+        this.logger.error('hub.session', { event: 'safety-tick-failed', message: err instanceof Error ? err.message : String(err) })
+      }
+    }, this.options.safetyTickMs ?? SAFETY_TICK_MS)
     this.safetyTimer.unref?.()
     this.attachWatchTimer = setInterval(() => this.watchCodexAttach(), this.options.codexAttach?.watchMs ?? CODEX_ATTACH_WATCH_MS)
     this.attachWatchTimer.unref?.()
@@ -1237,7 +1268,7 @@ export class Hub {
     // An exit asked for during startup (a signal, `stop`) must not be lost.
     if (!this.exiting) await new Promise<void>((resolve) => { this.exitResolve = resolve })
     signals?.()
-    await this.shutdown(exchange)
+    await this.shutdown()
     if (this.successor !== null) {
       // The handover (design §4.8): this hub has kept every lease on disk and
       // released the lock; the new build's hub takes them over. Children also
@@ -1419,16 +1450,65 @@ export class Hub {
     this.exitResolve?.()
   }
 
-  private async shutdown(exchange: Promise<void>): Promise<void> {
+  // -- the exchange watchdog ----------------------------------------------------
+
+  /** Follow one exchange loop: if it ends while the hub runs, the watchdog starts another. */
+  private track(loop: Promise<void>): void {
+    this.exchangeEnded = false
+    const tracked = loop.catch((err: unknown) => {
+      this.logger.error('hub.exchange', { event: 'stopped', message: err instanceof Error ? err.message : String(err) })
+    }).then(() => {
+      if (this.exchange === tracked && !this.exiting && !this.driver.stopped) this.exchangeEnded = true
+    })
+    this.exchange = tracked
+  }
+
+  /** The heartbeat: claims this hub holds count only while its exchange loop moves on. */
+  private beat(force = false): void {
+    const now = this.clock.monotonic()
+    if (!force && now - this.lastBeat < HEARTBEAT_EVERY_MS) return
+    this.lastBeat = now
+    beatHubHeartbeat(this.heartbeatFile, Date.now())
+  }
+
+  /**
+   * The exchange loop is the hub's whole purpose: a hub that lives on without
+   * it holds every session's claim and wakes nobody. A loop that ended, or
+   * has not moved on within the stall bound, is restarted; one that stalls
+   * again right after a restart takes the hub down, so the next child starts
+   * a fresh one.
+   */
+  private watchExchange(): void {
+    if (this.exiting || this.driver.stopped) return
+    const bound = this.options.exchangeStallMs ?? HUB_EXCHANGE_STALL_MS
+    const stalled = this.driver.stalledFor()
+    if (!this.exchangeEnded && stalled < bound) return
+    const now = this.clock.monotonic()
+    const reason = this.exchangeEnded ? 'ended' : 'stalled'
+    if (this.exchangeRestartedAt !== null && now - this.exchangeRestartedAt <= 2 * bound + (this.options.watchdogTickMs ?? WATCHDOG_TICK_MS)) {
+      this.logger.error('hub.exchange', { event: 'unrecoverable', reason, stalled_ms: Math.round(stalled) })
+      this.requestExit('exchange-stalled')
+      return
+    }
+    this.logger.error('hub.exchange', { event: 'restarted', reason, stalled_ms: Math.round(stalled) })
+    this.exchangeRestartedAt = now
+    this.track(this.driver.restart())
+  }
+
+  private async shutdown(): Promise<void> {
     // An end still being confirmed is left undecided, on disk: the next hub
     // decides it (a signal at shutdown or logout must not expire anything).
     for (const session of this.sessions.values()) if (session.endCandidate !== null) clearTimeout(session.endCandidate.timer)
     this.powerWatch?.stop()
     if (this.safetyTimer !== null) clearInterval(this.safetyTimer)
+    if (this.watchdogTimer !== null) clearInterval(this.watchdogTimer)
     if (this.attachWatchTimer !== null) clearInterval(this.attachWatchTimer)
     if (this.updateTimer !== null) clearTimeout(this.updateTimer)
     this.driver.stop()
-    await exchange
+    // A loop stuck on something that never settles must not keep this hub, and every claim it holds, alive.
+    let waited: ReturnType<typeof setTimeout> | undefined
+    await Promise.race([this.exchange, new Promise<void>((resolve) => { waited = setTimeout(resolve, SHUTDOWN_EXCHANGE_WAIT_MS) })])
+    clearTimeout(waited)
     for (const session of this.sessions.values()) {
       session.child?.close()
       session.child?.socket.destroy()
@@ -1438,6 +1518,7 @@ export class Hub {
     }
     await new Promise<void>((resolve) => this.server?.close(() => resolve()) ?? resolve())
     rmSync(hubSocketPath(this.env), { force: true })
+    rmSync(this.heartbeatFile, { force: true })
     this.releaseLock(true)
     this.writeStatusNow(true)
   }

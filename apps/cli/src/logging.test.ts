@@ -3,6 +3,8 @@ import {
 existsSync,
 mkdtempSync,
 readFileSync,
+renameSync,
+rmSync,
 statSync,
 writeFileSync
 } from 'node:fs'
@@ -241,6 +243,27 @@ describe('failure isolation', () => {
     const logger = createLogger({ env })
     expect(() => logger.info('cli.end', { exit: 0 })).not.toThrow()
     expect(logger.enabled).toBe(false)
+  })
+
+  it('a long-lived process records again once a full disk has room, and a write cut short damages only its own line', () => {
+    const env = sandbox()
+    let clock = Date.parse('2026-10-27T14:02:00Z')
+    const logger = createLogger({ env, now: () => clock, runId: 'r_hub', cmd: 'hub' })
+    logger.info('hub.start', { outcome: 'listening' })
+    // The disk filled mid-write: a record without its end, and a write that failed.
+    writeFileSync(activeLogPath(env), `${readFileSync(activeLogPath(env), 'utf8')}{"v":1,"ts":"2026-10-27T14:02:30.000Z","event":"hub.ses`)
+    const hold = path.join(env['XDG_STATE_HOME']!, 'notifai', 'logs')
+    const moved = `${hold}.away`
+    renameSync(hold, moved)
+    writeFileSync(hold, 'full')
+    logger.info('hub.session', { event: 'lost' })
+    expect(logger.enabled).toBe(false)
+    rmSync(hold)
+    renameSync(moved, hold)
+    clock += 60_000
+    logger.info('hub.exchange', { event: 'restarted' })
+    expect(logger.enabled).toBe(true)
+    expect(readLogRecords(env).records.map((record) => record.event)).toEqual(['hub.start', 'hub.exchange'])
   })
 })
 

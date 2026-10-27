@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "behavior_digest": "sha256:ce5187f8fe16f6a60e9794a1129cff80a087627742936c906a9fe159c07169e6",
+  "behavior_digest": "sha256:b1463fc750d5386478bcbc4f95f8eb812a150704725aedc6a1c15d1be2d164c3",
   "outcome": "reviewed-no-impact",
   "surfaces_reviewed": [
     "lifecycle-hooks",
@@ -9,5 +9,5 @@
     "cli-readiness",
     "domain-terms"
   ],
-  "reason": "Reviewed all five surfaces for the hub attendance fix. Lifecycle hooks: unchanged; no hook definition changes. A registration for a session the hub swept as ended now returns the existing session-ending refusal, already in the retry-later set, so the hook child retries as before and prints nothing new. CLI readiness: doctor output, setup and status are unchanged; the hub now names each session once per attendance batch, splits a refused batch into one exchange per session, sets a session refused on its own aside for ten minutes, and resets its backoff only after a successful exchange. hub.exchange log records gain refused and set-aside events with the service status, code and message; the diagnostics reference still describes hub.exchange as the hub service traffic, which stays accurate. Notifai skill and harness setup: no text or step depends on attendance retry timing. Domain terms: unchanged. skills/guidance-changes.json gains the release note for this change."
+  "reason": "Reviewed all five surfaces for the hub exchange watchdog. Lifecycle hooks: no hook definition changes. A Stop hook now treats a question claim held by a hub whose heartbeat is stale as gone and owns the question itself, through the existing Stop route with its existing output; a hub whose heartbeat is fresh still owns it, and claims from older hubs (no heartbeat) keep the process-liveness rule. CLI readiness: doctor, setup and status output are unchanged. The hub's exchange loop no longer ends on a step that throws, bounds every service call, restarts itself when it stops moving for three long-polls' worth of time and exits when a restart does not recover it; hub.exchange records gain step-failed, session-step-failed, restarted and unrecoverable events, and hub.exit an exchange-stalled reason. The diagnostics reference still describes hub.exchange as the hub's service traffic and says a restarted hub takes its sessions back, which stays accurate. The logger rests for 30 s after a failed write instead of stopping for the rest of the process, and keeps a record cut short by a full disk on its own line; `notifai logs` output is unchanged. Notifai skill and harness setup: no text or step depends on hub recovery timing. Domain terms: unchanged. skills/guidance-changes.json gains the release note for this change."
 }

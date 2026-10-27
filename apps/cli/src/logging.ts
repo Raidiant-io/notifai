@@ -43,7 +43,7 @@
  * diagnostic that can take down the thing it observes is not a diagnostic.
  */
 import { randomBytes } from 'node:crypto'
-import { appendFileSync, mkdirSync, readFileSync, readdirSync, renameSync, statSync, unlinkSync } from 'node:fs'
+import { appendFileSync, closeSync, fstatSync, mkdirSync, openSync, readFileSync, readSync, readdirSync, renameSync, statSync, unlinkSync } from 'node:fs'
 import path from 'node:path'
 import {
   CONFIG_KEYS,
@@ -421,6 +421,38 @@ export function newRunId(): string {
   return `r_${randomBytes(6).toString('hex')}`
 }
 
+/**
+ * After a failed write the sink rests this long. A hook, which finishes well
+ * inside it, never pays for a broken sink twice; a long-lived process (the
+ * hub) records again once the disk has room.
+ */
+const LOG_RETRY_AFTER_MS = 30_000
+
+/**
+ * Whether the next append starts a line. A write cut short (a full disk)
+ * leaves a partial record without its newline; the next record must not
+ * join it, or the damage spreads to a record that was fine.
+ */
+function atLineStart(file: string): boolean {
+  let handle: number | undefined
+  try {
+    handle = openSync(file, 'r')
+    const size = fstatSync(handle).size
+    if (size === 0) return true
+    const last = Buffer.alloc(1)
+    readSync(handle, last, 0, 1, size - 1)
+    return last[0] === 0x0a
+  } catch {
+    return true
+  } finally {
+    if (handle !== undefined) closeSync(handle)
+  }
+}
+
+function appendRecord(file: string, payload: string): void {
+  appendFileSync(file, atLineStart(file) ? payload : `\n${payload}`, { mode: 0o600, flag: 'a' })
+}
+
 export function createLogger(options: LoggerOptions = {}): Logger {
   const env = options.env ?? process.env
   const now = options.now ?? Date.now
@@ -432,7 +464,9 @@ export function createLogger(options: LoggerOptions = {}): Logger {
   const active = activeLogPath(env)
   const lock = `${active}.lock`
   const lockWaitMs = options.lockWaitMs
-  let broken = false
+  /** Until when the sink rests after a failed write. */
+  let restUntil = -Infinity
+  const resting = (): boolean => now() < restUntil
 
   /**
    * Run one append transaction under the shared lock. A caller that may not
@@ -448,7 +482,7 @@ export function createLogger(options: LoggerOptions = {}): Logger {
     try {
       withFileLock(lockFile, transaction, { waitMs: lockWaitMs })
     } catch {
-      appendFileSync(file, line, { mode: 0o600, flag: 'a' })
+      appendRecord(file, line)
     }
   }
 
@@ -486,7 +520,7 @@ export function createLogger(options: LoggerOptions = {}): Logger {
   }
 
   function write(level: RecordLevel, event: LogEvent, data?: Record<string, unknown>): void {
-    if (broken || LEVEL_RANK[settings.level] < LEVEL_RANK[level]) return
+    if (resting() || LEVEL_RANK[settings.level] < LEVEL_RANK[level]) return
     try {
       const session = typeof data?.['session'] === 'string' ? data['session'] : bindings.session
       const record: LogRecord = {
@@ -525,7 +559,7 @@ export function createLogger(options: LoggerOptions = {}): Logger {
         // caller injects maxBytes below that record's size, this one-record file
         // is the only unavoidable overshoot. Valid CLI configuration makes the
         // invariant unreachable (64 KB minimum versus an 8 KB record cap).
-        appendFileSync(active, payload, { mode: 0o600, flag: 'a' })
+        appendRecord(active, payload)
       })
       if (isDurableEvent(event, data)) {
         const events = durableEventsPath(env)
@@ -543,21 +577,20 @@ export function createLogger(options: LoggerOptions = {}): Logger {
               if ((err as NodeJS.ErrnoException).code !== 'ENOENT') throw err
             }
           }
-          appendFileSync(events, line, { mode: 0o600, flag: 'a' })
+          appendRecord(events, line)
         })
       }
     } catch {
-      // One failure is enough: a sink that cannot write will not start working
-      // mid-command, and retrying it on every event would cost the hook path
-      // real time for nothing.
-      broken = true
+      // Retrying a sink that cannot write on every event would cost the hook
+      // path real time for nothing; resting it for a while does not.
+      restUntil = now() + LOG_RETRY_AFTER_MS
     }
   }
 
   return {
     runId,
     get enabled() {
-      return !broken && settings.level !== 'off'
+      return !resting() && settings.level !== 'off'
     },
     error: (event, data) => write('error', event, data),
     info: (event, data) => write('info', event, data),
@@ -690,6 +723,24 @@ function isRecord(parsed: unknown): parsed is LogRecord {
 }
 
 /**
+ * One line's record. A line an older writer joined onto a partial record (a
+ * write cut short by a full disk) still yields the whole record that follows.
+ */
+function parseLine(raw: string): unknown {
+  try {
+    return JSON.parse(raw)
+  } catch {
+    const joined = raw.lastIndexOf('{"v":')
+    if (joined <= 0) return null
+    try {
+      return JSON.parse(raw.slice(joined))
+    } catch {
+      return null
+    }
+  }
+}
+
+/**
  * Newest matching records, walking the active file and then the archives
  * backwards and stopping as soon as the limit is met.
  *
@@ -730,12 +781,7 @@ export function readLogRecords(
     for (let index = lines.length - 1; index >= 0; index -= 1) {
       const raw = lines[index]
       if (raw === undefined || raw.trim() === '') continue
-      let parsed: unknown
-      try {
-        parsed = JSON.parse(raw)
-      } catch {
-        continue
-      }
+      const parsed = parseLine(raw)
       if (!isRecord(parsed)) continue
       const at = Date.parse(parsed.ts)
       if (!durable.has(file)) oldestMain = oldestMain === null ? at : Math.min(oldestMain, at)
