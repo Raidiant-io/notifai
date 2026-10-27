@@ -496,6 +496,68 @@ export const NotificationDraft = Type.Object(
   { additionalProperties: false },
 )
 
+/**
+ * Retained feed output, not a new submission. The service removes the body and
+ * may retain older content limits and identifiers. Validate every known field's
+ * shape, preserve additions, and leave submission policy in NotificationDraft.
+ */
+const nullableOutputString = Type.Union([Type.String(), Type.Null()])
+const outputSound = Type.Optional(nullableOutputString)
+const outputCustomData = Type.Optional(Type.Record(Type.String(), Type.String()))
+const outputIosFields = {
+  sound: outputSound,
+  badge: Type.Optional(Type.Union([Type.Integer(), Type.Null()])),
+  thread_id: Type.Optional(nullableOutputString),
+  category: Type.Optional(Type.Null()),
+  interruption_level: Type.Optional(Type.Union(INTERRUPTION_LEVELS.map(value => Type.Literal(value)))),
+  relevance_score: Type.Optional(Type.Union([Type.Number(), Type.Null()])),
+  target_content_id: Type.Optional(nullableOutputString),
+  custom_data: outputCustomData,
+}
+export const NotificationDraftView = Type.Object({
+  schema_version: Type.Literal(NOTIFICATION_SCHEMA_VERSION),
+  kind: Type.Optional(Type.Union(NOTIFICATION_KINDS.map(value => Type.Literal(value)))),
+  lifecycle: Type.Optional(Type.Object({
+    tier: Type.Union(LIFECYCLE_TIERS.map(value => Type.Literal(value))),
+    state: Type.Optional(Type.Union(LIFECYCLE_END_STATES.map(value => Type.Literal(value)))),
+    retires_request_id: Type.Optional(Type.String()),
+  })),
+  project: Type.Optional(Type.String()),
+  source: Type.Optional(Type.Object({
+    session_id: Type.Optional(Type.String()), session_label: Type.Optional(Type.String()),
+    session_label_source: Type.Optional(Type.Union([Type.Literal('fallback'), Type.Literal('semantic')])),
+    session_label_previous_source: Type.Optional(Type.Literal('fallback')),
+    harness: Type.Optional(Type.String()), branch: Type.Optional(Type.String()), worktree: Type.Optional(Type.String()),
+  })),
+  presentation: Type.Object({
+    title: Type.String(), summary: Type.String(), body: Type.Optional(Type.String()),
+    media: Type.Optional(Type.Array(Type.Object({ media_id: Type.String(), alt: Type.Optional(Type.String()) }))),
+  }),
+  targets: Type.Union([
+    Type.Object({ mode: Type.Literal('all') }),
+    Type.Object({ mode: Type.Literal('selected'), device_ids: Type.Array(Type.String()) }),
+  ]),
+  delivery: Type.Object({ ttl_seconds: Type.Integer(), collapse_key: nullableOutputString }),
+  reply: Type.Optional(Type.Object({
+    expires_in_seconds: Type.Integer(),
+    questions: Type.Array(Type.Object({
+      id: Type.String(), text: Type.String(), multi: Type.Optional(Type.Boolean()),
+      choices: Type.Optional(Type.Array(Type.Object({
+        id: Type.String(), label: Type.String(), description: Type.Optional(Type.String()),
+        recommended: Type.Optional(Type.Literal(true)),
+      }))),
+    })),
+  })),
+  platform: Type.Optional(Type.Object({
+    ios: Type.Optional(Type.Object(outputIosFields)),
+    macos: Type.Optional(Type.Object(outputIosFields)),
+    android: Type.Optional(Type.Object({ sound: outputSound, thread_id: Type.Optional(nullableOutputString), custom_data: outputCustomData })),
+    windows: Type.Optional(Type.Object({ sound: outputSound })),
+    linux: Type.Optional(Type.Object({ sound: outputSound })),
+  })),
+})
+export type NotificationDraftView = Static<typeof NotificationDraftView>
+
 export type MediaItemT = Static<typeof MediaItem>
 export type SourceContextT = Static<typeof SourceContext>
 export type DeliveryPolicyT = Static<typeof DeliveryPolicy>

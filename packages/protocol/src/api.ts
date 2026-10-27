@@ -667,40 +667,38 @@ export const REPLY_SOURCES = [
 ] as const
 
 /** One question's answer as stored: canonical ids and labels, server-checked. */
-export interface ReplyAnswerView {
-  question_id: string
-  /** Chosen choice ids, in choice order; empty for a purely typed answer. */
-  choice_ids: string[]
-  /** The typed answer, when the user wrote one (the "Other" path). */
-  text: string | null
-}
+export const ReplyAnswerView = Type.Object({
+  question_id: Type.String(),
+  /** Choice ids in choice order; empty for a purely typed answer. */
+  choice_ids: Type.Array(Type.String()),
+  /** Typed answer on the Other path, when supplied. */
+  text: Type.Union([Type.String(), Type.Null()]),
+})
+export type ReplyAnswerView = Static<typeof ReplyAnswerView>
 
-export interface ReplyView {
-  reply_id: string
+/** Retained output accepts additive fields and opaque identities. */
+export const ReplyView = Type.Object({
+  reply_id: Type.String(),
   /** Monotonic cursor within the Notification Request. */
-  seq: number
-  /** Null when answered through recovery or the native installation was removed. */
-  delivery_id: string | null
-  device_id: string | null
-  device_name: string
-  /** Human-readable rendering of the whole reply, assembled server-side. */
-  text: string
-  /** The checkable answers, one per question answered. */
-  answers: ReplyAnswerView[]
-  /** Which surface it was answered from, when the device said. */
-  source: string | null
-  created_at: string
-}
+  seq: Type.Number(),
+  /** Null after recovery or removal of the installation. */
+  delivery_id: Type.Union([Type.String(), Type.Null()]),
+  device_id: Type.Union([Type.String(), Type.Null()]),
+  device_name: Type.String(),
+  text: Type.String(),
+  answers: Type.Array(ReplyAnswerView),
+  /** Open surface name, when the device supplied one. */
+  source: Type.Union([Type.String(), Type.Null()]),
+  created_at: Type.String(),
+})
+export type ReplyView = Static<typeof ReplyView>
 
-export interface AgentAcknowledgementView {
-  /**
-   * The agent's brief written reply, or empty when the account turned
-   * acknowledgement text off. Empty text is still a recorded acknowledgement:
-   * it says an agent read the answer.
-   */
-  text: string
-  created_at: string
-}
+/** Empty text still records that the agent read the answer. */
+export const AgentAcknowledgementView = Type.Object({
+  text: Type.String(),
+  created_at: Type.String(),
+})
+export type AgentAcknowledgementView = Static<typeof AgentAcknowledgementView>
 
 /**
  * Optional body of `POST /api/v1/notifications/:request_id/replies/close`.

@@ -1,8 +1,8 @@
 import { Type, type Static } from '@sinclair/typebox'
 import { LIFECYCLE_END_STATES } from './lifecycle.js'
-import type { NotificationDraftT } from './notification.js'
-import type { AgentAcknowledgementView, ReplyView } from './api.js'
-import type { AnswerVersionView } from './sessions.js'
+import { NotificationDraftView } from './notification.js'
+import { AgentAcknowledgementView, ReplyView } from './api.js'
+import { AnswerVersionView } from './sessions.js'
 
 const nullableString = Type.Union([Type.String(), Type.Null()])
 
@@ -22,8 +22,7 @@ export type QuestionRetirementView = Static<typeof QuestionRetirementView>
 
 /**
  * Current retained snapshot. Required row fields are decoded before advancing
- * a feed cursor. Nested draft/reply/answer objects retain their wire types;
- * their deeper validation is separate from this bounded response schema.
+ * a feed cursor, including retained draft, reply and answer content.
  */
 export const NotificationHistoryItem = Type.Object({
   request_id: Type.String(),
@@ -34,7 +33,7 @@ export const NotificationHistoryItem = Type.Object({
   /** False means update an existing local row only; never restore a missing row. */
   insertable: Type.Boolean(),
   has_body: Type.Boolean(),
-  draft: Type.Unsafe<NotificationDraftT>(Type.Object({})),
+  draft: NotificationDraftView,
   project_name: nullableString,
   delivery_id: nullableString,
   reply_expires_at: nullableString,
@@ -61,15 +60,15 @@ export const NotificationHistoryItem = Type.Object({
    */
   read_at: nullableString,
   agent_acknowledgement_required: Type.Boolean(),
-  latest_reply: Type.Union([Type.Unsafe<ReplyView & { client_reply_id: string }>(Type.Object({})), Type.Null()]),
-  agent_acknowledgement: Type.Union([Type.Unsafe<AgentAcknowledgementView>(Type.Object({})), Type.Null()]),
+  latest_reply: Type.Union([Type.Object({ ...ReplyView.properties, client_reply_id: Type.String() }), Type.Null()]),
+  agent_acknowledgement: Type.Union([AgentAcknowledgementView, Type.Null()]),
   /**
    * Every answer the User gave this request, oldest first: replies, then
    * post-delivery Answer Edits. Present only for installations advertising
    * `answer_edits`; `latest_reply` and `agent_acknowledgement` keep their
    * released meaning either way.
    */
-  answer_versions: Type.Optional(Type.Array(Type.Unsafe<AnswerVersionView>(Type.Object({})))),
+  answer_versions: Type.Optional(Type.Array(AnswerVersionView)),
 })
 export type NotificationHistoryItem = Static<typeof NotificationHistoryItem>
 
