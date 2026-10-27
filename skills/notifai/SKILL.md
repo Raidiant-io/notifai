@@ -279,7 +279,9 @@ Branch on `states`, `can_send` and `question_routing_ready`; a nonzero exit is
 a gap to close, never to bypass. A state marked `informational` is not a gap:
 leave User choices and harness limits as they are. After a successful `init --json`, carry on:
 `ask` checks its own route. Run `notifai doctor` to verify a fresh session
-after installing hooks, or to diagnose a failure.
+after installing hooks, or to diagnose a failure. A hook approval only the User
+can give never stops your work: carry on, and end your reply with its
+`message` as written.
 
 On `no_active_devices`, run setup until its gap is closed, then repeat
 the exact original send with `--retry`. A verification Notification does not

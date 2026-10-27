@@ -17,7 +17,7 @@ import { codexSubagentShell } from './codex-subagent.js'
 import { claudeAskingSubagent } from './claude-subagent.js'
 import {
   CODEX_FRESH_SESSION_USER_ACTION,
-  CODEX_HOOK_APPROVAL_USER_ACTION,
+  codexHookApprovalUserAction,
   CODEX_STALE_STOP_DEFINITION_PROBLEM,
   CODEX_STOP_DEFINITION_NOT_SINGULAR_PROBLEM,
   activeQuestionRouteProblems,
@@ -35,7 +35,7 @@ import { processIdentityLiveness } from './process-identity.js'
 import { connectCodexAnswerControl, type CodexAnswerUnavailable } from './codex-answer-control.js'
 import { currentCodexQuestionContext, type NativeQuestionAdmission } from './codex-question-bindings.js'
 import { hermesQuestionRouteReady } from './session-attendant-state.js'
-import { codexRoutingTrustProblems, findInstallations, handlerEvent } from './install-hooks.js'
+import { codexRoutingTrustFindings, findInstallations, handlerEvent, summarizeCodexTrustFindings } from './install-hooks.js'
 import { cardHandbackInput, cardShown } from './codex-card-handback.js'
 import { CODEX_CARD_VERSION_FLOOR, codexCardHooksReady, codexCardToolOffered } from './codex-card-capability.js'
 import { activeOpenclawGeneration } from './openclaw-session-access.js'
@@ -126,6 +126,7 @@ export function reportAskFailure(
   } else {
     deps.io.err(failure.message)
     deps.io.err(`next: ${failure.remedy}`)
+    if (failure.user_action !== undefined) deps.io.err(`for the User: ${failure.user_action.message}`)
   }
   return failure.exit_code
 }
@@ -1129,9 +1130,10 @@ export function askCommand(
     const matchingInstallations = installations.filter(
       (installation) => installation.harness === active!.harness,
     )
-    const trustProblems = active!.harness === 'codex'
-      ? codexRoutingTrustProblems(matchingInstallations, deps.env)
+    const trustFindings = active!.harness === 'codex'
+      ? codexRoutingTrustFindings(matchingInstallations, deps.env)
       : []
+    const trustProblems = summarizeCodexTrustFindings(trustFindings)
     if (trustProblems.length > 0) {
       return askFailure(
         deps,
@@ -1139,9 +1141,9 @@ export function askCommand(
         'codex_hook_approval_required',
         'hook_trust',
         `Question routing is not ready: ${trustProblems.join('; ')}. This question was not registered. Neither \`notifai ask\` nor \`notifai ask --wait\` works until the User approves the hooks.`,
-        'open `/hooks` in Codex and approve or enable the Notifai handlers',
+        'ask this question in the conversation instead and carry on; never wait for the approval. End your reply with the line for the User (`user_action.message`), as written',
         EXIT.usage,
-        { user_action: CODEX_HOOK_APPROVAL_USER_ACTION },
+        { user_action: codexHookApprovalUserAction(deps.env, { off: trustFindings.some((finding) => finding.state === 'disabled') }) },
       )
     }
     const routeProblems = activeQuestionRouteProblems(deps, active!, installations)

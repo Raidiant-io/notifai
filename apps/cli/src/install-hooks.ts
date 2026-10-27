@@ -1669,12 +1669,12 @@ export function summarizeCodexTrustFindings(findings: readonly CodexTrustFinding
     const handlers = (count: number) => `${count} Notifai ${count === 1 ? 'handler' : 'handlers'}`
     const verb = (count: number) => (count === 1 ? 'is' : 'are')
     if (disabled === 0) {
-      return `${handlers(pending)} in ${file} ${verb(pending)} new or changed since Codex last approved ${pending === 1 ? 'it' : 'them'}; open /hooks in Codex and approve Notifai's handlers`
+      return `${handlers(pending)} in ${file} ${verb(pending)} new or changed since Codex last approved ${pending === 1 ? 'it' : 'them'}; approve Notifai's handlers in Codex (Review hooks in the ChatGPT app or IDE, /hooks in the CLI)`
     }
     if (pending === 0) {
-      return `${handlers(disabled)} in ${file} ${verb(disabled)} turned off in Codex; open /hooks in Codex and turn Notifai's handlers on`
+      return `${handlers(disabled)} in ${file} ${verb(disabled)} turned off in Codex; turn Notifai's handlers on in Codex (Settings → Hooks in the ChatGPT app or IDE, /hooks in the CLI)`
     }
-    return `${handlers(pending)} in ${file} ${verb(pending)} new or changed since Codex last approved ${pending === 1 ? 'it' : 'them'} and ${disabled} ${verb(disabled)} turned off; open /hooks in Codex, approve Notifai's handlers and turn them on`
+    return `${handlers(pending)} in ${file} ${verb(pending)} new or changed since Codex last approved ${pending === 1 ? 'it' : 'them'} and ${disabled} ${verb(disabled)} turned off; approve Notifai's handlers in Codex and turn them on (Settings → Hooks in the ChatGPT app or IDE, /hooks in the CLI)`
   })
 }
 
@@ -1687,7 +1687,15 @@ export function codexRoutingTrustProblems(
   installations: Installation[],
   env: NodeJS.ProcessEnv = process.env,
 ): string[] {
-  return codexTrustProblems(
+  return summarizeCodexTrustFindings(codexRoutingTrustFindings(installations, env))
+}
+
+/** The same defects, one per handler. */
+export function codexRoutingTrustFindings(
+  installations: Installation[],
+  env: NodeJS.ProcessEnv = process.env,
+): CodexTrustFinding[] {
+  return codexTrustFindings(
     installations.map((installation) => ({
       ...installation,
       handlers: installation.handlers.filter((handler) => !['attend', 'pre-tool-use', 'post-tool-use'].includes(handlerEvent(handler.command) ?? '')),

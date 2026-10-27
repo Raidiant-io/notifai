@@ -150,8 +150,8 @@ Setup installs hooks, the skill and command approval into the agent apps the
 User chose with `--apps`. There is no scope to ask about: Notifai installs one
 lifecycle mechanism per harness, for this machine, and the skill machine-wide.
 To connect another app later, rerun setup with the new `--apps` list. Codex
-also asks the User to approve the Notifai hooks in `/hooks`; setup's done
-message says so.
+also needs the User to approve the Notifai hooks: setup's done message says
+how, for the Codex surface it runs in, and never waits for it.
 
 Only when the User asks for the skill in this project alone:
 

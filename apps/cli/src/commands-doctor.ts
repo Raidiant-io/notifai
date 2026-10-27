@@ -96,7 +96,7 @@ import {
 import { stopShapeProblems } from './commands-hook-shape.js'
 import {
   CODEX_FRESH_SESSION_USER_ACTION,
-  CODEX_HOOK_APPROVAL_USER_ACTION,
+  codexHookApprovalUserAction,
   CODEX_STOP_DEFINITION_NOT_SINGULAR_PROBLEM,
   CODEX_STALE_STOP_DEFINITION_PROBLEM,
   activeQuestionRouteProblems,
@@ -1754,9 +1754,9 @@ function hookChecks(deps: CommandDeps): HookCheck[] {
             note: 'best-effort reading of the Codex trust store; Notifai never writes it, and /hooks in Codex is authoritative',
           },
           remedy: {
-            summary: "open /hooks in Codex and approve Notifai's handlers",
+            summary: "the User approves Notifai's hooks in Codex (Review hooks in the ChatGPT app or IDE, /hooks in the CLI); nothing waits for it",
             command: '/hooks',
-            user_action: CODEX_HOOK_APPROVAL_USER_ACTION,
+            user_action: codexHookApprovalUserAction(deps.env, { off: trustFindings.some((finding) => finding.state === 'disabled') }),
           },
         }),
   })

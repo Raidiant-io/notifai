@@ -1114,10 +1114,10 @@ describe('guided setup', () => {
     await initCommand(deps, { json: true })
     const result = JSON.parse(io.outLines.join('\n')) as { message: string; states: { id: string; status: string; technical: unknown }[] }
     expect(result.states[0]).toMatchObject({ id: 'apps', status: 'gap', technical: {
-      supported: expect.arrayContaining([{ id: 'claude-code', name: 'Claude Code' }, { id: 'codex', name: 'Codex' }]),
+      supported: expect.arrayContaining([{ id: 'claude-code', name: 'Claude Code' }, { id: 'codex', name: 'Codex (CLI, IDE or ChatGPT app)' }]),
       detected: ['codex'],
     } })
-    expect(result.message).toBe('**Which agent apps should Notifai connect?**\n\nFound on this computer: Codex. Keep these, or pick others.')
+    expect(result.message).toBe('**Which agent apps should Notifai connect?**\n\nFound on this computer: Codex (CLI, IDE or ChatGPT app). Keep these, or pick others.')
 
     io.outLines = []
     await initCommand(deps, { json: true, hooks: false, skills: false })
@@ -1539,7 +1539,11 @@ describe('asking before the hooks have ever run', () => {
       env.CODEX_HOME = shadow
       // Source-home approval must not admit a question in a different home.
       expect(askCommand(deps, 'Ship it?', { title: 'Decision', json: true })).toBe(EXIT.usage)
-      expect(JSON.parse(io.outLines.at(-1)!)).toMatchObject({ code: 'codex_hook_approval_required' })
+      expect(JSON.parse(io.outLines.at(-1)!)).toMatchObject({
+        code: 'codex_hook_approval_required',
+        remedy: expect.stringContaining('ask this question in the conversation instead and carry on'),
+        user_action: { message: "**Keep in mind:** Codex won't use Notifai until you approve its hooks. Type `/hooks` and approve them." },
+      })
       trustInstalledCodexHooks(cwd, env)
     }
     writeCurrentCodexSessionState(cwd, env, 'codex-current-thread', {

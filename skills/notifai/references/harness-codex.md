@@ -7,13 +7,21 @@ harness shares.
 
 Codex's internal `$CODEX_HOME/memories` and `memories_v2` workspaces (default `~/.codex`) intentionally receive no Notifai lifecycle context; requests there fail with `codex_memory_workspace`, so do not repair or re-enable them.
 
-Run `notifai hooks install --harness codex`. If `hooks-trust` fails, the User
-approves or enables the Notifai handlers in `/hooks` in a Codex session using
-the same `CODEX_HOME`, including the
-`PostToolUse` handler that hands answers and notes into a working turn; `/hooks`
-is authoritative when it disagrees with doctor. Send them the gap's `message`
-as written ([What to tell the User](harness-setup.md#what-to-tell-the-user));
-at the end of setup, the done message carries it.
+Codex runs in the Codex CLI, the Codex IDE extension and the ChatGPT desktop
+app. Call it Codex; the ChatGPT app is the window the User sees.
+
+Run `notifai hooks install --harness codex`. If `hooks-trust` fails, only the
+User can approve or turn on the Notifai handlers, in Codex with the same
+`CODEX_HOME`: the **Review hooks** icon in the message box of the ChatGPT app or
+the IDE extension (Settings → Hooks for handlers that are off), or `/hooks` in
+the CLI. That includes the `PostToolUse` handler that hands answers and notes
+into a working turn. Codex's own list is authoritative when it disagrees with
+doctor.
+
+Never wait for that approval or ask the User to tell you when it's done: carry
+on, and end your reply with the gap's `message` as written. It is a short
+reminder worded for the Codex surface you run in. During setup the done message
+carries it instead ([What to tell the User](harness-setup.md#what-to-tell-the-user)).
 
 Then start one fresh Agent Session, send one prompt, and run `notifai doctor`. If
 doctor finds no SessionStart, reinstall the current hooks and start a fresh
@@ -52,6 +60,11 @@ apps alike.
 `request_user_input` (no `_async`) is not linked to Notifai: where Codex
 accepts it, it waits in the terminal, where an away User never sees it. Use
 `ask` for those questions too.
+
+If `ask` is refused with `codex_hook_approval_required`, nothing was
+registered: ask the question in the conversation instead and carry on with
+work that doesn't depend on the answer. End your reply with the line for the
+User (`user_action.message`) as written. Later questions try `ask` again.
 
 To wait, run `notifai ask --wait`. It never opens a card, because Codex drops
 open cards when your turn ends: end your turn, and the answer arrives as your
@@ -175,7 +188,7 @@ The rule has three limits, and readiness names each:
 On Windows, Codex runs hooks through the session's own shell; Notifai's hook
 command works under PowerShell and cmd.exe, and cards link there as they do on
 macOS and Linux. A reinstall that adds or changes a handler needs the User's
-approval of that handler in `/hooks`; Notifai never grants hook trust. Running sessions may keep the hooks they loaded: leave their work
+approval of that handler in Codex; Notifai never grants hook trust. Running sessions may keep the hooks they loaded: leave their work
 running and check the new definition in a fresh session.
 
 ## After a Notifai update
@@ -184,7 +197,7 @@ Existing hook owners and approvals carry over. When the guidance this Agent
 Session read has changed, Notifai says so once, at its next prompt or tool call,
 as it does after a compaction: load the skill again and run `notifai guidance`
 before the next Notification Request. A changed handler can need the User's
-`/hooks` approval. Follow the specific reload or stale-Stop remedy the update
+approval in Codex, as in [Activation](#activation). Follow the specific reload or stale-Stop remedy the update
 reports, then confirm real hook calls, including the tool-boundary call
 (`tool_boundary_notes` in [Updating
 Notifai](updates.md#local-integration-faults)).

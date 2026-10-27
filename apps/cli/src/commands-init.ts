@@ -75,25 +75,25 @@ import {
 import { CODEX_COMMANDS_STATE_ID, installCodexCommandRules } from './codex-command-rules.js'
 import { packageVersion } from './release.js'
 import {
-  HARNESS_LABELS,
   HOOK_INSTALLABLE_HARNESSES,
   SOURCE_CONTEXT_HARNESSES,
   type HookInstallableHarness,
   type SourceContextHarness,
 } from './harnesses.js'
 import { relayMessage } from './relay-message.js'
+import { codexHooksWarning, codexSurface } from './codex-surface.js'
 import {
   APPROVAL_STOP_MS,
   APPS_QUESTION,
   NO_PROGRESS_STOP_MS,
   NOTIFICATION_GRACE_MS,
+  appChoiceName,
   appsQuestionMessage,
   clearSetupRun,
   connectedMessage,
   doneMessage,
   doneTerminalLines,
   expiredStopMessage,
-  CODEX_HOOKS_WARNING,
   PHONE_IN_BROWSER_MESSAGE,
   PHONE_IN_BROWSER_TERMINAL_LINE,
   freshSetupRun,
@@ -419,11 +419,11 @@ function applyNotificationGrace(readiness: Readiness, run: SetupRun, now: number
  * waits for it: during setup it is a warning the done message carries, not a
  * gap. `doctor` still reports it as one.
  */
-function codexTrustAsWarning(readiness: Readiness): Readiness {
+function codexTrustAsWarning(readiness: Readiness, env: NodeJS.ProcessEnv): Readiness {
   return {
     ...readiness,
     states: readiness.states.map((state) => state.id === 'hooks-trust' && state.status === 'gap'
-      ? { ...state, status: 'optional-gap', message: CODEX_HOOKS_WARNING }
+      ? { ...state, status: 'optional-gap', message: codexHooksWarning(codexSurface(env)) }
       : state),
   }
 }
@@ -1022,7 +1022,7 @@ export async function initCommand(deps: CommandDeps, flags: InitFlags): Promise<
             APPS_QUESTION,
             HOOK_INSTALLABLE_HARNESSES.map((app) => ({
               value: app,
-              label: HARNESS_LABELS[app],
+              label: appChoiceName(app),
               ...(detected.includes(app) ? { hint: 'found' } : {}),
             })),
             [...detected],
@@ -1066,7 +1066,7 @@ export async function initCommand(deps: CommandDeps, flags: InitFlags): Promise<
       ...skillOpts(),
       ...(json ? { json: true } : {}),
       ...(refresh === undefined || previous === undefined ? {} : { previous, refresh }),
-    }), run, now()))
+    }), run, now()), deps.env)
   let readiness = await assess()
 
   if (askApps) {
@@ -1432,7 +1432,7 @@ function appsGapState(detected: readonly HookInstallableHarness[]): ReadinessSta
     detail: 'the User has not chosen which agent apps to connect',
     message: appsQuestionMessage(detected),
     technical: {
-      supported: HOOK_INSTALLABLE_HARNESSES.map((id) => ({ id, name: HARNESS_LABELS[id] })),
+      supported: HOOK_INSTALLABLE_HARNESSES.map((id) => ({ id, name: appChoiceName(id) })),
       detected: [...detected],
     },
     remedy: {
@@ -1467,6 +1467,7 @@ function doneFacts(readiness: Readiness, apps: readonly HookInstallableHarness[]
     notificationsOff: devices?.status === 'optional-gap' && off !== undefined ? off : null,
     apps,
     codexNeedsApproval: status('hooks-trust') !== 'ready',
+    codexSurface: codexSurface(deps.env),
     commandApps: apps.filter((app) => (app === 'claude-code' && status(CLAUDE_COMMANDS_STATE_ID) === 'ready') ||
       (app === 'codex' && status(CODEX_COMMANDS_STATE_ID) === 'ready')),
     mac: (deps.hookPlatform ?? process.platform) === 'darwin' && !(deps.macAppInstalled ?? macAppInstalled(deps.env)),

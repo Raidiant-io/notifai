@@ -146,7 +146,7 @@ function installationBytes(files: string[]): string {
 function printHooksInstallClose(deps: CommandDeps, harness: HookInstallableHarness, file: string, changed = true): void {
   const label = HARNESS_LABELS[harness]
   const approvalNote = harness === 'codex' && codexTrustProblems(findInstallations(deps.env, deps.hookAdapterHome, deps.hookPlatform).filter(entry => entry.harness === 'codex'), deps.env).length === 0
-    ? 'Your existing Codex hook approvals still match. ' : harness === 'codex' ? 'In a Codex session using this same CODEX_HOME, open `/hooks` and approve or enable the Notifai handlers. Approval in another home does not apply here. ' : ''
+    ? 'Your existing Codex hook approvals still match. ' : harness === 'codex' ? 'In Codex with this same CODEX_HOME, the User approves or turns on the Notifai handlers: Review hooks in the ChatGPT app or IDE, `/hooks` in the CLI. Approval in another home does not apply here. ' : ''
   const activation = !changed
     ? approvalNote + 'Hook installation is unchanged; this write needs no restart. Continue the current Agent Session if its lifecycle and trust are ready; `notifai update --check --json` reports any remaining session requirement.'
     : approvalNote +

@@ -2,13 +2,14 @@
 
 Your agents can reach you, and you can answer from your phone. The answer goes
 back to the exact Agent Session that asked, in whichever harness it runs:
-Claude Code, Codex, Cursor, OpenCode, OpenClaw, Hermes or Grok.
+Claude Code, Codex (CLI, IDE or the ChatGPT app), Cursor, OpenCode, OpenClaw,
+Hermes or Grok.
 
 <p align="center"><sub>Works with</sub></p>
 <table align="center">
   <tr>
     <td align="center"><img src="docs/images/claude-code.png" width="48" alt="Claude Code logo"><br>Claude Code</td>
-    <td align="center"><img src="docs/images/codex.png" width="48" alt="Codex logo"><br>Codex</td>
+    <td align="center"><img src="docs/images/codex.png" width="48" alt="Codex logo"><br>Codex<br><sub>incl. ChatGPT app</sub></td>
     <td align="center"><img src="docs/images/cursor.png" width="48" alt="Cursor logo"><br>Cursor</td>
     <td align="center"><img src="docs/images/opencode.png" width="48" alt="OpenCode logo"><br>OpenCode</td>
     <td align="center"><img src="docs/images/openclaw.png" width="48" alt="OpenClaw logo"><br>OpenClaw</td>

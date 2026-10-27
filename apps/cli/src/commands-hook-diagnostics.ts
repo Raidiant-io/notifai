@@ -1,5 +1,6 @@
 /** User-facing diagnosis and recovery guidance for hook readiness. */
 import { existsSync, readFileSync } from 'node:fs'
+import { codexHooksReminder, codexSurface } from './codex-surface.js'
 import { type CommandDeps } from './commands-core.js'
 import { type ActiveHarnessSession } from './commands-harness-context.js'
 import { stopShapeProblems } from './commands-hook-shape.js'
@@ -68,15 +69,20 @@ export function inspectOpenclawPluginLoadability(
     }
   }
 }
-export const CODEX_HOOK_APPROVAL_USER_ACTION = {
-  code: 'codex_hook_approval_required',
-  harness: 'codex',
-  action: 'approve_or_enable_notifai_hooks',
-  // Outside setup (doctor, a refused `ask`) the User may be in another Codex
-  // home or have the hooks turned off, so this says both. Setup's done message
-  // carries its own short warning instead.
-  message: 'In a Codex session using this same Codex home (CODEX_HOME), type `/hooks` and approve the Notifai hooks it lists, turning them on if they are off. Tell me when that\'s done.',
-} as const
+/**
+ * Outside setup (doctor, a refused `ask`): Codex hooks wait for the User's
+ * approval. Nothing waits for it: the agent carries on and ends its reply
+ * with `message`, worded for the Codex surface this runs in. `off`: some of
+ * the hooks are turned off, which the approval dialog does not list.
+ */
+export function codexHookApprovalUserAction(env: NodeJS.ProcessEnv, options: { off?: boolean } = {}) {
+  return {
+    code: 'codex_hook_approval_required',
+    harness: 'codex',
+    action: 'approve_or_enable_notifai_hooks',
+    message: codexHooksReminder(codexSurface(env), options),
+  } as const
+}
 
 export const CODEX_FRESH_SESSION_USER_ACTION = {
   code: 'codex_fresh_session_required',

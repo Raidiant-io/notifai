@@ -8,7 +8,7 @@ What Notifai does in each agent harness. For commands and setup, see
 | Harness | Notifications | Answer questions | Send notes | Shows who's running |
 | --- | --- | --- | --- | --- |
 | Claude Code | Yes | Yes | Yes | Yes |
-| Codex | Yes | Yes | Yes | Yes |
+| Codex (CLI, IDE, ChatGPT app) | Yes | Yes | Yes | Yes |
 | Cursor | Yes | Yes | Partly | Partly |
 | OpenCode | Yes | Yes | Coming soon | Coming soon |
 | OpenClaw | Yes | Yes | Yes | Yes |
@@ -43,9 +43,12 @@ older version the answer arrives at the session's next turn. Claude Code's own
 question picker is linked too: answer it in the terminal or on your phone.
 
 **Codex.** Answers and notes arrive on their own, like Claude Code. Codex's
-question card is linked from Codex 0.163.0, with models that offer it. After
-installing or updating hooks, open `/hooks` in Codex once and approve the
-Notifai handlers; `notifai doctor` names any that still wait for approval.
+question card is linked from Codex 0.163.0, with models that offer it. Codex
+runs in the terminal (Codex CLI), in your editor (Codex IDE extension) and in
+the ChatGPT desktop app. After installing or updating hooks, approve the
+Notifai hooks once in Codex: in the ChatGPT app or your editor, click the
+**Review hooks** icon by the message box; in the terminal, type `/hooks`.
+`notifai doctor` names any that still wait for approval.
 
 **Cursor.** Questions wait in the asking command (`notifai ask --wait`). In
 the Cursor terminal agent on macOS, notes reach a conversation between turns,

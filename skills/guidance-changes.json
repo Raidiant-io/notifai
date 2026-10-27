@@ -1,5 +1,5 @@
 {
-  "current": "e578a0220e5a4b90010e468b76abd69ead05214be35835e65d002cd7fd066c87",
+  "current": "2b5326e38cb12c1e06fad0f95f72ac8ff06dd9147fa28384344847979c152d49",
   "releases": [
     {
       "digest": "3e47b01bc6bbfb43e910c660b9964fab6459d75148c3c02dcbcd0be64cfb2963",
@@ -128,6 +128,10 @@
     {
       "digest": "e578a0220e5a4b90010e468b76abd69ead05214be35835e65d002cd7fd066c87",
       "note": "Setup messages now put one idea per paragraph: the approval code, the link to open and the next step each stand out, and links have names. Send each message exactly as written as your whole reply. Keep its words, line breaks, blank lines and Markdown, don't quote it or put it in a code block, and add nothing except its QR. The install line no longer asks the User to allow prompts, and no setup message asks the User to report a step. On a Mac, the done message ends with a link to the desktop app."
+    },
+    {
+      "digest": "2b5326e38cb12c1e06fad0f95f72ac8ff06dd9147fa28384344847979c152d49",
+      "note": "Codex hook approval is now worded for the Codex surface you run in: `/hooks` in the Codex CLI, the Review hooks icon in the message box of the ChatGPT desktop app and the Codex IDE extension, or both when Notifai can't tell. Never wait for that approval or ask the User to tell you when it's done: carry on, and end your reply with the reminder doctor or ask gives (`message`, or `user_action.message`) as written. When `ask` is refused with `codex_hook_approval_required`, nothing was registered: ask the question in the conversation instead and carry on. The apps question names Codex \"Codex (CLI, IDE or ChatGPT app)\"; elsewhere call it Codex."
     }
   ]
 }
