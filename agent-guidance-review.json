@@ -1,7 +1,7 @@
 {
   "version": 1,
-  "behavior_digest": "sha256:8cc307fcb019a62967110e992bc39c921708ebdbe90384d121d6c397b482e22a",
-  "outcome": "guidance-updated",
+  "behavior_digest": "sha256:d9ef2d3a0914ecfba2729e7758cb17ee9db626675fe5727868c1140c22208611",
+  "outcome": "reviewed-no-impact",
   "surfaces_reviewed": [
     "lifecycle-hooks",
     "notifai-skill",
@@ -9,5 +9,5 @@
     "cli-readiness",
     "domain-terms"
   ],
-  "reason": "Reviewed the workspace eligibility boundary across lifecycle hooks, the skill, setup, readiness and domain terms. Codex memory roots now skip lifecycle work and refuse new requests with one stable error, independent of Project Enablement. The Codex reference explains that this exclusion needs no repair. Other harnesses, ordinary Projects and existing setup/readiness flows keep their behavior. No configuration or guidance contents leave the machine."
+  "reason": "Reviewed the additive registration, upload-grant and support-assessment schemas against lifecycle hooks, the Notifai skill, harness setup, CLI readiness and domain terms. Existing response fields and optional support metadata retain their types; new exported validators do not change CLI call sites, which continue to use the response types. These protocol additions introduce no command, setup action, readiness state, lifecycle behavior or domain term requiring agent guidance changes."
 }
