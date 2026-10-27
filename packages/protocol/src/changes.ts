@@ -1,13 +1,16 @@
-import type { NotificationHistoryItem } from './history.js'
-import type { SessionMessageView, SessionPresenceView } from './sessions.js'
+import { Type, type Static } from '@sinclair/typebox'
+import { Value } from '@sinclair/typebox/value'
+import { NotificationHistoryItem } from './history.js'
+import { SessionMessageView, SessionPresenceView } from './sessions.js'
 
 /** Longest `wait_seconds` a companion changes-feed call may hold open. */
 export const COMPANION_CHANGES_MAX_WAIT_SECONDS = 25
 
-export interface SessionPresenceEntry {
-  session_id: string
-  presence: SessionPresenceView
-}
+export const SessionPresenceEntry = Type.Object({
+  session_id: Type.String(),
+  presence: SessionPresenceView,
+})
+export type SessionPresenceEntry = Static<typeof SessionPresenceEntry>
 
 /**
  * `GET /api/v1/companion/changes?device_id=&cursor=&wait_seconds=` (user
@@ -15,17 +18,19 @@ export interface SessionPresenceEntry {
  * open until something changed after `cursor`, then returns every change in
  * order. Reading it keeps the installation routable for new Deliveries.
  */
-export interface CompanionChangesPage {
-  /** Notification Requests whose state advanced after `cursor`, oldest first. */
-  notifications: NotificationHistoryItem[]
-  /** Session Messages whose state advanced after `cursor`, oldest first. */
-  session_messages: SessionMessageView[]
-  /** Every Agent Session with recorded presence, when any of it changed after `cursor`; otherwise null. */
-  presence: SessionPresenceEntry[] | null
-  /** Opaque, Account-bound position; save only after every change is durable. */
-  next_cursor: string
-  /** More changes are ready now: call again at once. */
-  has_more: boolean
+export const CompanionChangesPage = Type.Object({
+  notifications: Type.Array(NotificationHistoryItem),
+  session_messages: Type.Array(SessionMessageView),
+  presence: Type.Union([Type.Array(SessionPresenceEntry), Type.Null()]),
+  /** Opaque Account-bound position; a missing/empty value cannot be committed. */
+  next_cursor: Type.String({ minLength: 1 }),
+  has_more: Type.Boolean(),
+})
+export type CompanionChangesPage = Static<typeof CompanionChangesPage>
+
+/** Checks the envelope and required row fields; nested content remains bounded. */
+export function isCompanionChangesPage(value: unknown): value is CompanionChangesPage {
+  return Value.Check(CompanionChangesPage, value)
 }
 
 /** Most Notification Requests one `companion/reads` call may name. */

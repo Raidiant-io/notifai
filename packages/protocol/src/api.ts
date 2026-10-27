@@ -127,24 +127,29 @@ export const ACCESS_REASONS = [
 ] as const
 export type AccountAccessReason = (typeof ACCESS_REASONS)[number]
 
-export interface AccountAccessResponse {
-  status: AccountAccessStatus
-  reason: AccountAccessReason
+/** Open response schema: newer servers may add fields without breaking clients. */
+export const AccountAccessResponse = Type.Object({
+  status: Type.Union(ACCESS_STATUSES.map(value => Type.Literal(value))),
+  reason: Type.Union(ACCESS_REASONS.map(value => Type.Literal(value))),
   /** Alpha grants are temporary; future sources may also carry an expiry. */
-  expires_at: string | null
+  expires_at: Type.Union([Type.String(), Type.Null()]),
   /**
    * The account's sign-in email when the server knows it. Used at the
    * companion-device hop so install/sign-in copy can name the exact address
    * that must match — never guess, and omit only when the server has none.
    */
-  email: string | null
+  email: Type.Union([Type.String(), Type.Null()]),
   /**
    * Whether the server has opened public purchase. Decided by the server and
    * carried on the call every client already makes, because a client that
    * compiled its own copy of the instant keeps offering the wrong errand to
    * every install that has not been updated.
    */
-  public_v1_cutover: boolean
+  public_v1_cutover: Type.Boolean(),
+})
+export type AccountAccessResponse = Static<typeof AccountAccessResponse>
+export function isAccountAccessResponse(value: unknown): value is AccountAccessResponse {
+  return Value.Check(AccountAccessResponse, value)
 }
 
 // ---------------------------------------------------------------------------

@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "behavior_digest": "sha256:d9ef2d3a0914ecfba2729e7758cb17ee9db626675fe5727868c1140c22208611",
+  "behavior_digest": "sha256:11aa777a15969ffe3fc66d7365aa206c9a0c6aaa65e6717c18595c6bd1d5ba51",
   "outcome": "reviewed-no-impact",
   "surfaces_reviewed": [
     "lifecycle-hooks",
@@ -9,5 +9,5 @@
     "cli-readiness",
     "domain-terms"
   ],
-  "reason": "Reviewed the additive registration, upload-grant and support-assessment schemas against lifecycle hooks, the Notifai skill, harness setup, CLI readiness and domain terms. Existing response fields and optional support metadata retain their types; new exported validators do not change CLI call sites, which continue to use the response types. These protocol additions introduce no command, setup action, readiness state, lifecycle behavior or domain term requiring agent guidance changes."
+  "reason": "Reviewed access and changes-feed response schemas against lifecycle hooks, the Notifai skill, harness setup, CLI readiness and domain terms. CLI accessStatus retains its existing call path and wire fields; the new exported guards are not invoked by CLI commands or harness integrations. Required feed row schemas preserve optional metadata and additive fields, and do not change attendance, readiness, session lifecycle or user instructions. Nested historical content remains explicitly outside deep response validation. No agent guidance text changes are needed."
 }
