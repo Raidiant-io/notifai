@@ -18,6 +18,7 @@ import type { HookHarness, PendingQuestion, SessionState } from './hook-types.js
 import { processIdentityLiveness, type ProcessIdentity } from './process-identity.js'
 import { systemMonotonicNs } from './monotonic-clock.js'
 import { finishBeforeExit } from './exit-work.js'
+import type { SendingCodexThread } from './hub-client.js'
 export function sessionStatePath(sessionId: string, env: NodeJS.ProcessEnv): string {
   return path.join(stateDir(env), 'sessions', `${sanitizeSessionId(sessionId)}.json`)
 }
@@ -420,22 +421,33 @@ export function sessionNotified(sessionId: string, env: NodeJS.ProcessEnv): bool
   return existsSync(sessionNotifiedPath(sessionId, env))
 }
 
-/** Record the first accepted Notification Request of an Agent Session. Never throws. */
-export function recordSessionNotified(sessionId: string, env: NodeJS.ProcessEnv, now: number): void {
+/**
+ * Record an accepted Notification Request of an Agent Session. Never throws.
+ *
+ * `codex`: the send came from that Codex thread itself. Its hooks may never
+ * have run (Codex skips handlers not approved in its active home), and then
+ * this hint is the only way the hub learns of it, so it is repeated on every
+ * send until a hub attends the thread.
+ */
+export function recordSessionNotified(sessionId: string, env: NodeJS.ProcessEnv, now: number, codex?: SendingCodexThread): void {
   try {
     const file = sessionNotifiedPath(sessionId, env)
-    if (existsSync(file)) return
-    mkdirSync(path.dirname(file), { recursive: true })
-    // Exclusive creation: of several first sends racing in one session, exactly
-    // one records the marker and tells the hub; the rest find it present.
-    try {
-      writeFileSync(file, `${now}\n`, { mode: 0o600, flag: 'wx' })
-    } catch (err) {
-      if ((err as NodeJS.ErrnoException).code === 'EEXIST') return
-      throw err
+    let first = false
+    if (!existsSync(file)) {
+      mkdirSync(path.dirname(file), { recursive: true })
+      // Exclusive creation: of several first sends racing in one session, exactly
+      // one records the marker; the rest find it present.
+      try {
+        writeFileSync(file, `${now}\n`, { mode: 0o600, flag: 'wx' })
+        first = true
+      } catch (err) {
+        if ((err as NodeJS.ErrnoException).code !== 'EEXIST') throw err
+      }
     }
+    if (!first && codex === undefined) return
     // The hub attends a session only once it notified; tell it now.
-    finishBeforeExit(import('./hub-client.js').then(({ notifyHubSessionNotified }) => notifyHubSessionNotified(env, sessionId)))
+    finishBeforeExit(import('./hub-client.js').then(({ hubRunsSession, notifyHubSessionNotified }) =>
+      first || !hubRunsSession(sessionId, env) ? notifyHubSessionNotified(env, sessionId, codex) : undefined))
   } catch {
     // The marker and hub hint only start attendance; the notification already left.
   }

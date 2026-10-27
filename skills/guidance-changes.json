@@ -1,5 +1,5 @@
 {
-  "current": "b368a3330c559f7c839596e9a483a37253a47532f5609c7628a939af1b3919ee",
+  "current": "2bc9bca4205c1ff4b3741bba4d4fb6f3964309e79b3373b5576cef2599359850",
   "releases": [
     {
       "digest": "3e47b01bc6bbfb43e910c660b9964fab6459d75148c3c02dcbcd0be64cfb2963",
@@ -140,6 +140,10 @@
     {
       "digest": "b368a3330c559f7c839596e9a483a37253a47532f5609c7628a939af1b3919ee",
       "note": "The hub now recovers by itself when its attendance exchange stalls or fails on a local write (such as a full disk), and a Stop hook takes over answer delivery from a hub that stopped exchanging. Existing agent guidance is unchanged."
+    },
+    {
+      "digest": "2bc9bca4205c1ff4b3741bba4d4fb6f3964309e79b3373b5576cef2599359850",
+      "note": "A Codex thread whose Notifai hooks were never approved in its Codex home (for example, an app that starts Codex with its own `CODEX_HOME`) now shows as running in the Notifai apps once it sends: its send tells the hub where it runs, and the hub attends it while a Codex process holds the thread. Until its hooks are approved in that home it takes no notes, and questions still need that approval. Existing agent guidance is unchanged."
     }
   ]
 }

@@ -23,7 +23,7 @@ import {
 import { systemdStopping } from './power-watch.js'
 import { launchSelf } from './launch-self.js'
 import { pidExists } from './process-identity.js'
-import { attendantClaimPath } from './session-attendant-state.js'
+import { attendantClaimPath, attendantStatusPath } from './session-attendant-state.js'
 
 /**
  * What the shared hub runs with, whoever starts it: the account, its locale
@@ -190,6 +190,17 @@ export function hubAttendsSession(sessionId: string, env: NodeJS.ProcessEnv): bo
   return holder?.['role'] === 'hub' && typeof holder['pid'] === 'number' && pidExists(holder['pid'])
 }
 
+/** Whether a live hub attends the session and reports it running: holding its claim alone is not that. */
+export function hubRunsSession(sessionId: string, env: NodeJS.ProcessEnv): boolean {
+  if (!hubAttendsSession(sessionId, env)) return false
+  try {
+    const phase = (JSON.parse(readFileSync(attendantStatusPath(sessionId, env), 'utf8')) as Record<string, unknown>)['phase']
+    return phase === 'attending' || phase === 'acquiring'
+  } catch {
+    return false
+  }
+}
+
 /** Best effort and bounded: tell a running hub that a session ended. Never starts one. */
 export async function notifyHubSessionEnded(env: NodeJS.ProcessEnv, sessionId: string, timeoutMs = 300): Promise<boolean> {
   if (!hubSupported()) return false
@@ -218,10 +229,30 @@ export async function holdSessionEnd(env: NodeJS.ProcessEnv, sessionId: string,
   return reply['type'] === 'ok' && reply['held'] === true ? 'held' : 'refused'
 }
 
-/** Best effort: a session sent its first Notification Request; the hub starts attending it. */
-export async function notifyHubSessionNotified(env: NodeJS.ProcessEnv, sessionId: string): Promise<void> {
+/**
+ * What a Codex thread's own send knows about where it runs. The hub reads
+ * everything else itself, and attends the thread from this even when no hook
+ * registered it (see the hub's `attendUnhooked`).
+ */
+export interface SendingCodexThread {
+  codexHome: string | null
+  cwd: string | null
+  /** `CODEX_INTERNAL_ORIGINATOR_OVERRIDE`: the host that started Codex, such as T3 Code. */
+  originatorOverride: string | null
+}
+
+/** Best effort: a session sent a Notification Request; the hub starts attending it. Never starts a hub. */
+export async function notifyHubSessionNotified(env: NodeJS.ProcessEnv, sessionId: string, codex?: SendingCodexThread): Promise<void> {
   if (!hubSupported()) return
-  await requestHub(env, { type: 'notified', session_id: sessionId }, { timeoutMs: 300 })
+  await requestHub(env, {
+    type: 'notified', session_id: sessionId,
+    ...(codex === undefined ? {} : {
+      harness: 'codex',
+      ...(codex.codexHome === null ? {} : { codex_home: codex.codexHome }),
+      ...(codex.cwd === null ? {} : { cwd: codex.cwd }),
+      ...(codex.originatorOverride === null ? {} : { originator_override: codex.originatorOverride }),
+    }),
+  }, { timeoutMs: 300 })
 }
 
 /**

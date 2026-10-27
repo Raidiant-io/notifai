@@ -51,6 +51,7 @@ import { isHookInstallableHarness, type HookInstallableHarness } from './harness
 import { acquireClaimFile, claimHolderMayRun, readClaimFile, releaseClaimFile, requestClaimHandoff, standDownQuestionOwners } from './hook-question-lock.js'
 import {
   beginSessionIncarnation,
+  lifecycleStamp,
   endsIncarnation,
   pendingList,
   readSessionEndMarker,
@@ -1764,7 +1765,13 @@ export class Hub {
       }
       case 'notified': {
         const session = sessionId === null ? undefined : this.sessions.get(sessionId)
-        if (session !== undefined) { session.lease.needsFresh = true; this.driver.poke() }
+        if (session !== undefined) {
+          this.attendHeldThread(session)
+          session.lease.needsFresh = true
+          this.driver.poke()
+        } else if (sessionId !== null && frame['harness'] === 'codex') {
+          void this.attendUnhooked(sessionId, frame)
+        }
         reply({ type: 'ok' })
         return
       }
@@ -2277,6 +2284,99 @@ export class Hub {
       if (this.clock.monotonic() >= deadline) return null
       await new Promise((resolve) => setTimeout(resolve, 250))
     }
+  }
+
+  /**
+   * A Codex thread that notified while no hook registered it: Codex skips a
+   * handler it has not approved in the active home (a host that gives Codex
+   * its own `CODEX_HOME` arrives with none approved), yet the agent's send
+   * still reaches the User. Its send names the thread; everything else is
+   * read here. While a live Codex process holds the thread's writer lock it
+   * runs there, so it is attended without a child, as a thread its server
+   * reloaded in place is, and the apps show it running. It takes no Session
+   * Messages (nothing can write into it), and its next hook brings a child.
+   */
+  private async attendUnhooked(sessionId: string, frame: Record<string, unknown>): Promise<void> {
+    if (this.exiting || this.handingOver || this.sessions.has(sessionId) || this.ended.has(sessionId) || this.unhooked.has(sessionId)) return
+    const absolute = (key: string): string | null => {
+      const value = frame[key]
+      return typeof value === 'string' && value.length > 0 && value.length <= 4096 && path.isAbsolute(value) ? value : null
+    }
+    const codexHome = absolute('codex_home')
+    const env = this.sessionEnv({ claudeConfigDir: null, codexHome })
+    if (!sessionNotified(sessionId, env) || stoppedOnDisk(sessionId, env)) return
+    const holders = (this.options.codexThreadHolders ?? codexThreadHolders)(codexHome, sessionId)
+    if (holders === 'unknown') return
+    let host: ProcessIdentity | null = null
+    for (const pid of holders) {
+      const start = pid === process.pid ? null : processStartTime(pid)
+      if (start !== null) { host = { pid, start }; break }
+    }
+    if (host === null) return
+    const registration: Registration = {
+      sessionId, harness: 'codex', harnessProcess: host, boot: (this.options.bootIdentity ?? currentBootIdentity)(),
+      stamp: lifecycleStamp(this.clock.wall()), hookEvent: 'Notified', source: null, cwd: absolute('cwd'),
+      transcriptPath: locateCodexRollout(codexHome, sessionId, null).path, inboxSocket: null, inboxToken: false,
+      claudeConfigDir: null, codexHome, harnessTicks: null, place: 'unreported', hostApp: null, terminalHost: null,
+      launch: null, sessionPath: null, display: {},
+    }
+    this.placeOf(registration, frame, host.pid)
+    // A scripted `codex exec` run, or a host this hub cannot name, is no place to attend.
+    if (!placeReceives(registration.place)) return
+    this.unhooked.add(sessionId)
+    try {
+      const record = beginSessionIncarnation(sessionId, env, {
+        stamp: registration.stamp, harnessProcess: host, ...(registration.boot === null ? {} : { boot: registration.boot }),
+      })
+      const session = new HubSession(this, sessionId, 'codex', env, host, record, registration)
+      session.transcriptGone()
+      session.reloadedAt = this.clock.monotonic()
+      session.claimToken = await this.takeClaim(session)
+      if (session.claimToken === null) return
+      if (this.sessions.has(sessionId) || this.ended.has(sessionId) || this.exiting || this.handingOver) {
+        // A child registered it meanwhile, or this hub is leaving.
+        releaseClaimFile(attendantClaimPath(sessionId, env), session.claimToken)
+        return
+      }
+      this.sessions.set(sessionId, session)
+      this.logger.info('hub.session', { event: 'attended-unhooked', session: sessionId, harness: 'codex', place: registration.place })
+      session.writeStatus(true)
+      session.lease.needsFresh = true
+      this.driver.poke()
+      this.touch()
+    } catch (err) {
+      this.logger.error('hub.session', { event: 'refused', reason: 'unhooked', message: err instanceof Error ? err.message : String(err) })
+    } finally {
+      this.unhooked.delete(sessionId)
+    }
+  }
+
+  /** Threads `attendUnhooked` is still attaching: another send meanwhile adds nothing. */
+  private readonly unhooked = new Set<string>()
+
+  /**
+   * A Codex thread this hub holds without a child and does not see running
+   * (after a restart, the adoption leaves it uncertain until a child comes
+   * back, and a thread without approved hooks never brings one): it runs
+   * again wherever a live Codex process holds it.
+   */
+  private attendHeldThread(session: HubSession): void {
+    if (session.harness !== 'codex' || session.reloadedAt !== null || session.stopped !== null || session.ending !== null ||
+        session.endCandidate !== null || (session.child !== null && !session.child.closed)) return
+    if (!session.harnessGone() && this.codexHolds(session)) {
+      session.child = null
+      session.reloadedAt = this.clock.monotonic()
+      session.writeStatus(true)
+      return
+    }
+    const holder = this.codexHolderElsewhere(session)
+    if (holder === null) return
+    session.child = null
+    session.harnessProcess = holder
+    session.registration = { ...session.registration, harnessProcess: holder, harnessTicks: null }
+    session.rehost(holder, session.registration.boot)
+    session.reloadedAt = this.clock.monotonic()
+    session.writeStatus(true)
   }
 
   private observeCodexStart(session: HubSession): void {

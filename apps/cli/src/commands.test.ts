@@ -26,7 +26,9 @@ writeFileSync
 import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { createServer } from 'node:net'
 import { afterEach,describe,expect,it,vi } from 'vitest'
+import { encodeFrame,ensurePrivateDirectory,FrameDecoder,hubRunDir,hubSocketPath } from './hub-ipc.js'
 import { resetPublishedCliDistTagsForTest } from './cli-release.js'
 import { ApiCallError,NetworkError,type ApiClient } from './client.js'
 import { guidanceSessionNeedsToken } from './command-guidance.js'
@@ -400,6 +402,34 @@ describe('command contracts', () => {
       expect(JSON.stringify(records)).not.toContain('Private task name')
       expect(JSON.stringify(records)).not.toContain('Private result text')
     } finally { rmSync(root, { recursive: true, force: true }) }
+  })
+
+  it('names the Codex thread it sends from to the hub on every send, so a thread whose hooks never ran is still attended', async () => {
+    // Short root: the fake hub's socket must fit in a Unix socket path.
+    const root = mkdtempSync(path.join('/tmp', 'nfcx-'))
+    const shadow = path.join(root, 'shadow')
+    const env = { ...isolatedEnv(root), CODEX_HOME: shadow, CODEX_THREAD_ID: 'codex-unhooked-thread', CODEX_INTERNAL_ORIGINATOR_OVERRIDE: 'T3 Code' }
+    ensurePrivateDirectory(hubRunDir(env))
+    const frames: Record<string, unknown>[] = []
+    const hub = createServer((socket) => {
+      const decoder = new FrameDecoder()
+      socket.on('data', (chunk: Buffer) => {
+        for (const frame of decoder.push(chunk)) { frames.push(frame); if (frame['type'] !== 'hello') socket.write(encodeFrame({ type: 'ok' })) }
+      })
+    })
+    await new Promise<void>((resolve) => hub.listen(hubSocketPath(env), resolve))
+    const deps = { ...makeDeps(new CapturedIo(), { submit: async () => receipt } as unknown as ApiClient), cwd: root, env }
+    try {
+      for (const title of ['Started', 'Finished']) expect(await sendCommand(deps, { kind: 'update', title })).toBe(EXIT.ok)
+      const hints = () => frames.filter((frame) => frame['type'] === 'notified')
+      await vi.waitFor(() => expect(hints()).toHaveLength(2))
+      for (const hint of hints()) {
+        expect(hint).toEqual({ type: 'notified', session_id: 'codex-unhooked-thread', harness: 'codex', codex_home: shadow, cwd: root, originator_override: 'T3 Code' })
+      }
+    } finally {
+      hub.close()
+      rmSync(root, { recursive: true, force: true })
+    }
   })
 
   it('asks Projectless outside a Project without creating Enablement state', async () => {

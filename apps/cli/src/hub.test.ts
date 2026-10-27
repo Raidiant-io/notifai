@@ -1106,6 +1106,94 @@ describe('hub and Codex SessionEnd', () => {
     }
   })
 
+  describe('a Codex thread whose hooks never ran (not approved in its CODEX_HOME), that sends', () => {
+    const running = (service: FakeService, from = 0) => service.batches.slice(from).flatMap((batch) => batch.body.sessions)
+      .filter((entry) => entry.session_id === SESSION && entry.state === 'running')
+    /** A later send from the thread itself: the marker already exists, as it does for a thread that sent before. */
+    const send = (env: NodeJS.ProcessEnv, codexHome: string): void =>
+      recordSessionNotified(SESSION, env, Date.now(), { codexHome, cwd: '/tmp', originatorOverride: 'T3 Code' })
+
+    async function server(): Promise<{ app: ChildProcess; host: { pid: number; start: string } }> {
+      const app = spawn('sleep', ['60'], { stdio: 'ignore' })
+      await until(() => processStartTime(app.pid!) !== null)
+      return { app, host: { pid: app.pid!, start: processStartTime(app.pid!)! } }
+    }
+
+    it('is attended without a child while a Codex process holds the thread, so the apps show it running', async () => {
+      const env = hubEnv()
+      const transcript = codexRollout(env, 'T3 Code')
+      const codexHome = path.dirname(path.dirname(transcript))
+      recordSessionNotified(SESSION, env, Date.now())
+      const { app, host } = await server()
+      const service = fakeService()
+      const { hub, done } = startHub(env, service, new Map(), memoryStore(), 100,
+        { codexHostHoldsThread: (_home, _id, pid) => pid === host.pid, codexHostKind: () => 'app-server' },
+        { codexThreadHolders: () => [host.pid] })
+      try {
+        await hubListening(env)
+        send(env, codexHome)
+        await until(() => running(service).length > 0)
+        expect(running(service)[0]).toMatchObject({ accepts_messages: false })
+        expect(hub.sessions.get(SESSION)?.registration).toMatchObject({ place: 't3', codexHome, harnessProcess: host })
+        await until(() => (JSON.parse(readFileSync(attendantStatusPath(SESSION, env), 'utf8')) as Record<string, unknown>)['phase'] === 'attending')
+      } finally {
+        app.kill('SIGKILL')
+        hub.requestExit('test')
+        service.release()
+        await done
+      }
+    })
+
+    it('is not attended when nothing holds the thread', async () => {
+      const env = hubEnv()
+      const transcript = codexRollout(env, 'T3 Code')
+      recordSessionNotified(SESSION, env, Date.now())
+      const service = fakeService()
+      const { hub, done } = startHub(env, service, new Map(), memoryStore(), 100, {}, { codexThreadHolders: () => [] })
+      await hubListening(env)
+      send(env, path.dirname(path.dirname(transcript)))
+      await new Promise((resolve) => setTimeout(resolve, 400))
+      service.release()
+      expect(hub.sessions.has(SESSION)).toBe(false)
+      expect(running(service)).toEqual([])
+      hub.requestExit('test')
+      service.release()
+      await done
+    })
+
+    it('runs again after a hub restart once it sends, though no child ever comes back for it', async () => {
+      const env = hubEnv()
+      const transcript = codexRollout(env, 'T3 Code')
+      const codexHome = path.dirname(path.dirname(transcript))
+      recordSessionNotified(SESSION, env, Date.now())
+      const { app, host } = await server()
+      const service = fakeService()
+      const options = { codexHostHoldsThread: (_home: string | null, _id: string, pid: number) => pid === host.pid, codexHostKind: () => 'app-server' as const }
+      const first = startHub(env, service, new Map(), memoryStore(), 100, options, { codexThreadHolders: () => [host.pid] })
+      let second: { hub: Hub; done: Promise<number> } | null = null
+      try {
+        await hubListening(env)
+        send(env, codexHome)
+        await until(() => running(service).length > 0)
+        first.hub.requestExit('test-crash')
+        service.release()
+        await first.done
+
+        second = startHub(env, service, new Map(), memoryStore(), 100, options, { codexThreadHolders: () => [host.pid] })
+        await hubListening(env)
+        await until(() => second!.hub.sessions.has(SESSION))
+        const before = service.batches.length
+        send(env, codexHome)
+        await until(() => running(service, before).length > 0)
+      } finally {
+        app.kill('SIGKILL')
+        second?.hub.requestExit('test')
+        service.release()
+        await second?.done
+      }
+    })
+  })
+
   describe('on Codex\'s shared server, where a closed terminal reports nothing', () => {
     type Attach = Awaited<ReturnType<NonNullable<NonNullable<HubOptions['codexAttach']>['state']>>>
     type AttachInput = Parameters<NonNullable<NonNullable<HubOptions['codexAttach']>['state']>>[0]

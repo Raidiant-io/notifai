@@ -386,7 +386,12 @@ export async function sendCommand(
   const notifiedSession = submissionDraft.source?.session_id
   if (notifiedSession !== undefined) {
     // Starts attendance: the hub (or, off macOS and Linux, the dormant attendant) begins watching for answers.
-    recordSessionNotified(notifiedSession, deps.env, (deps.now ?? Date.now)())
+    // A send from a Codex thread itself also names where it runs, so the hub can
+    // attend it even when Codex never ran its hooks.
+    const codexThread = activeSession?.harness === 'codex' && activeSession.sessionId === notifiedSession
+      ? { codexHome: nonEmpty(deps.env['CODEX_HOME']), cwd: deps.cwd, originatorOverride: nonEmpty(deps.env['CODEX_INTERNAL_ORIGINATOR_OVERRIDE']) }
+      : undefined
+    recordSessionNotified(notifiedSession, deps.env, (deps.now ?? Date.now)(), codexThread)
   }
   const receiptExit = receiptExitCode(receipt)
   for (const note of contentLengthNotes(flags.summary ?? '', flags.body)) deps.io.err(note)
@@ -1155,4 +1160,9 @@ function formatElapsed(milliseconds: number): string {
   const minutes = Math.floor(totalSeconds / 60)
   const seconds = totalSeconds % 60
   return minutes === 0 ? `${seconds}s` : `${minutes}m ${seconds}s`
+}
+
+function nonEmpty(value: string | undefined): string | null {
+  const trimmed = value?.trim()
+  return trimmed === undefined || trimmed === '' ? null : trimmed
 }
