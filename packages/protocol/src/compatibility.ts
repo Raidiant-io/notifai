@@ -96,20 +96,21 @@ export const AFFECTED_OPERATIONS = [
 export type AffectedOperation = (typeof AFFECTED_OPERATIONS)[number]
 
 /** Machine-readable support result. Human surfaces map this to the closed local copy. */
-export interface SupportAssessment {
-  state: SupportState
-  reason: SupportReason
-  affected_operation: AffectedOperation | null
-  recovery_action: RecoveryAction | null
-  current_version: string | null
-  current_build: string | null
-  recommended_version: string | null
-  recommended_build: string | null
-  minimum_version: string | null
-  minimum_build: string | null
-  deprecation: string | null
-  sunset: string | null
-}
+export const SupportAssessment = Type.Object({
+  state: Type.Union(SUPPORT_STATES.map((value) => Type.Literal(value))),
+  reason: Type.Union(SUPPORT_REASONS.map((value) => Type.Literal(value))),
+  affected_operation: Type.Union([Type.Union(AFFECTED_OPERATIONS.map((value) => Type.Literal(value))), Type.Null()]),
+  recovery_action: Type.Union([Type.Union(RECOVERY_ACTIONS.map((value) => Type.Literal(value))), Type.Null()]),
+  current_version: Type.Union([Type.String(), Type.Null()]),
+  current_build: Type.Union([Type.String(), Type.Null()]),
+  recommended_version: Type.Union([Type.String(), Type.Null()]),
+  recommended_build: Type.Union([Type.String(), Type.Null()]),
+  minimum_version: Type.Union([Type.String(), Type.Null()]),
+  minimum_build: Type.Union([Type.String(), Type.Null()]),
+  deprecation: Type.Union([Type.String(), Type.Null()]),
+  sunset: Type.Union([Type.String(), Type.Null()]),
+})
+export type SupportAssessment = Static<typeof SupportAssessment>
 
 export interface PlatformSupportPolicyView {
   platform: Platform
