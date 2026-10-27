@@ -29,7 +29,7 @@ import {
   type ClientCapability,
   type DeviceDerivedStatus,
   type MachineDerivedStatus,
-  type SupportAssessment,
+  SupportAssessment,
   type SupportState,
 } from './compatibility.js'
 
@@ -362,11 +362,19 @@ export const RegisterInstallationRequest = Type.Object(
 )
 export type RegisterInstallationRequestT = Static<typeof RegisterInstallationRequest>
 
-export interface RegisterInstallationResponse {
-  device_id: string
-  recovery_installation_id: string
+// Identifiers are opaque; only an empty/whitespace-only identity is unusable.
+const ResponseIdentity = Type.String({ pattern: '\\S' })
+
+export const RegisterInstallationResponse = Type.Object({
+  device_id: ResponseIdentity,
+  recovery_installation_id: ResponseIdentity,
   /** Omitted by servers released before compatibility inventory. */
-  support?: SupportAssessment
+  support: Type.Optional(SupportAssessment),
+})
+export type RegisterInstallationResponse = Static<typeof RegisterInstallationResponse>
+
+export function isRegisterInstallationResponse(value: unknown): value is RegisterInstallationResponse {
+  return Value.Check(RegisterInstallationResponse, value)
 }
 
 export const ApnsRegistrationRequest = Type.Object(
@@ -835,11 +843,27 @@ export const RenameSoundRequest = Type.Object(
 )
 export type RenameSoundRequestT = Static<typeof RenameSoundRequest>
 
-export interface BeginSoundUploadResponse {
-  media_id: string
-  upload_url: string
-  upload_headers: Record<string, string>
-  expires_at: string
+/** Shared grant for uploading media bytes, including sounds and Project avatars. */
+export const CreateMediaUploadResponse = Type.Object({
+  media_id: ResponseIdentity,
+  upload_url: Type.String({ pattern: '^[hH][tT][tT][pP][sS]?://' }),
+  /** Headers the client must send unchanged with the PUT upload. */
+  upload_headers: Type.Record(Type.String(), Type.String()),
+  expires_at: Type.String({ pattern: '^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(?:\\.\\d+)?(?:Z|[+-]\\d{2}:\\d{2})$' }),
+})
+export type CreateMediaUploadResponse = Static<typeof CreateMediaUploadResponse>
+export const BeginSoundUploadResponse = CreateMediaUploadResponse
+export type BeginSoundUploadResponse = CreateMediaUploadResponse
+
+export function isCreateMediaUploadResponse(value: unknown): value is CreateMediaUploadResponse {
+  if (!Value.Check(CreateMediaUploadResponse, value)) return false
+  try {
+    // Permit local HTTP and arbitrary signed hosts, but require a usable URL and headers.
+    new Request(value.upload_url, { method: 'PUT', headers: value.upload_headers })
+    return Number.isFinite(Date.parse(value.expires_at))
+  } catch {
+    return false
+  }
 }
 
 export interface SoundView {
@@ -854,13 +878,7 @@ export interface ListSoundsResponse {
   sounds: SoundView[]
 }
 
-export interface CreateMediaUploadResponse {
-  media_id: string
-  upload_url: string
-  /** Headers the client must send with the PUT upload. */
-  upload_headers: Record<string, string>
-  expires_at: string
-}
+
 
 export interface FinalizeMediaUploadResponse {
   media_id: string
