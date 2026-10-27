@@ -30,6 +30,9 @@ import {
   DEVICE_DERIVED_STATUSES,
   MachineDerivedStatusSchema,
   SupportAssessment,
+  type DeviceDerivedStatus,
+  type MachineDerivedStatus,
+  type SupportState,
 } from './compatibility.js'
 
 /**
