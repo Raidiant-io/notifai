@@ -76,5 +76,5 @@ every app. See [pricing](https://app.notifai.sh/pricing).
 
 Want to work on the CLI? See [CONTRIBUTING.md](CONTRIBUTING.md).
 
-Apache-2.0. Current releases are `@raidiant/notifai` <!--x-release-please-start-notifai-->14.4.1-beta.1<!--x-release-please-end--> and
+Apache-2.0. Current releases are `@raidiant/notifai` <!--x-release-please-start-notifai-->14.4.1<!--x-release-please-end--> and
 `@raidiant/notifai-protocol` <!--x-release-please-start-protocol-->9.2.0<!--x-release-please-end-->.
