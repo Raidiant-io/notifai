@@ -8,6 +8,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 This project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 and [Conventional Commits](https://www.conventionalcommits.org/en/v1.0.0/).
 
+## [14.4.1](https://github.com/Raidiant-io/notifai/compare/v14.4.0...v14.4.1) (2026-10-27)
+
+### Bug Fixes
+
+* The hub keeps attending sessions when a local write fails, for example on a full disk. Its exchange loop retries instead of stopping, a watchdog restarts a loop that stalls, and a Stop hook hands an answer back itself when the hub holding its question has stopped moving.
+* The local log survives a full disk: it pauses briefly after a failed write instead of going quiet for the rest of the process, and it no longer leaves a broken record behind.
+
 ## [14.4.0](https://github.com/Raidiant-io/notifai/compare/v14.3.0...v14.4.0) (2026-10-27)
 
 ### Features
