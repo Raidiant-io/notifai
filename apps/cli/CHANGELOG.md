@@ -8,6 +8,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 This project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 and [Conventional Commits](https://www.conventionalcommits.org/en/v1.0.0/).
 
+## [14.4.0-beta.1](https://github.com/Raidiant-io/notifai/compare/v14.3.0...v14.4.0-beta.1) (2026-10-27)
+
+### Features
+
+* Setup messages put one idea per paragraph: the approval code on its own line, named links and numbered phone steps, so the code and link are easy to spot.
+* On macOS, setup no longer suggests the Mac app when it is already installed.
+* Codex hook approval is worded for the Codex you use: `/hooks` in the Codex CLI, or the Review hooks icon by the message box in the ChatGPT desktop app and the Codex IDE extension, and both when Notifai can't tell. Outside setup, agents no longer wait for that approval; they carry on and end their reply with a short reminder.
+
+### Bug Fixes
+
+* The hub no longer resends an attendance exchange the service refused. A conversation that resumed after its end was recorded could keep a hub retrying about once a second.
+* Responses from the Notifai service (registration, media uploads, access, changes and retained feed content) are checked before they are used.
+
 ## [14.3.0](https://github.com/Raidiant-io/notifai/compare/v14.2.6...v14.3.0) (2026-10-26)
 
 ### Features
