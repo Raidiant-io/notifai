@@ -895,6 +895,20 @@ export function codexCoexistenceNotes(
 }
 
 /**
+ * The active `CODEX_HOME` when it is not the account's default `~/.codex`,
+ * as when a User or an app runs each Codex account in its own home; null
+ * otherwise. Codex keys hook approval by this path, so hooks approved in the
+ * default home are not approved here.
+ */
+export function separateCodexHome(
+  env: NodeJS.ProcessEnv = process.env,
+  platform: NodeJS.Platform | HookHostPlatform = process.platform,
+): string | null {
+  const effective = codexGlobalDir(env, platform)
+  return effective === path.join(harnessAccountHome(env, platform), '.codex') ? null : effective
+}
+
+/**
  * What `CODEX_HOME` is doing to this shell, when it is doing anything.
  *
  * Codex replaces its whole home when the variable is set, so hooks installed
@@ -907,9 +921,9 @@ export function codexHomeNote(
   env: NodeJS.ProcessEnv = process.env,
   platform: NodeJS.Platform | HookHostPlatform = process.platform,
 ): string | null {
-  const effective = codexGlobalDir(env, platform)
+  const effective = separateCodexHome(env, platform)
+  if (effective === null) return null
   const accountDefault = path.join(harnessAccountHome(env, platform), '.codex')
-  if (effective === accountDefault) return null
   return `CODEX_HOME points Codex at ${effective}, instead of ${accountDefault}. This home may share configuration through symlinks, but Codex keys hook trust by the active home path. Approve Notifai in /hooks in a Codex session using this home; approval in another home does not approve these hooks.`
 }
 

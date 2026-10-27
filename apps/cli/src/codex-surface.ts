@@ -62,10 +62,26 @@ export function codexHooksTerminalLine(surface: CodexSurface | null): string {
 }
 
 /**
- * Outside setup (`doctor`, a refused `ask`): the line the agent ends its reply
- * with. The agent carries on meanwhile; nothing waits for the approval.
+ * Outside setup (`doctor`, a refused `ask`, a send from a thread whose hooks
+ * are not approved): the line the agent ends its reply with. The agent
+ * carries on meanwhile; nothing waits for the approval.
+ *
+ * `home`: the active `CODEX_HOME` when it is not `~/.codex`. In an app with
+ * its own UI (T3 Code, Orca) neither the Review hooks icon nor `/hooks` in a
+ * plain terminal approves that home, since Codex keys approval by the home's
+ * path; a Codex CLI started on that home does. In the Codex CLI, app and
+ * editor, the usual step already runs in that home.
  */
-export function codexHooksReminder(surface: CodexSurface | null, options: { off?: boolean } = {}): string {
+export function codexHooksReminder(
+  surface: CodexSurface | null,
+  options: { off?: boolean; home?: string | null; platform?: NodeJS.Platform | 'posix' } = {},
+): string {
+  if (surface === null && options.home !== undefined && options.home !== null) {
+    const run = `In a terminal, run \`${codexOnHomeCommand(options.home, options.platform ?? process.platform)}\`, then type \`/hooks\``
+    return options.off === true
+      ? `**Keep in mind:** Codex won't use Notifai in this Codex account until you turn its hooks on and approve them there. ${run} to do both.`
+      : `**Keep in mind:** Codex won't use Notifai in this Codex account until you approve its hooks there. ${run} and approve them.`
+  }
   if (options.off === true) {
     const how = surface === 'cli'
       ? 'Type `/hooks` to do both.'
@@ -80,4 +96,11 @@ export function codexHooksReminder(surface: CodexSurface | null, options: { off?
       ? 'Click the **Review hooks** icon by the message box and allow them.'
       : 'In the ChatGPT app or your editor, click the **Review hooks** icon by the message box; in the terminal, type `/hooks`.'
   return `**Keep in mind:** Codex won't use Notifai until you approve its hooks. ${how}`
+}
+
+/** The terminal command that starts the Codex CLI on `home`. */
+function codexOnHomeCommand(home: string, platform: NodeJS.Platform | 'posix'): string {
+  if (platform === 'win32') return `$env:CODEX_HOME='${home.replace(/'/g, "''")}'; codex`
+  const quoted = /^[\w@%+=:,./-]+$/.test(home) ? home : `'${home.replace(/'/g, `'\\''`)}'`
+  return `CODEX_HOME=${quoted} codex`
 }

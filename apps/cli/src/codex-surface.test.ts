@@ -46,6 +46,16 @@ describe('hook approval wording', () => {
       }
     }
     expect(codexHooksReminder('app', { off: true })).toContain('Settings → **Hooks**')
+  })
+
+  it('names the home to start Codex on when an app runs Codex in its own home', () => {
+    expect(codexHooksReminder(null, { home: '/Users/me/app/shadow', platform: 'darwin' })).toBe(
+      "**Keep in mind:** Codex won't use Notifai in this Codex account until you approve its hooks there. In a terminal, run `CODEX_HOME=/Users/me/app/shadow codex`, then type `/hooks` and approve them.",
+    )
+    expect(codexHooksReminder(null, { home: '/Users/me/My Apps/shadow', off: true, platform: 'linux' })).toContain("run `CODEX_HOME='/Users/me/My Apps/shadow' codex`, then type `/hooks` to do both.")
+    expect(codexHooksReminder(null, { home: 'C:\\Users\\me\\shadow', platform: 'win32' })).toContain("run `$env:CODEX_HOME='C:\\Users\\me\\shadow'; codex`")
+    // The Codex CLI, app and editor already approve in the home they run on.
+    expect(codexHooksReminder('cli', { home: '/Users/me/app/shadow' })).toBe(codexHooksReminder('cli'))
     expect(codexHooksReminder('cli', { off: true })).toContain('`/hooks`')
   })
 })

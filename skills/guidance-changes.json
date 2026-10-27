@@ -1,5 +1,5 @@
 {
-  "current": "2bc9bca4205c1ff4b3741bba4d4fb6f3964309e79b3373b5576cef2599359850",
+  "current": "0396e670844b95a26e93690bf524845feaf6fa67aeec058c6ce55b2215c76736",
   "releases": [
     {
       "digest": "3e47b01bc6bbfb43e910c660b9964fab6459d75148c3c02dcbcd0be64cfb2963",
@@ -142,8 +142,8 @@
       "note": "The hub now recovers by itself when its attendance exchange stalls or fails on a local write (such as a full disk), and a Stop hook takes over answer delivery from a hub that stopped exchanging. Existing agent guidance is unchanged."
     },
     {
-      "digest": "2bc9bca4205c1ff4b3741bba4d4fb6f3964309e79b3373b5576cef2599359850",
-      "note": "A Codex thread whose Notifai hooks were never approved in its Codex home (for example, an app that starts Codex with its own `CODEX_HOME`) now shows as running in the Notifai apps once it sends: its send tells the hub where it runs, and the hub attends it while a Codex process holds the thread. Until its hooks are approved in that home it takes no notes, and questions still need that approval. Existing agent guidance is unchanged."
+      "digest": "0396e670844b95a26e93690bf524845feaf6fa67aeec058c6ce55b2215c76736",
+      "note": "A Codex thread whose Notifai hooks were never approved in its Codex home (for example, an app that starts Codex with its own `CODEX_HOME`, one per account) now shows as running in the Notifai apps once it sends: its send tells the hub where it runs, and the hub attends it while a Codex process holds the thread. Until its hooks are approved in that home it takes no notes, and questions still need that approval. The first send from such a thread now prints one line asking the agent to end its reply with a reminder to approve the hooks; in an app that runs Codex in its own home, the reminder names that home's terminal command (`CODEX_HOME=<home> codex`, then `/hooks`). Nothing waits for the approval."
     }
   ]
 }

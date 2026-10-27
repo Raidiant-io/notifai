@@ -1,3 +1,4 @@
+import { codexHooksSendNotice } from './commands-hook-diagnostics.js'
 import {
   CAPABILITIES_V1,
   REPLY_MAX_WINDOW_SECONDS,
@@ -392,6 +393,8 @@ export async function sendCommand(
       ? { codexHome: nonEmpty(deps.env['CODEX_HOME']), cwd: deps.cwd, originatorOverride: nonEmpty(deps.env['CODEX_INTERNAL_ORIGINATOR_OVERRIDE']) }
       : undefined
     recordSessionNotified(notifiedSession, deps.env, (deps.now ?? Date.now)(), codexThread)
+    const hooksNotice = codexThread === undefined ? null : codexHooksSendNotice(deps, notifiedSession)
+    if (hooksNotice !== null) deps.io.err(hooksNotice)
   }
   const receiptExit = receiptExitCode(receipt)
   for (const note of contentLengthNotes(flags.summary ?? '', flags.body)) deps.io.err(note)

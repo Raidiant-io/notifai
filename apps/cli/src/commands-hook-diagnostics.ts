@@ -9,12 +9,15 @@ import {
   isHookInstallableHarness,
   questionRoutingCapability,
 } from './harnesses.js'
-import { inspectHookAdapter } from './hook-adapter.js'
+import { inspectHookAdapter, type HookHostPlatform } from './hook-adapter.js'
 import { HOOK_EVENTS } from './hook-events.js'
-import { readSessionState } from './hook-session-state.js'
+import { claimSessionHooksNotice, readSessionState } from './hook-session-state.js'
 import {
   codexStopDefinitionFingerprint,
   codexRoutingTrustProblems,
+  codexTrustFindings,
+  findInstallations,
+  separateCodexHome,
   handlerEvent,
   type Installation,
 } from './install-hooks.js'
@@ -75,13 +78,40 @@ export function inspectOpenclawPluginLoadability(
  * with `message`, worded for the Codex surface this runs in. `off`: some of
  * the hooks are turned off, which the approval dialog does not list.
  */
-export function codexHookApprovalUserAction(env: NodeJS.ProcessEnv, options: { off?: boolean } = {}) {
+export function codexHookApprovalUserAction(
+  env: NodeJS.ProcessEnv,
+  options: { off?: boolean; platform?: NodeJS.Platform | HookHostPlatform } = {},
+) {
+  const platform = options.platform ?? process.platform
   return {
     code: 'codex_hook_approval_required',
     harness: 'codex',
     action: 'approve_or_enable_notifai_hooks',
-    message: codexHooksReminder(codexSurface(env), options),
+    message: codexHooksReminder(codexSurface(env), {
+      off: options.off === true,
+      home: separateCodexHome(env, platform),
+      platform: platform === 'win32' ? 'win32' : 'posix',
+    }),
   } as const
+}
+
+/**
+ * A send from a Codex thread whose Notifai hooks Codex will skip, because
+ * they are not approved (or turned off) in its Codex home: the one line that
+ * tells the agent to remind the User at the end of its reply. At most once
+ * per thread, and never a reason to stop: the send already left.
+ */
+export function codexHooksSendNotice(deps: CommandDeps, sessionId: string): string | null {
+  if (!claimSessionHooksNotice(sessionId, deps.env)) return null
+  const installations = findInstallations(deps.env, deps.hookAdapterHome, deps.hookPlatform)
+    .filter((installation) => installation.harness === 'codex')
+  const findings = codexTrustFindings(installations, deps.env)
+  if (findings.length === 0) return null
+  const action = codexHookApprovalUserAction(deps.env, {
+    off: findings.some((finding) => finding.state === 'disabled'),
+    ...(deps.hookPlatform === undefined ? {} : { platform: deps.hookPlatform }),
+  })
+  return `Notifai's hooks aren't approved in this Codex home. Carry on and never wait for it; end your reply to the User with this line, as written: ${action.message}`
 }
 
 export const CODEX_FRESH_SESSION_USER_ACTION = {

@@ -404,7 +404,7 @@ describe('command contracts', () => {
     } finally { rmSync(root, { recursive: true, force: true }) }
   })
 
-  it('names the Codex thread it sends from to the hub on every send, so a thread whose hooks never ran is still attended', async () => {
+  it('names the Codex thread it sends from to the hub on every send, and once asks the agent to remind the User to approve the hooks in that home', async () => {
     // Short root: the fake hub's socket must fit in a Unix socket path.
     const root = mkdtempSync(path.join('/tmp', 'nfcx-'))
     const shadow = path.join(root, 'shadow')
@@ -418,7 +418,11 @@ describe('command contracts', () => {
       })
     })
     await new Promise<void>((resolve) => hub.listen(hubSocketPath(env), resolve))
-    const deps = { ...makeDeps(new CapturedIo(), { submit: async () => receipt } as unknown as ApiClient), cwd: root, env }
+    const io = new CapturedIo()
+    const deps = { ...makeDeps(io, { submit: async () => receipt } as unknown as ApiClient), cwd: root, env }
+    // Installed in this home, never approved there: Codex skips every handler.
+    expect(hooksInstallCommand(deps, { harness: 'codex', execPath: process.execPath, scriptPath: fileURLToPath(import.meta.url) })).toBe(EXIT.ok)
+    io.errLines = []
     try {
       for (const title of ['Started', 'Finished']) expect(await sendCommand(deps, { kind: 'update', title })).toBe(EXIT.ok)
       const hints = () => frames.filter((frame) => frame['type'] === 'notified')
@@ -426,6 +430,11 @@ describe('command contracts', () => {
       for (const hint of hints()) {
         expect(hint).toEqual({ type: 'notified', session_id: 'codex-unhooked-thread', harness: 'codex', codex_home: shadow, cwd: root, originator_override: 'T3 Code' })
       }
+      const notices = io.errLines.filter((line) => line.includes('hooks aren\'t approved'))
+      expect(notices).toEqual([
+        "Notifai's hooks aren't approved in this Codex home. Carry on and never wait for it; end your reply to the User with this line, as written: " +
+          `**Keep in mind:** Codex won't use Notifai in this Codex account until you approve its hooks there. In a terminal, run \`CODEX_HOME=${shadow} codex\`, then type \`/hooks\` and approve them.`,
+      ])
     } finally {
       hub.close()
       rmSync(root, { recursive: true, force: true })

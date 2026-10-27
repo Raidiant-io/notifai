@@ -417,6 +417,22 @@ function sessionNotifiedPath(sessionId: string, env: NodeJS.ProcessEnv): string 
   return path.join(stateDir(env), 'sessions', `${sanitizeSessionId(sessionId)}.notified`)
 }
 
+/**
+ * Claim the one Codex hooks-approval notice an Agent Session gets: true for
+ * the first caller only. Exclusive creation, like the notified marker; a
+ * failure to record claims nothing, so a notice is never repeated.
+ */
+export function claimSessionHooksNotice(sessionId: string, env: NodeJS.ProcessEnv): boolean {
+  try {
+    const file = path.join(stateDir(env), 'sessions', `${sanitizeSessionId(sessionId)}.hooks-notice`)
+    mkdirSync(path.dirname(file), { recursive: true })
+    writeFileSync(file, '', { mode: 0o600, flag: 'wx' })
+    return true
+  } catch {
+    return false
+  }
+}
+
 export function sessionNotified(sessionId: string, env: NodeJS.ProcessEnv): boolean {
   return existsSync(sessionNotifiedPath(sessionId, env))
 }
