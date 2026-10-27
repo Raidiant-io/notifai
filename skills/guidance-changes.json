@@ -1,5 +1,5 @@
 {
-  "current": "187988579987f310e2d13fc03c8bac30c748885717b7d45198f48b7205bc8dfa",
+  "current": "e95c9f63a3f93b685f005231a6d7f6674bfc8dcc8cb638dd2127277e3b8a0710",
   "releases": [
     {
       "digest": "3e47b01bc6bbfb43e910c660b9964fab6459d75148c3c02dcbcd0be64cfb2963",
@@ -196,6 +196,10 @@
     {
       "digest": "187988579987f310e2d13fc03c8bac30c748885717b7d45198f48b7205bc8dfa",
       "note": "Notifai's hooks now have short names. Claude Code shows a hook's name while it runs. Codex shows the names in `/hooks` and the ChatGPT app's hook review for installs that carry no integration revision (fresh installs since 14.4.2-beta.4); Codex treats those renamed hooks as changed, so the User approves them once. Codex installs that carry a revision keep their approved hooks byte-for-byte and need no new approval. Grok, Cursor, OpenCode, OpenClaw and Hermes are unchanged. Nothing changes in what agents do."
+    },
+    {
+      "digest": "e95c9f63a3f93b685f005231a6d7f6674bfc8dcc8cb638dd2127277e3b8a0710",
+      "note": "A missing Agent Acknowledgement now holds the turn for at most three Stops in a row in every case. This includes a Stop that is already a continuation while another question still waits. After that the turn ends and the owed acknowledgement is dropped. What agents should do is unchanged: acknowledge an answer as soon as it arrives."
     }
   ]
 }

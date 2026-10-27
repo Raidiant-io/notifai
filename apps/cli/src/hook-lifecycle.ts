@@ -1287,19 +1287,11 @@ export async function runEscalationWaiter(
           sessionId,
           state.acknowledgement_due ?? [],
         )
-        if (due.length > 0) {
-          gate(ctx, 'held', 'acknowledgement-required', {
-            request_ids: due.map((entry) => entry.request_id),
-          })
-          return {
-            stdout: stopAnswerOutput(acknowledgementBlockContext(due)),
-            notes,
-            log: {
-              stage: 'acknowledgement-required',
-              request_ids: due.map((entry) => entry.request_id),
-            },
-          }
-        }
+        // Every acknowledgement hold shares one bounded streak. This Stop is
+        // already a continuation, so an unbounded hold here would block every
+        // successor Stop until the harness's own block cap ends the turn.
+        const held = holdForAcknowledgement(ctx, sessionId, due, notes)
+        if (held !== null) return held
         state = readSessionState(sessionId, ctx.env)
       }
       // Acknowledgement is per route, because routes end in different places.

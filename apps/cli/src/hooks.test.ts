@@ -1267,6 +1267,31 @@ describe('escalation waiter delivery seam', () => {
     expect(readSessionState('background-debt', h.env).acknowledgement_due).toContainEqual(expect.objectContaining({ request_id: 'req_previous' }))
   })
 
+  it('stops holding a stop_hook_active continuation that never acknowledges, while another question waits', async () => {
+    // A harness's own block cap (Claude Code ends the turn after 8) must never be what ends this.
+    const h = harness([])
+    const live = (id: string, question: string) =>
+      ({ question, summary: question, request_id: id, collapse_key: `ck_${id}`, device_ids: ['dev_iphone'] })
+    const answered = live('req_answered', 'Ship it?')
+    writeSessionState('unacknowledged', h.env, {
+      pending: [live('req_waiting', 'Next decision?')],
+      accepted: { answers: [{ pending: answered, reply: reply(), replies: [reply()] }], remaining: 1, recorded_at: NOW },
+      acknowledgement_due: [{ request_id: 'req_answered', recorded_at: NOW }],
+    })
+    const blocks: string[] = []
+    for (let stop = 0; stop < 6; stop += 1) {
+      const outcome = await runEscalationWaiter({ ...waiterContext(h), harness: 'grok' }, {
+        sessionId: 'unacknowledged', envelope: { session_id: 'unacknowledged', stop_hook_active: true },
+        route: { kind: 'hook-continuation', deliver: vi.fn() }, processDeadlineAt: h.deps.now!() + 1_000,
+      })
+      if (outcome.stdout?.includes('"decision":"block"') === true) blocks.push(outcome.stdout)
+      else break
+    }
+    expect(blocks).toHaveLength(3)
+    expect(blocks[0]).toContain('req_answered')
+    expect(readSessionState('unacknowledged', h.env).acknowledgement_due).toBeUndefined()
+  })
+
 })
 
 describe('a question reaching the end of its answer window', () => {
