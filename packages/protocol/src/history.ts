@@ -1,30 +1,51 @@
-import type { LifecycleEndState } from './lifecycle.js'
+import { Type, type Static } from '@sinclair/typebox'
+import { LIFECYCLE_END_STATES } from './lifecycle.js'
 import type { NotificationDraftT } from './notification.js'
 import type { AgentAcknowledgementView, ReplyView } from './api.js'
 import type { AnswerVersionView } from './sessions.js'
 
-/** A current retained Request snapshot; fetching it never posts a native alert. */
-export interface NotificationHistoryItem {
-  request_id: string
-  revision: string
-  accepted_at: string
-  native_expires_at: string
-  retained_until: string
+const nullableString = Type.Union([Type.String(), Type.Null()])
+
+export const QuestionRetirementView = Type.Object({
+  /**
+   * `answered`: the agent acknowledged an answer; `answered_elsewhere`: it was
+   * answered where this Device Installation could not see it (another
+   * device, or the agent's terminal); `expired`: nobody answered in time.
+   */
+  state: Type.Union(LIFECYCLE_END_STATES.map(value => Type.Literal(value))),
+  /** The answering Device Installation's name, `terminal`, or null when nobody answered. */
+  via: nullableString,
+  /** The answer, when the service holds it. A terminal answer stays on the agent's machine. */
+  answer: nullableString,
+})
+export type QuestionRetirementView = Static<typeof QuestionRetirementView>
+
+/**
+ * Current retained snapshot. Required row fields are decoded before advancing
+ * a feed cursor. Nested draft/reply/answer objects retain their wire types;
+ * their deeper validation is separate from this bounded response schema.
+ */
+export const NotificationHistoryItem = Type.Object({
+  request_id: Type.String(),
+  revision: Type.String(),
+  accepted_at: Type.String(),
+  native_expires_at: Type.String(),
+  retained_until: Type.String(),
   /** False means update an existing local row only; never restore a missing row. */
-  insertable: boolean
-  has_body: boolean
-  draft: NotificationDraftT
-  project_name: string | null
-  delivery_id: string | null
-  reply_expires_at: string | null
-  retired_at: string | null
+  insertable: Type.Boolean(),
+  has_body: Type.Boolean(),
+  draft: Type.Unsafe<NotificationDraftT>(Type.Object({})),
+  project_name: nullableString,
+  delivery_id: nullableString,
+  reply_expires_at: nullableString,
+  retired_at: nullableString,
   /**
    * How the question stopped waiting on the User, once it was retired: where
    * it was answered and with what, as far as the service knows. Null while it
    * is live, for an answer given on this Device Installation, and for
    * requests that never asked anything.
    */
-  retirement: QuestionRetirementView | null
+  retirement: Type.Union([QuestionRetirementView, Type.Null()]),
   /**
    * When the User dismissed this question from a Companion App (`question_dismiss`).
    * A dismissal closes the window and retires the question as `expired`, so
@@ -32,37 +53,26 @@ export interface NotificationHistoryItem {
    * Null when it was not dismissed. Absent from servers that predate it:
    * read absent as unknown, not as "not dismissed".
    */
-  dismissed_at?: string | null
+  dismissed_at: Type.Optional(nullableString),
   /**
    * When the User first read this request on any Companion App of the
    * Account. Account-wide and never cleared: a Companion App shows a request
    * read when this is set or when it read the request itself.
    */
-  read_at: string | null
-  agent_acknowledgement_required: boolean
-  latest_reply: (ReplyView & { client_reply_id: string }) | null
-  agent_acknowledgement: AgentAcknowledgementView | null
+  read_at: nullableString,
+  agent_acknowledgement_required: Type.Boolean(),
+  latest_reply: Type.Union([Type.Unsafe<ReplyView & { client_reply_id: string }>(Type.Object({})), Type.Null()]),
+  agent_acknowledgement: Type.Union([Type.Unsafe<AgentAcknowledgementView>(Type.Object({})), Type.Null()]),
   /**
    * Every answer the User gave this request, oldest first: replies, then
    * post-delivery Answer Edits. Present only for installations advertising
    * `answer_edits`; `latest_reply` and `agent_acknowledgement` keep their
    * released meaning either way.
    */
-  answer_versions?: AnswerVersionView[]
-}
+  answer_versions: Type.Optional(Type.Array(Type.Unsafe<AnswerVersionView>(Type.Object({})))),
+})
+export type NotificationHistoryItem = Static<typeof NotificationHistoryItem>
 
-export interface QuestionRetirementView {
-  /**
-   * `answered`: the agent acknowledged an answer; `answered_elsewhere`: it was
-   * answered where this Device Installation could not see it (another
-   * device, or the agent's terminal); `expired`: nobody answered in time.
-   */
-  state: LifecycleEndState
-  /** The answering Device Installation's name, `terminal`, or null when nobody answered. */
-  via: string | null
-  /** The answer, when the service holds it. A terminal answer stays on the agent's machine. */
-  answer: string | null
-}
 
 export interface NotificationHistoryPage {
   entries: NotificationHistoryItem[]

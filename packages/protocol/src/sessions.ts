@@ -70,31 +70,33 @@ export const SessionActivitySchema = Type.Union(
 )
 
 /** Effective presence, derived when read from the owner row and its lease. */
-export type SessionPresenceView =
-  | {
-      state: 'running'
-      activity: SessionActivity
-      /** True when new Session Notes and post-delivery Answer Edits are accepted. */
-      accepts_messages: boolean
-      last_seen_at: string
-    }
-  | {
-      /**
-       * The lease lapsed without an end: the process may be alive but
-       * unreachable. Also how a stopped Agent Session reads: its harness
-       * stopped without the User closing it and may be reopened in place.
-       */
-      state: 'out_of_reach'
-      last_seen_at: string
-      /**
-       * Present and true only for a stopped Agent Session (server feature
-       * `session_stopped_hold`): Session Notes and post-read Answer Edits are
-       * accepted and held until it is reopened. Absent otherwise.
-       */
-      accepts_messages?: true
-    }
-  | { state: 'ended'; ended_at: string }
-  | { state: 'unknown' }
+export const SessionPresenceView = Type.Union([
+  Type.Object({
+    state: Type.Literal('running'),
+    activity: SessionActivitySchema,
+    /** True when new Session Notes and post-delivery Answer Edits are accepted. */
+    accepts_messages: Type.Boolean(),
+    last_seen_at: Type.String(),
+  }),
+  Type.Object({
+    /**
+     * The lease lapsed without an end: the process may be alive but
+     * unreachable. Also how a stopped Agent Session reads: its harness
+     * stopped without the User closing it and may be reopened in place.
+     */
+    state: Type.Literal('out_of_reach'),
+    last_seen_at: Type.String(),
+    /**
+     * Present and true only for a stopped Agent Session (server feature
+     * `session_stopped_hold`): Session Notes and post-read Answer Edits are
+     * accepted and held until it is reopened. Absent otherwise.
+     */
+    accepts_messages: Type.Optional(Type.Literal(true)),
+  }),
+  Type.Object({ state: Type.Literal('ended'), ended_at: Type.String() }),
+  Type.Object({ state: Type.Literal('unknown') }),
+])
+export type SessionPresenceView = Static<typeof SessionPresenceView>
 
 // ---------------------------------------------------------------------------
 // Session Attendance (CLI Session Attendant ↔ server)
@@ -517,30 +519,29 @@ export const CreateSessionNoteRequest = Type.Object(
 )
 export type CreateSessionNoteRequestT = Static<typeof CreateSessionNoteRequest>
 
-export type SessionMessageView = {
-  message_id: string
-  session_id: string
-  client_message_id: string
+const sessionMessageFields = {
+  message_id: Type.String(),
+  session_id: Type.String(),
+  client_message_id: Type.String(),
   /** The installation that sent it; null once that installation was removed. */
-  device_id: string | null
-  state: SessionMessageState
-  not_delivered_reason: SessionMessageNotDeliveredReason | null
-  agent_acknowledgement_text_required: boolean
-  agent_acknowledgement: AgentAcknowledgementView | null
-  created_at: string
-  handed_off_at: string | null
+  device_id: Type.Union([Type.String(), Type.Null()]),
+  state: Type.Union(SESSION_MESSAGE_STATES.map(value => Type.Literal(value))),
+  // Unknown reasons have always been rendered generically by clients.
+  not_delivered_reason: Type.Union([Type.String(), Type.Null()]),
+  agent_acknowledgement_text_required: Type.Boolean(),
+  // Nested acknowledgement/answers are object-checked, not deeply decoded here.
+  agent_acknowledgement: Type.Union([Type.Unsafe<AgentAcknowledgementView>(Type.Object({})), Type.Null()]),
+  created_at: Type.String(),
+  handed_off_at: Type.Union([Type.String(), Type.Null()]),
   /** Opaque change position; equal revisions mean an unchanged message. */
-  revision: string
-} & (
-  | { kind: 'note'; body: string; request_id: null }
-  | {
-      kind: 'answer_edit'
-      request_id: string
-      answers: ReplyAnswerView[]
-      /** Human-readable rendering of the complete edited answer. */
-      text: string
-    }
-)
+  revision: Type.String(),
+}
+export const SessionMessageView = Type.Union([
+  Type.Object({ ...sessionMessageFields, kind: Type.Literal('note'), body: Type.String(), request_id: Type.Null() }),
+  Type.Object({ ...sessionMessageFields, kind: Type.Literal('answer_edit'), request_id: Type.String(),
+    answers: Type.Array(Type.Unsafe<ReplyAnswerView>(Type.Object({}))), text: Type.String() }),
+])
+export type SessionMessageView = Static<typeof SessionMessageView>
 
 export interface CreateSessionNoteResponse {
   /** True when `client_message_id` returned a previously accepted note. */
