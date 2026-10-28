@@ -187,8 +187,11 @@ approvals, pending input and the Agent Session; missing proof does not authorize
 
 An unchanged definition and a healthy compatible owner need no new activation.
 For a changed definition, resume retains the affected scope and waits for an
-actual root callback carrying that definition's revision. Reading current files,
-running the CLI by absolute path or simulating a hook cannot establish loading.
+actual root callback carrying that definition's revision. Codex instead records,
+when a session starts, which Notifai handlers it loaded; resume and `doctor`
+name each handler the session lacks and say that a new Codex session picks it
+up. Reading current files, running the CLI by absolute path or simulating a
+hook cannot establish loading.
 Follow the remaining diagnosis before arranging a reload; preserve pending work.
 If the original Agent Session has ended naturally, an observed replacement in
 the same scope can establish loading without adopting the original session's debt.

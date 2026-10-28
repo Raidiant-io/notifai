@@ -197,7 +197,12 @@ Existing hook owners and approvals carry over. When the guidance this Agent
 Session read has changed, Notifai says so once, at its next prompt or tool call,
 as it does after a compaction: load the skill again and run `notifai guidance`
 before the next Notification Request. A changed handler can need the User's
-approval in Codex, as in [Activation](#activation). Follow the specific reload or stale-Stop remedy the update
+approval in Codex, as in [Activation](#activation). Approval does not reach a
+running session: Codex keeps the handlers a session loaded when it started, so
+`update --resume` and `doctor` name any Notifai handler this session lacks and
+say a new Codex session picks it up. Only a handler a feature needs (turn end,
+the tool boundary, question cards) blocks; keep working otherwise and tell the
+User. Follow the specific reload or stale-Stop remedy the update
 reports, then confirm real hook calls, including the tool-boundary call
 (`tool_boundary_notes` in [Updating
 Notifai](updates.md#local-integration-faults)).

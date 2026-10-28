@@ -49,7 +49,7 @@ import {
   codexCoexistenceNotes,
   codexHomeNote,
   codexRepresentationProblems,
-  codexTrustFindings,
+  type CodexTrustFinding,
   summarizeCodexTrustFindings,
   detectedHarnesses,
   findInstallations,
@@ -105,6 +105,8 @@ import {
   questionRouteLimits,
 } from './commands-hook-diagnostics.js'
 import { HOOK_EVENTS, requiredHookEvents } from './hook-events.js'
+import { codexTrustReader } from './codex-hooks-list.js'
+import { sessionHandlers, sessionHandlersLine } from './session-handlers.js'
 import { cliBinReadiness, inspectCliInstallations } from './cli-bin.js'
 import {
   discoverCliUpdate,
@@ -614,7 +616,7 @@ export async function assessReadiness(
           reused.server,
           reused.contract,
           reused.auth,
-          ...hookStates(deps),
+          ...hookStates(deps, await doctorCodexTrust(deps)),
           ...await codexSharedServerStates(deps),
           ...await codexCommandStates(deps),
           await skillReadiness(deps, options.skillScope, options.skillHarnesses),
@@ -708,7 +710,7 @@ export async function assessReadiness(
   // Optional setup that works without a companion device must appear before the
   // device gap: init stops at the first user-elsewhere blocker, and hooks/skill
   // are reachable without a phone.
-  states.push(...hookStates(deps))
+  states.push(...hookStates(deps, await doctorCodexTrust(deps)))
   states.push(...await codexSharedServerStates(deps))
   states.push(...await codexCommandStates(deps))
   states.push(await skillReadiness(deps, options.skillScope, options.skillHarnesses))
@@ -1181,14 +1183,22 @@ async function codexCommandStates(deps: CommandDeps): Promise<ReadinessState[]> 
   })]
 }
 
-function hookStates(deps: CommandDeps): ReadinessState[] {
+type CodexTrust = (installations: Installation[], env: NodeJS.ProcessEnv) => CodexTrustFinding[]
+
+/** Codex's trust answer for this home, asked once per doctor run. */
+async function doctorCodexTrust(deps: CommandDeps): Promise<CodexTrust> {
+  const installations = findInstallations(deps.env, deps.hookAdapterHome, deps.hookPlatform)
+  return codexTrustReader([{ env: deps.env, installations }], deps.cwd, deps.codexHooksList)
+}
+
+function hookStates(deps: CommandDeps, codexTrust: CodexTrust): ReadinessState[] {
   const detected = detectedHarnesses(deps.env)
-  return hookStatesWithContext(deps).map((state) => state.id === 'hooks'
+  return hookStatesWithContext(deps, codexTrust).map((state) => state.id === 'hooks'
     ? { ...state, technical: { ...(typeof state.technical === 'object' && state.technical !== null ? state.technical : {}), detected } }
     : state)
 }
 
-function hookStatesWithContext(deps: CommandDeps): ReadinessState[] {
+function hookStatesWithContext(deps: CommandDeps, codexTrust: CodexTrust): ReadinessState[] {
   const installations = findInstallations(deps.env, deps.hookAdapterHome, deps.hookPlatform)
   const { active, contested } = resolveActiveHarness(
     deps.env,
@@ -1326,7 +1336,7 @@ function readinessRemedy(
 }
 
   return [
-    ...hookChecks(deps).map((check): ReadinessState => check.informational !== undefined && !check.ok ? asInformation({
+    ...hookChecks(deps, codexTrust).map((check): ReadinessState => check.informational !== undefined && !check.ok ? asInformation({
       id: hookCheckId(check.name),
       title: checkTitle(check.name),
       status: 'optional-gap',
@@ -1399,7 +1409,7 @@ interface HookCheck {
     | { by: 'user-elsewhere'; summary: string }
 }
 
-function hookChecks(deps: CommandDeps): HookCheck[] {
+function hookChecks(deps: CommandDeps, codexTrust: CodexTrust): HookCheck[] {
   const checks: HookCheck[] = []
   const installations = findInstallations(deps.env, deps.hookAdapterHome, deps.hookPlatform)
 
@@ -1737,14 +1747,15 @@ function hookChecks(deps: CommandDeps): HookCheck[] {
     })
   }
 
-  const trustFindings = codexTrustFindings(installations, deps.env)
+  // Codex's own hooks/list when it answered; the config.toml mirror otherwise.
+  const trustFindings = codexTrust(installations, deps.env)
   checks.push({
     name: 'hooks (trust)',
     harnesses: ['codex'],
     ok: trustFindings.length === 0,
     detail:
       trustFindings.length === 0
-        ? 'best-effort check matches current persisted Codex approvals; Notifai never writes the trust store, and `/hooks` is authoritative'
+        ? 'Codex has approved every Notifai handler; Notifai never writes the trust store, and `/hooks` is authoritative'
         : summarizeCodexTrustFindings(trustFindings).join('; '),
     ...(trustFindings.length === 0
       ? {}
@@ -1899,6 +1910,36 @@ function hookChecks(deps: CommandDeps): HookCheck[] {
           }
         : {}),
     })
+  }
+
+  // Which of the installed handlers this exact session runs: the same answer
+  // `update --resume` gives (session-handlers.ts). Only a handler a feature
+  // needs blocks; any other gap is reported with how a new session fixes it.
+  if (active !== null && active.sessionId !== undefined && contested.length <= 1 && activeInstallations.length > 0) {
+    const handlers = sessionHandlers(deps.env, { ...active, sessionId: active.sessionId }, activeInstallations)
+    const line = handlers.state === 'stale' ? sessionHandlersLine(handlers) : null
+    if (handlers.state === 'current' || line !== null) {
+      const blocking = handlers.blocking.length > 0
+      checks.push({
+        name: 'hooks (session handlers)',
+        harnesses: [active.harness],
+        ok: line === null,
+        ...(blocking ? {} : { reportOnly: true }),
+        detail: line ?? `this ${active.label} session runs every installed Notifai handler`,
+        ...(line !== null && handlers.harness === 'codex'
+          ? { technical: { missing: handlers.missing, changed: handlers.changed, blocking: handlers.blocking } }
+          : {}),
+        ...(blocking && handlers.harness === 'codex'
+          ? {
+              remedy: {
+                summary: 'start one fresh Codex session so it loads the current Notifai handlers',
+                command: 'notifai doctor',
+                user_action: CODEX_FRESH_SESSION_USER_ACTION,
+              },
+            }
+          : {}),
+      })
+    }
   }
 
   // Which route this judges, and which remedy it prints, must both belong to

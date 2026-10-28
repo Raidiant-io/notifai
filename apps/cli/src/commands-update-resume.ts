@@ -19,6 +19,7 @@ import { codexToolHookReady, CODEX_TOOL_HOOK_RECOVERY } from './codex-tool-messa
 import { integrationPublication } from './native-installation.js'
 import { buildIdentity } from './distribution.js'
 import { pendingHookRepairs, withHookRepairIntent } from './integration-repair.js'
+import { codexTrustReader } from './codex-hooks-list.js'
 import { pendingNpmRepairs } from './npm-repair-status.js'
 import { TRUST_SENSITIVE_HOOK_HARNESSES } from './activation-plan.js'
 import { claudeHookFormFor } from './claude-hook-form.js'
@@ -175,8 +176,12 @@ export async function updateResumeCommand(deps: CommandDeps, flags: { json?: boo
     // Fence even a no-write resume: another runtime may have activated while
     // asynchronous skill discovery was in flight. Resolve durable requirements
     // from a fresh synchronous inspection under that same authority.
+    // Ask Codex for its own trust answer before taking the fence: it is a
+    // short-lived app-server, and the decision below must stay synchronous.
+    const codexTrust = await codexTrustReader(assessment.installations.map(entry =>
+      ({ env: entry.env, installations: [entry.installation] })), deps.cwd, deps.codexHooksList)
     return publish(() => {
-      pending.push(...pendingHookRepairs(deps, localIntegrationAssessment(deps).installations))
+      pending.push(...pendingHookRepairs(deps, localIntegrationAssessment(deps).installations, codexTrust))
       // First-time host setup is not a failed runtime update. Keep its scope
       // visible without making unrelated owned repairs depend on its outcome.
       diagnostics.push(...(publish.pending?.() ?? []).map(item =>
