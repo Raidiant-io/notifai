@@ -48,8 +48,14 @@ export const SERVER_FEATURES = [
 export type ServerFeature = (typeof SERVER_FEATURES)[number]
 
 /** `GET /api/v1/features` (user auth). A 404 means a server with none of them. */
-export interface FeaturesResponse {
-  features: ServerFeature[]
+export const FeaturesResponse = Type.Object({
+  /** Unknown names are retained for forward compatibility and ignored by older clients. */
+  features: Type.Array(Type.String()),
+})
+export type FeaturesResponse = Static<typeof FeaturesResponse>
+
+export function isFeaturesResponse(value: unknown): value is FeaturesResponse {
+  return Value.Check(FeaturesResponse, value)
 }
 
 // ---------------------------------------------------------------------------
