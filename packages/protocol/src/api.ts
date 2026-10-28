@@ -439,8 +439,11 @@ export const PutRegistrationRequest = Type.Union([
 ])
 export type PutRegistrationRequestT = Static<typeof PutRegistrationRequest>
 
-export interface PutRegistrationResponse {
-  registration_version: number
+export const PutRegistrationResponse = Type.Object({ registration_version: Type.Number() })
+export type PutRegistrationResponse = Static<typeof PutRegistrationResponse>
+
+export function isPutRegistrationResponse(value: unknown): value is PutRegistrationResponse {
+  return Value.Check(PutRegistrationResponse, value)
 }
 
 export const ReportHealthRequest = Type.Object(
