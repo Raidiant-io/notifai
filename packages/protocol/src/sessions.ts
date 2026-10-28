@@ -1,4 +1,5 @@
 import { Type, type Static } from '@sinclair/typebox'
+import { Value } from '@sinclair/typebox/value'
 import { REPLY_MAX_QUESTIONS } from './notification.js'
 import {
   PutAgentAcknowledgementRequest,
@@ -543,10 +544,15 @@ export const SessionMessageView = Type.Union([
 ])
 export type SessionMessageView = Static<typeof SessionMessageView>
 
-export interface CreateSessionNoteResponse {
+export const CreateSessionNoteResponse = Type.Object({
   /** True when `client_message_id` returned a previously accepted note. */
-  replayed: boolean
-  message: SessionMessageView
+  replayed: Type.Boolean(),
+  message: SessionMessageView,
+})
+export type CreateSessionNoteResponse = Static<typeof CreateSessionNoteResponse>
+
+export function isCreateSessionNoteResponse(value: unknown): value is CreateSessionNoteResponse {
+  return Value.Check(CreateSessionNoteResponse, value)
 }
 
 /**
@@ -652,8 +658,13 @@ export const AnswerVersionView = Type.Object({
 })
 export type AnswerVersionView = Static<typeof AnswerVersionView>
 
-export interface CreateAnswerEditResponse {
+export const CreateAnswerEditResponse = Type.Object({
   /** True when `client_edit_id` returned a previously accepted edit. */
-  replayed: boolean
-  answer_version: AnswerVersionView
+  replayed: Type.Boolean(),
+  answer_version: AnswerVersionView,
+})
+export type CreateAnswerEditResponse = Static<typeof CreateAnswerEditResponse>
+
+export function isCreateAnswerEditResponse(value: unknown): value is CreateAnswerEditResponse {
+  return Value.Check(CreateAnswerEditResponse, value)
 }

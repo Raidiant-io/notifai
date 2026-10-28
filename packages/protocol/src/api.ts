@@ -722,6 +722,17 @@ export const ReplyView = Type.Object({
 })
 export type ReplyView = Static<typeof ReplyView>
 
+/** Confirmed companion reply submission; retries return the retained reply. */
+export const SubmitReplyResponse = Type.Object({
+  outcome: Type.Union([Type.Literal('recorded'), Type.Literal('replayed')]),
+  reply: ReplyView,
+})
+export type SubmitReplyResponse = Static<typeof SubmitReplyResponse>
+
+export function isSubmitReplyResponse(value: unknown): value is SubmitReplyResponse {
+  return Value.Check(SubmitReplyResponse, value)
+}
+
 /** Empty text still records that the agent read the answer. */
 export const AgentAcknowledgementView = Type.Object({
   text: Type.String(),
