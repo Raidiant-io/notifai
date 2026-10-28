@@ -1631,7 +1631,7 @@ async function printInitClose(
         const done = doneTerminalLines(journey.facts)
         await deps.io.note?.(done.lines.join('\n'), done.title)
       } else {
-        await deps.io.note?.(['You are signed in.', questions ? 'Their questions reach your devices too.' : 'Their questions stay in the terminal.'].join('\n'), 'Ready')
+        await deps.io.note?.(['You are signed in.', questions ? 'Their questions reach your devices too.' : 'Their questions stay in your conversation with them.'].join('\n'), 'Ready')
       }
       printOptionalLeftovers(deps, leftovers)
       // The note already says what is true; only a disabled Project has a

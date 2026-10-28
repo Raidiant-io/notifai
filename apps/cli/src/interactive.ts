@@ -114,7 +114,7 @@ export function routingHookActions(input: {
   }
 
   options.push(
-    { value: 'settings', label: 'Change question settings', hint: 'when a question may leave this terminal' },
+    { value: 'settings', label: 'Change question settings', hint: 'when a question may reach your devices' },
     { value: 'back', label: '← Back' },
   )
   return options
@@ -690,14 +690,14 @@ async function routingScreen(deps: CommandDeps, readiness: Readiness): Promise<b
 
   const row = (label: string, value: string): string => `${style.dim(label.padEnd(16))}${value}`
   clack.note(
-    'When an agent registers a question, it appears in your terminal first.\n' +
+    'When an agent asks a question, it appears in your conversation with it first.\n' +
       'After the grace below, it goes to your Companion devices as a\n' +
       'notification with a supported native or in-app answer surface, and\n' +
       'your answer comes back to the agent —\n' +
       'whether or not you are still at this machine.\n\n' +
       [
         row('Wired to', wiringSummary(hooks)),
-        row('Send', config.ask_notifications.value ? 'yes' : 'no — questions stay in the terminal'),
+        row('Send', config.ask_notifications.value ? 'yes' : 'no — questions stay in the conversation'),
         row('Grace', formatValue('ask_grace_seconds', config.ask_grace_seconds.value)),
       ].join('\n'),
     'Question routing',

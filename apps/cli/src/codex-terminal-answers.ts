@@ -21,7 +21,7 @@ import type { Logger } from './logging.js'
 
 const OPEN = '<send_user_message_question_reply>'
 const CLOSE = '</send_user_message_question_reply>'
-export const CODEX_TERMINAL_RECEIPT = 'Answered in the terminal.'
+export const CODEX_TERMINAL_RECEIPT = 'Answered in the agent session.'
 const hash = (text: string): string => createHash('sha256').update(text).digest('hex')
 
 export interface CodexTerminalReply { callId: string; index: number; question: string; answer: string }

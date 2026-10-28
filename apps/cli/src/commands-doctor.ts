@@ -1267,7 +1267,7 @@ function hookStatesWithContext(deps: CommandDeps, codexTrust: CodexTrust): Readi
         status: active === null ? 'optional-gap' : 'gap',
         detail:
           active === null
-            ? 'hooks not installed, so questions stay in the terminal'
+            ? 'hooks not installed, so questions stay in the conversation with the agent'
             : `active ${active.label} session detected, but ${active.label} hooks are not installed; \`notifai ask\` cannot route this session`,
         remedy: {
           by: 'cli',

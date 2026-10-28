@@ -1834,7 +1834,7 @@ async function handleClaimedStop(
     ctx.harness !== undefined &&
     HARNESS_CAPABILITIES[ctx.harness].stopContinuation === 'unsupported'
   ) {
-    for (const entry of live) await closeQuietly(ctx, entry.request_id!)
+    for (const entry of live) await closeQuietly(ctx, entry.request_id!, 'expired')
     await retirePendings(ctx, envelope, sessionId, pending, 'expired')
     // Not `no-question`: there was a question, and this says so. Reading the
     // log to find out why an ask never travelled is the whole reason these
@@ -1857,7 +1857,7 @@ async function handleClaimedStop(
     const permanentlyRejected = live.filter((entry) =>
       permanentFailures.has(entry.request_id!),
     )
-    await Promise.all(permanentlyRejected.map((entry) => closeQuietly(ctx, entry.request_id!)))
+    await Promise.all(permanentlyRejected.map((entry) => closeQuietly(ctx, entry.request_id!, 'expired')))
     if (permanentlyRejected.length > 0) {
       await retirePendings(ctx, envelope, sessionId, permanentlyRejected, 'expired')
     }

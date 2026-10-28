@@ -2,6 +2,7 @@
 import type {
   CloseDisposition,
   CloseRepliesResponse,
+  CloseRetirementState,
   LifecycleEndState,
   ListRepliesResponse,
 } from '@raidiant/notifai-protocol'
@@ -64,11 +65,12 @@ export async function finalizeReplies(
   ctx: RetireDeps,
   requestId: string,
   disposition?: CloseDisposition,
+  retirement?: CloseRetirementState,
 ): Promise<ListRepliesResponse | CloseRepliesResponse | null> {
   try {
     return disposition === undefined
       ? await ctx.client.closeReplies(requestId)
-      : await ctx.client.closeReplies(requestId, disposition)
+      : await ctx.client.closeReplies(requestId, disposition, retirement)
   } catch {
     return null
   }
@@ -89,8 +91,16 @@ export function selectedForClaimedDelivery(
 }
 
 /** Best effort only for already-journaled retirement debt. */
-export async function closeQuietly(ctx: RetireDeps, requestId: string): Promise<void> {
-  await finalizeReplies(ctx, requestId, 'retire')
+export async function closeQuietly(ctx: RetireDeps, requestId: string, ended?: LifecycleEndState): Promise<void> {
+  await finalizeReplies(ctx, requestId, 'retire', closeRetirement(ended))
+}
+
+/**
+ * What a retirement close tells the service about how the question ended. A
+ * device answer needs nothing: the service already holds it.
+ */
+function closeRetirement(ended: LifecycleEndState | undefined): CloseRetirementState | undefined {
+  return ended === 'expired' || ended === 'answered_elsewhere' ? ended : undefined
 }
 
 /**
@@ -101,8 +111,9 @@ export async function closeQuietly(ctx: RetireDeps, requestId: string): Promise<
 async function proveRetirement(
   ctx: RetireDeps,
   requestId: string,
+  ended: LifecycleEndState,
 ): Promise<boolean> {
-  const response = await finalizeReplies(ctx, requestId, 'retire')
+  const response = await finalizeReplies(ctx, requestId, 'retire', closeRetirement(ended))
   const proven = response !== null
   ctx.log?.info('hook.retirement', {
     request_id: requestId,
@@ -285,7 +296,7 @@ export async function drainRetirements(
 
   const retired: string[] = []
   for (const entry of queue) {
-    const proven = await proveRetirement(ctx, entry.request_id)
+    const proven = await proveRetirement(ctx, entry.request_id, entry.state)
     if (proven) {
       retired.push(entry.request_id)
       // Persist each success before touching the next entry. A later corrupt
@@ -377,7 +388,7 @@ export async function drainOrphanRetirements(
       )
       continue
     }
-    const proven = await proveRetirement(ctx, entry.request_id)
+    const proven = await proveRetirement(ctx, entry.request_id, entry.state)
     if (proven) {
       done.push(entry.request_id)
       updateOrphanQueue(env, (current) =>

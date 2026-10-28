@@ -160,7 +160,7 @@ function questionsOff(deps: CommandDeps, flags: Pick<AskFlags, 'json'>): number 
     'question_routing_disabled',
     'ask_notifications',
     'The User keeps questions off their devices: "Send questions to my devices" is off (ask_notifications=false). Nothing was registered.',
-    'ask the way you would without Notifai: in the conversation, or in your own question form, which stays in the terminal; change the setting only if the User asks',
+    'ask the way you would without Notifai: in the conversation, or in your own question form, which stays in the conversation; change the setting only if the User asks',
   )
 }
 

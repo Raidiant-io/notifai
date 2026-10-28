@@ -497,7 +497,7 @@ describe('Claude Code picker hooks', () => {
     overtaken.output.length = 0
     claudePostToolUse(overtaken.deps, overtaken.envelope(ENVIRONMENT, { tool_response: { answers: { [REWORDED]: 'Production' } } }), overtaken.logger)
     expect(overtaken.context()).toContain('"Staging"')
-    expect(overtaken.context()).toContain('answered in the terminal at the same moment')
+    expect(overtaken.context()).toContain('answered in the conversation at the same moment')
 
     const unconfirmed = setup()
     await claudePermissionRequest(unconfirmed.deps, unconfirmed.envelope(), unconfirmed.logger, {

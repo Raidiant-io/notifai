@@ -193,3 +193,49 @@ describe('compatibility metadata transport', () => {
     })
   })
 })
+
+describe('closing a retired question', () => {
+  const listed = { request_id: 'req_1', reply_expires_at: null, agent_acknowledgement_required: true,
+    agent_acknowledgement_text_required: false, agent_acknowledgement: null, replies: [],
+    close_disposition: 'retire', delivered_reply_seq: null }
+
+  it('says how the question ended, and closes anyway on a service that predates saying so', async () => {
+    const bodies: unknown[] = []
+    const baseUrl = await serving((request, response) => {
+      let raw = ''
+      request.on('data', (chunk) => { raw += chunk })
+      request.on('end', () => {
+        const body = JSON.parse(raw) as Record<string, unknown>
+        bodies.push(body)
+        response.setHeader('content-type', 'application/json')
+        if ('retirement' in body) {
+          response.statusCode = 422
+          response.end(JSON.stringify({ error: { code: 'invalid_request', message: 'disposition must be "deliver" or "retire".' } }))
+          return
+        }
+        response.end(JSON.stringify(listed))
+      })
+    })
+    const client = createClient(baseUrl, 'Bearer nfm_m.s')
+
+    await expect(client.closeReplies('req_1', 'retire', 'expired')).resolves.toMatchObject({ request_id: 'req_1' })
+    expect(bodies).toEqual([{ disposition: 'retire', retirement: 'expired' }, { disposition: 'retire' }])
+  })
+
+  it('sends the end state once to a service that accepts it', async () => {
+    const bodies: unknown[] = []
+    const baseUrl = await serving((request, response) => {
+      let raw = ''
+      request.on('data', (chunk) => { raw += chunk })
+      request.on('end', () => {
+        bodies.push(JSON.parse(raw))
+        response.setHeader('content-type', 'application/json')
+        response.end(JSON.stringify(listed))
+      })
+    })
+    const client = createClient(baseUrl, 'Bearer nfm_m.s')
+
+    await client.closeReplies('req_1', 'retire', 'expired')
+    expect(bodies).toEqual([{ disposition: 'retire', retirement: 'expired' }])
+  })
+})

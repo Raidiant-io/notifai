@@ -107,7 +107,7 @@ export const CLAUDE_PICKER_HANDOVER_MS = 15_000
 export const CLAUDE_TERMINAL_OPERATION = 'terminal'
 
 /** What the User's devices show for a picker answered in the terminal. */
-export const CLAUDE_TERMINAL_ACKNOWLEDGEMENT = 'Answered in the terminal.'
+export const CLAUDE_TERMINAL_ACKNOWLEDGEMENT = 'Answered in the agent session.'
 
 /**
  * How long a cancelled picker waits for the `PostToolUse` that says what its
@@ -860,7 +860,7 @@ export function claudePostToolUse(deps: CommandDeps, envelope: HookEnvelope, log
       } else {
         // Claude Code took the terminal's answer instead; the device answer is still the User's.
         stage = 'app-answer-beside-terminal'
-        context = `${presented.context} The picker was also answered in the terminal at the same moment. If the two answers differ, ask which one governs before acting on either.`
+        context = `${presented.context} The picker was also answered in the conversation at the same moment. If the two answers differ, ask which one governs before acting on either.`
       }
       return next
     }

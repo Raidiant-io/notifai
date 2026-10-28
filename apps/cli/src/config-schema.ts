@@ -41,7 +41,7 @@ export const CONFIG_GROUPS: { id: ConfigGroup; title: string; blurb: string }[] 
   {
     id: 'questions',
     title: 'Questions',
-    blurb: 'Whether a question an agent registered may leave this terminal and reach your devices, and how soon.',
+    blurb: 'Whether a question an agent asked may reach your devices, and how soon.',
   },
   {
     id: 'delivery',
@@ -115,7 +115,7 @@ const INFO: Record<ConfigKey, Omit<ConfigKeyInfo, 'key'>> = {
     kind: 'boolean',
     summary: 'Whether a registered question may reach your Companion devices at all',
     detail:
-      'When off, no question reaches your devices, however an agent asks it: `notifai ask` refuses and tells the agent to ask the way it would without Notifai, in the conversation or in its own question form, which stays in the terminal. It does not disable ordinary notifications or withdraw questions already sent. Turn it off to keep questions in the terminal without uninstalling harness hooks.',
+      'When off, no question reaches your devices, however an agent asks it: `notifai ask` refuses and tells the agent to ask the way it would without Notifai, in the conversation or in its own question form, which stays in the conversation. It does not disable ordinary notifications or withdraw questions already sent. Turn it off to keep questions in your conversation with the agent without uninstalling harness hooks.',
     example: 'true',
   },
   ask_grace_seconds: {
@@ -125,7 +125,7 @@ const INFO: Record<ConfigKey, Omit<ConfigKeyInfo, 'key'>> = {
     unit: 's',
     summary: 'Optional delay before a question may reach your devices',
     detail:
-      'Zero (the default) starts question submission immediately when the agent registers it. Set a positive duration to offer the terminal an exclusive answer window first; the timer is measured from the moment the agent asked. A question that `notifai ask --wait` waits for in the command skips the delay, because nobody can answer that question in the terminal.\n\nThis controls when the question reaches devices, not how the harness returns the answer afterward. Claude Code waits out of band and is woken through its session inbox. Codex observes answers out of band and queues only a wake-up; current answers and notes drain at supported hooks or an exact-session receive command.',
+      'Zero (the default) starts question submission immediately when the agent registers it. Set a positive duration to give your conversation with the agent an exclusive answer window first; the timer is measured from the moment the agent asked. A question that `notifai ask --wait` waits for in the command skips the delay, because nobody can answer that question in the conversation.\n\nThis controls when the question reaches devices, not how the harness returns the answer afterward. Claude Code waits out of band and is woken through its session inbox. Codex observes answers out of band and queues only a wake-up; current answers and notes drain at supported hooks or an exact-session receive command.',
     example: '0',
   },
 

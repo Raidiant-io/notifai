@@ -91,11 +91,11 @@ The picker takes whichever answer comes first and closes:
 - **Esc, "Chat about this", or a picker another hook denies** withdraws the
   device question: continue in the conversation.
 
-A picker stays in the terminal when question notifications are off, the
+A picker stays in Claude Code when question notifications are off, the
 machine is not signed in, or the User disabled this project; it still works
 there. Otherwise a picker Notifai cannot carry is refused before
 it opens with what to fix: fix that and open the picker again.
-`notifai logs --event hook.gate` shows why a picker stayed in the terminal
+`notifai logs --event hook.gate` shows why a picker stayed in Claude Code
 (`picker-terminal-only` and its `reason`) and how it closed.
 
 ## Command approval

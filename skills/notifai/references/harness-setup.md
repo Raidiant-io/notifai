@@ -247,7 +247,7 @@ one local Git checkout and all its linked worktrees resolve to the same file.
 Nothing in the repository configures Notifai.
 
 With “Send questions to my devices” (`ask_notifications`) off, ask in the
-conversation, or in your own question form, which stays in the terminal.
+conversation, or in your own question form, which stays in the conversation.
 `doctor` reports that setting as the User's choice, not as a gap.
 
 `NOTIFAI_NO_INPUT=1` is for scripts and CI: with it, no command ever prompts.

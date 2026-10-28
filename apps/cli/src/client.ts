@@ -21,7 +21,9 @@ import type {
   ClaimDeliveryAttemptResponse,
   ClientCapability,
   CloseDisposition,
+  CloseRepliesRequestT,
   CloseRepliesResponse,
+  CloseRetirementState,
   CompatibilityResponse,
   GetSessionMessageAcknowledgementResponse,
   RecoveryAction,
@@ -132,12 +134,19 @@ export interface ApiClient {
    * the close fence. `disposition` says why: `deliver` only when this caller
    * will claim the fenced answer for hand-off, `retire` on every retirement.
    * Without one the close records none, exactly as released CLIs do.
+   * `retirement` says how a retired question ended when the caller knows, so
+   * the devices never show a withdrawn question as answered elsewhere.
    */
   closeReplies(requestId: string): Promise<ListRepliesResponse>
-  closeReplies(requestId: string, disposition: CloseDisposition): Promise<CloseRepliesResponse>
+  closeReplies(
+    requestId: string,
+    disposition: CloseDisposition,
+    retirement?: CloseRetirementState,
+  ): Promise<CloseRepliesResponse>
   closeReplies(
     requestId: string,
     disposition?: CloseDisposition,
+    retirement?: CloseRetirementState,
   ): Promise<ListRepliesResponse | CloseRepliesResponse>
   putAgentAcknowledgement(
     requestId: string,
@@ -385,12 +394,23 @@ export function createClient(
         undefined,
         waitSeconds,
       ),
-    closeReplies: ((requestId: string, disposition?: CloseDisposition) =>
-      call<ListRepliesResponse | CloseRepliesResponse>(
+    closeReplies: (async (requestId: string, disposition?: CloseDisposition, retirement?: CloseRetirementState) => {
+      const close = (body: CloseRepliesRequestT | undefined) => call<ListRepliesResponse | CloseRepliesResponse>(
         'POST',
         `/api/v1/notifications/${encodeURIComponent(requestId)}/replies/close`,
-        disposition === undefined ? undefined : { disposition },
-      )) as ApiClient['closeReplies'],
+        body,
+      )
+      if (disposition === undefined) return close(undefined)
+      if (retirement === undefined) return close({ disposition })
+      try {
+        return await close({ disposition, retirement })
+      } catch (err) {
+        // A service that predates `retirement` refuses it; the close itself
+        // must still happen, with the service's older reading of it.
+        if (err instanceof ApiCallError && err.status === 422 && err.code === 'invalid_request') return close({ disposition })
+        throw err
+      }
+    }) as ApiClient['closeReplies'],
     putAgentAcknowledgement: (requestId, body) =>
       call<PutAgentAcknowledgementResponse>(
         'PUT',

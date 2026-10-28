@@ -60,7 +60,7 @@ instead. Codex offers the card only with some models, in the terminal and the
 apps alike.
 
 `request_user_input` (no `_async`) is not linked to Notifai: where Codex
-accepts it, it waits in the terminal, where an away User never sees it. Use
+accepts it, it waits in Codex, where an away User never sees it. Use
 `ask` for those questions too.
 
 If `ask` is refused with `codex_hook_approval_required`, nothing was

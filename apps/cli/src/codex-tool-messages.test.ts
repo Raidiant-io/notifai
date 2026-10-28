@@ -608,7 +608,7 @@ it('records a card terminal answer through UserPromptSubmit and the detached sub
     other_submissions: [{ version_id: 'rpl_device', origin: 'companion', answers: [{ question_id: 'q1', choice_ids: [], text: 'Wait' }] }],
   }))
   const acknowledge = vi.fn(async () => ({ status: 'recorded',
-    agent_acknowledgement: { text: 'Answered in the terminal.', created_at: new Date().toISOString() } }))
+    agent_acknowledgement: { text: 'Answered in the agent session.', created_at: new Date().toISOString() } }))
   Object.assign(h.sequencer.client, { recordHarnessAnswer: report, putAgentAcknowledgement: acknowledge })
   await hookRunCommand(h.deps, 'user-prompt-submit', async () => JSON.stringify({ session_id: SESSION, cwd: h.deps.cwd,
     hook_event_name: 'UserPromptSubmit', turn_id: 'turn-1', transcript_path: binding.file, prompt }), 'codex')
@@ -618,7 +618,7 @@ it('records a card terminal answer through UserPromptSubmit and the detached sub
   appendFileSync(binding.file, JSON.stringify({ type: 'event_msg', payload: { type: 'user_message', message: prompt } }) + '\n')
   await hookRunCommand(h.deps, 'question-submission', async () => JSON.stringify({ session_id: SESSION, cwd: h.deps.cwd }), 'codex')
   expect(report).toHaveBeenCalledOnce()
-  expect(acknowledge).toHaveBeenCalledWith('req_bound', { session_id: SESSION, reply_seq: 1, text: 'Answered in the terminal.' })
+  expect(acknowledge).toHaveBeenCalledWith('req_bound', { session_id: SESSION, reply_seq: 1, text: 'Answered in the agent session.' })
   h.output.length = 0
   await binding.hook()
   expect(h.output).toHaveLength(1)

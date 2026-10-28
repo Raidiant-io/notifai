@@ -711,9 +711,22 @@ export type AgentAcknowledgementView = Static<typeof AgentAcknowledgementView>
 export const CLOSE_DISPOSITIONS = ['deliver', 'retire'] as const
 export type CloseDisposition = (typeof CLOSE_DISPOSITIONS)[number]
 
+/**
+ * How a question being retired ended, when the closer knows. `expired`: nobody
+ * answered, for example the User dismissed the harness's own question form or
+ * the conversation ended. `answered_elsewhere`: it was answered somewhere the
+ * push never reached, such as the agent's own conversation. Without it the
+ * service treats an early close as answered elsewhere, as released CLIs expect.
+ * A service that predates the field refuses it as `invalid_request`; resend
+ * the close without it.
+ */
+export const CLOSE_RETIREMENT_STATES = ['expired', 'answered_elsewhere'] as const
+export type CloseRetirementState = (typeof CLOSE_RETIREMENT_STATES)[number]
+
 export const CloseRepliesRequest = Type.Object(
   {
     disposition: Type.Union(CLOSE_DISPOSITIONS.map((value) => Type.Literal(value))),
+    retirement: Type.Optional(Type.Union(CLOSE_RETIREMENT_STATES.map((value) => Type.Literal(value)))),
   },
   { additionalProperties: false },
 )

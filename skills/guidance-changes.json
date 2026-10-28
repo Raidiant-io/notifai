@@ -1,5 +1,5 @@
 {
-  "current": "fb427dfcf5435276731defad2cb12b345b59f480b445287f6f5e9ba87e03fff5",
+  "current": "db368a8f91bd08d90a11e89286babebd52215f5970c4a67f9af661531e3c05da",
   "releases": [
     {
       "digest": "3e47b01bc6bbfb43e910c660b9964fab6459d75148c3c02dcbcd0be64cfb2963",
@@ -164,6 +164,10 @@
     {
       "digest": "fb427dfcf5435276731defad2cb12b345b59f480b445287f6f5e9ba87e03fff5",
       "note": "The reminder to approve Notifai's Codex hooks, the setup warning and the done message now say \"in a terminal on this machine\" for every app that runs Codex without a hook review of its own; they no longer add a note naming one particular app. The step itself is unchanged: run `notifai doctor codex` and choose **Trust all and continue** (or type `/hooks` for hooks that are off). Carry on and end your reply with the reminder as written, as before."
+    },
+    {
+      "digest": "db368a8f91bd08d90a11e89286babebd52215f5970c4a67f9af661531e3c05da",
+      "note": "Wording no longer calls the conversation with an agent \"the terminal\", since many agents run in desktop apps. A question answered in Claude Code's picker or Codex's own question card is recorded on the User's devices as \"Answered in the agent session.\" instead of \"Answered in the terminal.\"; `notifai ask` and `notifai send --reply` refusals with question notifications off, the `ask_notifications` and `ask_grace_seconds` setting descriptions, `notifai doctor`, `notifai init` and the interactive question settings now say the question stays in the conversation. The skill's setup, Claude Code, Codex and diagnostics references say the same. Separately, when a question Notifai retires ended unanswered (Esc or \"Chat about this\" on a Claude Code picker, or the Agent Session ending), the CLI now tells the service so, and the User's devices show it as expired instead of answered elsewhere; a service that predates this is closed as before. Agents run nothing new."
     }
   ]
 }

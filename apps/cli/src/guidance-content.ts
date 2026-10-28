@@ -129,7 +129,7 @@ Good:
 
 Bad:
 
-- \`What should I do?\` — nothing to answer without the terminal
+- \`What should I do?\` — nothing to answer without the conversation
 - \`Reply here with your choice\` — never say where the answer must arrive
 `
 

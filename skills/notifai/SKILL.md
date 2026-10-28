@@ -271,7 +271,7 @@ The User makes one decision: which agent apps to connect. The first run asks
 it as the `apps` gap; ask once, then rerun with `--apps <ids>`. Setup installs
 hooks, this skill (machine-wide) and command approval into those apps. Hooks
 let Notifai activate in their Agent Sessions where it is on, send questions to
-their devices and bring answers back; to keep questions in the terminal, they
+their devices and bring answers back; to keep questions in the conversation, they
 turn off “Send questions to my devices” (`ask_notifications`) instead.
 `notifai project enable` and `disable` are the per-project switch.
 

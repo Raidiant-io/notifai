@@ -35,7 +35,7 @@ Queued-question records (`stage` `queued`) use exactly these reasons:
 `question-notifications-off`, `claimed-elsewhere`, `no-question`, `no-session`,
 `answered`, `acknowledgement-required`, `acknowledgement-abandoned`,
 `harness-cannot-continue`, `delivery-limit` and `proceeding`. A Claude Code picker or
-OpenCode form that stayed in the terminal logs the stage `picker-terminal-only`
+OpenCode form that stayed in its harness logs the stage `picker-terminal-only`
 or `form-terminal-only` with a `reason` of its own, such as `not-signed-in`;
 an OpenCode form refused to protect an existing hand-back logs `form-refused`.
 A self-opened OpenCode form outside device limits logs `form-terminal-only`

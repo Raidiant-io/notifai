@@ -205,7 +205,7 @@ export async function sendCommand(
     deps.io.err(
       'question_routing_disabled: The User keeps questions off their devices: "Send questions to my devices" is off ' +
         '(ask_notifications=false). Nothing was sent.\n' +
-        'Ask the way you would without Notifai: in the conversation, or in your own question form, which stays in the terminal; ' +
+        'Ask the way you would without Notifai: in the conversation, or in your own question form, which stays in the conversation; ' +
         'change the setting only if the User asks.',
     )
     return EXIT.usage
