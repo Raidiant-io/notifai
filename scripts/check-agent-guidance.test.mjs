@@ -130,3 +130,21 @@ test('stale preflight lists added, edited and removed inputs without approving t
     assert.equal(readFileSync(recordPath, 'utf8'), record)
   } finally { rmSync(root, { recursive: true, force: true }) }
 })
+
+test('an excluded path inside an input root cannot make the review stale, and is not listed', () => {
+  const { root, recordPath } = fixture()
+  const git = args => execFileSync('git', args, { cwd: root, stdio: 'pipe' })
+  const excluded = ['docs/USAGE.md']
+  try {
+    const record = JSON.parse(readFileSync(recordPath, 'utf8'))
+    writeFileSync(recordPath, JSON.stringify({ ...record, behavior_digest: behaviorDigest(root, DEFAULT_INPUT_ROOTS, excluded) }))
+    git(['init'])
+    git(['add', '.'])
+    git(['-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.invalid', '-c', 'core.hooksPath=/dev/null', 'commit', '-m', 'fixture'])
+    write(root, 'docs/USAGE.md', '# Using Notifai, reworded\n')
+    checkAgentGuidance({ repo: root, recordPath, excluded })
+    assert.deepEqual(changedInputs(root, recordPath, DEFAULT_INPUT_ROOTS, excluded), [])
+    write(root, 'docs/HARNESSES.md', '# Harness support, changed\n')
+    assert.throws(() => checkAgentGuidance({ repo: root, recordPath, excluded }), /docs\/HARNESSES.md/)
+  } finally { rmSync(root, { recursive: true, force: true }) }
+})

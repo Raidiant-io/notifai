@@ -36,6 +36,11 @@ function behaviorInput(relative, contents) {
   )
 }
 
+/** True for a path inside an excluded file or directory (forward slashes). */
+function isExcluded(file, excluded) {
+  return excluded.some((entry) => file === entry || file.startsWith(`${entry}/`))
+}
+
 function filesUnder(repo, relative) {
   const absolute = path.join(repo, relative)
   const stat = statSync(absolute)
@@ -44,11 +49,12 @@ function filesUnder(repo, relative) {
     .flatMap((entry) => filesUnder(repo, path.join(relative, entry.name)))
 }
 
-export function behaviorDigest(repo, inputRoots = DEFAULT_INPUT_ROOTS) {
+export function behaviorDigest(repo, inputRoots = DEFAULT_INPUT_ROOTS, excluded = []) {
   const files = inputRoots
     .flatMap((relative) => filesUnder(repo, relative))
     .filter((file) => !file.endsWith('.test.ts') && !file.endsWith('.test.mjs'))
     .map((file) => file.split(path.sep).join('/'))
+    .filter((file) => !isExcluded(file, excluded))
     .sort()
   const digest = createHash('sha256')
   for (const file of files) {
@@ -61,7 +67,7 @@ export function behaviorDigest(repo, inputRoots = DEFAULT_INPUT_ROOTS) {
 }
 
 /** Compare inputs with the commit that last recorded a review, including local edits. */
-export function changedInputs(repo, recordPath, inputRoots = DEFAULT_INPUT_ROOTS) {
+export function changedInputs(repo, recordPath, inputRoots = DEFAULT_INPUT_ROOTS, excluded = []) {
   const git = args => execFileSync('git', args, { cwd: repo, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] })
   try {
     const reviewed = git(['log', '-1', '--format=%H', '--', path.relative(repo, recordPath)]).trim()
@@ -71,7 +77,7 @@ export function changedInputs(repo, recordPath, inputRoots = DEFAULT_INPUT_ROOTS
       ...git(['ls-files', '--others', '--exclude-standard', '--', ...inputRoots]).split('\n'),
     ])
     return [...candidates].filter(file => {
-      if (!file || file.endsWith('.test.ts') || file.endsWith('.test.mjs')) return false
+      if (!file || file.endsWith('.test.ts') || file.endsWith('.test.mjs') || isExcluded(file, excluded)) return false
       try {
         return behaviorInput(file, git(['show', `${reviewed}:${file}`])) !==
           behaviorInput(file, readFileSync(path.join(repo, file), 'utf8'))
@@ -80,10 +86,10 @@ export function changedInputs(repo, recordPath, inputRoots = DEFAULT_INPUT_ROOTS
   } catch { return ['(Git review baseline unavailable; inspect all input roots)'] }
 }
 
-function reviewHelp(repo, recordPath, inputRoots) {
+function reviewHelp(repo, recordPath, inputRoots, excluded) {
   return [
     'Changed behavior input paths since the recorded review:',
-    ...changedInputs(repo, recordPath, inputRoots).map(file => `  ${file}`),
+    ...changedInputs(repo, recordPath, inputRoots, excluded).map(file => `  ${file}`),
     `Required review surfaces: ${REQUIRED_SURFACES.join(', ')}`,
     'After reviewing, obtain the current digest: node scripts/check-agent-guidance.mjs --print',
     'Update agent-guidance-review.json with that digest, an explicit outcome, reason, and all surfaces reviewed.',
@@ -92,26 +98,26 @@ function reviewHelp(repo, recordPath, inputRoots) {
   ].join('\n')
 }
 
-export function checkAgentGuidance({ repo, recordPath, inputRoots = DEFAULT_INPUT_ROOTS }) {
-  const actual = behaviorDigest(repo, inputRoots)
+export function checkAgentGuidance({ repo, recordPath, inputRoots = DEFAULT_INPUT_ROOTS, excluded = [] }) {
+  const actual = behaviorDigest(repo, inputRoots, excluded)
   const record = JSON.parse(readFileSync(recordPath, 'utf8'))
   if (record.behavior_digest !== actual) {
     throw new Error([
       'Agent Guidance review is stale: shipped agent behavior inputs changed.',
       `expected ${record.behavior_digest}`,
       `actual   ${actual}`,
-      reviewHelp(repo, recordPath, inputRoots),
+      reviewHelp(repo, recordPath, inputRoots, excluded),
     ].join('\n'))
   }
   if (!['guidance-updated', 'reviewed-no-impact'].includes(record.outcome)) {
-    throw new Error(`Agent Guidance review outcome must be guidance-updated or reviewed-no-impact.\n${reviewHelp(repo, recordPath, inputRoots)}`)
+    throw new Error(`Agent Guidance review outcome must be guidance-updated or reviewed-no-impact.\n${reviewHelp(repo, recordPath, inputRoots, excluded)}`)
   }
   if (typeof record.reason !== 'string' || record.reason.trim().length < 20) {
-    throw new Error(`Agent Guidance review needs a concrete review reason (at least 20 characters).\n${reviewHelp(repo, recordPath, inputRoots)}`)
+    throw new Error(`Agent Guidance review needs a concrete review reason (at least 20 characters).\n${reviewHelp(repo, recordPath, inputRoots, excluded)}`)
   }
   for (const surface of REQUIRED_SURFACES) {
     if (!record.surfaces_reviewed?.includes(surface)) {
-      throw new Error(`Agent Guidance review did not review required surface: ${surface}\n${reviewHelp(repo, recordPath, inputRoots)}`)
+      throw new Error(`Agent Guidance review did not review required surface: ${surface}\n${reviewHelp(repo, recordPath, inputRoots, excluded)}`)
     }
   }
   return { actual, record }
@@ -123,6 +129,7 @@ function parseArgs(argv) {
     repo: publicRepo,
     record: 'agent-guidance-review.json',
     roots: [],
+    excluded: [],
     print: false,
   }
   const args = [...argv]
@@ -137,6 +144,7 @@ function parseArgs(argv) {
     if (flag === '--repo') options.repo = path.resolve(value)
     else if (flag === '--record') options.record = value
     else if (flag === '--root') options.roots.push(value)
+    else if (flag === '--exclude') options.excluded.push(value)
     else throw new Error(`unknown option: ${flag}`)
   }
   return options
@@ -147,10 +155,10 @@ function main() {
   const inputRoots = options.roots.length > 0 ? options.roots : DEFAULT_INPUT_ROOTS
   const recordPath = path.resolve(options.repo, options.record)
   if (options.print) {
-    process.stdout.write(`${behaviorDigest(options.repo, inputRoots)}\n`)
+    process.stdout.write(`${behaviorDigest(options.repo, inputRoots, options.excluded)}\n`)
     return
   }
-  const { actual } = checkAgentGuidance({ repo: options.repo, recordPath, inputRoots })
+  const { actual } = checkAgentGuidance({ repo: options.repo, recordPath, inputRoots, excluded: options.excluded })
   console.log(`Agent Guidance review current (${actual}).`)
 }
 
