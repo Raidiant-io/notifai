@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "behavior_digest": "sha256:658915e00aa2fdf7720627c2b02bcce12c5b0ed2367fa39f15501f725df34099",
+  "behavior_digest": "sha256:1bcb6f4ec4dc3bc36b88c8962d2c422e40d2481fa8ca8864e6ca9b14b54e6c8b",
   "outcome": "reviewed-no-impact",
   "surfaces_reviewed": [
     "lifecycle-hooks",
@@ -9,5 +9,5 @@
     "cli-readiness",
     "domain-terms"
   ],
-  "reason": "Reviewed lifecycle hooks, the Notifai skill, harness setup, CLI readiness and domain terms against the canonical open Account preference response schema and guard. Existing preference properties, the optional Send Delay field for older services, true/false values, zero delay and additive response facts retain their meaning. Configuration and partial update requests remain closed; validation does not fill absent fields or change User-owned preference decisions. No command, lifecycle, setup, skill, readiness or domain wording changes are needed. Previously reviewed hook approval and send/registration contracts remain intact."
+  "reason": "Reviewed lifecycle hooks, the Notifai skill, harness setup, CLI readiness and domain terms against the open feature-discovery response schema and guard. The response retains unknown future names, additive fields and the empty list; known capabilities still require exact advertised names. The known Server Feature catalog and producer typing, legacy missing-endpoint behavior, commands, lifecycle, setup and User-owned decisions keep their existing meanings. No instruction wording changes are needed. Previously reviewed hook approval, send, registration and preference contracts remain intact."
 }
