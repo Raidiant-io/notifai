@@ -815,7 +815,7 @@ export async function hookRunCommand(
       // cannot reconstruct that activation proof from a possibly changed file.
       try {
         recordSessionStart(envelope.session_id, deps.env, harness, cwd,
-          codexStopDefinitionFingerprint(findInstallations(deps.env, deps.hookAdapterHome, deps.hookPlatform)), invokedAt)
+          codexStopDefinitionFingerprint(findInstallations(deps.env, deps.hookAdapterHome, deps.hookPlatform), deps.env), invokedAt)
       } catch (err) {
         logger.error('hook.end', {
           hook: event, outcome: 'record-failed', reason: 'session-state-failed', ...failureData(err),

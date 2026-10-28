@@ -26,7 +26,7 @@ function toolHookFingerprint(deps: Pick<CommandDeps, 'env' | 'hookAdapterHome' |
   if (hooks.length !== 2 || !['PostToolUse', 'UserPromptSubmit'].every((event) => hooks.some(({ handler }) => handler.event === event))) return null
   if (hooks.some(({ installation, handler }) => handler.async === true || handler.asyncRewake === true ||
     codexTrustProblems([{ ...installation, handlers: [handler] }], deps.env).length !== 0)) return null
-  return hooks.map(({ installation, handler }) => `${codexTrustKey(installation, handler)}:${codexHookIdentityHash(handler)}`).sort().join('|')
+  return hooks.map(({ installation, handler }) => `${codexTrustKey(installation, handler, deps.env)}:${codexHookIdentityHash(handler)}`).sort().join('|')
 }
 
 export function codexToolHookReady(

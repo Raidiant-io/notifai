@@ -192,7 +192,7 @@ export function activeQuestionRouteProblems(
   problems.push(...codexRoutingTrustProblems(matching, deps.env))
   if (active.harness === 'codex' && active.sessionId !== undefined) {
     const state = readSessionState(active.sessionId, deps.env)
-    const currentFingerprint = codexStopDefinitionFingerprint(matching)
+    const currentFingerprint = codexStopDefinitionFingerprint(matching, deps.env)
     if (matching.length === 1 && currentFingerprint === undefined) {
       problems.push(CODEX_STOP_DEFINITION_NOT_SINGULAR_PROBLEM)
     } else if (

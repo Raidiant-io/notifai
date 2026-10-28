@@ -1583,18 +1583,29 @@ function codexTrustState(env: NodeJS.ProcessEnv): Record<string, unknown> {
 export function codexTrustKey(
   installation: Installation,
   handler: InstalledHandler,
+  env: NodeJS.ProcessEnv = process.env,
 ): string {
-  let source = installation.file
+  return `${codexTrustSource(installation.file, env)}:${codexEventName(handler.event)}:${handler.groupIndex}:${handler.handlerIndex}`
+}
+
+/**
+ * The file path Codex writes into a trust key. Codex canonicalizes its home
+ * only when `CODEX_HOME` is set; an unset one is the logical `~/.codex`, so a
+ * symlinked `~/.codex` keeps the link's path in every key.
+ */
+function codexTrustSource(file: string, env: NodeJS.ProcessEnv): string {
+  const override = env['CODEX_HOME']
+  if ((override === undefined || override === '') && path.dirname(file) === codexGlobalDir(env)) return file
   try {
     // Codex canonicalizes with the OS. On Windows only the native call expands
     // 8.3 short names (`RUNNER~1`) the way Codex's key spells them.
     const canonical = process.platform === 'win32' ? realpathSync.native : realpathSync
-    source = path.join(canonical(path.dirname(source)), path.basename(source))
+    return path.join(canonical(path.dirname(file)), path.basename(file))
   } catch {
     // Codex falls back to the logical source path when canonicalization fails,
     // so the diagnostic must do the same.
+    return file
   }
-  return `${source}:${codexEventName(handler.event)}:${handler.groupIndex}:${handler.handlerIndex}`
 }
 
 /**
@@ -1609,6 +1620,7 @@ export function codexTrustKey(
  */
 export function codexStopDefinitionFingerprint(
   installations: Installation[],
+  env: NodeJS.ProcessEnv = process.env,
 ): string | undefined {
   const candidates = installations
     .filter((installation) => installation.harness === 'codex')
@@ -1623,7 +1635,7 @@ export function codexStopDefinitionFingerprint(
   if (candidate === undefined) return undefined
   const { installation, handler } = candidate
   return createHash('sha256')
-    .update(`${codexTrustKey(installation, handler)}\0${codexHookIdentityHash(handler)}`)
+    .update(`${codexTrustKey(installation, handler, env)}\0${codexHookIdentityHash(handler)}`)
     .digest('hex')
 }
 
@@ -1651,7 +1663,7 @@ export function codexTrustFindings(
     .filter((installation) => installation.harness === 'codex')
     .flatMap((installation) =>
       installation.handlers.flatMap((handler): CodexTrustFinding[] => {
-        const entry = state[codexTrustKey(installation, handler)]
+        const entry = state[codexTrustKey(installation, handler, env)]
         const record = typeof entry === 'object' && entry !== null ? (entry as Record<string, unknown>) : undefined
         if (record?.['enabled'] === false) return [{ file: installation.file, event: handler.event, state: 'disabled' }]
         const trustedHash = record?.['trusted_hash']

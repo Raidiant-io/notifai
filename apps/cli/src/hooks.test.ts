@@ -345,7 +345,7 @@ function harness(replies: ReplyView[] = []): Harness {
   }
   const codex = findInstallations(env, home).find(entry => entry.harness === 'codex')!
   writeFileSync(path.join(home, '.codex', 'config.toml'), codex.handlers.map(handler =>
-    `[hooks.state.${JSON.stringify(codexTrustKey(codex, handler))}]\ntrusted_hash = ${JSON.stringify(codexHookIdentityHash(handler))}\n`,
+    `[hooks.state.${JSON.stringify(codexTrustKey(codex, handler, env))}]\ntrusted_hash = ${JSON.stringify(codexHookIdentityHash(handler))}\n`,
   ).join('\n'))
   const io = new CapturedIo()
   const recorder: Recorder = { submitted: [], receipts: [], closed: [], aliases: new Map() }

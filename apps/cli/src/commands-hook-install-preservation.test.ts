@@ -1,4 +1,4 @@
-import { existsSync,lstatSync,symlinkSync,mkdirSync,mkdtempSync,readFileSync,rmSync,writeFileSync } from 'node:fs'
+import { existsSync,lstatSync,renameSync,symlinkSync,mkdirSync,mkdtempSync,readFileSync,rmSync,writeFileSync } from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -173,14 +173,15 @@ describe('active harness homes', () => {
   it.each(['default', 'separate', 'symlinked'] as const)('discovers and repairs the %s Codex home without replacing shared links', (kind) => {
     const f = fixture('model = "keep-model"\n')
     expect(hooksInstallCommand(f.deps, f.flags)).toBe(EXIT.ok)
+    // Codex keys an unset CODEX_HOME by the logical ~/.codex, so approve under the env each kind runs in.
+    if (kind === 'default') delete f.deps.env['CODEX_HOME']
     const sourceInstallation = findInstallations(f.deps.env, f.deps.hookAdapterHome).find(i => i.harness === 'codex')!
     writeFileSync(f.toml, readFileSync(f.toml, 'utf8') + sourceInstallation.handlers.map(handler =>
-      `[hooks.state.${JSON.stringify(codexTrustKey(sourceInstallation, handler))}]\ntrusted_hash = "${codexHookIdentityHash(handler)}"\n`,
+      `[hooks.state.${JSON.stringify(codexTrustKey(sourceInstallation, handler, f.deps.env))}]\ntrusted_hash = "${codexHookIdentityHash(handler)}"\n`,
     ).join('\n'))
     const original = readFileSync(f.hooks, 'utf8')
     const originalConfig = readFileSync(f.toml, 'utf8')
-    if (kind === 'default') delete f.deps.env['CODEX_HOME']
-    else {
+    if (kind !== 'default') {
       const selected = path.join(f.deps.cwd, 'profile')
       mkdirSync(selected)
       f.deps.env['CODEX_HOME'] = selected
@@ -205,6 +206,31 @@ describe('active harness homes', () => {
   })
 })
 
+
+describe('Codex trust keys', () => {
+  // Codex canonicalizes a set CODEX_HOME but keys an unset one by the logical
+  // `$HOME/.codex`, so a symlinked `~/.codex` keeps the link's path in the key.
+  it('matches approvals Codex keyed by a symlinked ~/.codex when CODEX_HOME is unset', () => {
+    const f = fixture('model = "keep-model"\n')
+    expect(hooksInstallCommand(f.deps, f.flags)).toBe(EXIT.ok)
+    const home = f.deps.env['HOME']!
+    const real = path.join(f.deps.cwd, 'real-codex')
+    renameSync(path.join(home, '.codex'), real)
+    symlinkSync(real, path.join(home, '.codex'))
+    delete f.deps.env['CODEX_HOME']
+    const installed = findInstallations(f.deps.env, f.deps.hookAdapterHome, 'darwin').filter(i => i.harness === 'codex')
+    expect(installed).toHaveLength(1)
+    const logical = path.join(home, '.codex', 'hooks.json')
+    const snake = (event: string) => event.replace(/([a-z0-9])([A-Z])/g, '$1_$2').toLowerCase()
+    writeFileSync(path.join(real, 'config.toml'), 'model = "keep-model"\n' + installed[0]!.handlers.map(handler =>
+      `[hooks.state.${JSON.stringify(`${logical}:${snake(handler.event)}:${handler.groupIndex}:${handler.handlerIndex}`)}]\ntrusted_hash = "${codexHookIdentityHash(handler)}"\n`,
+    ).join('\n'))
+    expect(codexTrustFindings(installed, f.deps.env)).toEqual([])
+    // A set CODEX_HOME naming the same link is canonicalized, so that key differs.
+    f.deps.env['CODEX_HOME'] = path.join(home, '.codex')
+    expect(codexTrustFindings(installed, f.deps.env)).toHaveLength(installed[0]!.handlers.length)
+  })
+})
 
 describe('shared Machine configuration repair', () => {
   it.each(['codex', 'claude-code'] as const)('repairs %s through the selected home and preserves foreign content', (harness) => {
