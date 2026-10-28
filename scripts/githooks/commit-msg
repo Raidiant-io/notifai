@@ -1,9 +1,29 @@
 #!/bin/sh
 # Lint a proposed commit message with commitlint.
+#
+# A checkout may have no node_modules of its own: a linked worktree shares the
+# main worktree's install, and a checkout nested in a larger workspace uses that
+# workspace's install. Look where Node would resolve the package: this
+# checkout and each parent directory, then the main worktree.
 set -e
 root=$(git rev-parse --show-toplevel)
 cd "$root"
-if [ -x "$root/node_modules/.bin/commitlint" ]; then
-  exec "$root/node_modules/.bin/commitlint" --edit "$1"
-fi
-exec pnpm exec commitlint --edit "$1"
+
+lint_with() {
+  # commitlint resolves the shared config next to its own install.
+  exec "$1/node_modules/.bin/commitlint" --cwd "$root" --edit "$2"
+}
+
+dir=$root
+while :; do
+  [ -x "$dir/node_modules/.bin/commitlint" ] && lint_with "$dir" "$1"
+  [ "$dir" = / ] && break
+  dir=$(dirname "$dir")
+done
+
+common=$(git rev-parse --path-format=absolute --git-common-dir)
+main=$(dirname "$common")
+[ -x "$main/node_modules/.bin/commitlint" ] && lint_with "$main" "$1"
+
+echo 'commit-msg: commitlint is not installed. Run pnpm install in this checkout or the workspace that contains it.' >&2
+exit 1
