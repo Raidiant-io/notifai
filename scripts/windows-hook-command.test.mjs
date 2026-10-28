@@ -15,7 +15,11 @@ for (const shell of ['powershell', 'cmd']) {
 process.stdin.on('data', bytes => input += bytes);
 process.stdin.on('end', () => { process.stdout.write(JSON.stringify({ argv: process.argv.slice(2), input })); process.exit(JSON.parse(input).exit); });`)
       writeFileSync(path.join(root, 'powershell.exe'), 'This project-local executable must never be selected')
-      const command = buildHookConfig({ adapterPath: script, harness: 'codex', platform: 'win32', nodePath: process.execPath }).SessionStart[0].hooks[0].command
+      // A new install carries no revision; an existing one keeps the revision it was given.
+      for (const kept of [undefined, 'a'.repeat(64)]) {
+      const command = buildHookConfig({ adapterPath: script, harness: 'codex', platform: 'win32', nodePath: process.execPath,
+        ...(kept === undefined ? {} : { integrationRevision: kept }) }).SessionStart[0].hooks[0].command
+      const argv = ['hook', 'session-start', '--owner', 'notifai', '--harness', 'codex', ...(kept === undefined ? [] : ['--integration-revision', kept])]
       for (const exit of [0, 7]) {
         const input = JSON.stringify({ text: 'héllø 東京', exit })
         const program = shell === 'cmd' ? 'cmd.exe' : path.win32.join(process.env.SystemRoot ?? 'C:\\Windows', 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe')
@@ -24,10 +28,9 @@ process.stdin.on('end', () => { process.stdout.write(JSON.stringify({ argv: proc
         assert.ifError(result.error)
         assert.equal(result.status === 0, exit === 0, result.stderr)
         const actual = JSON.parse(result.stdout)
-        assert.deepEqual(actual.argv.slice(0, 7), ['hook', 'session-start', '--owner', 'notifai', '--harness', 'codex', '--integration-revision'])
-        assert.match(actual.argv[7], /^[a-f0-9]{64}$/)
-        assert.equal(actual.argv.length, 8)
+        assert.deepEqual(actual.argv, argv)
         assert.equal(actual.input, input)
+      }
       }
       const missing = buildHookConfig({ adapterPath: path.join(root, 'missing.exe'), harness: 'codex', platform: 'win32' }).SessionStart[0].hooks[0].command
       const failed = spawnSync(shell === 'cmd' ? 'cmd.exe' : 'powershell.exe', shell === 'cmd'
