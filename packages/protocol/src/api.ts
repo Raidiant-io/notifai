@@ -86,7 +86,13 @@ export const AccountPreferences = Type.Object(
   { additionalProperties: false },
 )
 export type AccountPreferencesT = Static<typeof AccountPreferences>
-export type AccountPreferencesResponse = AccountPreferencesT
+/** Successful responses retain additive facts; update requests remain closed. */
+export const AccountPreferencesResponse = Type.Object(AccountPreferences.properties)
+export type AccountPreferencesResponse = Static<typeof AccountPreferencesResponse>
+
+export function isAccountPreferencesResponse(value: unknown): value is AccountPreferencesResponse {
+  return Value.Check(AccountPreferencesResponse, value)
+}
 
 /** A partial update: each present field is written; at least one must be present. */
 export const UpdateAccountPreferencesRequest = Type.Object(
