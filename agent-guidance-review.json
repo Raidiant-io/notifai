@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "behavior_digest": "sha256:fc39c5f2c249c15d50943f81f7b14090f2f3ac6be9b3b184b003dbd30c998cf0",
+  "behavior_digest": "sha256:658915e00aa2fdf7720627c2b02bcce12c5b0ed2367fa39f15501f725df34099",
   "outcome": "reviewed-no-impact",
   "surfaces_reviewed": [
     "lifecycle-hooks",
@@ -9,5 +9,5 @@
     "cli-readiness",
     "domain-terms"
   ],
-  "reason": "Reviewed lifecycle hooks, the Notifai skill, harness setup, CLI readiness and domain terms against the canonical open registration-version response schema and guard. The numeric served field, additive response facts, existing registration/health requests and User-owned setup decisions remain unchanged. Desktop validation now refuses unconfirmed registration and health success before retaining a new Device Installation identity. The existing Codex approval guidance and send-confirmation schemas remain intact; no instruction wording changes are needed."
+  "reason": "Reviewed lifecycle hooks, the Notifai skill, harness setup, CLI readiness and domain terms against the canonical open Account preference response schema and guard. Existing preference properties, the optional Send Delay field for older services, true/false values, zero delay and additive response facts retain their meaning. Configuration and partial update requests remain closed; validation does not fill absent fields or change User-owned preference decisions. No command, lifecycle, setup, skill, readiness or domain wording changes are needed. Previously reviewed hook approval and send/registration contracts remain intact."
 }
