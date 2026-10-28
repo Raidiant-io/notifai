@@ -12,8 +12,7 @@ import {
   NOTIFICATION_SOUND_MEDIA_TYPE,
   SOUND_NAME_MAX_LENGTH,
   SESSION_LABEL_MAX_LENGTH,
-  type NotificationMediaType,
-  type QuestionT,
+  QuestionView,
 } from './notification.js'
 import type {
   CompanionReceiptState,
@@ -964,39 +963,37 @@ export interface FinalizeMediaUploadResponse {
 // Canonical notification content (fetched by Companion Apps on open)
 // ---------------------------------------------------------------------------
 
-export interface NotificationContentMediaItem {
-  media_id: string
+/** Open retained output; submission limits belong to NotificationDraft. */
+export const NotificationContentMediaItem = Type.Object({
+  media_id: Type.String(),
   /** Zero-based collection position; presentation.media order is semantic. */
-  position: number
-  media_type: NotificationMediaType
-  alt: string | null
-  /** Fresh one-hour signed URL of the original, or null when this item is unavailable. */
-  url: string | null
-  /**
-   * Fresh one-hour signed URL of the server-generated WebP preview variant
-   * (longest side 1024px), or null when the asset has no preview.
-   */
-  preview_url: string | null
-  /** Oriented pixel width of the original, or null when never decoded. */
-  width: number | null
-  /** Oriented pixel height of the original, or null when never decoded. */
-  height: number | null
-}
+  position: Type.Number(),
+  media_type: NotificationMediaTypeSchema,
+  alt: Type.Union([Type.String(), Type.Null()]),
+  /** Fresh one-hour signed original URL, or null when this item is unavailable. */
+  url: Type.Union([Type.String(), Type.Null()]),
+  /** Signed WebP preview URL, or null when the asset has no preview. */
+  preview_url: Type.Union([Type.String(), Type.Null()]),
+  /** Oriented original pixel dimensions, or null when never decoded. */
+  width: Type.Union([Type.Number(), Type.Null()]),
+  height: Type.Union([Type.Number(), Type.Null()]),
+})
+export type NotificationContentMediaItem = Static<typeof NotificationContentMediaItem>
 
-export interface NotificationContentResponse {
-  request_id: string
+export const NotificationContentResponse = Type.Object({
+  request_id: Type.String(),
   /** Purpose-written plain text used when the request has no Markdown Body. */
-  summary: string
+  summary: Type.String(),
   /** Standalone focused content, always interpreted as Markdown when present. */
-  body: string | null
-  media: NotificationContentMediaItem[]
-  /**
-   * The reply questions exactly as accepted, choice descriptions and question
-   * titles and details included, or empty for a request that asks nothing. A
-   * push leaves those out when they do not fit; this is where a Companion App
-   * gets them.
-   */
-  questions: QuestionT[]
+  body: Type.Union([Type.String(), Type.Null()]),
+  media: Type.Array(NotificationContentMediaItem),
+  /** Accepted questions and choice descriptions; older services omit this field. */
+  questions: Type.Optional(Type.Array(QuestionView)),
+})
+export type NotificationContentResponse = Static<typeof NotificationContentResponse>
+
+export function isNotificationContentResponse(value: unknown): value is NotificationContentResponse {
+  return Value.Check(NotificationContentResponse, value)
 }
 
 /** Most requests one content batch may name; a Companion App splits a longer list. */
@@ -1019,14 +1016,16 @@ export const NotificationContentBatchRequest = Type.Object(
 )
 export type NotificationContentBatchRequestT = Static<typeof NotificationContentBatchRequest>
 
-export interface NotificationContentBatchResponse {
+export const NotificationContentBatchResponse = Type.Object({
   /** Content of each named request this Account still holds, in request order. */
-  contents: NotificationContentResponse[]
-  /**
-   * Named requests with no content to return: unknown, another Account's, or
-   * deleted by retention. One case, exactly like the single-request 404.
-   */
-  missing: string[]
+  contents: Type.Array(NotificationContentResponse),
+  /** Unknown, other-Account or deleted requests, equivalent to single-request 404. */
+  missing: Type.Array(Type.String()),
+})
+export type NotificationContentBatchResponse = Static<typeof NotificationContentBatchResponse>
+
+export function isNotificationContentBatchResponse(value: unknown): value is NotificationContentBatchResponse {
+  return Value.Check(NotificationContentBatchResponse, value)
 }
 
 /**
