@@ -434,7 +434,7 @@ describe('command contracts', () => {
       const notices = io.errLines.filter((line) => line.includes('hooks aren\'t approved'))
       expect(notices).toEqual([
         "Notifai's hooks aren't approved in this Codex home. Carry on and never wait for it; end your reply to the User with this line, as written: " +
-          "**Keep in mind:** Codex won't use Notifai in this Codex account until you approve its hooks there. In a terminal on this machine (T3 Code's terminal panel works), run `notifai doctor codex`: it opens Codex's own hook review for this account, where you choose **Trust all and continue**.",
+          "**Keep in mind:** Codex won't use Notifai in this Codex account until you approve its hooks there. In a terminal on this machine, run `notifai doctor codex`: it opens Codex's own hook review for this account, where you choose **Trust all and continue**.",
       ])
       // The User may run it from a terminal that knows nothing of this home.
       expect(JSON.parse(readFileSync(path.join(stateDir(env), 'codex-homes.json'), 'utf8'))).toEqual({ homes: [shadow] })
