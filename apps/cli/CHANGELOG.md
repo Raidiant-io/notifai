@@ -8,6 +8,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 This project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 and [Conventional Commits](https://www.conventionalcommits.org/en/v1.0.0/).
 
+## [14.4.2-beta.4](https://github.com/Raidiant-io/notifai/compare/v14.4.1...v14.4.2-beta.4) (2026-10-28)
+
+### Bug Fixes
+
+* A Codex session keeps the Notifai hooks it loaded when it started. After an update adds or changes one, `notifai update --resume` no longer says the update is done for that session: it names the hooks the session is missing and says a new Codex session picks them up. `notifai doctor` names them too, and only treats it as a problem when a feature needs one (answers at turn end, Notes during a busy turn, question cards).
+* New Codex installs no longer add an `--integration-revision` argument to their hook commands. Existing installs keep their commands exactly as they are, so nothing needs approving again. `notifai doctor` asks Codex itself whether the hooks are approved when it can.
+* A Codex thread whose Notifai hooks Codex skips, such as one started with its own `CODEX_HOME` for another account, now shows as running in the Notifai apps once it sends. Until its hooks are approved in that home it takes no notes and can't ask questions.
+* The agent in such a thread is told once to remind you to approve the hooks, with the step that works there. In apps that run Codex for you, such as T3 Code and Orca, that is a terminal command that opens Codex's hook review with no sign-in: `CODEX_HOME=<home> codex -c model_provider=ollama`, then **Trust all and continue**. On Windows the command clears `CODEX_HOME` afterwards, and in Orca one approval in `~/.codex` covers every account. `notifai init` and its done message give the same step.
+* With a symlinked `~/.codex`, hooks you approved are no longer reported as waiting for approval.
+
 ## [14.4.1](https://github.com/Raidiant-io/notifai/compare/v14.4.0...v14.4.1) (2026-10-27)
 
 ### Bug Fixes
