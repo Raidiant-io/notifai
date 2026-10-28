@@ -1000,20 +1000,28 @@ export const UpdateProjectRequest = Type.Object(
 )
 export type UpdateProjectRequestT = Static<typeof UpdateProjectRequest>
 
-export interface ProjectView {
-  project_id: string
-  identifier: string
-  display_name: string | null
-  image_media_id: string | null
+export const ProjectView = Type.Object({
+  project_id: Type.String(),
+  identifier: Type.String(),
+  display_name: Type.Union([Type.String(), Type.Null()]),
+  image_media_id: Type.Union([Type.String(), Type.Null()]),
   /** Stable cache identity. Signed URLs are transport capabilities, never cache identity. */
-  avatar_revision: string
+  avatar_revision: Type.String(),
   /** Public generated avatar URL, or a short-lived signed URL for custom media. */
-  image_url: string | null
-  last_seen_at: string
+  image_url: Type.Union([Type.String(), Type.Null()]),
+  last_seen_at: Type.String(),
+})
+export type ProjectView = Static<typeof ProjectView>
+
+export const ListProjectsResponse = Type.Object({ projects: Type.Array(ProjectView) })
+export type ListProjectsResponse = Static<typeof ListProjectsResponse>
+
+export function isProjectView(value: unknown): value is ProjectView {
+  return Value.Check(ProjectView, value)
 }
 
-export interface ListProjectsResponse {
-  projects: ProjectView[]
+export function isListProjectsResponse(value: unknown): value is ListProjectsResponse {
+  return Value.Check(ListProjectsResponse, value)
 }
 
 // ---------------------------------------------------------------------------

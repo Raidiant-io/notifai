@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "behavior_digest": "sha256:3b7e76863715b28a88a3eae95c65f0a092a2079dd680143bb14f9e9c25841e4c",
+  "behavior_digest": "sha256:e4a8175c01a44d4bef1390b389e8e2c0754a6a949c32593d4b62a51501411cd5",
   "outcome": "reviewed-no-impact",
   "surfaces_reviewed": [
     "lifecycle-hooks",
@@ -9,5 +9,5 @@
     "cli-readiness",
     "domain-terms"
   ],
-  "reason": "Reviewed all five surfaces for the request_reads silent push and read_sync capability. The change adds Companion App wire only: a silent APNs/FCM push carrying just sync=request_reads, a read_sync client capability and a read_sync Server Feature. No agent, hook or CLI command sends, receives or describes it. Lifecycle hooks: unchanged. Notifai skill: unchanged; agents never see read state or this push. Harness setup: unchanged. CLI readiness: SHIPPED_CLI_CAPABILITIES is unchanged; the CLI reads server_capabilities only through includes() checks for its own capabilities, so a new listed entry changes no doctor, resume or ask result. Domain terms: unchanged; read and Device Installation keep their meaning. Also reviewed the additive machine/device resource schemas and strict completed-mutation acknowledgements retained on this branch: inventory field types and CLI behavior stay unchanged; no further agent instruction change is required."
+  "reason": "Reviewed all five surfaces for the canonical Project response schemas. These add runtime schema and guard exports for the existing Project fields, preserving nullable values, opaque strings and additive response fields. Lifecycle hooks: unchanged. Notifai skill: unchanged; no new command or agent action. Harness setup: unchanged. CLI readiness: unchanged; no command consumes the new guards and existing field types stay the same. Domain terms: unchanged; Project retains its existing meaning. The previously reviewed machine/device schemas and request_reads push are retained."
 }
