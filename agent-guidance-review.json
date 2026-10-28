@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "behavior_digest": "sha256:4d70878c949d318ae511283535c1ea454c3acd33ad9ebae72b84b510d0a3c31b",
+  "behavior_digest": "sha256:fc39c5f2c249c15d50943f81f7b14090f2f3ac6be9b3b184b003dbd30c998cf0",
   "outcome": "reviewed-no-impact",
   "surfaces_reviewed": [
     "lifecycle-hooks",
@@ -9,5 +9,5 @@
     "cli-readiness",
     "domain-terms"
   ],
-  "reason": "Reviewed lifecycle hooks, the Notifai skill, harness setup, CLI readiness and domain terms against canonical reply submission, Session Note and Answer Edit response schemas. They reuse existing retained reply/message/version fields, accept additive response facts and preserve replay semantics; existing request schemas and served fields are unchanged. Desktop validation prevents unconfirmed success from clearing queued sends. No lifecycle, skill, setup, readiness or domain wording changes are needed. The reviewed User-owned Codex hook approval command and guidance remain intact."
+  "reason": "Reviewed lifecycle hooks, the Notifai skill, harness setup, CLI readiness and domain terms against the canonical open registration-version response schema and guard. The numeric served field, additive response facts, existing registration/health requests and User-owned setup decisions remain unchanged. Desktop validation now refuses unconfirmed registration and health success before retaining a new Device Installation identity. The existing Codex approval guidance and send-confirmation schemas remain intact; no instruction wording changes are needed."
 }
