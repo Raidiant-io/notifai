@@ -144,7 +144,8 @@ export const DEVICE_DERIVED_STATUSES = [
 ] as const
 export type DeviceDerivedStatus = (typeof DEVICE_DERIVED_STATUSES)[number]
 
-export type MachineDerivedStatus = 'must_update' | 'working'
+export const MachineDerivedStatusSchema = Type.Union([Type.Literal('must_update'), Type.Literal('working')])
+export type MachineDerivedStatus = Static<typeof MachineDerivedStatusSchema>
 
 export interface FeatureUnavailableDetails {
   affected_operation: AffectedOperation

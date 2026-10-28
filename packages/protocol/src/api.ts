@@ -14,7 +14,6 @@ import {
   SESSION_LABEL_MAX_LENGTH,
   type NotificationMediaType,
   type QuestionT,
-  type Platform,
 } from './notification.js'
 import type {
   CompanionReceiptState,
@@ -27,10 +26,10 @@ import {
   CapabilityAdvertisement,
   type AffectedOperation,
   type ClientCapability,
-  type DeviceDerivedStatus,
-  type MachineDerivedStatus,
+  ClientCapabilitySchema,
+  DEVICE_DERIVED_STATUSES,
+  MachineDerivedStatusSchema,
   SupportAssessment,
-  type SupportState,
 } from './compatibility.js'
 
 /**
@@ -323,24 +322,37 @@ export interface PairingDetailsResponse {
   expires_at: string
 }
 
-export interface MachineSummary {
-  machine_id: string
-  name: string
-  status: 'active' | 'revoked'
-  approved_at: string
-  revoked_at: string | null
-  last_seen_at: string | null
-  cli_version: string | null
-  capabilities: ClientCapability[]
-  support: SupportAssessment
-  support_state: SupportState
-  derived_status: MachineDerivedStatus
+/** Open resource responses retain facts added by newer services. */
+export const MachineSummary = Type.Object({
+  machine_id: Type.String(),
+  name: Type.String(),
+  status: Type.Union([Type.Literal('active'), Type.Literal('revoked')]),
+  approved_at: Type.String(),
+  revoked_at: Type.Union([Type.String(), Type.Null()]),
+  last_seen_at: Type.Union([Type.String(), Type.Null()]),
+  cli_version: Type.Union([Type.String(), Type.Null()]),
+  capabilities: Type.Array(ClientCapabilitySchema),
+  support: SupportAssessment,
+  support_state: SupportAssessment.properties.state,
+  derived_status: MachineDerivedStatusSchema,
   /** Null while this Approved Machine can send. Optional updates never appear here. */
-  status_message: string | null
+  status_message: Type.Union([Type.String(), Type.Null()]),
+})
+export type MachineSummary = Static<typeof MachineSummary>
+
+export const ListMachinesResponse = Type.Object({ machines: Type.Array(MachineSummary) })
+export type ListMachinesResponse = Static<typeof ListMachinesResponse>
+
+export function isListMachinesResponse(value: unknown): value is ListMachinesResponse {
+  return Value.Check(ListMachinesResponse, value)
 }
 
-export interface ListMachinesResponse {
-  machines: MachineSummary[]
+/** Removing a Device Installation or revoking an Approved Machine completed. */
+export const ResourceMutationResponse = Type.Object({ ok: Type.Literal(true) })
+export type ResourceMutationResponse = Static<typeof ResourceMutationResponse>
+
+export function isResourceMutationResponse(value: unknown): value is ResourceMutationResponse {
+  return Value.Check(ResourceMutationResponse, value)
 }
 
 // ---------------------------------------------------------------------------
@@ -436,27 +448,27 @@ export const ReportHealthRequest = Type.Object(
 )
 export type ReportHealthRequestT = Static<typeof ReportHealthRequest>
 
-export interface RoutableDevice {
-  device_id: string
-  display_name: string
-  platform: Platform
-  permission_status: string
-  registration_healthy: boolean
-  app_version: string
-  app_build: string | null
-  os_version: string | null
-  capabilities: ClientCapability[]
-  support: SupportAssessment
-  support_state: SupportState
-  derived_status: DeviceDerivedStatus
+export const RoutableDevice = Type.Object({
+  device_id: Type.String(),
+  display_name: Type.String(),
+  platform: PlatformSchema,
+  permission_status: Type.String(),
+  registration_healthy: Type.Boolean(),
+  app_version: Type.String(),
+  app_build: Type.Union([Type.String(), Type.Null()]),
+  os_version: Type.Union([Type.String(), Type.Null()]),
+  capabilities: Type.Array(ClientCapabilitySchema),
+  support: SupportAssessment,
+  support_state: SupportAssessment.properties.state,
+  derived_status: Type.Union(DEVICE_DERIVED_STATUSES.map((status) => Type.Literal(status))),
   /** Exactly one dashboard status; null means working. */
-  status_message: string | null
-  last_seen_at: string | null
-}
+  status_message: Type.Union([Type.String(), Type.Null()]),
+  last_seen_at: Type.Union([Type.String(), Type.Null()]),
+})
+export type RoutableDevice = Static<typeof RoutableDevice>
 
-export interface ListDevicesResponse {
-  devices: RoutableDevice[]
-}
+export const ListDevicesResponse = Type.Object({ devices: Type.Array(RoutableDevice) })
+export type ListDevicesResponse = Static<typeof ListDevicesResponse>
 
 // ---------------------------------------------------------------------------
 // Notification submission and evidence
