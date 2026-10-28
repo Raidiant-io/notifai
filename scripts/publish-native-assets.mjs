@@ -1,4 +1,5 @@
-// Publish only a complete admitted bundle into its pre-existing release draft.
+// Publish only a complete admitted bundle into its tag's one release draft,
+// creating that draft from the tag's CHANGELOG section when none exists.
 // Channels advance separately, after immutable release readback.
 import assert from 'node:assert/strict'
 import { createHash } from 'node:crypto'
@@ -85,7 +86,25 @@ function assetState(release, assets, complete = false) {
   return found
 }
 
-export async function publishNativeAssets({ bundle, sourceRevision, token, fetchImpl = fetch, delay = ms => new Promise(resolve => setTimeout(resolve, ms)) }) {
+/** The release notes for one version: its CHANGELOG section, as published before. */
+export function changelogSection(text, version) {
+  const lines = text.replace(/\r\n?/g, '\n').split('\n')
+  const start = lines.findIndex(line => line.startsWith(`## [${version}](`) || line === `## [${version}]`)
+  assert.ok(start >= 0, `The CLI CHANGELOG has no section for ${version}; its release draft needs those notes`)
+  const next = lines.findIndex((line, index) => index > start && line.startsWith('## '))
+  const body = lines.slice(start + 1, next < 0 ? lines.length : next).join('\n').trim()
+  assert.ok(body, `The CLI CHANGELOG section for ${version} is empty`)
+  return `${body}\n`
+}
+
+// A retried `gh release create` leaves byte-identical empty drafts. Keep the
+// oldest; any other ambiguity stays a stop for the owner.
+const duplicateDrafts = releases => releases.length > 1 && releases.every(release => release.draft === true &&
+  Array.isArray(release.assets) && release.assets.length === 0 && release.name === releases[0].name &&
+  release.body === releases[0].body && release.prerelease === releases[0].prerelease)
+
+export async function publishNativeAssets({ bundle, sourceRevision, token, notes, fetchImpl = fetch,
+  delay = ms => new Promise(resolve => setTimeout(resolve, ms)), log = message => console.error(message) }) {
   const { inventory, assets } = bundle
   assert.equal(inventory.source_revision, sourceRevision, 'Bundle and publication source differ')
   const tag = `v${inventory.version}`, prerelease = publicationLane(inventory.version) === 'beta'
@@ -98,15 +117,37 @@ export async function publishNativeAssets({ bundle, sourceRevision, token, fetch
   const api = nativeGithubClient(token, fetchImpl)
   // A draft has no by-tag address. Find this tag's one release in the list,
   // then read that exact release by ID through publication.
-  const listed = []
-  for (let page = 1; page <= 20; page += 1) {
-    const batch = await api(`/releases?per_page=100&page=${page}`)
-    assert.ok(Array.isArray(batch), 'GitHub release list is unavailable')
-    listed.push(...batch.filter(entry => entry?.tag_name === tag))
-    if (batch.length < 100) break
-    assert.ok(page < 20, 'GitHub release list is too long to search safely')
+  const tagReleases = async () => {
+    const listed = []
+    for (let page = 1; page <= 20; page += 1) {
+      const batch = await api(`/releases?per_page=100&page=${page}`)
+      assert.ok(Array.isArray(batch), 'GitHub release list is unavailable')
+      listed.push(...batch.filter(entry => entry?.tag_name === tag))
+      if (batch.length < 100) break
+      assert.ok(page < 20, 'GitHub release list is too long to search safely')
+    }
+    return listed
   }
-  assert.ok(listed.length === 1 && positiveId(listed[0].id), 'Exactly one GitHub release must exist for the admitted tag')
+  let listed = await tagReleases()
+  if (duplicateDrafts(listed)) {
+    const [keep, ...extra] = [...listed].sort((a, b) => a.id - b.id)
+    for (const release of extra) {
+      assert.ok(positiveId(release.id))
+      await api(`/releases/${release.id}`, { method: 'DELETE' })
+    }
+    log(`Removed ${extra.length} duplicate empty draft(s) for ${tag}; keeping draft ${keep.id}.`)
+    listed = [keep]
+  } else if (listed.length === 0) {
+    const body = typeof notes === 'function' ? notes() : notes
+    assert.ok(typeof body === 'string' && body.trim(), `No GitHub release exists for ${tag} and no release notes were supplied`)
+    const created = await api('/releases', { method: 'POST',
+      body: { tag_name: tag, name: inventory.version, body, draft: true, prerelease } })
+    assert.ok(positiveId(created?.id) && created.tag_name === tag && created.draft === true, 'Created release draft differs')
+    log(`No GitHub release existed for ${tag}; created its draft ${created.id} from the CHANGELOG section.`)
+    listed = [created]
+  }
+  assert.ok(listed.length === 1 && positiveId(listed[0].id),
+    `Exactly one GitHub release must exist for the admitted tag; found ${listed.length} (${listed.map(release => release.id).join(', ')})`)
   const releaseId = listed[0].id
   const readRelease = () => api(`/releases/${releaseId}`)
   let release = await readRelease()

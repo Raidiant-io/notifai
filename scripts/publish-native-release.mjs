@@ -10,7 +10,7 @@ import { registryDistTags } from './verify-npm-distribution.mjs'
 import { parseArgs } from 'node:util'
 import { Distribution } from '../apps/cli/dist/release-distribution.js'
 import { RELEASE_PUBLIC_KEYS } from '../apps/cli/dist/release-trust.js'
-import { nativeReleaseBundle, publishNativeAssets } from './publish-native-assets.mjs'
+import { changelogSection, nativeReleaseBundle, publishNativeAssets } from './publish-native-assets.mjs'
 import { isSemVer } from '../apps/cli/dist/version.js'
 import { validateReleaseSigner } from './sign-release-records.mjs'
 import { requireUnifiedPublication } from './require-unified-publication.mjs'
@@ -55,7 +55,8 @@ try {
     sourceRevision: values['expected-sha'], requireNpmPointer: true })
   if (values.promote) assert.equal(result.admission.inventory_sha256,
     createHash('sha256').update(bundle.signedInventory).digest('hex'), 'Retained bundle differs from admitted npm/native inventory')
-  if (values.publish) result.publication = await publishNativeAssets(options)
+  if (values.publish) result.publication = await publishNativeAssets({ ...options,
+    notes: () => changelogSection(readFileSync(new URL('../apps/cli/CHANGELOG.md', import.meta.url), 'utf8'), bundle.inventory.version) })
   if (values.promote) result.channel = await advanceNativeChannel({ ...options, ...signing, channel: values.channel,
     initialize: values['initialize-channel'], allowRollback: values['allow-channel-rollback'], withdraw: values.withdraw })
   process.stdout.write(JSON.stringify({ ok: true, ...result }) + '\n')

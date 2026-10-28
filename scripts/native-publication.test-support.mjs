@@ -23,7 +23,22 @@ export function fixture() {
     if (route === '/releases/tags/v1.0.0') return state.release.draft ? response({ message: 'Not Found' }, 404) : response(state.release)
     if (method === 'GET' && route === '/releases') {
       assert.equal(url.searchParams.get('per_page'), '100')
-      return response(url.searchParams.get('page') === '1' ? [...state.otherReleases, state.release] : [])
+      return response(url.searchParams.get('page') === '1' ? [...state.otherReleases, ...(state.release ? [state.release] : [])] : [])
+    }
+    if (method === 'POST' && route === '/releases') {
+      assert.equal(url.origin, 'https://api.github.com')
+      assert.ok(!state.release, 'A release draft already existed')
+      const body = JSON.parse(options.body)
+      state.created = body
+      state.release = { id: 1, tag_name: body.tag_name, name: body.name, body: body.body, prerelease: body.prerelease, draft: body.draft, immutable: false, assets: [] }
+      return response(state.release, 201)
+    }
+    if (method === 'DELETE' && /^\/releases\/\d+$/.test(route)) {
+      const id = Number(route.split('/').at(-1))
+      const doomed = state.otherReleases.find(item => item.id === id)
+      assert.ok(doomed && doomed.draft && doomed.assets.length === 0, 'Only an empty duplicate draft may be deleted')
+      state.otherReleases = state.otherReleases.filter(item => item.id !== id)
+      return response(null, 204)
     }
     if (method === 'GET' && route === '/releases/1') return response(state.release)
     if (method === 'DELETE' && route.startsWith('/releases/assets/')) {
@@ -52,5 +67,5 @@ export function fixture() {
     }
     throw new Error(`Unexpected test request ${method} ${route}`)
   }
-  return { state, args: { bundle, sourceRevision, token: 'fixture', fetchImpl, delay: async () => {} } }
+  return { state, args: { bundle, sourceRevision, token: 'fixture', fetchImpl, delay: async () => {}, notes: '### Bug Fixes\n\n* Fixture notes.\n', log: () => {} } }
 }
