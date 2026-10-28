@@ -79,9 +79,7 @@ function terminalApproval(surface: CodexSurface | null, place: CodexApprovalPlac
   // Orca's accounts take their approval from ~/.codex.
   const home = orca ? null : place.home ?? null
   if (home === null && (place.host ?? null) === null) return null
-  const where = place.host === 't3'
-    ? "in a terminal on this machine (T3 Code's terminal panel works)"
-    : 'in a terminal on this machine'
+  const where = 'in a terminal on this machine'
   const review = home === null ? "Codex's own hook review" : "Codex's own hook review for this account"
   return {
     /** Who skips the hooks, and where the approval goes. */

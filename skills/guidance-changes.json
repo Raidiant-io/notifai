@@ -1,5 +1,5 @@
 {
-  "current": "3049dc0e53865d3ffd3ea58b73ab77bd60f792fbde409d595f4d50c118838874",
+  "current": "fb427dfcf5435276731defad2cb12b345b59f480b445287f6f5e9ba87e03fff5",
   "releases": [
     {
       "digest": "3e47b01bc6bbfb43e910c660b9964fab6459d75148c3c02dcbcd0be64cfb2963",
@@ -160,6 +160,10 @@
     {
       "digest": "3049dc0e53865d3ffd3ea58b73ab77bd60f792fbde409d595f4d50c118838874",
       "note": "New: `notifai doctor codex` helps the User approve Notifai's Codex hooks. Run in a terminal, it finds the Codex homes where Notifai's hooks wait (`~/.codex`, the shell's `CODEX_HOME`, and homes Notifai saw a Codex thread run in) and opens Codex's own hook review in each, with no sign-in where the home has none of its own; the User approves there and Notifai re-checks. Notifai never approves its hooks itself. Run by an agent it launches nothing and prints the command for the User. Where Codex runs under an app with no hook review of its own (T3 Code, Orca), the reminder, the setup warning and the done message now name `notifai doctor codex` instead of `CODEX_HOME=<home> codex -c model_provider=ollama`, on every platform. `doctor`, a refused `ask` and `hooks install` add it beside Review hooks and `/hooks`. Never run it for the User; carry on and end your reply with the reminder as written, as before."
+    },
+    {
+      "digest": "fb427dfcf5435276731defad2cb12b345b59f480b445287f6f5e9ba87e03fff5",
+      "note": "The reminder to approve Notifai's Codex hooks, the setup warning and the done message now say \"in a terminal on this machine\" for every app that runs Codex without a hook review of its own; they no longer add a note naming one particular app. The step itself is unchanged: run `notifai doctor codex` and choose **Trust all and continue** (or type `/hooks` for hooks that are off). Carry on and end your reply with the reminder as written, as before."
     }
   ]
 }

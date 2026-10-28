@@ -49,10 +49,12 @@ describe('hook approval wording', () => {
   })
 
   it('names `notifai doctor codex` when an app runs Codex in its own home', () => {
-    const t3 = "**Keep in mind:** Codex won't use Notifai in this Codex account until you approve its hooks there. In a terminal on this machine (T3 Code's terminal panel works), run `notifai doctor codex`: it opens Codex's own hook review for this account, where you choose **Trust all and continue**."
+    const t3 = "**Keep in mind:** Codex won't use Notifai in this Codex account until you approve its hooks there. In a terminal on this machine, run `notifai doctor codex`: it opens Codex's own hook review for this account, where you choose **Trust all and continue**."
     expect(codexHooksReminder(null, { home: '/Users/me/app/shadow', host: 't3', platform: 'darwin' })).toBe(t3)
     // One command on every platform: no home path, no PowerShell form to type.
     expect(codexHooksReminder(null, { home: "C:\\Users\\me's\\shadow", host: 't3', platform: 'win32' })).toBe(t3)
+    // Every app gets the same words: the step names no particular app.
+    expect(codexHooksReminder(null, { home: '/Users/me/app/shadow', platform: 'darwin' })).toBe(t3)
     // The startup prompt does not list hooks that are off, so that takes /hooks.
     expect(codexHooksReminder(null, { home: '/Users/me/My Apps/shadow', off: true, platform: 'linux' })).toBe(
       "**Keep in mind:** Codex won't use Notifai in this Codex account until you turn its hooks on and approve them there. In a terminal on this machine, run `notifai doctor codex`: it opens Codex's own hook review for this account, where you type `/hooks` to turn them on and approve them.",
@@ -64,7 +66,7 @@ describe('hook approval wording', () => {
 
   it('sends a T3 Code default account to the terminal too, on ~/.codex', () => {
     expect(codexHooksReminder(null, { host: 't3', home: null, platform: 'darwin' })).toBe(
-      "**Keep in mind:** Codex won't use Notifai until you approve its hooks. In a terminal on this machine (T3 Code's terminal panel works), run `notifai doctor codex`: it opens Codex's own hook review, where you choose **Trust all and continue**.",
+      "**Keep in mind:** Codex won't use Notifai until you approve its hooks. In a terminal on this machine, run `notifai doctor codex`: it opens Codex's own hook review, where you choose **Trust all and continue**.",
     )
   })
 
@@ -79,7 +81,7 @@ describe('hook approval wording', () => {
 
   it('gives setup and its done message the same step for a separate home', () => {
     const place = { home: '/Users/me/app/shadow', host: 't3', platform: 'darwin' } as const
-    const step = "in a terminal on this machine (T3 Code's terminal panel works), run `notifai doctor codex`: it opens Codex's own hook review for this account, where you choose **Trust all and continue**."
+    const step = "in a terminal on this machine, run `notifai doctor codex`: it opens Codex's own hook review for this account, where you choose **Trust all and continue**."
     expect(codexHooksWarning(null, place)).toBe(`⚠️ **Codex won't use Notifai in this Codex account until you approve its hooks there:** ${step}`)
     expect(codexNextStep(null, true, place)).toBe(`**approve the Notifai hooks**, then open a new session: ${step}`)
     expect(doneMessage({ ...facts, codexSurface: null, codexPlace: place })).toContain(`- **Codex**: **approve the Notifai hooks**, then open a new session: ${step}`)
