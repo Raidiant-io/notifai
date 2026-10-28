@@ -14,6 +14,10 @@ const probeShell = (shell: string) => spawnSync(shell,
   /^(pwsh|powershell)/.test(shell) ? ['-NoProfile', '-NonInteractive', '-Command', 'exit 0'] : ['-c', 'exit 0'],
   { encoding: 'utf8', timeout: 30_000 },
 )
+// pwsh 7.6 on GitHub's windows-11-arm runners dies in its own .NET runtime in
+// roughly one launch in fifty, with exactly this output and nothing else. It
+// never occurs in Windows PowerShell or on x64. Only this signature is repeated.
+const PWSH_RUNTIME_CRASH = /^Fatal error\.\r?\nInternal CLR error\. \(0x80131506\)\s*$/
 const posixQuote = (value: string) => `'${value.replaceAll("'", `'"'"'`)}'`
 const powershellQuote = (value: string) => `'${value.replace(/['’‘‚‛]/g, '$&$&')}'`
 
@@ -56,9 +60,15 @@ for (const shell of shells) {
       const command = `${powershell ? '& ' : ''}${quote(process.execPath)} ${quote(driver)} ${args.map(quote).join(' ')}`
       // A BOM makes Windows PowerShell read script source as UTF-8.
       writeFileSync(script, `${powershell ? '\ufeff' : ''}${command}\n`)
-      const result = spawnSync(shell, powershell ? ['-NoProfile', '-NonInteractive', '-File', script] : ['-f', script], {
-        cwd: root, encoding: 'utf8', timeout: 25_000,
-      })
+      let result
+      for (let attempt = 1; ; attempt += 1) {
+        result = spawnSync(shell, powershell ? ['-NoProfile', '-NonInteractive', '-File', script] : ['-f', script], {
+          cwd: root, encoding: 'utf8', timeout: 25_000,
+        })
+        if (!(shell === 'pwsh' && PWSH_RUNTIME_CRASH.test(result.stderr ?? '') && attempt < 3)) break
+        expect(existsSync(path.join(root, 'SHELL_SENTINEL'))).toBe(false)
+        console.warn(`pwsh crashed in its own .NET runtime (Internal CLR error 0x80131506), not in Notifai; repeating the identical invocation (attempt ${attempt + 1} of 3)`)
+      }
       expect(result.error).toBeUndefined()
       expect(result.stderr).toBe('')
       expect(result.status).toBe(0)
