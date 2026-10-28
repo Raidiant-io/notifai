@@ -40,7 +40,7 @@ that reaches nobody, and your devices say so.
 them between steps, an idle one starts a new turn. This needs Claude Code
 2.1.224 or newer on macOS and Linux, or 2.1.234 or newer on Windows; with an
 older version the answer arrives at the session's next turn. Claude Code's own
-question picker is linked too: answer it in the terminal or on your phone.
+question picker is linked too: answer it in Claude Code or on your phone.
 
 **Codex.** Answers and notes arrive on their own, like Claude Code. Codex's
 question card is linked from Codex 0.163.0, with models that offer it. Codex

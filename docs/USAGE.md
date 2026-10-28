@@ -152,7 +152,7 @@ records the receipt on its own.
 
 Where the harness has its own question form (Claude Code's picker, Codex's
 question card, OpenCode's question form), `ask` can hand that form back for the
-agent to open. You can then answer in the terminal or on your phone, and both
+agent to open. You can then answer in that form or on your phone, and both
 close.
 
 Where no later answer can reach the asking Agent Session, `notifai ask --wait`

@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "behavior_digest": "sha256:4fd3556606d6bf4d7a36ba7009432f01c8f3ee8c5e5225f6bc29221ab4c3c7b9",
+  "behavior_digest": "sha256:35e21b448d18ebcc86a641ad8feabff4fddc5e01866faed0520430a47a00be85",
   "outcome": "guidance-updated",
   "surfaces_reviewed": [
     "lifecycle-hooks",
@@ -9,5 +9,5 @@
     "cli-readiness",
     "domain-terms"
   ],
-  "reason": "Reviewed all five surfaces for harness-neutral wording and for retirement closes that say how a question ended. CLI readiness: the interactive question-routing screen, `notifai init`'s Ready note, `notifai doctor`'s hooks gap and the ask_notifications/ask_grace_seconds descriptions say the question stays in the conversation, not the terminal; genuine shell steps (`notifai doctor codex` in a terminal, the Codex TUI's /hooks) are unchanged. Lifecycle hooks: the native-answer receipt for Claude Code pickers and Codex cards reads 'Answered in the agent session.'; the agent context for a picker answered in two places says 'in the conversation'; retirement closes now carry an optional `retirement` state (expired or answered_elsewhere) the CLI already recorded, retried without it on a service that refuses the field; no hook definition, timing or exit behavior changes. Notifai skill: SKILL.md, references/harness-setup.md, harness-claude-code.md, harness-codex.md and diagnostics.md replace 'stays in the terminal' with the conversation or the harness by name; the questions topic's bad example says 'without the conversation'. Harness setup: no setup step changes. Domain terms: unchanged; app copy uses Agent Session. skills/guidance-changes.json carries one new note."
+  "reason": "Reviewed all five surfaces for the remaining harness-neutral wording in harness setup docs. Harness setup: docs/HARNESSES.md says Claude Code's picker is answered in Claude Code or on the phone, and docs/USAGE.md says a handed-back form is answered in that form or on the phone, instead of 'in the terminal'; no setup step changes. Lifecycle hooks, Notifai skill, CLI readiness and domain terms: unchanged since the previous review, which already replaced conversation-meaning 'terminal' wording there. No CLI source changes, so skills/guidance-changes.json needs no new note."
 }
