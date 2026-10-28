@@ -41,35 +41,71 @@ export function admitSourceJob(run, jobs, artifact) {
   assert.match(artifact.digest, /^sha256:[a-f0-9]{64}$/)
   return artifact
 }
-async function restore(file) {
-  const digest = inputDigest()
-  const gh = args => execFileSync('gh', args, { encoding: 'utf8', timeout: 30_000, stdio: ['ignore', 'pipe', 'pipe'] })
-  const api = suffix => JSON.parse(gh(['api', `repos/Raidiant-io/notifai/${suffix}`]))
+// GitHub's Actions API intermittently answers 5xx (502 on job listings broke
+// four releases). Only those, and timeouts, are retried; anything else is real.
+const TRANSIENT = /\bHTTP 5\d\d\b|\bETIMEDOUT\b|\bECONNRESET\b|\bEAI_AGAIN\b/
+const pause = ms => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms)
+export class ReceiptLookupUnavailable extends Error {}
+export function githubReader({ exec = execFileSync, wait = pause, log = message => console.error(message), delays = [3000, 10000] } = {}) {
+  return (args, options = {}) => {
+    for (let attempt = 0; ; attempt += 1) {
+      try {
+        return exec('gh', args, { timeout: 30_000, stdio: ['ignore', 'pipe', 'pipe'], ...options })
+      } catch (error) {
+        const detail = `${error.code ?? ''} ${error.signal ?? ''} ${error.stderr ?? ''}`.trim()
+        if (!TRANSIENT.test(detail) && !(error.code === 'ETIMEDOUT' || error.signal === 'SIGTERM')) throw error
+        const summary = detail.replace(/\s+/g, ' ').slice(0, 200)
+        if (attempt >= delays.length) throw new ReceiptLookupUnavailable(`GitHub API stayed unavailable for gh ${args[1] ?? args[0]}: ${summary}`)
+        log(`Source receipt lookup: GitHub API transient failure (${summary}); retrying in ${delays[attempt] / 1000}s (attempt ${attempt + 2} of ${delays.length + 1}).`)
+        wait(delays[attempt])
+      }
+    }
+  }
+}
+// Most releases change inputs, so read each candidate receipt first and list
+// jobs only for the one whose inputs match. Admission stays as strict.
+export function findReceipt({ digest, api, download, currentRun }) {
   const runs = api('actions/workflows/publish.yml/runs?event=workflow_dispatch&per_page=30').workflow_runs
   for (const run of runs) {
-    if (String(run.id) === process.env.GITHUB_RUN_ID) continue
+    if (String(run.id) === currentRun) continue
     const artifacts = api(`actions/runs/${run.id}/artifacts?per_page=100`)
     const artifact = artifacts.artifacts.find(a => a.name === `release-source-${run.head_sha}` && !a.expired)
     if (!artifact) continue
+    const receipt = download(artifact)
+    if (receipt.input_digest !== digest) continue
     const jobs = api(`actions/runs/${run.id}/jobs?filter=latest&per_page=100`)
     assert.equal(jobs.jobs.length, jobs.total_count, 'Incomplete job evidence')
     admitSourceJob(run, jobs.jobs, artifact)
+    validateReceipt(receipt, digest)
+    assert.equal(receipt.source_revision, run.head_sha)
+    return { ...receipt, reused_from_run: run.id }
+  }
+  return null
+}
+function restore(file, { gh = githubReader(), log = message => console.error(message) } = {}) {
+  const digest = inputDigest()
+  const api = suffix => JSON.parse(gh(['api', `repos/Raidiant-io/notifai/${suffix}`], { encoding: 'utf8' }))
+  const download = artifact => {
     const dir = mkdtempSync(path.join(os.tmpdir(), 'release-source-'))
     try {
-      const archive = execFileSync('gh', ['api', `repos/Raidiant-io/notifai/actions/artifacts/${artifact.id}/zip`], { timeout: 30_000, maxBuffer: 1024 * 1024 })
+      const archive = gh(['api', `repos/Raidiant-io/notifai/actions/artifacts/${artifact.id}/zip`], { maxBuffer: 1024 * 1024 })
       assert.equal(`sha256:${createHash('sha256').update(archive).digest('hex')}`, artifact.digest, 'Receipt archive digest differs')
       writeFileSync(path.join(dir, 'receipt.zip'), archive)
-      const contents = execFileSync('unzip', ['-p', path.join(dir, 'receipt.zip'), 'release-source.json'], { maxBuffer: 64 * 1024 })
-      writeFileSync(path.join(dir, 'release-source.json'), contents)
-      const receipt = JSON.parse(readFileSync(path.join(dir, 'release-source.json'), 'utf8'))
-      if (receipt.input_digest !== digest) continue
-      validateReceipt(receipt, digest)
-      assert.equal(receipt.source_revision, run.head_sha)
-      writeFileSync(file, JSON.stringify({ ...receipt, reused_from_run: run.id }) + '\n')
-      return true
+      return JSON.parse(execFileSync('unzip', ['-p', path.join(dir, 'receipt.zip'), 'release-source.json'], { maxBuffer: 64 * 1024 }).toString('utf8'))
     } finally { rmSync(dir, { recursive: true, force: true }) }
   }
-  return false
+  let receipt
+  try {
+    receipt = findReceipt({ digest, api, download, currentRun: process.env.GITHUB_RUN_ID })
+  } catch (error) {
+    if (!(error instanceof ReceiptLookupUnavailable)) throw error
+    // Not reusing is always safe: the full source tests run instead.
+    log(`${error.message}. Running the source tests instead of reusing a receipt.`)
+    return false
+  }
+  if (!receipt) return false
+  writeFileSync(file, JSON.stringify(receipt) + '\n')
+  return true
 }
 async function main() {
   const [command, kind, file] = process.argv.slice(2)
@@ -81,7 +117,7 @@ async function main() {
     assert.ok(kind !== 'stable' || !version.includes('-'), 'Stable cannot expose beta bytes')
     assert.ok(kind !== 'beta' || version.includes('-beta.'), 'Beta requires a beta version')
   } else if (command === 'restore') {
-    const reused = await restore(kind)
+    const reused = restore(kind)
     if (process.env.GITHUB_OUTPUT) appendFileSync(process.env.GITHUB_OUTPUT, `reused=${reused}\n`)
   } else if (command === 'write') {
     assert.equal(kind, 'source')
