@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "behavior_digest": "sha256:1bcb6f4ec4dc3bc36b88c8962d2c422e40d2481fa8ca8864e6ca9b14b54e6c8b",
+  "behavior_digest": "sha256:eaf09bff189fdc7d0aeaa603cfd5ede496abd7e60b6d162f1f66329ca056579d",
   "outcome": "reviewed-no-impact",
   "surfaces_reviewed": [
     "lifecycle-hooks",
@@ -9,5 +9,5 @@
     "cli-readiness",
     "domain-terms"
   ],
-  "reason": "Reviewed lifecycle hooks, the Notifai skill, harness setup, CLI readiness and domain terms against the open feature-discovery response schema and guard. The response retains unknown future names, additive fields and the empty list; known capabilities still require exact advertised names. The known Server Feature catalog and producer typing, legacy missing-endpoint behavior, commands, lifecycle, setup and User-owned decisions keep their existing meanings. No instruction wording changes are needed. Previously reviewed hook approval, send, registration and preference contracts remain intact."
+  "reason": "Reviewed lifecycle hooks, the Notifai skill, harness setup, CLI readiness and domain terms against canonical open retained-content response validation. Content reads preserve accepted questions and choice descriptions, older single-content responses without questions, unavailable media, older retained values and additive fields. Submission policy, notification wording, routing and User decisions are unchanged, so the five instruction surfaces need no wording change."
 }

@@ -520,6 +520,16 @@ const outputIosFields = {
   target_content_id: Type.Optional(nullableOutputString),
   custom_data: outputCustomData,
 }
+/** Questions read from retained content: preserve additions and older authoring limits. */
+export const QuestionView = Type.Object({
+  id: Type.String(), text: Type.String(), multi: Type.Optional(Type.Boolean()),
+  choices: Type.Optional(Type.Array(Type.Object({
+    id: Type.String(), label: Type.String(), description: Type.Optional(Type.String()),
+    recommended: Type.Optional(Type.Literal(true)),
+  }))),
+})
+export type QuestionView = Static<typeof QuestionView>
+
 export const NotificationDraftView = Type.Object({
   schema_version: Type.Literal(NOTIFICATION_SCHEMA_VERSION),
   kind: Type.Optional(Type.Union(NOTIFICATION_KINDS.map(value => Type.Literal(value)))),
@@ -546,13 +556,7 @@ export const NotificationDraftView = Type.Object({
   delivery: Type.Object({ ttl_seconds: Type.Integer(), collapse_key: nullableOutputString }),
   reply: Type.Optional(Type.Object({
     expires_in_seconds: Type.Integer(),
-    questions: Type.Array(Type.Object({
-      id: Type.String(), text: Type.String(), multi: Type.Optional(Type.Boolean()),
-      choices: Type.Optional(Type.Array(Type.Object({
-        id: Type.String(), label: Type.String(), description: Type.Optional(Type.String()),
-        recommended: Type.Optional(Type.Literal(true)),
-      }))),
-    })),
+    questions: Type.Array(QuestionView),
   })),
   platform: Type.Optional(Type.Object({
     ios: Type.Optional(Type.Object(outputIosFields)),
