@@ -20,6 +20,10 @@ import type { Platform } from './notification.js'
  *   `continued` end, and a stopped Agent Session holds Session Notes and
  *   post-read Answer Edits until it is reopened. A CLI sends either only when
  *   the server lists it.
+ * - `read_sync` (Companion App): the installation recovers history when a
+ *   silent `request_reads` push says requests were read on another device,
+ *   and takes their native notifications down. Advertised only after
+ *   `GET /api/v1/features` lists it, like `session_notes`.
  * - `question_dismiss` (server only): the User can dismiss an open question
  *   from a Companion App. Listed as a Server Feature of the same name.
  * - `notification_content_batch` (server only): one exchange returns the
@@ -46,6 +50,7 @@ export const CLIENT_CAPABILITIES = [
   'session_continued_successor',
   'session_confirmed_end',
   'notification_content_batch',
+  'read_sync',
 ] as const
 export type ClientCapability = (typeof CLIENT_CAPABILITIES)[number]
 

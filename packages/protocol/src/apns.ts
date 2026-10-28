@@ -5,6 +5,7 @@ import {
   isSemanticSound,
   REPLY_CATEGORY_ID,
   REPLY_CHOICE_CATEGORY_ID,
+  REQUEST_READS_SYNC,
   SESSION_MESSAGES_SYNC,
   SOUND_LIBRARY_SYNC,
   type IosOptionsT,
@@ -242,6 +243,21 @@ export function buildSessionMessagesSyncEnvelope(): ApnsEnvelope {
     payload: {
       aps: { 'content-available': 1 },
       notifai: { sync: SESSION_MESSAGES_SYNC },
+    },
+    priority: 5,
+    pushType: 'background',
+  }
+}
+
+/** Collapse id so a burst of reads replaces one pending push. */
+export const REQUEST_READS_SYNC_COLLAPSE_ID = 'notifai.request-reads' as const
+
+/** Silent push saying requests were read elsewhere, shaped like the sound-library sync. */
+export function buildRequestReadsSyncEnvelope(): ApnsEnvelope {
+  return {
+    payload: {
+      aps: { 'content-available': 1 },
+      notifai: { sync: REQUEST_READS_SYNC },
     },
     priority: 5,
     pushType: 'background',

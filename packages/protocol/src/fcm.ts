@@ -1,6 +1,7 @@
 import {
   defaultSoundForKind,
   effectiveKind,
+  REQUEST_READS_SYNC,
   SESSION_MESSAGES_SYNC,
   type NotificationDraftT,
 } from './notification.js'
@@ -49,6 +50,19 @@ export function buildFcmSessionMessagesSyncEnvelope(): FcmDataEnvelope {
       notifai: JSON.stringify({
         schema_version: ANDROID_ENVELOPE_SCHEMA_VERSION,
         sync: SESSION_MESSAGES_SYNC,
+      }),
+    },
+    priority: 'NORMAL',
+  }
+}
+
+/** Silent Android hint that requests were read elsewhere, consumed before visible-envelope parsing. */
+export function buildFcmRequestReadsSyncEnvelope(): FcmDataEnvelope {
+  return {
+    data: {
+      notifai: JSON.stringify({
+        schema_version: ANDROID_ENVELOPE_SCHEMA_VERSION,
+        sync: REQUEST_READS_SYNC,
       }),
     },
     priority: 'NORMAL',
