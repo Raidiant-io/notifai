@@ -49,9 +49,11 @@ the ChatGPT desktop app. After installing or updating hooks, approve the
 Notifai hooks once in Codex: in the ChatGPT app or your editor, click the
 **Review hooks** icon by the message box; in the terminal, type `/hooks`.
 Apps that run Codex for you, such as T3 Code and Orca, have no hook review of
-their own; there your agent's reminder gives the terminal command that opens
-Codex's review for the right Codex account, with no sign-in.
-`notifai doctor` names any that still wait for approval.
+their own, and Codex approves hooks separately for each Codex home (T3 Code
+gives each extra account its own). There, run `notifai doctor codex` in a
+terminal: it finds the Codex homes where Notifai's hooks wait and opens
+Codex's own review in each, with no sign-in. Notifai never approves its hooks
+for you. `notifai doctor` names any that still wait for approval.
 
 **Cursor.** Questions wait in the asking command (`notifai ask --wait`). In
 the Cursor terminal agent on macOS, notes reach a conversation between turns,

@@ -82,6 +82,7 @@ import {
 } from './harnesses.js'
 import { relayMessage } from './relay-message.js'
 import { codexHooksWarning, codexSurface } from './codex-surface.js'
+import { rememberCodexHome } from './codex-hook-review.js'
 import { codexApprovalPlace } from './commands-hook-diagnostics.js'
 import {
   APPROVAL_STOP_MS,
@@ -421,6 +422,7 @@ function applyNotificationGrace(readiness: Readiness, run: SetupRun, now: number
  * gap. `doctor` still reports it as one.
  */
 function codexTrustAsWarning(readiness: Readiness, deps: Pick<CommandDeps, 'env' | 'hookPlatform'>): Readiness {
+  if (readiness.states.some((state) => state.id === 'hooks-trust' && state.status === 'gap')) rememberCodexHome(deps.env, deps.hookPlatform)
   return {
     ...readiness,
     states: readiness.states.map((state) => state.id === 'hooks-trust' && state.status === 'gap'

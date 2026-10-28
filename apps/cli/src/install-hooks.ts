@@ -933,7 +933,7 @@ export function codexHomeNote(
   const effective = separateCodexHome(env, platform)
   if (effective === null) return null
   const accountDefault = path.join(harnessAccountHome(env, platform), '.codex')
-  return `CODEX_HOME points Codex at ${effective}, instead of ${accountDefault}. This home may share configuration through symlinks, but Codex keys hook trust by the active home path. Approve Notifai in /hooks in a Codex session using this home; approval in another home does not approve these hooks.`
+  return `CODEX_HOME points Codex at ${effective}, instead of ${accountDefault}. This home may share configuration through symlinks, but Codex keys hook trust by the active home path. Approve Notifai in this home: \`notifai doctor codex\` in a terminal opens Codex's own hook review here (or type /hooks in a Codex session using this home); approval in another home does not approve these hooks.`
 }
 
 function tryLoadMachineSettings(file: string): SettingsDocument | null {
@@ -1737,12 +1737,12 @@ export function summarizeCodexTrustFindings(findings: readonly CodexTrustFinding
     const handlers = (count: number) => `${count} Notifai ${count === 1 ? 'handler' : 'handlers'}`
     const verb = (count: number) => (count === 1 ? 'is' : 'are')
     if (disabled === 0) {
-      return `${handlers(pending)} in ${file} ${verb(pending)} new or changed since Codex last approved ${pending === 1 ? 'it' : 'them'}; approve Notifai's handlers in Codex (Review hooks in the ChatGPT app or IDE, /hooks in the CLI)`
+      return `${handlers(pending)} in ${file} ${verb(pending)} new or changed since Codex last approved ${pending === 1 ? 'it' : 'them'}; approve Notifai's handlers in Codex (Review hooks in the ChatGPT app or IDE, /hooks in the CLI, or \`notifai doctor codex\` in a terminal)`
     }
     if (pending === 0) {
-      return `${handlers(disabled)} in ${file} ${verb(disabled)} turned off in Codex; turn Notifai's handlers on in Codex (Settings → Hooks in the ChatGPT app or IDE, /hooks in the CLI)`
+      return `${handlers(disabled)} in ${file} ${verb(disabled)} turned off in Codex; turn Notifai's handlers on in Codex (Settings → Hooks in the ChatGPT app or IDE, /hooks in the CLI, or \`notifai doctor codex\` in a terminal)`
     }
-    return `${handlers(pending)} in ${file} ${verb(pending)} new or changed since Codex last approved ${pending === 1 ? 'it' : 'them'} and ${disabled} ${verb(disabled)} turned off; approve Notifai's handlers in Codex and turn them on (Settings → Hooks in the ChatGPT app or IDE, /hooks in the CLI)`
+    return `${handlers(pending)} in ${file} ${verb(pending)} new or changed since Codex last approved ${pending === 1 ? 'it' : 'them'} and ${disabled} ${verb(disabled)} turned off; approve Notifai's handlers in Codex and turn them on (Settings → Hooks in the ChatGPT app or IDE, /hooks in the CLI, or \`notifai doctor codex\` in a terminal)`
   })
 }
 
