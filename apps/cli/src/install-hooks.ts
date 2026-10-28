@@ -265,7 +265,13 @@ export function quoteWindowsArg(value: string): string {
 
 export interface BuildOptions {
   integrationScope?: string
-  /** Codex: the revision the owned handlers already carry (`installedHookRevision`). */
+  /**
+   * Codex: the revision the owned handlers already carry (`installedHookRevision`).
+   * Absent for Codex, nothing is stamped: Codex approves each handler by its
+   * exact bytes, so a revision cannot say which definition a session loaded
+   * without asking the User to approve everything again. Its SessionStart
+   * records that instead (`codexHandlerFingerprints`).
+   */
   integrationRevision?: string
   /** Stable user-level executable installed by the hook adapter module. */
   adapterPath: string
@@ -430,6 +436,9 @@ export function buildHookConfig(options: BuildOptions): HookConfig {
       else group.hooks.push(attend)
     }
   }
+  // An install that already carries a revision keeps it, so every handler
+  // Codex approved keeps its exact bytes.
+  if (options.harness === 'codex' && options.integrationRevision === undefined) return hooks
   return stampHookDefinition(hooks, options.integrationScope ?? '', options.integrationRevision)
 }
 
@@ -1637,6 +1646,39 @@ export function codexStopDefinitionFingerprint(
   return createHash('sha256')
     .update(`${codexTrustKey(installation, handler, env)}\0${codexHookIdentityHash(handler)}`)
     .digest('hex')
+}
+
+/**
+ * The Notifai handlers of the active Codex definition, each by a readable name
+ * and a fingerprint of what Codex holds for it: its trust key (file, event and
+ * position) and its approval identity. A SessionStart records this map for its
+ * session, because Codex reads the definition when a thread starts and keeps
+ * it; comparing that record with the current map names exactly the handlers
+ * the session lacks or holds an older copy of. Nothing is stamped into the
+ * commands, so the comparison never changes what the User approved.
+ */
+export function codexHandlerFingerprints(
+  installations: Installation[],
+  env: NodeJS.ProcessEnv = process.env,
+): Record<string, string> {
+  const fingerprints: Record<string, string> = {}
+  for (const installation of installations.filter((entry) => entry.harness === 'codex')) {
+    for (const handler of installation.handlers) {
+      const name = codexHandlerName(handler)
+      const fingerprint = createHash('sha256')
+        .update(`${codexTrustKey(installation, handler, env)}\0${codexHookIdentityHash(handler)}`)
+        .digest('hex')
+      // Two definitions naming the same handler can never both be current.
+      fingerprints[name] = fingerprints[name] === undefined ? fingerprint : `${fingerprints[name]}+${fingerprint}`
+    }
+  }
+  return fingerprints
+}
+
+/** A handler's name as the User sees it in `/hooks`: event, matcher, role. */
+export function codexHandlerName(handler: Pick<InstalledHandler, 'event' | 'matcher' | 'command'>): string {
+  const role = handlerEvent(handler.command)
+  return `${handler.event}${handler.matcher === undefined || handler.matcher === '' ? '' : ` (${handler.matcher})`}${role === 'attend' ? ' attendant' : ''}`
 }
 
 /** One Notifai handler Codex will skip until the User acts in `/hooks`. */

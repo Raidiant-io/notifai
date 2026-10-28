@@ -657,6 +657,7 @@ export function recordSessionStart(
   codexStopDefinitionFingerprint?: string,
   stamp: LifecycleStamp = lifecycleStamp(),
   openclawGeneration?: string,
+  codexHandlerFingerprints?: Record<string, string>,
 ): void {
   // Harnesses may reuse a session id only by explicitly starting that session
   // again. That lifecycle edge is the sole authority for clearing cancellation,
@@ -679,9 +680,11 @@ export function recordSessionStart(
     // resumed session borrow the definition loaded by an earlier runtime.
     if (harness === 'codex') {
       delete next.codex_stop_definition_fingerprint
+      delete next.codex_handler_fingerprints
       if (codexStopDefinitionFingerprint !== undefined) {
         next.codex_stop_definition_fingerprint = codexStopDefinitionFingerprint
       }
+      if (codexHandlerFingerprints !== undefined) next.codex_handler_fingerprints = codexHandlerFingerprints
     }
     return next
   })

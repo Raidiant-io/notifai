@@ -1,5 +1,6 @@
 import { claudeHookFormFor } from './claude-hook-form.js'
-import { loadedIntegrationObserved, sourceIntegrationRevision } from './integration-revision.js'
+import { sourceIntegrationRevision } from './integration-revision.js'
+import { installedRevision, sessionHandlers, sessionHandlersLine } from './session-handlers.js'
 /** Narrow write-ahead requirements for owned hook repairs. Runtime selection
  * remains the Installation transaction's responsibility. */
 import { createHash } from 'node:crypto'
@@ -14,15 +15,19 @@ import { codexToolHookReady, CODEX_TOOL_HOOK_RECOVERY } from './codex-tool-messa
 import { stateDir } from './config.js'
 import { withFileLock } from './file-lock.js'
 import { isHookInstallableHarness, questionRoutingCapability } from './harnesses.js'
-import { buildHookConfig, buildCursorHookConfig, NON_ROUTING_BLOCKING_STOP_TIMEOUT_SECONDS, settingsFile, codexTrustProblems,
-  findInstallations, installedHookRevision, machineHookFiles, type Installation } from './install-hooks.js'
+import { buildHookConfig, buildCursorHookConfig, NON_ROUTING_BLOCKING_STOP_TIMEOUT_SECONDS, settingsFile, codexTrustFindings,
+  codexHandlerFingerprints, findInstallations, machineHookFiles, summarizeCodexTrustFindings, type CodexTrustFinding,
+  type Installation } from './install-hooks.js'
 import { hookAdapterPath, inspectHookAdapter } from './hook-adapter.js'
 import { opencodePluginLine, opencodePluginSourceFor, opencodeVersionFor } from './opencode-version.js'
 import { openclawPluginSource } from './openclaw-plugin.js'
 import { hermesPluginSource } from './hermes-plugin.js'
 import { installationFaults } from './integration-health.js'
 
-type Requirement = { file: string; harness: Installation['harness']; before: string; expected: string; owner?: ActiveHarnessSession }
+/** `before_handlers`, Codex only: the handlers on disk before the repair
+ * rewrote them, which is what an owner session already running had loaded. */
+type Requirement = { file: string; harness: Installation['harness']; before: string; expected: string; owner?: ActiveHarnessSession
+  before_handlers?: Record<string, string> }
 const digest = (file: string) => createHash('sha256').update(readFileSync(file)).digest('hex')
 const location = (deps: CommandDeps) => path.join(stateDir(deps.env), 'integration-repair.json')
 function read(file: string): Requirement[] {
@@ -36,7 +41,9 @@ function read(file: string): Requirement[] {
     !item || typeof item.file !== 'string' || !path.isAbsolute(item.file) || !isHookInstallableHarness(item.harness) ||
     !/^[a-f0-9]{64}$/.test(item.before) || !/^[a-f0-9]{64}$/.test(item.expected) || item.owner !== undefined &&
     (item.owner.harness !== item.harness || typeof item.owner.label !== 'string' ||
-      item.owner.sessionId !== undefined && typeof item.owner.sessionId !== 'string'))) throw new Error('Invalid integration repair requirements')
+      item.owner.sessionId !== undefined && typeof item.owner.sessionId !== 'string') ||
+    item.before_handlers !== undefined && (typeof item.before_handlers !== 'object' || item.before_handlers === null ||
+      Object.values(item.before_handlers).some(value => typeof value !== 'string')))) throw new Error('Invalid integration repair requirements')
   return value.requirements
 }
 function save(file: string, requirements: Requirement[]): void {
@@ -46,9 +53,9 @@ function save(file: string, requirements: Requirement[]): void {
 /** Render only the owned definition. The literal revision excludes unrelated
  * host config and stays stable across runtime-only updates. */
 function desiredRevision(deps: CommandDeps, installation: Installation): string {
-  // A Codex refresh keeps the revision its handlers carry (stampHookDefinition).
-  const kept = installation.harness === 'codex' ? installedHookRevision(installation.handlers) : undefined
-  if (kept !== undefined) return kept
+  // Codex proves activation per handler at SessionStart, never by revision
+  // (session-handlers.ts). The field stays for the record's format.
+  if (installation.harness === 'codex') return createHash('sha256').update(`codex\n${installation.file}`).digest('hex')
   const platform = deps.hookPlatform ?? process.platform
   const adapterPath = hookAdapterPath(deps.hookAdapterHome, platform)
   const target = inspectHookAdapter(deps.hookAdapterHome, platform).target
@@ -88,7 +95,8 @@ export function withHookRepairIntent<T>(deps: CommandDeps, installation: Install
       save(file, requirements)
     } else {
       requirements.push({ file: target.file, harness: installation.harness, before: digest(installation.file), expected,
-        ...(owner?.harness === installation.harness ? { owner } : {}) })
+        ...(owner?.harness === installation.harness ? { owner } : {}),
+        ...(installation.harness === 'codex' ? { before_handlers: codexHandlerFingerprints([installation], deps.env) } : {}) })
       save(file, requirements)
     }
     return action()
@@ -123,7 +131,9 @@ function recordedScope(deps: CommandDeps, requirement: Requirement):
  * Unrelated pre-existing defects never become migration requirements. Caller
  * holds the publication fence through this final synchronous assessment. */
 export function pendingHookRepairs(deps: CommandDeps,
-  installations: Array<{ installation: Installation; env: NodeJS.ProcessEnv }>): string[] {
+  installations: Array<{ installation: Installation; env: NodeJS.ProcessEnv }>,
+  /** Codex trust, from Codex's own hooks/list where the caller could ask it. */
+  codexTrust: (installations: Installation[], env: NodeJS.ProcessEnv) => CodexTrustFinding[] = codexTrustFindings): string[] {
   const file = location(deps)
   return withFileLock(`${file}.lock`, () => {
     const remaining: Requirement[] = [], pending: string[] = []
@@ -149,8 +159,8 @@ export function pendingHookRepairs(deps: CommandDeps,
       // If publication never happened, an unchanged healthy definition needs
       // no activation proof. Retrying repairs a still-damaged definition first.
       if (digest(installation.file) === requirement.before) continue
-      const revision = sourceIntegrationRevision(['hermes', 'openclaw', 'opencode'].includes(installation.harness)
-        ? readFileSync(installation.file, 'utf8') : JSON.stringify(installation.handlers))
+      // Codex handlers carry no revision since new installs stopped stamping it.
+      const revision = installation.harness === 'codex' ? requirement.expected : installedRevision(installation)
       if (revision === null) {
         remaining.push(requirement)
         pending.push(`The ${requirement.harness} hooks at ${requirement.file} carry no single Notifai revision, so their activation cannot be verified; run notifai hooks install --harness ${requirement.harness} where that file is the active configuration.`)
@@ -162,7 +172,7 @@ export function pendingHookRepairs(deps: CommandDeps,
       // Trust and activation proof now bind to what the harness will load.
       if (revision !== requirement.expected) requirement = { ...requirement, expected: revision }
       const problems: string[] = []
-      if (installation.harness === 'codex' && codexTrustProblems([installation], env).length > 0) {
+      if (installation.harness === 'codex' && summarizeCodexTrustFindings(codexTrust([installation], env)).length > 0) {
         const home = path.dirname(installation.file)
         problems.push(`native-approval-pending: Codex has not approved Notifai's changed hooks in ${home}. ${env['CODEX_HOME']
           ? `Open /hooks in a Codex session whose CODEX_HOME is ${home}` : 'Start codex, open /hooks'} and approve the Notifai handlers.`)
@@ -182,12 +192,18 @@ export function pendingHookRepairs(deps: CommandDeps,
         }
       }
       if (owner) {
-        // Codex keeps one revision across refreshes, so there this proves the
-        // session runs Notifai's handlers. Codex's own approval, checked
-        // above, covers a handler that is new or changed.
-        if (owner.sessionId === undefined || !loadedIntegrationObserved(owner.sessionId, requirement.expected, env)) {
-          problems.push(`The changed ${owner.label} definition has not been observed in this Agent Session. Preserve existing work and verify a real lifecycle callback after the harness loads the repaired definition.`)
-        }
+        // Approval is per handler on disk, never per session: an approved
+        // handler still runs only in sessions that loaded it.
+        const line = owner.sessionId === undefined ? sessionHandlersLine({ harness: owner.harness as Installation['harness'],
+          label: owner.label, state: 'unknown', missing: [], changed: [], blocking: [] })
+          : sessionHandlersLine(sessionHandlers(env, { ...owner, sessionId: owner.sessionId }, [installation], {
+            ...(installation.harness === 'codex'
+              // The original owner was running when the repair began, so it
+              // holds the definition from before; a replacement holds its own.
+              ? owner === requirement.owner && requirement.before_handlers !== undefined ? { loaded: requirement.before_handlers } : {}
+              : { expected: requirement.expected }),
+          }))
+        if (line !== null) problems.push(line)
       }
       if (owner && isHookInstallableHarness(owner.harness) &&
           questionRoutingCapability(owner.harness, deps.hookPlatform).stopContinuation !== 'unsupported') {

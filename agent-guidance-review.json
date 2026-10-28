@@ -1,7 +1,7 @@
 {
   "version": 1,
-  "behavior_digest": "sha256:f8c930c54ede4d0bfc4fc04481bbad9a5b5f35750f3ac9e307dc54558293c68c",
-  "outcome": "reviewed-no-impact",
+  "behavior_digest": "sha256:66ce0befcecaa614b0c72e092b32fd7488511d43d4df57dae33c5ea454aa9cc1",
+  "outcome": "guidance-updated",
   "surfaces_reviewed": [
     "lifecycle-hooks",
     "notifai-skill",
@@ -9,5 +9,5 @@
     "cli-readiness",
     "domain-terms"
   ],
-  "reason": "Reviewed the machine and device resource schemas against lifecycle hooks, the Notifai skill, harness setup, CLI readiness and domain terms. The new guards validate resource lists and completed mutation acknowledgements. CLI inventory and readiness use the existing unchanged field shapes as types; they do not invoke these guards. Open response schemas retain additive fields and nullable inventory facts. No command, hook, readiness rule, submission contract or instruction text changes. The current hook-approval guidance and previous deep feed validation are retained when reconciling the quality branch with main."
+  "reason": "Reviewed all five surfaces for the Codex session-handler check. Lifecycle hooks: a new Codex install no longer appends --integration-revision to its commands; an existing install keeps the revision it carries, so every approved handler keeps its exact bytes (tested), and the Codex SessionStart now also records a fingerprint per Notifai handler in session state; hook output is unchanged and the other harnesses keep the per-definition revision. CLI readiness: update --resume no longer reports a changed Codex definition done for a session that started before it; its pending action names the handlers that session lacks and says a new Codex session picks them up (reproduced first as a failing test). doctor adds a 'hooks (session handlers)' row with the same sentence, a gap only when a missing handler serves turn end, the tool boundary or question cards (with the fresh-session user_action), report-only otherwise; for other harnesses it reports the existing 'changed definition has not been observed' line when a callback carried an older revision. doctor's and resume's Codex trust now come from Codex's app-server hooks/list where codex answers, else config.toml as before (one private stdio codex app-server per run, initialized with the shared non-originating client identity, so it claims no originator); ask readiness is unchanged. Notifai skill: references/updates.md (Harness differences) and references/harness-codex.md (After a Notifai update) now say Codex records the handlers a session loaded, that resume and doctor name the missing ones, that a new Codex session picks them up, and that only a feature's handler blocks. Harness setup: unchanged. Domain terms: unchanged. skills/guidance-changes.json carries one new release note for this change. Also reviewed the additive machine/device resource schemas and strict completed-mutation acknowledgements on the quality branch. These keep the CLI inventory field types unchanged, add no command or readiness rule, and require no further agent instruction changes."
 }

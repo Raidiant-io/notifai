@@ -145,6 +145,12 @@ export interface SessionState {
   activation_cwd?: string
   /** Codex Stop definition observed when this exact Agent Session activated. */
   codex_stop_definition_fingerprint?: string
+  /**
+   * Every Notifai handler of the Codex definition this exact Agent Session
+   * loaded, by name (`codexHandlerFingerprints`). Absent for a session that
+   * started before Notifai recorded it.
+   */
+  codex_handler_fingerprints?: Record<string, string>
   /** Epoch ms of the user's last prompt in this session — our presence signal. */
   last_prompt_at?: number
   /** Epoch ms of the last observed Stop hook, distinct from prompt routing. */

@@ -1,5 +1,5 @@
 /** Verified existing Codex connection shared by queue and answer adapters. */
-import { execFile } from 'node:child_process'
+import { execFile, spawn } from 'node:child_process'
 import { lstatSync, realpathSync } from 'node:fs'
 import { promisify } from 'node:util'
 import { codexHome } from './codex-wake.js'
@@ -126,4 +126,57 @@ export async function connectCodexControl(
     unavailable?.(stage)
     return null
   }
+}
+
+/**
+ * One request to a private, short-lived `codex app-server` over stdio, for
+ * questions about configuration rather than a thread (`hooks/list`). It
+ * starts no thread, and initializes with the same non-originating identity as
+ * every other Notifai connection. Null when Codex cannot be asked in time.
+ */
+export function codexStdioRequest(env: NodeJS.ProcessEnv, cwd: string, method: 'hooks/list', params: unknown,
+  timeoutMs = 5_000): Promise<unknown> {
+  return new Promise((resolve) => {
+    let settled = false
+    let child: ReturnType<typeof spawn> | undefined
+    const finish = (value: unknown) => {
+      if (settled) return
+      settled = true
+      clearTimeout(timer)
+      try { child?.kill() } catch { /* already gone */ }
+      resolve(value)
+    }
+    const timer = setTimeout(() => finish(null), timeoutMs)
+    try {
+      child = spawn('codex', ['app-server'], { cwd, env, stdio: ['pipe', 'pipe', 'ignore'], windowsHide: true })
+    } catch {
+      finish(null)
+      return
+    }
+    child.on('error', () => finish(null))
+    child.on('exit', () => finish(null))
+    child.stdin?.on('error', () => finish(null))
+    const send = (message: object) => { child?.stdin?.write(`${JSON.stringify(message)}\n`) }
+    let buffer = ''
+    child.stdout?.setEncoding('utf8')
+    child.stdout?.on('data', (chunk: string) => {
+      buffer += chunk
+      if (buffer.length > 4 * 1024 * 1024) return finish(null)
+      let newline: number
+      while ((newline = buffer.indexOf('\n')) >= 0) {
+        const line = buffer.slice(0, newline)
+        buffer = buffer.slice(newline + 1)
+        let message: { id?: unknown; result?: unknown; error?: unknown }
+        try { message = JSON.parse(line) } catch { continue }
+        if (message.id === 1) {
+          if (message.error !== undefined) return finish(null)
+          send({ method: 'initialized' })
+          send({ id: 2, method, params })
+        } else if (message.id === 2) {
+          finish(message.error === undefined ? message.result : null)
+        }
+      }
+    })
+    send({ id: 1, method: 'initialize', params: { clientInfo: CODEX_CONTROL_CLIENT_INFO } })
+  })
 }

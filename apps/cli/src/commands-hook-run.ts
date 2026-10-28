@@ -65,7 +65,7 @@ import {
   type HookHarness,
   type HookOutcome,
 } from './hook-types.js'
-import { codexStopDefinitionFingerprint, findInstallations } from './install-hooks.js'
+import { codexHandlerFingerprints, codexStopDefinitionFingerprint, findInstallations } from './install-hooks.js'
 import { logConfigResolved, logSettingsFrom } from './logging.js'
 import {
   observeOpenclawPrompt,
@@ -814,8 +814,10 @@ export async function hookRunCommand(
       // guidance work can exhaust SessionStart's budget. Later prompt hooks
       // cannot reconstruct that activation proof from a possibly changed file.
       try {
+        const installations = findInstallations(deps.env, deps.hookAdapterHome, deps.hookPlatform)
         recordSessionStart(envelope.session_id, deps.env, harness, cwd,
-          codexStopDefinitionFingerprint(findInstallations(deps.env, deps.hookAdapterHome, deps.hookPlatform), deps.env), invokedAt)
+          codexStopDefinitionFingerprint(installations, deps.env), invokedAt, undefined,
+          codexHandlerFingerprints(installations, deps.env))
       } catch (err) {
         logger.error('hook.end', {
           hook: event, outcome: 'record-failed', reason: 'session-state-failed', ...failureData(err),
