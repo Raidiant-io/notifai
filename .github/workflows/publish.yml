@@ -131,7 +131,7 @@ jobs:
         run: node --test scripts/verify-packed-install.test.mjs
         if: steps.receipt.outputs.reused != 'true'
       - name: Verify release tooling once
-        run: node --test scripts/package-standalone.test.mjs scripts/sign-release-records.test.mjs scripts/assemble-native-release.test.mjs scripts/publish-native-assets.test.mjs scripts/advance-native-channel.test.mjs scripts/require-native-evidence.test.mjs scripts/native-finalization.test.mjs scripts/verify-runtime-sources.test.mjs scripts/release-receipt.test.mjs scripts/publication-receipt.test.mjs && node scripts/verify-runtime-sources.mjs
+        run: node --test scripts/package-standalone.test.mjs scripts/sign-release-records.test.mjs scripts/assemble-native-release.test.mjs scripts/publish-native-assets.test.mjs scripts/advance-native-channel.test.mjs scripts/require-native-evidence.test.mjs scripts/native-finalization.test.mjs scripts/verify-runtime-sources.test.mjs scripts/release-receipt.test.mjs scripts/publication-receipt.test.mjs scripts/publish-npm-tarball.test.mjs && node scripts/verify-runtime-sources.mjs
         env:
           GH_TOKEN: ${{ github.token }}
         if: steps.receipt.outputs.reused != 'true'
@@ -456,7 +456,11 @@ jobs:
         if: steps.plan.outputs.publish == 'true'
         env:
           NPM_DIST_TAG: ${{ steps.plan.outputs.npm_dist_tag }}
-        run: npm publish "$NPM_TARBALL" --access public --provenance --tag "$NPM_DIST_TAG"
+          PACKAGE_NAME: ${{ steps.plan.outputs.package_name }}
+          VERSION: ${{ steps.plan.outputs.version }}
+        # Runs npm publish "$NPM_TARBALL" --access public --provenance --tag "$NPM_DIST_TAG",
+        # repeating it only after a Sigstore Rekor 409 that left the registry untouched.
+        run: node scripts/publish-npm-tarball.mjs "$NPM_TARBALL" "$NPM_DIST_TAG" "$PACKAGE_NAME" "$VERSION"
       - name: Verify published package bytes and metadata
         if: steps.plan.outputs.publish == 'true'
         env:
