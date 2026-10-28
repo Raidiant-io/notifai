@@ -19,10 +19,11 @@ import {
   UpdateAccountPreferencesRequest,
 } from './index.js'
 import {
+  buildRequestReadsSyncEnvelope,
   buildSessionMessagesSyncEnvelope,
   buildSoundLibrarySyncEnvelope,
 } from './apns.js'
-import { buildFcmSessionMessagesSyncEnvelope } from './fcm.js'
+import { buildFcmRequestReadsSyncEnvelope, buildFcmSessionMessagesSyncEnvelope } from './fcm.js'
 
 describe('released clients keep their exact contract', () => {
   it('accepts the preference update released apps send and the shape older servers return', () => {
@@ -320,5 +321,27 @@ describe('Session Message sync push', () => {
       data: { notifai: JSON.stringify({ schema_version: 1, sync: 'session_messages' }) },
       priority: 'NORMAL',
     })
+  })
+})
+
+describe('request reads sync push', () => {
+  it('is a silent APNs background push carrying only its marker', () => {
+    expect(buildRequestReadsSyncEnvelope()).toEqual({
+      payload: { aps: { 'content-available': 1 }, notifai: { sync: 'request_reads' } },
+      priority: 5,
+      pushType: 'background',
+    })
+  })
+
+  it('is a silent normal-priority FCM data message carrying only its marker', () => {
+    expect(buildFcmRequestReadsSyncEnvelope()).toEqual({
+      data: { notifai: JSON.stringify({ schema_version: 1, sync: 'request_reads' }) },
+      priority: 'NORMAL',
+    })
+  })
+
+  it('is a Server Feature a Companion App may advertise', () => {
+    expect(SERVER_FEATURES).toContain('read_sync')
+    expect(Value.Check(CapabilityAdvertisement, ['answer', 'read_sync'])).toBe(true)
   })
 })

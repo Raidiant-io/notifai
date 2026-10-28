@@ -272,6 +272,12 @@ export const SOUND_LIBRARY_SYNC = 'sound_library' as const
  * `session_notes` to pull `GET /api/v1/session-messages`.
  */
 export const SESSION_MESSAGES_SYNC = 'session_messages' as const
+/**
+ * Silent background push asking an installation that advertised `read_sync`
+ * to recover history, so it takes down the native notifications of requests
+ * read on another device. It carries no request ids or content.
+ */
+export const REQUEST_READS_SYNC = 'request_reads' as const
 
 export const INTERRUPTION_LEVELS = ['passive', 'active', 'time_sensitive'] as const
 

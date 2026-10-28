@@ -42,6 +42,7 @@ export const SERVER_FEATURES = [
   'session_stopped_hold',
   'question_dismiss',
   'notification_content_batch',
+  'read_sync',
 ] as const
 export type ServerFeature = (typeof SERVER_FEATURES)[number]
 
