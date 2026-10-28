@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "behavior_digest": "sha256:e4a8175c01a44d4bef1390b389e8e2c0754a6a949c32593d4b62a51501411cd5",
+  "behavior_digest": "sha256:863a56ce9a43e383d6a656dc7895834b42cd499af707d3ddb80b0af39dbf95a9",
   "outcome": "reviewed-no-impact",
   "surfaces_reviewed": [
     "lifecycle-hooks",
@@ -9,5 +9,5 @@
     "cli-readiness",
     "domain-terms"
   ],
-  "reason": "Reviewed all five surfaces for the canonical Project response schemas. These add runtime schema and guard exports for the existing Project fields, preserving nullable values, opaque strings and additive response fields. Lifecycle hooks: unchanged. Notifai skill: unchanged; no new command or agent action. Harness setup: unchanged. CLI readiness: unchanged; no command consumes the new guards and existing field types stay the same. Domain terms: unchanged; Project retains its existing meaning. The previously reviewed machine/device schemas and request_reads push are retained."
+  "reason": "Reviewed lifecycle hooks, the Notifai skill, harness setup, CLI readiness and domain terms against runtime schemas for sound records, library lists and Account sound-default responses. The served fields and request schemas are unchanged; additive response fields remain accepted, and dashboard validation rejects unusable successes. The sound listing and User-owned sound/routing instructions still describe the same behavior. No lifecycle, setup, readiness, skill or domain wording changes are needed."
 }

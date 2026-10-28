@@ -100,7 +100,13 @@ export const AccountSoundDefaults = Type.Object(
   { additionalProperties: false },
 )
 export type AccountSoundDefaultsT = Static<typeof AccountSoundDefaults>
-export type AccountSoundDefaultsResponse = AccountSoundDefaultsT
+/** Responses preserve additive fields; update requests keep their closed shape. */
+export const AccountSoundDefaultsResponse = Type.Object({ sounds: Type.Object(KindSoundMap.properties) })
+export type AccountSoundDefaultsResponse = Static<typeof AccountSoundDefaultsResponse>
+
+export function isAccountSoundDefaultsResponse(value: unknown): value is AccountSoundDefaultsResponse {
+  return Value.Check(AccountSoundDefaultsResponse, value)
+}
 export const UpdateAccountSoundDefaultsRequest = AccountSoundDefaults
 export type UpdateAccountSoundDefaultsRequestT = AccountSoundDefaultsT
 
@@ -881,16 +887,24 @@ export function isCreateMediaUploadResponse(value: unknown): value is CreateMedi
   }
 }
 
-export interface SoundView {
-  sound_id: string
-  name: string
-  duration_ms: number
-  content_hash: string
-  url: string
+export const SoundView = Type.Object({
+  sound_id: Type.String(),
+  name: Type.String(),
+  duration_ms: Type.Number(),
+  content_hash: Type.String(),
+  url: Type.String(),
+})
+export type SoundView = Static<typeof SoundView>
+
+export const ListSoundsResponse = Type.Object({ sounds: Type.Array(SoundView) })
+export type ListSoundsResponse = Static<typeof ListSoundsResponse>
+
+export function isSoundView(value: unknown): value is SoundView {
+  return Value.Check(SoundView, value)
 }
 
-export interface ListSoundsResponse {
-  sounds: SoundView[]
+export function isListSoundsResponse(value: unknown): value is ListSoundsResponse {
+  return Value.Check(ListSoundsResponse, value)
 }
 
 
