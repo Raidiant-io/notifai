@@ -30,7 +30,8 @@ function powershell(operation, data = {}, { lineInput = false, execute = execFil
         encoding: 'utf8', timeout: 30_000, maxBuffer: 256 * 1024, windowsHide: true }).trim()
   } catch (error) {
     const last = [...String(error.stderr ?? '').matchAll(/notifai-bootstrap:([a-z-]+)/g)].at(-1)?.[1] ?? 'process-start'
-    throw new Error(`Windows installation helper failed after ${last} (${error.code ?? error.status ?? 'unknown'}).`, { cause: error })
+    const step = /\b(?:Get|Assert|New)-Notifai\w+/.exec(operation)?.[0] ?? 'helper'
+    throw new Error(`Windows installation helper failed after ${last} in ${step} (${error.code ?? error.status ?? 'unknown'}).`, { cause: error })
   }
 }
 

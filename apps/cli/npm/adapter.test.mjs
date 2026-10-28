@@ -42,7 +42,7 @@ test('Windows batch transport keeps hostile and long pathnames as bounded data i
     assert.throws(() => windowsPackageAccess(rejected, execute))
   }
   assert.equal(calls.length, 1)
-  assert.throws(() => windowsPackageAccess(paths, () => { throw new Error('ACL rejection') }), /Windows installation helper failed/)
+  assert.throws(() => windowsPackageAccess(paths, () => { throw new Error('ACL rejection') }), /Windows installation helper failed after process-start in Assert-NotifaiPathAccess/)
 })
 async function fixture(t, { target = 'bun-linux-x64', extra = false, beta = false } = {}) {
   const root = mkdtempSync(path.join(os.tmpdir(), 'notifai-npm-acquisition-')), temporary = path.join(root, 'temporary')
