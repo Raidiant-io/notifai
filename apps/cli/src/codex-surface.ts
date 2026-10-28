@@ -63,14 +63,13 @@ const BOTH = 'in the ChatGPT app or your editor, click the **Review hooks** icon
 
 /**
  * With no hook review in the surface itself, the step that approves the home
- * Codex runs in: start the Codex CLI on it in a terminal. Codex keys approval
- * by the home's path, so in a separate home (one per account in T3 Code) the
- * command names that home. `-c model_provider=ollama` takes no sign-in, which
- * a home whose app supplies the account's token itself would otherwise ask
- * for first, and where a sign-in exists it changes nothing but the session's
- * model, which reviewing hooks never uses. Orca copies the hooks and their
- * approval from `~/.codex` into each of its account homes whenever it starts
- * Codex there, so one approval in `~/.codex` covers every Orca account.
+ * Codex runs in: `notifai doctor codex` in a terminal. Codex keys approval by
+ * the home's path, so a separate home (one per account in T3 Code) needs its
+ * own; the command finds the homes Notifai's hooks wait in and opens Codex's
+ * own review in each, with no sign-in where the home has none of its own
+ * (`codex-hook-review.ts`). Orca copies the hooks and their approval from
+ * `~/.codex` into each of its account homes whenever it starts Codex there,
+ * so one approval in `~/.codex` covers every Orca account.
  * Null where the surface's own step already approves the home it runs on, or
  * where neither the host nor a separate home is known.
  */
@@ -80,30 +79,30 @@ function terminalApproval(surface: CodexSurface | null, place: CodexApprovalPlac
   // Orca's accounts take their approval from ~/.codex.
   const home = orca ? null : place.home ?? null
   if (home === null && (place.host ?? null) === null) return null
-  const command = home === null ? CODEX_FOR_HOOKS : codexOnHomeCommand(home, place.platform ?? process.platform)
   const where = place.host === 't3'
     ? "in a terminal on this machine (T3 Code's terminal panel works)"
     : 'in a terminal on this machine'
+  const review = home === null ? "Codex's own hook review" : "Codex's own hook review for this account"
   return {
     /** Who skips the hooks, and where the approval goes. */
     scope: orca ? ' in Orca' : home === null ? '' : ' in this Codex account',
     there: home === null ? '' : ' there',
     step: off
-      ? `${where}, run \`${command}\` and type \`/hooks\` to turn them on and approve them.`
-      : `${where}, run \`${command}\` and choose **Trust all and continue** (or type \`/hooks\`).`,
-    note: 'It only opens Codex to review hooks; no sign-in needed.' +
-      (orca ? ' Orca copies the approval to its Codex accounts the next time it starts Codex.' : ''),
+      ? `${where}, run \`${CODEX_REVIEW_COMMAND}\`: it opens ${review}, where you type \`/hooks\` to turn them on and approve them.`
+      : `${where}, run \`${CODEX_REVIEW_COMMAND}\`: it opens ${review}, where you choose **Trust all and continue**.`,
+    note: orca ? 'Orca copies the approval to its Codex accounts the next time it starts Codex.' : '',
   }
 }
 
-const CODEX_FOR_HOOKS = 'codex -c model_provider=ollama'
+/** The one command that opens Codex's own hook review in each home that needs it (`codex-hook-review.ts`). */
+export const CODEX_REVIEW_COMMAND = 'notifai doctor codex'
 
 /** Codex's line in the done message's "To start" list. */
 export function codexNextStep(surface: CodexSurface | null, needsApproval: boolean, place: CodexApprovalPlace = {}): string {
   const inChat = surface === 'app' || surface === 'ide'
   if (!needsApproval) return inChat ? 'start a new chat' : 'open a new session'
   const terminal = terminalApproval(surface, place, false)
-  if (terminal !== null) return `**approve the Notifai hooks**, then open a new session: ${terminal.step} ${terminal.note}`
+  if (terminal !== null) return `**approve the Notifai hooks**, then open a new session: ${terminal.step}${terminal.note === '' ? '' : ` ${terminal.note}`}`
   if (surface === 'cli') return 'open a new session, type `/hooks` and **approve the Notifai hooks**'
   if (inChat) return 'start a new chat, click the **Review hooks** icon by the message box and **allow the Notifai hooks**'
   return `open a new session and **approve the Notifai hooks**: ${BOTH}`
@@ -113,7 +112,7 @@ export function codexNextStep(surface: CodexSurface | null, needsApproval: boole
 export function codexHooksWarning(surface: CodexSurface | null, place: CodexApprovalPlace = {}): string {
   const terminal = terminalApproval(surface, place, false)
   if (terminal !== null) {
-    return `⚠️ **Codex won't use Notifai${terminal.scope} until you approve its hooks${terminal.there}:** ${terminal.step} ${terminal.note}`
+    return `⚠️ **Codex won't use Notifai${terminal.scope} until you approve its hooks${terminal.there}:** ${terminal.step}${terminal.note === '' ? '' : ` ${terminal.note}`}`
   }
   const how = surface === 'cli'
     ? 'type `/hooks` in Codex and approve them.'
@@ -146,8 +145,8 @@ export function codexHooksReminder(
   if (terminal !== null) {
     const step = terminal.step.charAt(0).toUpperCase() + terminal.step.slice(1)
     return off
-      ? `**Keep in mind:** Codex won't use Notifai${terminal.scope} until you turn its hooks on and approve them${terminal.there}. ${step} ${terminal.note}`
-      : `**Keep in mind:** Codex won't use Notifai${terminal.scope} until you approve its hooks${terminal.there}. ${step} ${terminal.note}`
+      ? `**Keep in mind:** Codex won't use Notifai${terminal.scope} until you turn its hooks on and approve them${terminal.there}. ${step}${terminal.note === '' ? '' : ` ${terminal.note}`}`
+      : `**Keep in mind:** Codex won't use Notifai${terminal.scope} until you approve its hooks${terminal.there}. ${step}${terminal.note === '' ? '' : ` ${terminal.note}`}`
   }
   if (off) {
     const how = surface === 'cli'
@@ -166,12 +165,13 @@ export function codexHooksReminder(
 }
 
 /**
- * The terminal command that starts the Codex CLI on `home` to review hooks.
+ * A terminal command that runs `command` (the Codex CLI) on `home`: the hand-typed
+ * fallback where `notifai doctor codex` cannot start Codex itself.
  * PowerShell, the Windows default: `$env:` would otherwise stay set for the
  * rest of that window, so a later plain `codex` there would run in `home`.
  */
-function codexOnHomeCommand(home: string, platform: NodeJS.Platform | 'posix'): string {
-  if (platform === 'win32') return `$env:CODEX_HOME='${home.replace(/'/g, "''")}'; ${CODEX_FOR_HOOKS}; Remove-Item Env:CODEX_HOME`
+export function codexOnHomeCommand(home: string, platform: NodeJS.Platform | 'posix', command: string): string {
+  if (platform === 'win32') return `$env:CODEX_HOME='${home.replace(/'/g, "''")}'; ${command}; Remove-Item Env:CODEX_HOME`
   const quoted = /^[\w@%+=:,./-]+$/.test(home) ? home : `'${home.replace(/'/g, `'\\''`)}'`
-  return `CODEX_HOME=${quoted} ${CODEX_FOR_HOOKS}`
+  return `CODEX_HOME=${quoted} ${command}`
 }

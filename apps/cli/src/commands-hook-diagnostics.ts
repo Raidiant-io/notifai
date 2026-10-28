@@ -1,5 +1,6 @@
 /** User-facing diagnosis and recovery guidance for hook readiness. */
 import { existsSync, readFileSync } from 'node:fs'
+import { rememberCodexHome } from './codex-hook-review.js'
 import { codexHooksReminder, codexHost, codexSurface, type CodexApprovalPlace } from './codex-surface.js'
 import { type CommandDeps } from './commands-core.js'
 import { type ActiveHarnessSession } from './commands-harness-context.js'
@@ -80,8 +81,11 @@ export function inspectOpenclawPluginLoadability(
  */
 export function codexHookApprovalUserAction(
   env: NodeJS.ProcessEnv,
-  options: { off?: boolean; platform?: NodeJS.Platform | HookHostPlatform } = {},
+  options: { off?: boolean; platform?: NodeJS.Platform | HookHostPlatform; remember?: boolean } = {},
 ) {
+  // The reminder names `notifai doctor codex`, which the User may run from a
+  // terminal that knows nothing of this home. Doctor itself writes nothing.
+  if (options.remember !== false) rememberCodexHome(env, options.platform)
   return {
     code: 'codex_hook_approval_required',
     harness: 'codex',

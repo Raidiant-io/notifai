@@ -1765,9 +1765,9 @@ function hookChecks(deps: CommandDeps, codexTrust: CodexTrust): HookCheck[] {
             note: 'best-effort reading of the Codex trust store; Notifai never writes it, and /hooks in Codex is authoritative',
           },
           remedy: {
-            summary: "the User approves Notifai's hooks in Codex (Review hooks in the ChatGPT app or IDE, /hooks in the CLI); nothing waits for it",
-            command: '/hooks',
-            user_action: codexHookApprovalUserAction(deps.env, { off: trustFindings.some((finding) => finding.state === 'disabled') }),
+            summary: "the User approves Notifai's hooks in Codex (Review hooks in the ChatGPT app or IDE, /hooks in the CLI, or `notifai doctor codex` in a terminal, which opens Codex's own review in each Codex home that needs it); nothing waits for it",
+            command: 'notifai doctor codex',
+            user_action: codexHookApprovalUserAction(deps.env, { off: trustFindings.some((finding) => finding.state === 'disabled'), remember: false }),
           },
         }),
   })

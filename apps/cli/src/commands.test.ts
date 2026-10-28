@@ -52,7 +52,8 @@ type CommandDeps,
 type CommandIo
 } from './commands.js'
 import {
-personalProjectConfigPath
+personalProjectConfigPath,
+stateDir
 } from './config.js'
 import { writeProjectSession } from './hook-project-sessions.js'
 import { inspectQuestionState } from './hook-question-state.js'
@@ -433,8 +434,10 @@ describe('command contracts', () => {
       const notices = io.errLines.filter((line) => line.includes('hooks aren\'t approved'))
       expect(notices).toEqual([
         "Notifai's hooks aren't approved in this Codex home. Carry on and never wait for it; end your reply to the User with this line, as written: " +
-          `**Keep in mind:** Codex won't use Notifai in this Codex account until you approve its hooks there. In a terminal on this machine (T3 Code's terminal panel works), run \`CODEX_HOME=${shadow} codex -c model_provider=ollama\` and choose **Trust all and continue** (or type \`/hooks\`). It only opens Codex to review hooks; no sign-in needed.`,
+          "**Keep in mind:** Codex won't use Notifai in this Codex account until you approve its hooks there. In a terminal on this machine (T3 Code's terminal panel works), run `notifai doctor codex`: it opens Codex's own hook review for this account, where you choose **Trust all and continue**.",
       ])
+      // The User may run it from a terminal that knows nothing of this home.
+      expect(JSON.parse(readFileSync(path.join(stateDir(env), 'codex-homes.json'), 'utf8'))).toEqual({ homes: [shadow] })
     } finally {
       hub.close()
       rmSync(root, { recursive: true, force: true })

@@ -1,7 +1,7 @@
 {
   "version": 1,
-  "behavior_digest": "sha256:863a56ce9a43e383d6a656dc7895834b42cd499af707d3ddb80b0af39dbf95a9",
-  "outcome": "reviewed-no-impact",
+  "behavior_digest": "sha256:19fe72272010ffee922481564727aebed4afa204140bf5090d6a6b2811aafd44",
+  "outcome": "guidance-updated",
   "surfaces_reviewed": [
     "lifecycle-hooks",
     "notifai-skill",
@@ -9,5 +9,5 @@
     "cli-readiness",
     "domain-terms"
   ],
-  "reason": "Reviewed lifecycle hooks, the Notifai skill, harness setup, CLI readiness and domain terms against runtime schemas for sound records, library lists and Account sound-default responses. The served fields and request schemas are unchanged; additive response fields remain accepted, and dashboard validation rejects unusable successes. The sound listing and User-owned sound/routing instructions still describe the same behavior. No lifecycle, setup, readiness, skill or domain wording changes are needed."
+  "reason": "Reviewed all five surfaces for `notifai doctor codex`. Lifecycle hooks: no hook definition or output changes. CLI readiness: a new `doctor codex` form finds Codex homes (~/.codex, the shell's CODEX_HOME, homes in Notifai's attendance records and the homes a reminder named, kept in Notifai's own state) and, only for a person at a terminal with no Agent Session markers, opens Codex's own hook review in each home that waits, with `-c model_provider=ollama` only where the home has no auth.json; it writes no trust, passes no trust override and re-checks with hooks/list (config.toml fallback). Run by an agent or with --json it launches nothing and prints the one command for the User (exit 1). Reproduced on Codex 0.164.0 in scratch homes under /tmp: agent mode, the review in ~/.codex and in a T3-style shadow with a symlinked config.toml (no sign-in, the link stayed a link, no model_provider persisted), and the all-approved rerun. The reminder (doctor's and a refused ask's user_action.message, and the once-per-thread send notice), the init warning and the done message now name `notifai doctor codex` wherever the surface has no hook review of its own, replacing `CODEX_HOME=<home> codex -c model_provider=ollama` and its PowerShell form; hooks that are off still say to type /hooks; the Codex CLI, app and editor keep their wording. doctor's hooks (trust) remedy, the trust summaries in doctor and ask, the CODEX_HOME note and hooks install's message add the command beside Review hooks and /hooks. Notifai skill: references/harness-codex.md names the command and says never to run it for the User. Harness setup: docs/HARNESSES.md describes it for apps that run Codex for the User. Domain terms: unchanged. skills/guidance-changes.json carries one new release note for this change. Retained the reviewed open Project and sound/default response schemas and runtime guards from the quality branch. Their served fields, opaque strings, additive response facts and closed update requests remain unchanged; they require no lifecycle, skill, setup, readiness or domain wording changes."
 }

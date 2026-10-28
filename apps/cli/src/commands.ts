@@ -52,6 +52,7 @@ export {
 export { logsCommand, parseSince } from './commands-logs.js'
 export { initCommand, projectSlugFrom } from './commands-init.js'
 export { assessReadiness, doctorCommand } from './commands-doctor.js'
+export { doctorCodexCommand } from './codex-hook-review.js'
 export { cliUpdateCheckCommand } from './commands-update-check.js'
 export { cliUpdateCommand } from './commands-update.js'
 export {

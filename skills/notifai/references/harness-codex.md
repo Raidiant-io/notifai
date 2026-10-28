@@ -13,8 +13,10 @@ app. Call it Codex; the ChatGPT app is the window the User sees.
 Run `notifai hooks install --harness codex`. If `hooks-trust` fails, only the
 User can approve or turn on the Notifai handlers, in Codex with the same
 `CODEX_HOME`: the **Review hooks** icon in the message box of the ChatGPT app or
-the IDE extension (Settings → Hooks for handlers that are off), or `/hooks` in
-the CLI. That includes the `PostToolUse` handler that hands answers and notes
+the IDE extension (Settings → Hooks for handlers that are off), `/hooks` in
+the CLI, or `notifai doctor codex` in a terminal, which opens Codex's own
+review in each Codex home that needs it. Never run that command for the User:
+run by an agent it only prints what the User should run. That includes the `PostToolUse` handler that hands answers and notes
 into a working turn. Codex's own list is authoritative when it disagrees with
 doctor.
 

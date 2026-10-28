@@ -19,6 +19,7 @@ import {
   type ClientOptions,
 } from './client.js'
 import { type CodexWakeAdapters } from './codex-wake.js'
+import type { CodexReviewSeams } from './codex-hook-review.js'
 import { loadConfig, type CliConfig } from './config.js'
 import type { CredentialStore, MachineCredential } from './credentials.js'
 import { type HookAdapterTarget } from './hook-adapter.js'
@@ -123,6 +124,8 @@ export interface CommandDeps {
   codexAnswerControl?: typeof connectCodexAnswerControl
   /** Test seam for doctor's shared Codex app-server report. */
   codexDaemonVersion?: ReadCodexDaemonVersion
+  /** Test seams for `notifai doctor codex`: the Codex executable and its foreground launch. */
+  codexReview?: CodexReviewSeams
   /** Test seam for Codex's own `hooks/list` (trust and current hashes). */
   codexHooksList?: ListCodexHooks
   /** Test seam: what kind of Codex process hosts the active session. */

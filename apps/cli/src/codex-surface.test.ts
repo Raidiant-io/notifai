@@ -48,17 +48,14 @@ describe('hook approval wording', () => {
     expect(codexHooksReminder('app', { off: true })).toContain('Settings → **Hooks**')
   })
 
-  it('names the home to start Codex on when an app runs Codex in its own home', () => {
-    expect(codexHooksReminder(null, { home: '/Users/me/app/shadow', host: 't3', platform: 'darwin' })).toBe(
-      "**Keep in mind:** Codex won't use Notifai in this Codex account until you approve its hooks there. In a terminal on this machine (T3 Code's terminal panel works), run `CODEX_HOME=/Users/me/app/shadow codex -c model_provider=ollama` and choose **Trust all and continue** (or type `/hooks`). It only opens Codex to review hooks; no sign-in needed.",
-    )
+  it('names `notifai doctor codex` when an app runs Codex in its own home', () => {
+    const t3 = "**Keep in mind:** Codex won't use Notifai in this Codex account until you approve its hooks there. In a terminal on this machine (T3 Code's terminal panel works), run `notifai doctor codex`: it opens Codex's own hook review for this account, where you choose **Trust all and continue**."
+    expect(codexHooksReminder(null, { home: '/Users/me/app/shadow', host: 't3', platform: 'darwin' })).toBe(t3)
+    // One command on every platform: no home path, no PowerShell form to type.
+    expect(codexHooksReminder(null, { home: "C:\\Users\\me's\\shadow", host: 't3', platform: 'win32' })).toBe(t3)
     // The startup prompt does not list hooks that are off, so that takes /hooks.
     expect(codexHooksReminder(null, { home: '/Users/me/My Apps/shadow', off: true, platform: 'linux' })).toBe(
-      "**Keep in mind:** Codex won't use Notifai in this Codex account until you turn its hooks on and approve them there. In a terminal on this machine, run `CODEX_HOME='/Users/me/My Apps/shadow' codex -c model_provider=ollama` and type `/hooks` to turn them on and approve them. It only opens Codex to review hooks; no sign-in needed.",
-    )
-    // PowerShell keeps $env: for the rest of the window, so the command clears it.
-    expect(codexHooksReminder(null, { home: "C:\\Users\\me's\\shadow", platform: 'win32' })).toContain(
-      "run `$env:CODEX_HOME='C:\\Users\\me''s\\shadow'; codex -c model_provider=ollama; Remove-Item Env:CODEX_HOME` and choose",
+      "**Keep in mind:** Codex won't use Notifai in this Codex account until you turn its hooks on and approve them there. In a terminal on this machine, run `notifai doctor codex`: it opens Codex's own hook review for this account, where you type `/hooks` to turn them on and approve them.",
     )
     // The Codex CLI, app and editor already approve in the home they run on.
     expect(codexHooksReminder('cli', { home: '/Users/me/app/shadow', host: 't3' })).toBe(codexHooksReminder('cli'))
@@ -67,27 +64,27 @@ describe('hook approval wording', () => {
 
   it('sends a T3 Code default account to the terminal too, on ~/.codex', () => {
     expect(codexHooksReminder(null, { host: 't3', home: null, platform: 'darwin' })).toBe(
-      "**Keep in mind:** Codex won't use Notifai until you approve its hooks. In a terminal on this machine (T3 Code's terminal panel works), run `codex -c model_provider=ollama` and choose **Trust all and continue** (or type `/hooks`). It only opens Codex to review hooks; no sign-in needed.",
+      "**Keep in mind:** Codex won't use Notifai until you approve its hooks. In a terminal on this machine (T3 Code's terminal panel works), run `notifai doctor codex`: it opens Codex's own hook review, where you choose **Trust all and continue**.",
     )
   })
 
   it('approves once in ~/.codex for Orca, which copies it to every account', () => {
     for (const home of [null, '/Users/me/Library/Application Support/orca/codex-accounts/a/home']) {
       expect(codexHooksReminder(null, { host: 'orca', home, platform: 'darwin' })).toBe(
-        "**Keep in mind:** Codex won't use Notifai in Orca until you approve its hooks. In a terminal on this machine, run `codex -c model_provider=ollama` and choose **Trust all and continue** (or type `/hooks`). It only opens Codex to review hooks; no sign-in needed. Orca copies the approval to its Codex accounts the next time it starts Codex.",
+        "**Keep in mind:** Codex won't use Notifai in Orca until you approve its hooks. In a terminal on this machine, run `notifai doctor codex`: it opens Codex's own hook review, where you choose **Trust all and continue**. Orca copies the approval to its Codex accounts the next time it starts Codex.",
       )
     }
-    expect(codexHooksReminder(null, { host: 'orca', off: true })).toContain('run `codex -c model_provider=ollama` and type `/hooks` to turn them on and approve them.')
+    expect(codexHooksReminder(null, { host: 'orca', off: true })).toContain("run `notifai doctor codex`: it opens Codex's own hook review, where you type `/hooks` to turn them on and approve them.")
   })
 
   it('gives setup and its done message the same step for a separate home', () => {
     const place = { home: '/Users/me/app/shadow', host: 't3', platform: 'darwin' } as const
-    const step = "in a terminal on this machine (T3 Code's terminal panel works), run `CODEX_HOME=/Users/me/app/shadow codex -c model_provider=ollama` and choose **Trust all and continue** (or type `/hooks`). It only opens Codex to review hooks; no sign-in needed."
+    const step = "in a terminal on this machine (T3 Code's terminal panel works), run `notifai doctor codex`: it opens Codex's own hook review for this account, where you choose **Trust all and continue**."
     expect(codexHooksWarning(null, place)).toBe(`⚠️ **Codex won't use Notifai in this Codex account until you approve its hooks there:** ${step}`)
     expect(codexNextStep(null, true, place)).toBe(`**approve the Notifai hooks**, then open a new session: ${step}`)
     expect(doneMessage({ ...facts, codexSurface: null, codexPlace: place })).toContain(`- **Codex**: **approve the Notifai hooks**, then open a new session: ${step}`)
     const terminal = doneTerminalLines({ ...facts, codexSurface: null, codexPlace: place }).lines.join('\n')
-    expect(terminal).toContain('run CODEX_HOME=/Users/me/app/shadow codex -c model_provider=ollama and choose Trust all and continue')
+    expect(terminal).toContain("run notifai doctor codex: it opens Codex's own hook review for this account, where you choose Trust all and continue")
     expect(terminal).not.toMatch(/\*\*|`/)
   })
 })

@@ -21,6 +21,7 @@ import {
   configUnsetCommand,
   devicesCommand,
   doctorCommand,
+  doctorCodexCommand,
   guidanceSetCommand,
   guidanceShowCommand,
   guidanceChangesCommand,
@@ -119,6 +120,7 @@ const defaultRunners = {
   install: nativeInstallCommand,
   uninstall: nativeUninstallCommand,
   doctor: doctorCommand,
+  doctorCodex: doctorCodexCommand,
   update: cliUpdateCommand,
   updateCheck: cliUpdateCheckCommand,
   updateSkill: updateSkillCommand,
@@ -430,16 +432,23 @@ export function buildProgram(deps: CommandDeps, options: BuildProgramOptions = {
     .command('doctor')
     .helpGroup(GROUP.daily)
     .summary('Check every part of the setup')
-    .description('Audit config, credential, server, contract, device, hook, and saved receipt proof; exits nonzero when any line is FAIL (no live send)')
+    .description('Audit config, credential, server, contract, device, hook, and saved receipt proof; exits nonzero when any line is FAIL (no live send).\n\n' +
+      "`notifai doctor codex` finds the Codex homes where Notifai's hooks wait for approval and opens Codex's own hook review in each, one after another. Notifai never approves its hooks itself; run by an agent, it only prints what the User should run.")
+    .argument('[harness]', 'codex: help approve Notifai\'s hooks in each Codex home')
     .option('--json', 'machine-readable output')
-    .action(async (opts: { json?: boolean }) => {
+    .action(async (harness: string | undefined, opts: { json?: boolean }) => {
+      if (harness !== undefined && harness !== 'codex') {
+        deps.io.err(`notifai doctor checks every harness; \`notifai doctor codex\` is the only harness-specific form (got "${harness}")`)
+        exit(2)
+        return
+      }
       if (admission === 'diagnostic') {
         const report = portableNativeReport(deps.env, { nativeHome: deps.hookAdapterHome, invokingNpmAdapterArtifact: deps.invokingNpmAdapterArtifact })
         deps.io.out(opts.json ? JSON.stringify(report) : String(report['message']))
         exit(1)
         return
       }
-      exit(await runners.doctor(deps, opts))
+      exit(harness === 'codex' ? await runners.doctorCodex(deps, opts) : await runners.doctor(deps, opts))
     })
 
   program
