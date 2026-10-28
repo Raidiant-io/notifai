@@ -14,8 +14,11 @@ in one release branch/PR, with the stable manifest unchanged. Close a completed
 beta PR without merging beta metadata into main. Ordinary product changes land
 before the release. Review notes against the previous stable tag.
 
-Freeze the candidate commit, create its exact `v<version>` tag and draft GitHub
-Release, then dispatch **publish.yml** on that tag:
+Freeze the candidate commit, create its exact `v<version>` tag, then dispatch
+**publish.yml** on that tag. Native publication creates the tag's draft GitHub
+Release from its CHANGELOG section when none exists, and keeps the oldest of
+byte-identical empty duplicate drafts; edit the notes after publication if
+needed. Any other ambiguity stops before upload:
 
 - `expected_sha`: the full frozen commit;
 - `mode: release`;
@@ -39,7 +42,12 @@ hashes remain mandatory; current main need not stay at the release commit.
 
 Source boundaries are scanned once, package contents once. Native finalization
 runs runtime/storage checks on final bytes. macOS remains Developer ID signed
-and notarized, including the accepted-ticket retry. Each target then installs
+and notarized, including the accepted-ticket retry. When a Mac's Gatekeeper
+reports valid Developer ID code as unnotarized, the check asks Apple's ticket
+store for the exact code hash: no ticket fails at once; a held ticket or an
+unreachable store is a bounded retry, and only a later local check admits the
+file. npm publication repeats only a Sigstore Rekor 409 conflict, after
+proving the version never reached the registry. Each target then installs
 one registry-verified npm adapter, acquires its exact signed native product,
 and checks both process identity and skill refresh in that installation.
 
