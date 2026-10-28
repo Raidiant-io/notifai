@@ -207,7 +207,8 @@ test('publication requires exact-SHA CI before the protected OIDC job', () => {
   const integrity = publishWorkflow.jobs['dispatch-integrity']
   assert.deepEqual(integrity.permissions, {actions: 'read', contents: 'read'})
   assert.match(publish, /Require successful CI evidence at the exact release SHA/u)
-  assert.match(publish, /node scripts\/require-ci-evidence\.mjs --expected-sha/u)
+  assert.match(publish, /node scripts\/require-ci-evidence\.mjs --wait --expected-sha/u)
+  assert.ok(integrity['timeout-minutes'] >= 19, 'dispatch-integrity must outlast the bounded CI wait')
   assert.equal(publishWorkflow.jobs.npm.environment, 'npm-release')
   assert.deepEqual(publishWorkflow.jobs.npm.permissions, {contents: 'read', 'id-token': 'write'})
   assert.ok(publishWorkflow.jobs['native-publication'].needs.includes('source'))

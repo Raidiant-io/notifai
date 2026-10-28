@@ -300,7 +300,7 @@ jobs:
     environment: native-release
   dispatch-integrity:
     runs-on: ubuntu-latest
-    timeout-minutes: 1
+    timeout-minutes: 20
     permissions:
       actions: read
       contents: read
@@ -344,7 +344,7 @@ jobs:
         if: inputs.mode != 'repair-beta'
         env:
           GH_TOKEN: ${{ github.token }}
-        run: node scripts/require-ci-evidence.mjs --expected-sha "${{ inputs.expected_sha }}"
+        run: node scripts/require-ci-evidence.mjs --wait --expected-sha "${{ inputs.expected_sha }}"
       - name: Require retained npm/native acceptance before CLI promotion
         if: inputs.mode == 'promote' && startsWith(github.ref, 'refs/tags/v')
         env:
@@ -612,6 +612,13 @@ jobs:
           tarball=$(find "$RUNNER_TEMP/verified-npm" -name "*.tgz")
           test -f "$tarball"
           node scripts/verify-packed-install.mjs --with-skill --cli-tarball "$tarball" --expected-sha "$EXPECTED_SHA" --owned-hosted-account > "$RUNNER_TEMP/npm-native-acceptance.json"
+      - name: Show Gatekeeper's notarization lookups after a failed macOS acceptance
+        if: failure() && runner.os == 'macOS'
+        shell: bash
+        run: |
+          /usr/bin/log show --last 20m --style compact --info --debug \
+            --predicate '(process == "syspolicyd" || process == "trustd") && (eventMessage CONTAINS[c] "ticket" || eventMessage CONTAINS[c] "notari" || eventMessage CONTAINS[c] "cloudkit" || eventMessage CONTAINS[c] "NSURLError")' \
+            | tail -n 300 || true
       - name: Retain exact OS acceptance receipts
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
