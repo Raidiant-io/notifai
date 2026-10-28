@@ -433,7 +433,7 @@ describe('command contracts', () => {
       const notices = io.errLines.filter((line) => line.includes('hooks aren\'t approved'))
       expect(notices).toEqual([
         "Notifai's hooks aren't approved in this Codex home. Carry on and never wait for it; end your reply to the User with this line, as written: " +
-          `**Keep in mind:** Codex won't use Notifai in this Codex account until you approve its hooks there. In a terminal, run \`CODEX_HOME=${shadow} codex\`, then type \`/hooks\` and approve them.`,
+          `**Keep in mind:** Codex won't use Notifai in this Codex account until you approve its hooks there. In a terminal on this machine (T3 Code's terminal panel works), run \`CODEX_HOME=${shadow} codex -c model_provider=ollama\` and choose **Trust all and continue** (or type \`/hooks\`). It only opens Codex to review hooks; no sign-in needed.`,
       ])
     } finally {
       hub.close()

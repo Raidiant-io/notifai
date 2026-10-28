@@ -1,7 +1,7 @@
 {
   "version": 1,
-  "behavior_digest": "sha256:2a5ba87464b2bf2b7adc773f5190d45ce49a2ce32487becb337d8ecb301fedfc",
-  "outcome": "reviewed-no-impact",
+  "behavior_digest": "sha256:f6cdda3a8d2f579eeead9f0c397d7b1a8cc21696ffd3f47a8688b8674f1a4c94",
+  "outcome": "guidance-updated",
   "surfaces_reviewed": [
     "lifecycle-hooks",
     "notifai-skill",
@@ -9,5 +9,5 @@
     "cli-readiness",
     "domain-terms"
   ],
-  "reason": "Reviewed all five surfaces for the Codex trust-key fix. Lifecycle hooks: no hook definition or output changes. CLI readiness: codexTrustFindings now keys an unset CODEX_HOME by the logical ~/.codex, as Codex does (it canonicalizes only a set CODEX_HOME), so a symlinked ~/.codex no longer reports approved handlers as new in doctor, a refused ask or the send notice; the wording of every message is unchanged. The Stop and tool-hook fingerprints use the same key, so a session that already ran under the old key with a symlinked ~/.codex may need one fresh session. Notifai skill, harness setup and domain terms: unchanged. skills/guidance-changes.json carries one release note for this change."
+  "reason": "Reviewed all five surfaces for the Codex hook approval reminder. Lifecycle hooks: no hook definition or output changes. CLI readiness: the reminder (doctor's and a refused ask's user_action.message, and the once-per-thread send notice) now names a terminal step wherever the surface has no hook review of its own: a separate CODEX_HOME under T3 Code or an unidentified app gets `CODEX_HOME=<home> codex -c model_provider=ollama` and the Trust all and continue choice (or /hooks), which needs no sign-in (reproduced on Codex 0.164.0 in a home without auth.json and one with it); Windows gets the PowerShell form that removes CODEX_HOME afterwards; hooks that are off still take /hooks, since the startup prompt does not list them; a T3 Code default account gets the same step on ~/.codex; an Orca chat (ORCA_STRUCTURED_SESSION=1) is told to approve once in ~/.codex, because Orca copies those hooks and their approval into each account home whenever it starts Codex there. The Codex CLI, app and editor keep their wording. notifai init's hooks-trust warning and the done message now carry the same step instead of approving ~/.codex. Notifai skill: the Codex reference already says to carry on and end the reply with the gap's message as written, and that a distinct Codex home needs its own approval; no edit. Harness setup: docs/HARNESSES.md gains one sentence that apps running Codex for the User get the terminal command from the reminder. Domain terms: unchanged. skills/guidance-changes.json carries one new release note for this change."
 }

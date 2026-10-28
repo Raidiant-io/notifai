@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { codexHooksReminder, codexHooksTerminalLine, codexHooksWarning, codexSurface } from './codex-surface.js'
+import { codexHost, codexHooksReminder, codexHooksTerminalLine, codexHooksWarning, codexNextStep, codexSurface } from './codex-surface.js'
 import { doneMessage, doneTerminalLines } from './setup-journey.js'
 
 describe('codexSurface', () => {
@@ -49,13 +49,56 @@ describe('hook approval wording', () => {
   })
 
   it('names the home to start Codex on when an app runs Codex in its own home', () => {
-    expect(codexHooksReminder(null, { home: '/Users/me/app/shadow', platform: 'darwin' })).toBe(
-      "**Keep in mind:** Codex won't use Notifai in this Codex account until you approve its hooks there. In a terminal, run `CODEX_HOME=/Users/me/app/shadow codex`, then type `/hooks` and approve them.",
+    expect(codexHooksReminder(null, { home: '/Users/me/app/shadow', host: 't3', platform: 'darwin' })).toBe(
+      "**Keep in mind:** Codex won't use Notifai in this Codex account until you approve its hooks there. In a terminal on this machine (T3 Code's terminal panel works), run `CODEX_HOME=/Users/me/app/shadow codex -c model_provider=ollama` and choose **Trust all and continue** (or type `/hooks`). It only opens Codex to review hooks; no sign-in needed.",
     )
-    expect(codexHooksReminder(null, { home: '/Users/me/My Apps/shadow', off: true, platform: 'linux' })).toContain("run `CODEX_HOME='/Users/me/My Apps/shadow' codex`, then type `/hooks` to do both.")
-    expect(codexHooksReminder(null, { home: 'C:\\Users\\me\\shadow', platform: 'win32' })).toContain("run `$env:CODEX_HOME='C:\\Users\\me\\shadow'; codex`")
+    // The startup prompt does not list hooks that are off, so that takes /hooks.
+    expect(codexHooksReminder(null, { home: '/Users/me/My Apps/shadow', off: true, platform: 'linux' })).toBe(
+      "**Keep in mind:** Codex won't use Notifai in this Codex account until you turn its hooks on and approve them there. In a terminal on this machine, run `CODEX_HOME='/Users/me/My Apps/shadow' codex -c model_provider=ollama` and type `/hooks` to turn them on and approve them. It only opens Codex to review hooks; no sign-in needed.",
+    )
+    // PowerShell keeps $env: for the rest of the window, so the command clears it.
+    expect(codexHooksReminder(null, { home: "C:\\Users\\me's\\shadow", platform: 'win32' })).toContain(
+      "run `$env:CODEX_HOME='C:\\Users\\me''s\\shadow'; codex -c model_provider=ollama; Remove-Item Env:CODEX_HOME` and choose",
+    )
     // The Codex CLI, app and editor already approve in the home they run on.
-    expect(codexHooksReminder('cli', { home: '/Users/me/app/shadow' })).toBe(codexHooksReminder('cli'))
+    expect(codexHooksReminder('cli', { home: '/Users/me/app/shadow', host: 't3' })).toBe(codexHooksReminder('cli'))
     expect(codexHooksReminder('cli', { off: true })).toContain('`/hooks`')
+  })
+
+  it('sends a T3 Code default account to the terminal too, on ~/.codex', () => {
+    expect(codexHooksReminder(null, { host: 't3', home: null, platform: 'darwin' })).toBe(
+      "**Keep in mind:** Codex won't use Notifai until you approve its hooks. In a terminal on this machine (T3 Code's terminal panel works), run `codex -c model_provider=ollama` and choose **Trust all and continue** (or type `/hooks`). It only opens Codex to review hooks; no sign-in needed.",
+    )
+  })
+
+  it('approves once in ~/.codex for Orca, which copies it to every account', () => {
+    for (const home of [null, '/Users/me/Library/Application Support/orca/codex-accounts/a/home']) {
+      expect(codexHooksReminder(null, { host: 'orca', home, platform: 'darwin' })).toBe(
+        "**Keep in mind:** Codex won't use Notifai in Orca until you approve its hooks. In a terminal on this machine, run `codex -c model_provider=ollama` and choose **Trust all and continue** (or type `/hooks`). It only opens Codex to review hooks; no sign-in needed. Orca copies the approval to its Codex accounts the next time it starts Codex.",
+      )
+    }
+    expect(codexHooksReminder(null, { host: 'orca', off: true })).toContain('run `codex -c model_provider=ollama` and type `/hooks` to turn them on and approve them.')
+  })
+
+  it('gives setup and its done message the same step for a separate home', () => {
+    const place = { home: '/Users/me/app/shadow', host: 't3', platform: 'darwin' } as const
+    const step = "in a terminal on this machine (T3 Code's terminal panel works), run `CODEX_HOME=/Users/me/app/shadow codex -c model_provider=ollama` and choose **Trust all and continue** (or type `/hooks`). It only opens Codex to review hooks; no sign-in needed."
+    expect(codexHooksWarning(null, place)).toBe(`⚠️ **Codex won't use Notifai in this Codex account until you approve its hooks there:** ${step}`)
+    expect(codexNextStep(null, true, place)).toBe(`**approve the Notifai hooks**, then open a new session: ${step}`)
+    expect(doneMessage({ ...facts, codexSurface: null, codexPlace: place })).toContain(`- **Codex**: **approve the Notifai hooks**, then open a new session: ${step}`)
+    const terminal = doneTerminalLines({ ...facts, codexSurface: null, codexPlace: place }).lines.join('\n')
+    expect(terminal).toContain('run CODEX_HOME=/Users/me/app/shadow codex -c model_provider=ollama and choose Trust all and continue')
+    expect(terminal).not.toMatch(/\*\*|`/)
+  })
+})
+
+describe('codexHost', () => {
+  it('names T3 Code and Orca chats, never a surface with its own hook review', () => {
+    expect(codexHost({ CODEX_THREAD_ID: 't', CODEX_INTERNAL_ORIGINATOR_OVERRIDE: 'T3' })).toBe('t3')
+    expect(codexHost({ CODEX_THREAD_ID: 't', CODEX_INTERNAL_ORIGINATOR_OVERRIDE: 'T3 Code' })).toBe('t3')
+    expect(codexHost({ CODEX_THREAD_ID: 't', ORCA_STRUCTURED_SESSION: '1' })).toBe('orca')
+    // An Orca terminal pane runs the plain Codex CLI, whose /hooks approves its own home.
+    expect(codexHost({ CODEX_THREAD_ID: 't' })).toBeNull()
+    expect(codexHost({ CODEX_THREAD_ID: 't', CODEX_INTERNAL_ORIGINATOR_OVERRIDE: 'other_app' })).toBeNull()
   })
 })

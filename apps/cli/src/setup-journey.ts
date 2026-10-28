@@ -18,7 +18,7 @@ import path from 'node:path'
 import { atomicWriteFileSync } from './atomic-file.js'
 import { stateDir } from './config.js'
 import { HARNESS_LABELS, HOOK_INSTALLABLE_HARNESSES, type HookInstallableHarness } from './harnesses.js'
-import { codexHooksTerminalLine, codexNextStep, type CodexSurface } from './codex-surface.js'
+import { codexHooksTerminalLine, codexNextStep, type CodexApprovalPlace, type CodexSurface } from './codex-surface.js'
 import { COMPANION_INSTALL_URLS, deviceNoun, MAC_DOWNLOAD_URL } from './setup-destinations.js'
 
 /** A wait with nothing changing ends here, with what is left. */
@@ -292,6 +292,8 @@ export interface DoneFacts {
   codexNeedsApproval: boolean
   /** The Codex surface setup runs in, which decides how approval is worded; null or absent when not known. */
   codexSurface?: CodexSurface | null
+  /** The app around Codex and its home, which word the approval when the surface has no hook review. */
+  codexPlace?: CodexApprovalPlace
   /** Apps that now run Notifai's commands without asking. */
   commandApps: readonly HookInstallableHarness[]
   /** This computer is a Mac, so the desktop app can run here too. */
@@ -301,11 +303,11 @@ export interface DoneFacts {
 export const MAC_APP_LINE = `Want notifications on your Mac? [Download the desktop app here](${MAC_DOWNLOAD_URL})`
 
 /** Codex's step in the done message carries its hook approval, so it reads as a step, not a footnote. */
-function nextStep(app: HookInstallableHarness, facts: Pick<DoneFacts, 'codexNeedsApproval' | 'codexSurface'>): string {
-  return app === 'codex' ? codexNextStep(facts.codexSurface ?? null, facts.codexNeedsApproval) : NEXT_STEP[app]
+function nextStep(app: HookInstallableHarness, facts: Pick<DoneFacts, 'codexNeedsApproval' | 'codexSurface' | 'codexPlace'>): string {
+  return app === 'codex' ? codexNextStep(facts.codexSurface ?? null, facts.codexNeedsApproval, facts.codexPlace) : NEXT_STEP[app]
 }
 
-export function appsBlock(facts: Pick<DoneFacts, 'apps' | 'codexNeedsApproval' | 'codexSurface' | 'commandApps'>): string {
+export function appsBlock(facts: Pick<DoneFacts, 'apps' | 'codexNeedsApproval' | 'codexSurface' | 'codexPlace' | 'commandApps'>): string {
   if (facts.apps.length === 0) return ''
   const step = (app: HookInstallableHarness) => nextStep(app, facts)
   return '**To start:**\n\n' + facts.apps.map((app) => `- **${HARNESS_LABELS[app]}**: ${step(app)}`).join('\n') +
@@ -330,7 +332,7 @@ export function doneTerminalLines(facts: DoneFacts): { title: string; lines: str
   if (facts.apps.length > 0) {
     lines.push(`To start: ${facts.apps.map((app) => `${HARNESS_LABELS[app]}: ${nextStep(app, { ...facts, codexNeedsApproval: false })}`).join(' · ')}`)
   }
-  if (facts.apps.includes('codex') && facts.codexNeedsApproval) lines.push(codexHooksTerminalLine(facts.codexSurface ?? null))
+  if (facts.apps.includes('codex') && facts.codexNeedsApproval) lines.push(codexHooksTerminalLine(facts.codexSurface ?? null, facts.codexPlace))
   if (facts.commandApps.length > 0) lines.push(`${appNames(facts.commandApps)} can now run Notifai's commands without asking.`)
   if (facts.mac === true) lines.push(`Want notifications on your Mac? Download the desktop app: ${MAC_DOWNLOAD_URL}`)
   return { title: facts.email === null ? 'Notifai is set up' : `Notifai is set up for ${facts.email}`, lines }

@@ -82,6 +82,7 @@ import {
 } from './harnesses.js'
 import { relayMessage } from './relay-message.js'
 import { codexHooksWarning, codexSurface } from './codex-surface.js'
+import { codexApprovalPlace } from './commands-hook-diagnostics.js'
 import {
   APPROVAL_STOP_MS,
   APPS_QUESTION,
@@ -419,11 +420,11 @@ function applyNotificationGrace(readiness: Readiness, run: SetupRun, now: number
  * waits for it: during setup it is a warning the done message carries, not a
  * gap. `doctor` still reports it as one.
  */
-function codexTrustAsWarning(readiness: Readiness, env: NodeJS.ProcessEnv): Readiness {
+function codexTrustAsWarning(readiness: Readiness, deps: Pick<CommandDeps, 'env' | 'hookPlatform'>): Readiness {
   return {
     ...readiness,
     states: readiness.states.map((state) => state.id === 'hooks-trust' && state.status === 'gap'
-      ? { ...state, status: 'optional-gap', message: codexHooksWarning(codexSurface(env)) }
+      ? { ...state, status: 'optional-gap', message: codexHooksWarning(codexSurface(deps.env), codexApprovalPlace(deps.env, deps.hookPlatform)) }
       : state),
   }
 }
@@ -1066,7 +1067,7 @@ export async function initCommand(deps: CommandDeps, flags: InitFlags): Promise<
       ...skillOpts(),
       ...(json ? { json: true } : {}),
       ...(refresh === undefined || previous === undefined ? {} : { previous, refresh }),
-    }), run, now()), deps.env)
+    }), run, now()), deps)
   let readiness = await assess()
 
   if (askApps) {
@@ -1468,6 +1469,7 @@ function doneFacts(readiness: Readiness, apps: readonly HookInstallableHarness[]
     apps,
     codexNeedsApproval: status('hooks-trust') !== 'ready',
     codexSurface: codexSurface(deps.env),
+    codexPlace: codexApprovalPlace(deps.env, deps.hookPlatform),
     commandApps: apps.filter((app) => (app === 'claude-code' && status(CLAUDE_COMMANDS_STATE_ID) === 'ready') ||
       (app === 'codex' && status(CODEX_COMMANDS_STATE_ID) === 'ready')),
     mac: (deps.hookPlatform ?? process.platform) === 'darwin' && !(deps.macAppInstalled ?? macAppInstalled(deps.env)),

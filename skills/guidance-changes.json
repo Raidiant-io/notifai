@@ -1,5 +1,5 @@
 {
-  "current": "b6226205b3111227e735b121ba651bfdef8cc92df0073f8ecfd435618368b281",
+  "current": "9d35fa31b24c8e390af11f92479f4285d5e8addfa152a56a7fd79a52e779bb6e",
   "releases": [
     {
       "digest": "3e47b01bc6bbfb43e910c660b9964fab6459d75148c3c02dcbcd0be64cfb2963",
@@ -148,6 +148,10 @@
     {
       "digest": "b6226205b3111227e735b121ba651bfdef8cc92df0073f8ecfd435618368b281",
       "note": "Notifai's Codex trust check now keys an unset `CODEX_HOME` by the plain `~/.codex` path, as Codex does, so a `~/.codex` that is a symlink no longer reports approved hooks as unapproved, and `doctor`, a refused `ask` and the send notice stop asking for an approval that was already given. Existing agent guidance is unchanged."
+    },
+    {
+      "digest": "9d35fa31b24c8e390af11f92479f4285d5e8addfa152a56a7fd79a52e779bb6e",
+      "note": "The reminder to approve Notifai's Codex hooks now gets the User there without a sign-in. When Codex runs under an app with no hook review of its own (such as T3 Code), it names a terminal command, `CODEX_HOME=<home> codex -c model_provider=ollama` for an account in its own home, and the **Trust all and continue** choice; on Windows the PowerShell line also clears `CODEX_HOME` afterwards. Hooks that are turned off still take `/hooks`. In an Orca chat it says to approve once in `~/.codex`, which Orca copies to its Codex accounts. `notifai init` and its done message give the same step. Carry on and end your reply with the reminder as written, as before."
     }
   ]
 }

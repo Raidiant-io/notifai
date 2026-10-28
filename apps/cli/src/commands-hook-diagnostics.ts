@@ -1,6 +1,6 @@
 /** User-facing diagnosis and recovery guidance for hook readiness. */
 import { existsSync, readFileSync } from 'node:fs'
-import { codexHooksReminder, codexSurface } from './codex-surface.js'
+import { codexHooksReminder, codexHost, codexSurface, type CodexApprovalPlace } from './codex-surface.js'
 import { type CommandDeps } from './commands-core.js'
 import { type ActiveHarnessSession } from './commands-harness-context.js'
 import { stopShapeProblems } from './commands-hook-shape.js'
@@ -82,17 +82,27 @@ export function codexHookApprovalUserAction(
   env: NodeJS.ProcessEnv,
   options: { off?: boolean; platform?: NodeJS.Platform | HookHostPlatform } = {},
 ) {
-  const platform = options.platform ?? process.platform
   return {
     code: 'codex_hook_approval_required',
     harness: 'codex',
     action: 'approve_or_enable_notifai_hooks',
     message: codexHooksReminder(codexSurface(env), {
       off: options.off === true,
-      home: separateCodexHome(env, platform),
-      platform: platform === 'win32' ? 'win32' : 'posix',
+      ...codexApprovalPlace(env, options.platform),
     }),
   } as const
+}
+
+/** The app around Codex, its home and the terminal's platform: what picks the approval step. */
+export function codexApprovalPlace(
+  env: NodeJS.ProcessEnv,
+  platform: NodeJS.Platform | HookHostPlatform = process.platform,
+): CodexApprovalPlace {
+  return {
+    host: codexHost(env),
+    home: separateCodexHome(env, platform),
+    platform: platform === 'win32' ? 'win32' : 'posix',
+  }
 }
 
 /**
