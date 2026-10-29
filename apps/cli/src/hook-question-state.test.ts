@@ -3,16 +3,16 @@ import { sourceContextAtHookEvent } from './hook-question-state.js'
 
 describe('sourceContextAtHookEvent', () => {
   it('keeps the session name provenance a hook-linked question was registered with', () => {
-    // Without it the service treats the app-name fallback as a real name and
+    // Without it the service treats the generated fallback as a real name and
     // the name the agent gives the session later can never replace it.
     expect(sourceContextAtHookEvent({
       session_id: 'session-one',
-      session_label: 'Claude Code session',
+      session_label: 'Yellow Bear',
       session_label_source: 'fallback',
       harness: 'claude-code',
     }, undefined)).toEqual({
       session_id: 'session-one',
-      session_label: 'Claude Code session',
+      session_label: 'Yellow Bear',
       session_label_source: 'fallback',
       harness: 'claude-code',
     })

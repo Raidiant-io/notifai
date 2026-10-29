@@ -1,7 +1,7 @@
 {
   "version": 1,
-  "behavior_digest": "sha256:9aad82d7bb90802539c21dcc12e0e20f247822cb49808b58621004d708820b93",
-  "outcome": "reviewed-no-impact",
+  "behavior_digest": "sha256:708a89267a9d4d92dd9a5ecde762a35931ee14f6f7af106763ae47e8ae4e60e3",
+  "outcome": "guidance-updated",
   "surfaces_reviewed": [
     "lifecycle-hooks",
     "notifai-skill",
@@ -9,5 +9,5 @@
     "cli-readiness",
     "domain-terms"
   ],
-  "reason": "Reviewed all five surfaces for the Android capability document change, on top of the unnamed Agent Session fallback review. From Android app build 66 one single-select question with up to 3 choices shows a notification button per choice; larger forms and earlier builds open the question in the app, and the Android draft warning now says which. Lifecycle hooks, harness setup and CLI readiness: unaffected; none describes how a Companion App presents choices. Notifai skill: its question guidance (closed choices that say what they do, --recommended, never 'recommended' in a label) holds on every surface and names no per-platform presentation, so nothing there becomes untrue. Domain terms: no new or changed term. The capability document carries the per-build fact through `notifai capabilities --platform android`. No CLI source change in this review, so skills/guidance-changes.json needs no new note."
+  "reason": "Reviewed all five surfaces for restoring the generated unnamed Agent Session fallback. The CLI again names a session that sends before it is named with a generated adjective-animal name (with a ' \u00b7 2' suffix when another local session already shows it) instead of its agent app's name, which was never published; hook-linked questions keep session_label_source, so the fallback stays replaceable. Lifecycle hooks: hook question submission keeps label provenance; no hook text changed. Notifai skill: unchanged; 'Name the Agent Session' already tells agents to pass --session-label on every send and ask and never described the fallback. Harness setup: unchanged. CLI readiness: unchanged; no capability or doctor result depends on the fallback text. Domain terms: unchanged. Agent-facing text: the 'Heads up (source.session_label)' stderr line keeps saying the User sees the session under that name until it is named, now naming it as generated; skills/guidance-changes.json replaces the unpublished app-name note with one that describes the generated name and the picker fix."
 }

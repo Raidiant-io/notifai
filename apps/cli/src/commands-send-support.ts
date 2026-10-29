@@ -68,9 +68,9 @@ export function resolveDraftInvocation(
       : source.source?.session_label_previous_source === 'fallback' ? 'fallback-upgrade' : 'semantic',
   })
   if (!source.ok) return source
-  if (source.fallbackSessionLabel !== undefined) {
+  if (source.generatedSessionLabel !== undefined) {
     deps.io.err(
-      `Heads up (source.session_label): No semantic Agent Session title was available, so the User sees this Agent Session as "${source.fallbackSessionLabel}" until it is named. Pass --session-label with a concise task name when one is available.`,
+      `Heads up (source.session_label): No semantic Agent Session title was available, so the User sees this Agent Session under the generated name "${source.generatedSessionLabel}" until it is named. Pass --session-label with a concise task name when one is available.`,
     )
   }
   if (source.rejectedSessionLabel !== undefined) {

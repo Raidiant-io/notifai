@@ -1607,12 +1607,12 @@ describe('asking before the hooks have ever run', () => {
     )
     expect(
       readSessionState('codex-current-thread', env).pending?.[0]?.source?.session_label,
-    ).toBe('Codex session')
+    ).toBe('Gentle Salmon')
     expect(readSessionState('codex-current-thread', env).pending?.[0]?.title).toBe('Decision')
     // An agent on an older skill passes no --title: the question still registers,
     // titled by the Agent Session name, with one note naming --title.
     expect(askCommand(deps, 'Ship it now?', {})).toBe(EXIT.ok)
-    expect(readSessionState('codex-current-thread', env).pending?.[1]?.title).toBe('Codex session')
+    expect(readSessionState('codex-current-thread', env).pending?.[1]?.title).toBe('Gentle Salmon')
     expect(io.errLines).toContain(MISSING_TITLE_NOTE)
     expect(settingsFile('codex', env)).toBe(path.join(env.CODEX_HOME, 'hooks.json'))
     expect(existsSync(path.join(repo, '.codex'))).toBe(false)

@@ -5,6 +5,7 @@ import { SESSION_LABEL_MAX_LENGTH } from '@raidiant/notifai-protocol'
 import { atomicWriteFileSync } from './atomic-file.js'
 import { stateDir } from './config.js'
 import { withFileLock } from './file-lock.js'
+import { generatedSessionLabel } from './generated-session-label.js'
 import { HARNESS_LABELS, type SourceContextHarness } from './harnesses.js'
 
 const STORE_VERSION = 1
@@ -302,26 +303,13 @@ export function formatSessionFirstSeen(now: number): string {
   return `${MONTHS[date.getMonth()]} ${date.getDate()}, ${date.getFullYear()} ${pad(date.getHours())}:${pad(date.getMinutes())}`
 }
 
-/**
- * What the User sees until the agent names its session: the agent app's own
- * name, such as "Claude Code session", or "Agent session" when the harness is
- * unknown. Equal fallbacks stay equal; telling apart several unnamed sessions
- * in one Project is the Companion Apps' Project-scoped `#n` presentation.
- */
-export function fallbackSessionLabel(harness: SourceContextHarness | undefined): string {
-  return harness === undefined ? 'Agent session' : `${HARNESS_LABELS[harness]} session`
+function fallbackCandidate(sessionId: string): SessionLabelCandidate {
+  return {
+    label: generatedSessionLabel(sessionId),
+    source: 'fallback',
+  }
 }
 
-function fallbackCandidate(harness: SourceContextHarness | undefined): SessionLabelCandidate {
-  return { label: fallbackSessionLabel(harness), source: 'fallback' }
-}
-
-/**
- * Releases before generated names froze `<owner> session · <first seen>`.
- * Generated adjective-animal fallbacks stay as they are: the service keeps a
- * session's first fallback until a semantic name replaces it, so rewriting
- * them here would change nothing the User sees.
- */
 function isLegacyDateFallback(record: StoredSessionLabel): boolean {
   if (record.source !== 'fallback') return false
   const owner = record.harness === undefined ? 'Agent' : HARNESS_LABELS[record.harness]
@@ -344,7 +332,14 @@ function uniqueLabel(
   now: number,
   used: ReadonlySet<string>,
 ): string {
-  if (source === 'fallback' || !used.has(collisionKey(base))) return base
+  if (!used.has(collisionKey(base))) return base
+
+  if (source === 'fallback') {
+    for (let ordinal = 2; ; ordinal += 1) {
+      const candidate = withSuffix(base, ` · ${ordinal}`)
+      if (!used.has(collisionKey(candidate))) return candidate
+    }
+  }
 
   const owner = harness === undefined ? 'Agent' : HARNESS_LABELS[harness]
   const ownerCandidate = withSuffix(base, ` · ${owner}`)
@@ -363,8 +358,8 @@ function uniqueLabel(
  * Freeze the first accepted human name for one immutable session.
  *
  * An explicit task label wins, then a title supplied by a trusted harness
- * adapter, then the agent app's name as a fallback: the agent naming its own
- * job knows it best, and a harness title is the next semantic name. A frozen
+ * adapter, then a generated fallback: the agent naming its own job knows it
+ * best, and a harness title is the next semantic name. A frozen generated
  * fallback is the one exception to permanence: it names nothing, so the first
  * semantic candidate to arrive later — explicit first, then a trusted harness
  * title — replaces it once. Semantic names then stay frozen even when their
@@ -436,7 +431,13 @@ export function resolveSessionLabel(input: SessionLabelInput): SessionLabelResol
               : { previousSource: existing.previous_source }),
           }
         }
-        const label = fallbackSessionLabel(input.harness ?? existing.harness)
+        const label = uniqueLabel(
+          generatedSessionLabel(input.sessionId),
+          'fallback',
+          input.harness ?? existing.harness,
+          now,
+          used,
+        )
         store.sessions[key] = { ...existing, label }
         writeStore(file, store)
         return { ok: true, label, source: existing.source }
@@ -456,7 +457,7 @@ export function resolveSessionLabel(input: SessionLabelInput): SessionLabelResol
         }
       }
       const candidate: SessionLabelCandidate =
-        explicit ?? native ?? fallbackCandidate(input.harness)
+        explicit ?? native ?? fallbackCandidate(input.sessionId)
       const used = new Set(
         Object.values(store.sessions).map((record) => collisionKey(record.label)),
       )
