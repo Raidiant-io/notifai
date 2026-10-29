@@ -222,8 +222,12 @@ it('keeps the exact bytes of every Codex handler an existing install carries, so
   const revision = 'a'.repeat(64)
   const document = JSON.parse(readFileSync(f.installation.file, 'utf8'))
   delete document.hooks.SubagentStart
-  for (const groups of Object.values(document.hooks) as Array<Array<{ hooks: Array<{ command: string }> }>>) {
-    for (const group of groups) for (const handler of group.hooks) handler.command += ` --integration-revision ${revision}`
+  // Those releases wrote no handler names.
+  for (const groups of Object.values(document.hooks) as Array<Array<{ hooks: Array<{ command: string; statusMessage?: string }> }>>) {
+    for (const group of groups) for (const handler of group.hooks) {
+      handler.command += ` --integration-revision ${revision}`
+      delete handler.statusMessage
+    }
   }
   writeFileSync(f.installation.file, JSON.stringify(document, null, 2))
   approveCodex(f)
