@@ -611,14 +611,21 @@ jobs:
           set -euo pipefail
           tarball=$(find "$RUNNER_TEMP/verified-npm" -name "*.tgz")
           test -f "$tarball"
+          date -u '+%Y-%m-%d %H:%M:%S+0000' > "$RUNNER_TEMP/notarization-acquisition-start.txt"
           node scripts/verify-packed-install.mjs --with-skill --cli-tarball "$tarball" --expected-sha "$EXPECTED_SHA" --owned-hosted-account > "$RUNNER_TEMP/npm-native-acceptance.json"
       - name: Show Gatekeeper's notarization lookups after a failed macOS acceptance
         if: failure() && runner.os == 'macOS'
         shell: bash
         run: |
-          /usr/bin/log show --last 20m --style compact --info --debug \
-            --predicate '(process == "syspolicyd" || process == "trustd") && (eventMessage CONTAINS[c] "ticket" || eventMessage CONTAINS[c] "notari" || eventMessage CONTAINS[c] "cloudkit" || eventMessage CONTAINS[c] "NSURLError")' \
-            | tail -n 300 || true
+          node scripts/capture-notarization-diagnostics.mjs \
+            "$RUNNER_TEMP/notarization-acquisition-start.txt" "$RUNNER_TEMP/notarization-diagnostics.json"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: failure() && runner.os == 'macOS'
+        with:
+          name: notarization-diagnostics-${{ matrix.target }}-${{ inputs.expected_sha }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/notarization-diagnostics.json
+          if-no-files-found: error
+          retention-days: 90
       - name: Retain exact OS acceptance receipts
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
