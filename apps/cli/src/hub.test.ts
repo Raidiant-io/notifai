@@ -20,10 +20,10 @@ import { beginSessionIncarnation,lifecycleStamp,markSessionEnded,readSessionEndM
 import { ExchangeDriver,type AttendedSession,type ExchangeHost } from './hub-exchange.js'
 import { credentialGenerationPath,encodeFrame,ensurePrivateDirectory,FrameDecoder,hubLockPath,hubSocketPath,requestHub } from './hub-ipc.js'
 import { HUB_WRITE_MARGIN_MS,SessionLease } from './hub-lease.js'
-import { Hub,type HubOptions,type PeerCredentials } from './hub.js'
+import { Hub,HUB_IDLE_EXIT_MS,type HubOptions,type PeerCredentials } from './hub.js'
 import { recordClaudeSessionTitle } from './harness-session-title.js'
 import { resolveSessionLabel } from './session-labels.js'
-import { nullLogger } from './logging.js'
+import { nullLogger,type Logger } from './logging.js'
 import { pidExists,processStartTime } from './process-identity.js'
 import { attendantClaimPath,attendantStatusPath,readAttendantEndingLease,readAttendantLease,recordTurnEnd,recordTurnStart } from './session-attendant-state.js'
 import { hasSessionInputs,stageSessionMessages } from './session-inputs.js'
@@ -427,17 +427,19 @@ function peerOf(pid: number, parent: { pid: number; comm: string; start: string 
 
 function startHub(env: NodeJS.ProcessEnv, service: FakeService, peers: Map<number, PeerCredentials>, store = memoryStore(), safetyTickMs?: number,
   codex: Partial<Pick<HubOptions, 'endConfirmMs' | 'codexHostKind' | 'codexHostHoldsThread'>> & { wake?: CodexWakeAdapters } = {},
-  extra: Partial<HubOptions> = {}): { hub: Hub; done: Promise<number> } {
+  { logger = nullLogger(), ...extra }: Partial<HubOptions> & { logger?: Logger } = {}): { hub: Hub; done: Promise<number> } {
   const deps: CommandDeps = {
     io: { out: () => undefined, err: () => undefined, confirm: async () => false, openUrl: () => undefined },
-    store, env, cwd: '/tmp', logger: nullLogger(), clientFactory: () => service.client,
+    store, env, cwd: '/tmp', logger, clientFactory: () => service.client,
     ...(codex.wake === undefined ? {} : { codexWake: codex.wake, codexQueueControl: async () => null }),
   }
   const hub = new Hub(deps, { deps, verifyPeer: async (socket) => {
     // The fake child's pid is whatever it said in hello; tests map it to a peer.
     void socket
     return peers.get(lastHelloPid) ?? null
-  }, idleExitMs: 400, bootIdentity: () => 'test-boot', ...(safetyTickMs === undefined ? {} : { safetyTickMs }),
+  // The idle exit at its shipped limit: a shorter one ends a hub between
+  // steps whenever a loaded machine makes a step slower than that limit.
+  }, idleExitMs: HUB_IDLE_EXIT_MS, bootIdentity: () => 'test-boot', ...(safetyTickMs === undefined ? {} : { safetyTickMs }),
   // A short end confirmation unless a test says otherwise; no thread is held by default.
   endConfirmMs: codex.endConfirmMs ?? 50, codexHostHoldsThread: codex.codexHostHoldsThread ?? (() => false),
   ...(codex.codexHostKind === undefined ? {} : { codexHostKind: codex.codexHostKind }), ...extra })
@@ -476,12 +478,21 @@ describe('hub', () => {
       return { ...body, renamed_by: 'agent', updated_at: new Date().toISOString() }
     } })
     const peers = new Map<number, PeerCredentials>()
-    const { hub, done } = startHub(env, service, peers, memoryStore(), 200)
+    // The hub looks for a host title at most once per lookup interval: the
+    // title appears after a lookup that found none, and the test's clock
+    // reaches the next lookup instead of waiting for it.
+    const lookups: unknown[] = []
+    const logger = { ...nullLogger(), info: (event: string, data?: Record<string, unknown>) => { if (event === 'session.label') lookups.push(data?.['outcome']) } }
+    let skew = 0
+    const clock = { monotonic: () => performance.now() + skew, wall: () => Date.now() + skew }
+    const { hub, done } = startHub(env, service, peers, memoryStore(), 50, {}, { logger, clock })
     await hubListening(env)
     const child = await registered(env, SESSION, 900499, peerOf(900499, { pid: HARNESS.pid, comm: 'claude', start: HARNESS.start }), peers)
     try {
-      await until(() => service.batches.length > 0)
+      await until(() => lookups.includes('no-title'))
       recordClaudeSessionTitle(SESSION, env, 'Repair the parser')
+      // Past the 30-second lookup interval.
+      skew += 31_000
       await until(() => upgrades.length === 1)
       expect(upgrades).toEqual([{ session_id: SESSION, label: 'Repair the parser' }])
       expect(resolveSessionLabel({ env, sessionId: SESSION })).toMatchObject({ source: 'harness', previousSource: 'fallback' })
@@ -524,7 +535,7 @@ describe('hub', () => {
     writeDescriptor(env, SESSION)
     const service = fakeService()
     const peers = new Map<number, PeerCredentials>()
-    const { done } = startHub(env, service, peers)
+    const { hub, done } = startHub(env, service, peers)
     await hubListening(env)
     const harness = { pid: HARNESS.pid, comm: 'claude', start: HARNESS.start }
     const viaShell = await registered(env, SESSION, 900002,
@@ -549,6 +560,7 @@ describe('hub', () => {
     liar.send(registration(SESSION))
     await until(() => liar.frames.length > 0)
     expect(liar.frames[0]).toEqual({ type: 'refused', reason: 'peer-mismatch', retry: false })
+    hub.requestExit('test')
     service.release()
     await done
   })
@@ -579,6 +591,7 @@ describe('hub', () => {
     const renewed = service.batches.slice(batchesBefore)
     expect(renewed.flatMap((batch) => batch.body.sessions).every((entry) => entry.state === 'running' && entry.generation === 1)).toBe(true)
     again.socket.destroy()
+    second.hub.requestExit('test')
     service.release()
     await second.done
   })
@@ -645,7 +658,7 @@ describe('hub', () => {
     const service = fakeService()
     const store = memoryStore()
     const peers = new Map<number, PeerCredentials>()
-    const { done } = startHub(env, service, peers, store)
+    const { hub, done } = startHub(env, service, peers, store)
     await hubListening(env)
     const child = await registered(env, SESSION, 900020, peerOf(900020, { pid: HARNESS.pid, comm: 'claude', start: HARNESS.start }), peers)
     await until(() => service.batches.length >= 2)
@@ -658,6 +671,7 @@ describe('hub', () => {
     await new Promise((resolve) => setTimeout(resolve, 100))
     expect(service.batches.length).toBe(after)
     child.socket.destroy()
+    hub.requestExit('test')
     await done
   })
 
@@ -725,8 +739,10 @@ describe('hub', () => {
     // Its child re-registered with the question still waiting: the next hub runs its answer owner.
     expect(owners).toContain(SESSION)
     again.socket.destroy()
+    const successorHub = successor as { hub: Hub; done: Promise<number> } | null
+    successorHub!.hub.requestExit('test')
     service.release()
-    await (successor as { done: Promise<number> } | null)!.done
+    await successorHub!.done
   })
 })
 
@@ -935,6 +951,7 @@ describe('hub end confirmation and writers', () => {
     service.release()
     await until(() => ended(service), 5_000)
     for (const child of [a, b, c]) child.socket.destroy()
+    hub.requestExit('test')
     service.release()
     await done
   })
@@ -1024,17 +1041,22 @@ describe('hub and Codex SessionEnd', () => {
     const transcript = codexRollout(env, 'codex-tui')
     const service = fakeService()
     const peers = new Map<number, PeerCredentials>()
-    const { hub, done } = startHub(env, service, peers, memoryStore(), 100, { endConfirmMs: 300, codexHostKind: () => 'other', wake: noWake })
+    // A delay no step of this test outlasts: the conversation starts again
+    // inside it however slow the machine, and the cancel is read off the hub.
+    const { hub, done } = startHub(env, service, peers, memoryStore(), 100, { endConfirmMs: 60_000, codexHostKind: () => 'other', wake: noWake })
     await hubListening(env)
     const child = await codexSession(env, service, peers, 900080, transcript)
     await requestHub(env, { type: 'session-end-candidate', session_id: SESSION, transcript_path: transcript })
     child.socket.destroy()
+    expect(hub.sessions.get(SESSION)?.endCandidate).not.toBeNull()
     const again = await registered(env, SESSION, 900081, peerOf(900081, { pid: HARNESS.pid, comm: 'codex', start: HARNESS.start }), peers,
       { harness: 'codex', transcript_path: transcript, claude_config_dir: undefined, inbox_token: undefined, source: 'resume' })
     expect(again.frames[0]).toMatchObject({ type: 'registered' })
-    await new Promise((resolve) => setTimeout(resolve, 500))
+    // The held end is gone, timer and all: nothing decides it later.
+    expect(hub.sessions.get(SESSION)?.endCandidate).toBeNull()
+    const before = service.batches.length
     service.release()
-    await new Promise((resolve) => setTimeout(resolve, 200))
+    await until(() => service.batches.slice(before).some((batch) => batch.body.sessions.some((entry) => entry.session_id === SESSION && entry.state === 'running')))
     expect(reportedEnd(service)).toBe(false)
     expect(readSessionEndMarker(SESSION, env)).toBeNull()
     again.socket.destroy()

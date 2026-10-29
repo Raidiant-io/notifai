@@ -53,17 +53,25 @@ it('bounds registration retries when directory access never recovers', () => {
   const lock = fixture()
   let reads = 0
   let actions = 0
+  // The lock's own clock, not the machine's: each denied read takes 10 ms of
+  // it, so the 20 ms budget always allows a retry and always runs out.
+  vi.useFakeTimers({ toFake: ['Date'] })
   vi.mocked(lstatSync).mockImplementation((file, options) => {
     if (file === lock) {
       reads += 1
+      vi.setSystemTime(Date.now() + 10)
       throw denied()
     }
     return realFs.lstatSync(file, options)
   })
 
-  expect(() => withFileLock(lock, () => { actions += 1 }, { waitMs: 20 }))
-    .toThrow(/lock directory is inaccessible/)
-  expect(reads).toBeGreaterThan(1)
+  try {
+    expect(() => withFileLock(lock, () => { actions += 1 }, { waitMs: 20 }))
+      .toThrow(/lock directory is inaccessible/)
+  } finally {
+    vi.useRealTimers()
+  }
+  expect(reads).toBe(2)
   expect(actions).toBe(0)
   expect(existsSync(lock)).toBe(false)
 })

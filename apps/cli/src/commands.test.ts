@@ -55,6 +55,7 @@ import {
 personalProjectConfigPath,
 stateDir
 } from './config.js'
+import { settleBeforeExit } from './exit-work.js'
 import { writeProjectSession } from './hook-project-sessions.js'
 import { inspectQuestionState } from './hook-question-state.js'
 import { readSessionState,updateSessionState,writeSessionState } from './hook-session-state.js'
@@ -426,9 +427,11 @@ describe('command contracts', () => {
     io.errLines = []
     try {
       for (const title of ['Started', 'Finished']) expect(await sendCommand(deps, { kind: 'update', title })).toBe(EXIT.ok)
-      const hints = () => frames.filter((frame) => frame['type'] === 'notified')
-      await vi.waitFor(() => expect(hints()).toHaveLength(2))
-      for (const hint of hints()) {
+      // Each send's hint is work the CLI finishes before it exits: wait for exactly that.
+      await settleBeforeExit()
+      const hints = frames.filter((frame) => frame['type'] === 'notified')
+      expect(hints).toHaveLength(2)
+      for (const hint of hints) {
         expect(hint).toEqual({ type: 'notified', session_id: 'codex-unhooked-thread', harness: 'codex', codex_home: shadow, cwd: root, originator_override: 'T3 Code' })
       }
       const notices = io.errLines.filter((line) => line.includes('hooks aren\'t approved'))
