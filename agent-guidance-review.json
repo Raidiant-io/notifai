@@ -1,7 +1,7 @@
 {
   "version": 1,
-  "behavior_digest": "sha256:0696da7e19965558d5f0698608fea9e5b93a130fec1ed1d2664293b473eecbfc",
-  "outcome": "guidance-updated",
+  "behavior_digest": "sha256:cb791dfb4f568e8a7903723718de5afd1446c8d2a9d8a77369d50c8c0aa2b417",
+  "outcome": "reviewed-no-impact",
   "surfaces_reviewed": [
     "lifecycle-hooks",
     "notifai-skill",
@@ -9,5 +9,5 @@
     "cli-readiness",
     "domain-terms"
   ],
-  "reason": "Reviewed all five surfaces for the host-neutral terminal step. CLI readiness: where Codex runs under an app with no hook review of its own, the reminder (doctor's and a refused ask's user_action.message, and the once-per-thread send notice), the init warning and the done message now say \"in a terminal on this machine\" for every such app; the T3 Code-only parenthetical \"(T3 Code's terminal panel works)\" is gone. Which places get a terminal step is unchanged (an app host or a separate Codex home), the command is still `notifai doctor codex`, Orca's wording and note are unchanged, and hooks that are off still say to type /hooks. Lifecycle hooks: no hook definition or output changes. Notifai skill: references/harness-codex.md already names the command without any app; no change. Harness setup: docs/HARNESSES.md already gives the generic step and names T3 Code and Orca only as examples of apps without a hook review; no change. Domain terms: unchanged. skills/guidance-changes.json carries one new note for this change. Combined with open retained-content, feature, Account preference, registration and send-confirmation response guards: older retained values, additive fields and questionless content remain accepted; submission rules and User decisions are unchanged. These guard additions require no extra wording on lifecycle hooks, the Notifai skill, harness setup, CLI readiness or domain terms."
+  "reason": "Reviewed lifecycle hooks, the Notifai skill, harness setup, CLI readiness and domain terms against the remaining Companion App operation-response guards. Existing valid pairing, session labels, read marks, dismissal and resource success shapes are unchanged; optional older-service harness/presence facts and additive response fields remain compatible. The existing approval response schema moves into the shared protocol without changing its nonblank identity rule. No command, User setup step, notification guidance, hook or domain wording changes are required. Earlier reviewed terminal-step guidance and retained-content guards remain intact."
 }

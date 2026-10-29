@@ -106,6 +106,32 @@ export const SessionPresenceView = Type.Union([
 ])
 export type SessionPresenceView = Static<typeof SessionPresenceView>
 
+/** Account-authoritative labels; older services omit harness and presence. */
+export const AgentSessionView = Type.Object({
+  harness: Type.Optional(Type.String()),
+  session_id: Type.String(),
+  label: Type.String(),
+  renamed_by: Type.Union([Type.Literal('user'), Type.Literal('agent')]),
+  updated_at: Type.String(),
+})
+export type AgentSessionView = Static<typeof AgentSessionView>
+
+export const ListAgentSessionsResponse = Type.Object({
+  agent_sessions: Type.Array(Type.Object({
+    ...AgentSessionView.properties,
+    presence: Type.Optional(SessionPresenceView),
+  })),
+})
+export type ListAgentSessionsResponse = Static<typeof ListAgentSessionsResponse>
+
+export function isAgentSessionView(value: unknown): value is AgentSessionView {
+  return Value.Check(AgentSessionView, value)
+}
+
+export function isListAgentSessionsResponse(value: unknown): value is ListAgentSessionsResponse {
+  return Value.Check(ListAgentSessionsResponse, value)
+}
+
 // ---------------------------------------------------------------------------
 // Session Attendance (CLI Session Attendant ↔ server)
 // ---------------------------------------------------------------------------

@@ -49,9 +49,14 @@ export type CompanionReadsRequest = { device_id: string } & (
   | { through: string; request_ids?: never }
 )
 
-export interface CompanionReadsResponse {
+export const CompanionReadsResponse = Type.Object({
   /** Requests that became read with this call; already-read ones are not counted. */
-  marked: number
+  marked: Type.Number(),
+})
+export type CompanionReadsResponse = Static<typeof CompanionReadsResponse>
+
+export function isCompanionReadsResponse(value: unknown): value is CompanionReadsResponse {
+  return Value.Check(CompanionReadsResponse, value)
 }
 
 /** Read-only reconciliation for retained rows, independent of the history cursor.

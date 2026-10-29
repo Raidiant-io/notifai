@@ -20,7 +20,7 @@ import type {
   OverallState,
   EvidenceStage,
 } from './status.js'
-import type { AnswerVersionView, SessionPresenceView } from './sessions.js'
+import type { AnswerVersionView } from './sessions.js'
 import {
   CapabilityAdvertisement,
   type AffectedOperation,
@@ -189,13 +189,18 @@ export const BeginPairingRequest = Type.Object(
 )
 export type BeginPairingRequestT = Static<typeof BeginPairingRequest>
 
-export interface BeginPairingResponse {
-  pairing_id: string
+export const BeginPairingResponse = Type.Object({
+  pairing_id: Type.String(),
   /** Short human-checkable code shown in both CLI and approval page. */
-  code: string
-  approve_url: string
-  expires_at: string
-  poll_interval_seconds: number
+  code: Type.String(),
+  approve_url: Type.String(),
+  expires_at: Type.String(),
+  poll_interval_seconds: Type.Number(),
+})
+export type BeginPairingResponse = Static<typeof BeginPairingResponse>
+
+export function isBeginPairingResponse(value: unknown): value is BeginPairingResponse {
+  return Value.Check(BeginPairingResponse, value)
 }
 
 export const PollPairingRequest = Type.Object(
@@ -325,12 +330,25 @@ export interface AlphaAccessRequestResponse {
  * mint an Approved Machine nobody holds, so the browser must neither offer it
  * nor claim the terminal will pick it up.
  */
-export interface PairingDetailsResponse {
-  pairing_id: string
-  machine_name: string
-  code: string
-  status: 'pending' | 'approved' | 'expired' | 'denied' | 'stopped'
-  expires_at: string
+export const PairingDetailsResponse = Type.Object({
+  pairing_id: Type.String(),
+  machine_name: Type.String(),
+  code: Type.String(),
+  status: Type.Union((['pending', 'approved', 'expired', 'denied', 'stopped'] as const).map((status) => Type.Literal(status))),
+  expires_at: Type.String(),
+})
+export type PairingDetailsResponse = Static<typeof PairingDetailsResponse>
+
+export function isPairingDetailsResponse(value: unknown): value is PairingDetailsResponse {
+  return Value.Check(PairingDetailsResponse, value)
+}
+
+/** Approval identifies the machine even when the initiating Auth Session has ended. */
+export const ApprovePairingResponse = Type.Object({ machine_id: Type.String({ pattern: '\\S' }) })
+export type ApprovePairingResponse = Static<typeof ApprovePairingResponse>
+
+export function isApprovePairingResponse(value: unknown): value is ApprovePairingResponse {
+  return Value.Check(ApprovePairingResponse, value)
 }
 
 /** Open resource responses retain facts added by newer services. */
@@ -795,10 +813,15 @@ export interface CloseRepliesResponse extends ListRepliesResponse {
  * window already closed, is left exactly as it was: an answer recorded first
  * always wins over a dismissal.
  */
-export interface DismissQuestionResponse {
-  request_id: string
-  /** When the question was dismissed, by this call or an earlier one; null when nothing changed. */
-  dismissed_at: string | null
+export const DismissQuestionResponse = Type.Object({
+  request_id: Type.String(),
+  /** Null when the question already settled; an answer recorded first wins. */
+  dismissed_at: Type.Union([Type.String(), Type.Null()]),
+})
+export type DismissQuestionResponse = Static<typeof DismissQuestionResponse>
+
+export function isDismissQuestionResponse(value: unknown): value is DismissQuestionResponse {
+  return Value.Check(DismissQuestionResponse, value)
 }
 
 /** Agent-authored follow-up text is kept intentionally smaller than a user reply. */
@@ -1071,22 +1094,8 @@ export const PutAgentSessionLabelRequest = Type.Object(
 )
 export type PutAgentSessionLabelRequestT = Static<typeof PutAgentSessionLabelRequest>
 
-export interface AgentSessionView {
-  /** Informational CLI-detected harness; omitted by older services or when unknown. */
-  harness?: string
-  session_id: string
-  label: string
-  renamed_by: 'user' | 'agent'
-  updated_at: string
-}
-
-export interface ListAgentSessionsResponse {
-  /**
-   * `presence` is additive: servers that predate Session Presence omit it,
-   * which a Companion App renders exactly like `unknown`.
-   */
-  agent_sessions: (AgentSessionView & { presence?: SessionPresenceView })[]
-}
+// Schemas live beside Session Presence, avoiding a runtime import cycle here.
+export type { AgentSessionView, ListAgentSessionsResponse } from './sessions.js'
 
 // ---------------------------------------------------------------------------
 // Feedback intake (paired machine → developers)
