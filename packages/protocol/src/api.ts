@@ -942,9 +942,10 @@ export interface NotificationContentResponse {
   body: string | null
   media: NotificationContentMediaItem[]
   /**
-   * The reply questions exactly as accepted, choice descriptions included,
-   * or empty for a request that asks nothing. A push leaves the descriptions
-   * out when they do not fit; this is where a Companion App gets them.
+   * The reply questions exactly as accepted, choice descriptions and question
+   * titles and details included, or empty for a request that asks nothing. A
+   * push leaves those out when they do not fit; this is where a Companion App
+   * gets them.
    */
   questions: QuestionT[]
 }

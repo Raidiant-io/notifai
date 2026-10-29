@@ -97,7 +97,7 @@ export const IOS_CAPABILITIES_V1: CapabilityDocument = {
         default_window_seconds: 86400,
       },
       reason:
-        'Free-text reply is an inline action whose button and placeholder are fixed by the app. Closed-choice answers appear on the expanded notification; the banner never shows choice labels. Choice descriptions and the recommended marker show on the answer controls, never on notification action buttons.',
+        'Free-text reply is an inline action whose button and placeholder are fixed by the app. Closed-choice answers appear on the expanded notification; the banner never shows choice labels. Choice descriptions and the recommended marker show on the answer controls, never on notification action buttons. Question titles and details show in the app, above and under each question.',
     },
     {
       path: 'presentation.media',

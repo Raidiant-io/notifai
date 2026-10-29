@@ -13,13 +13,22 @@ export function hasChoiceDescriptions(draft: NotificationDraftT): boolean {
   )
 }
 
+/** True when some question of this request carries a title or a detail. */
+export function hasQuestionDetails(draft: NotificationDraftT): boolean {
+  return (
+    draft.reply?.questions.some((question) => question.title !== undefined || question.detail !== undefined) ??
+    false
+  )
+}
+
 /**
- * The questions as every push carries them: choice descriptions are left out,
- * because they are optional content that may not fit. `has_choice_descriptions`
- * says they exist, and the renderers add them back when they fit.
+ * The questions as every push carries them: choice descriptions and question
+ * titles and details are left out, because they are optional content that may
+ * not fit. `has_choice_descriptions` and `has_question_details` say they
+ * exist, and the renderers add them back when they fit.
  */
 export function pushedQuestions(questions: readonly QuestionT[]): QuestionT[] {
-  return questions.map((question) =>
+  return questions.map(({ title: _title, detail: _detail, ...question }) =>
     question.choices === undefined
       ? question
       : {
@@ -35,9 +44,10 @@ export function utf8Bytes(value: unknown): number {
 
 /**
  * Optional content that rides in a push only when it fits, as a function of
- * a candidate custom key: choice descriptions first (they sit on the answer
- * controls an expanded notification shows), then the Markdown Body. Shared by
- * the APNs and FCM renderers. `fits` sees the complete payload as sent.
+ * a candidate custom key: the complete questions first, with their choice
+ * descriptions, titles and details (they sit on the answer controls), then
+ * the Markdown Body. Shared by the APNs and FCM renderers. `fits` sees the
+ * complete payload as sent.
  * Null when nothing fits, so the rendered payload stays exactly as built.
  */
 export function withFittingContent(
@@ -46,7 +56,7 @@ export function withFittingContent(
   fits: (candidate: Record<string, unknown>) => boolean,
 ): Record<string, unknown> | null {
   const body = draft.presentation.body
-  const describes = hasChoiceDescriptions(draft)
+  const describes = hasChoiceDescriptions(draft) || hasQuestionDetails(draft)
   if ((body === undefined && !describes) || draft.lifecycle?.tier === 'done') return null
   const { content_token: contentToken, ...rest } = notifai
   const hasMedia = (draft.presentation.media?.length ?? 0) > 0

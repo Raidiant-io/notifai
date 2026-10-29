@@ -15,6 +15,7 @@ import {
 } from './apns.js'
 import {
   hasChoiceDescriptions,
+  hasQuestionDetails,
   pushedQuestions,
   utf8Bytes,
   withFittingContent,
@@ -160,6 +161,7 @@ export function buildFcmDataEnvelope(
         }
       : {}),
     ...(hasChoiceDescriptions(draft) ? { has_choice_descriptions: true } : {}),
+    ...(hasQuestionDetails(draft) ? { has_question_details: true } : {}),
     ...(draft.reply !== undefined ? { questions: pushedQuestions(draft.reply.questions) } : {}),
   }
 
@@ -172,9 +174,10 @@ export function buildFcmDataEnvelope(
 /**
  * Adds the optional content to a rendered FCM data map whenever the whole
  * map, as it will be sent (destination stamp included), stays within
- * `limitBytes` less {@link PUSHED_BODY_HEADROOM_BYTES}: first each choice's
- * description, then the Markdown Body. Apply it last. `has_body` and
- * `has_choice_descriptions` are unchanged either way, so an envelope without
+ * `limitBytes` less {@link PUSHED_BODY_HEADROOM_BYTES}: first the complete
+ * questions (choice descriptions, question titles and details), then the
+ * Markdown Body. Apply it last. `has_body`, `has_choice_descriptions` and
+ * `has_question_details` are unchanged either way, so an envelope without
  * them still tells the app to fetch them.
  */
 export function withPushedFcmContent(

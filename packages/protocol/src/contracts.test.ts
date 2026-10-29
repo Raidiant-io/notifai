@@ -9,6 +9,8 @@ import {
   BODY_MAX_LENGTH,
   BeginPairingRequest,
   CHOICE_DESCRIPTION_MAX_LENGTH,
+  QUESTION_DETAIL_MAX_LENGTH,
+  QUESTION_TITLE_MAX_LENGTH,
   CAPABILITIES_V1,
   CONTENT_TOKEN_LENGTH,
   PUSHED_BODY_HEADROOM_BYTES,
@@ -2179,5 +2181,77 @@ describe("push size with the Project's real identity", () => {
     expect(estimateDeliveredPayloadBytes(inProject, platform, { projectIdentity: identity }) - plain).toBeGreaterThan(
       platform === 'ios' ? 100 : 180,
     )
+  })
+})
+
+describe('question titles and details', () => {
+  const ids = {
+    requestId: 'req_00000000000000000000000000',
+    deliveryId: 'del_00000000000000000000000000',
+    receiptToken: '0'.repeat(RECEIPT_TOKEN_LENGTH),
+    contentToken: 'c'.repeat(CONTENT_TOKEN_LENGTH),
+    createdAt: new Date(0),
+  }
+  const LIMIT = 4096
+  const notifaiOf = (payload: Record<string, unknown>) => payload['notifai'] as Record<string, unknown>
+  type Asked = NonNullable<NotificationDraftT['reply']>['questions'][number]
+  const form = (questions: Asked[], body?: string) =>
+    draft({
+      presentation: { title: 'Release plan', summary: 'Two decisions before the release.', body },
+      reply: { expires_in_seconds: 86400, questions },
+    })
+  const detailed: Asked[] = [
+    { id: 'day', title: 'Ship day', text: 'Ship on Friday?', detail: 'Friday has **no** on-call cover.\n\nMonday is safe.',
+      choices: [{ id: 'yes', label: 'Yes' }, { id: 'no', label: 'No' }] },
+    { id: 'notes', text: 'Anything to add to the notes?' },
+  ]
+
+  it('accepts a one-line title and a short Markdown detail, both optional', () => {
+    expect(validateDraft(form(detailed))).toEqual({ ok: true, errors: [], warnings: [] })
+    const title = 'é'.repeat(QUESTION_TITLE_MAX_LENGTH)
+    const detail = '🚀'.repeat(QUESTION_DETAIL_MAX_LENGTH)
+    expect(validateDraft(form([{ id: 'a', title, text: 'A?', detail }])).ok).toBe(true)
+    for (const bad of [{ title: `${title}x` }, { title: 'Two\nlines' }, { title: ' ' }, { detail: `${detail}x` }, { detail: '\n \n' }, { detail: '' }]) {
+      expect(validateDraft(form([{ id: 'a', text: 'A?', ...bad }])).ok, JSON.stringify(bad)).toBe(false)
+    }
+  })
+
+  it('still accepts every draft of the previous schema', () => {
+    expect(ACCEPTED_NOTIFICATION_CONTRACT_FINGERPRINTS).toContain('notification-draft/bc248d61f2da3bcd')
+    expect(ACCEPTED_NOTIFICATION_CONTRACT_FINGERPRINTS[0]).toBe(NOTIFICATION_CONTRACT_FINGERPRINT)
+  })
+
+  it('pushes them only when they fit, flagging that they exist', () => {
+    const asked = form(detailed, 'Context.')
+    const base = notifaiOf(buildApnsEnvelope(asked, ids, null).payload)
+    expect(base['has_question_details']).toBe(true)
+    expect(base['questions']).toEqual([
+      { id: 'day', text: 'Ship on Friday?', choices: [{ id: 'yes', label: 'Yes' }, { id: 'no', label: 'No' }] },
+      { id: 'notes', text: 'Anything to add to the notes?' },
+    ])
+    expect(base['content_token']).toBe(ids.contentToken)
+    const pushed = notifaiOf(withPushedApnsContent(buildApnsEnvelope(asked, ids, null).payload, asked, LIMIT))
+    expect(pushed['questions']).toEqual(asked.reply!.questions)
+    expect(pushed['content_token']).toBeUndefined()
+
+    const data = buildFcmDataEnvelope(asked, ids, null).data
+    expect(JSON.parse(data['notifai']!)).toMatchObject({ has_question_details: true })
+    const envelope = JSON.parse(withPushedFcmContent(data, asked, LIMIT)['notifai']!) as Record<string, unknown>
+    expect(envelope['questions']).toEqual(asked.reply!.questions)
+  })
+
+  it('leaves details that do not fit to the content fetch, keeping the token', () => {
+    const wordy = 'w'.repeat(QUESTION_DETAIL_MAX_LENGTH)
+    const questions = Array.from({ length: 8 }, (_, index) => ({ id: `q${index}`, title: `Part ${index}`, text: `Question ${index}?`, detail: wordy }))
+    const big = form(questions, 'Short.')
+    expect(validateDraft(big).ok).toBe(true)
+    const pushed = notifaiOf(withPushedApnsContent(buildApnsEnvelope(big, ids, null).payload, big, LIMIT))
+    expect(JSON.stringify(pushed['questions'])).not.toContain(wordy)
+    expect(pushed).toMatchObject({ body: 'Short.', has_question_details: true, content_token: ids.contentToken })
+  })
+
+  it('sends no flag and keeps the old shape when no question has one', () => {
+    const plain = form([{ id: 'a', text: 'A?' }])
+    expect(notifaiOf(buildApnsEnvelope(plain, ids, null).payload)['has_question_details']).toBeUndefined()
   })
 })

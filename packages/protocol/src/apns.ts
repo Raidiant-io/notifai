@@ -13,6 +13,7 @@ import {
 } from './notification.js'
 import {
   hasChoiceDescriptions,
+  hasQuestionDetails,
   pushedQuestions,
   utf8Bytes,
   withFittingContent,
@@ -91,16 +92,18 @@ export function hasFetchableContent(draft: NotificationDraftT): boolean {
   return (
     draft.presentation.body !== undefined ||
     (draft.presentation.media?.length ?? 0) > 0 ||
-    hasChoiceDescriptions(draft)
+    hasChoiceDescriptions(draft) ||
+    hasQuestionDetails(draft)
   )
 }
 
 /**
  * Adds the optional content to a rendered APNs alert payload whenever the
  * whole payload, as it will be sent, stays within `limitBytes` less
- * {@link PUSHED_BODY_HEADROOM_BYTES}: first each choice's description, then
- * the Markdown Body. Apply it last, after every other field (including the
- * destination stamp). `has_body` and `has_choice_descriptions` are unchanged
+ * {@link PUSHED_BODY_HEADROOM_BYTES}: first the complete questions (choice
+ * descriptions, question titles and details), then the Markdown Body. Apply it
+ * last, after every other field (including the destination stamp). `has_body`,
+ * `has_choice_descriptions` and `has_question_details` are unchanged
  * either way, so a push without them still tells the Companion App to fetch
  * them. When nothing is left to fetch, the content token is dropped.
  */
@@ -331,6 +334,7 @@ function notifaiKey(
         }
       : {}),
     ...(hasChoiceDescriptions(draft) ? { has_choice_descriptions: true } : {}),
+    ...(hasQuestionDetails(draft) ? { has_question_details: true } : {}),
     ...(draft.reply !== undefined ? { questions: pushedQuestions(draft.reply.questions) } : {}),
   }
 }

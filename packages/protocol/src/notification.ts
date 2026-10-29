@@ -201,6 +201,27 @@ export const REPLY_MAX_QUESTIONS = 10
 export const QUESTION_TEXT_MAX_LENGTH = 240
 
 /**
+ * Longest question title, in Unicode code points: a word or two naming one
+ * question's own decision inside a form, shown above its text.
+ */
+export const QUESTION_TITLE_MAX_LENGTH = 40
+
+/**
+ * Longest question detail, in Unicode code points: a short Markdown paragraph
+ * or two explaining one question, read under its text on the answer surface.
+ * Longer context, logs and images belong in the request's Markdown Body.
+ */
+export const QUESTION_DETAIL_MAX_LENGTH = 500
+
+/**
+ * Markdown of 1 to `maxLength` Unicode code points, not blank. Like
+ * {@link plainTextLinePattern}, a valid surrogate pair counts as one.
+ */
+function markdownTextPattern(maxLength: number): string {
+  return `^(?=[\\s\\S]*\\S)(?:[^\\uD800-\\uDFFF]|[\\uD800-\\uDBFF][\\uDC00-\\uDFFF]){1,${maxLength}}$`
+}
+
+/**
  * One question in a reply request. With `choices` it is a closed question
  * answered by id; without, a free-text question. A typed answer remains possible
  * either way, so an agent must be prepared to receive text where it offered a
@@ -210,7 +231,19 @@ export const Question = Type.Object(
   {
     /** Agent-facing token naming this question inside the set. */
     id: Type.String({ minLength: 1, maxLength: 32, pattern: '^[a-z0-9][a-z0-9_-]*$' }),
+    /**
+     * A word or two naming this question's own decision, shown above its
+     * text. Companion Apps show it on answer surfaces, never on native
+     * notification actions.
+     */
+    title: Type.Optional(Type.String({ pattern: plainTextLinePattern(QUESTION_TITLE_MAX_LENGTH) })),
     text: Type.String({ minLength: 1, maxLength: QUESTION_TEXT_MAX_LENGTH }),
+    /**
+     * Why this question is asked and what rides on it, as short Markdown.
+     * Companion Apps show it under the text in a quieter style on answer
+     * surfaces; native notifications keep the request's Summary.
+     */
+    detail: Type.Optional(Type.String({ pattern: markdownTextPattern(QUESTION_DETAIL_MAX_LENGTH) })),
     choices: Type.Optional(
       Type.Array(ReplyChoice, { minItems: 2, maxItems: REPLY_MAX_CHOICES }),
     ),
@@ -548,6 +581,7 @@ export const NotificationDraftView = Type.Object({
     expires_in_seconds: Type.Integer(),
     questions: Type.Array(Type.Object({
       id: Type.String(), text: Type.String(), multi: Type.Optional(Type.Boolean()),
+      title: Type.Optional(Type.String()), detail: Type.Optional(Type.String()),
       choices: Type.Optional(Type.Array(Type.Object({
         id: Type.String(), label: Type.String(), description: Type.Optional(Type.String()),
         recommended: Type.Optional(Type.Literal(true)),
@@ -601,6 +635,8 @@ export const NOTIFICATION_CONTRACT_FINGERPRINT =
  */
 export const ACCEPTED_NOTIFICATION_CONTRACT_FINGERPRINTS: readonly string[] = [
   NOTIFICATION_CONTRACT_FINGERPRINT,
+  // Before question titles and details.
+  'notification-draft/bc248d61f2da3bcd',
   // Before choice descriptions and the recommended choice.
   'notification-draft/ef9258bde264376c',
   // Before the Windows and Linux desktop platforms (CLI 11.x).
