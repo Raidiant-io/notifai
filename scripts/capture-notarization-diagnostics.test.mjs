@@ -1,12 +1,27 @@
 import assert from 'node:assert/strict'
+import { execFileSync } from 'node:child_process'
 import { test } from 'node:test'
-import { captureNotarizationDiagnostics, classifyNotarizationEvents } from './capture-notarization-diagnostics.mjs'
+import { captureNotarizationDiagnostics, classifyNotarizationEvents, LOG_PREDICATE } from './capture-notarization-diagnostics.mjs'
 
-const event = message => ({ processImagePath: '/usr/libexec/syspolicyd', eventMessage: message })
+// Both kinds of red event in job 123591764902 carried this subsystem/category.
+const event = message => ({ process: 'syspolicyd', processImagePath: '/usr/libexec/syspolicyd',
+  subsystem: 'com.apple.syspolicy', category: 'default', eventMessage: message })
 const outage = [
   event('cloudkit request failed: Error Domain=NSURLErrorDomain Code=-1001 UserInfo={sensitive: secret-value}'),
   event('CKTicketStore network reachability: 0, Thu Oct 29 16:47:34 2026'),
 ]
+
+test('the real Apple predicate admits the captured red metadata and excludes unrelated host traffic',
+  { skip: process.platform !== 'darwin' }, () => {
+    const fixtures = [...outage, { ...outage[0], subsystem: 'unrelated.subsystem' },
+      { ...outage[0], process: 'unrelated-process' }, { ...outage[0], eventMessage: 'ordinary ticket lookup' }]
+    const script = `ObjC.import('Foundation');
+      const predicate = $.NSPredicate.predicateWithFormat(${JSON.stringify(LOG_PREDICATE)});
+      const fixtures = ${JSON.stringify(fixtures)};
+      JSON.stringify(fixtures.map(value => Boolean(predicate.evaluateWithObject($(value)))));`
+    const actual = execFileSync('/usr/bin/osascript', ['-l', 'JavaScript', '-e', script], { encoding: 'utf8', timeout: 10000 })
+    assert.deepEqual(JSON.parse(actual), [true, true, false, false, false])
+  })
 
 test('classifies the captured daemon timeout and emits only allowlisted observations', () => {
   const receipt = classifyNotarizationEvents(outage)

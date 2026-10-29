@@ -657,6 +657,7 @@ jobs:
       - run: pnpm --filter @raidiant/notifai-protocol build
       - name: Verify the macOS wake boundary
         run: pnpm --filter @raidiant/notifai test -- src/codex-wake.test.ts src/local-input.test.ts
+      - run: node --test scripts/capture-notarization-diagnostics.test.mjs
   platform-windows-x64:
     name: platform (windows-2025)
     needs: release-admission

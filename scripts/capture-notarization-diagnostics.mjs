@@ -7,6 +7,11 @@ import { pathToFileURL } from 'node:url'
 const windowMs = 5 * 60 * 1000
 const transportCodes = new Set([-1001, -1003, -1004, -1005, -1006, -1009])
 const logTime = date => date.toISOString().replace('T', ' ').replace(/\.\d{3}Z$/, '+0000')
+export const LOG_PREDICATE = '(process == "syspolicyd" OR process == "trustd") AND ' +
+  '(subsystem == "com.apple.syspolicy" OR subsystem == "com.apple.CFNetwork" OR subsystem == "com.apple.securityd") AND ' +
+  '(eventMessage CONTAINS[c] "cloudkit request failed:" OR eventMessage CONTAINS[c] "CKTicketStore network reachability:" OR ' +
+  'eventMessage CONTAINS[c] "revoked" OR eventMessage CONTAINS[c] "CSSMERR_TP_" OR ' +
+  'eventMessage CONTAINS[c] "invalid signature" OR eventMessage CONTAINS[c] "code or signature have been modified")'
 
 export function classifyNotarizationEvents(events) {
   if (!Array.isArray(events)) throw new Error('Expected a system-log event array')
@@ -49,13 +54,8 @@ export function captureNotarizationDiagnostics({ start, now = new Date(), platfo
   const since = new Date(start.replace(' ', 'T').replace('+0000', 'Z'))
   if (!Number.isFinite(since.valueOf()) || since > now) return { ...receipt, capture_status: 'invalid-window' }
   const lower = new Date(Math.max(since.valueOf(), now.valueOf() - windowMs))
-  const predicate = '(process == "syspolicyd" OR process == "trustd") AND ' +
-    '(subsystem == "com.apple.syspolicy" OR subsystem == "com.apple.CFNetwork" OR subsystem == "com.apple.securityd") AND ' +
-    '(eventMessage CONTAINS[c] "cloudkit request failed:" OR eventMessage CONTAINS[c] "CKTicketStore network reachability:" OR ' +
-    'eventMessage CONTAINS[c] "revoked" OR eventMessage CONTAINS[c] "CSSMERR_TP_" OR ' +
-    'eventMessage CONTAINS[c] "invalid signature" OR eventMessage CONTAINS[c] "code or signature have been modified")'
   const result = run('/usr/bin/log', ['show', '--style', 'json', '--info', '--debug', '--timezone', 'UTC',
-    '--start', logTime(lower), '--end', logTime(now), '--predicate', predicate], {
+    '--start', logTime(lower), '--end', logTime(now), '--predicate', LOG_PREDICATE], {
     encoding: 'utf8', timeout: 15000, maxBuffer: 1024 * 1024, stdio: ['ignore', 'pipe', 'pipe'],
   })
   const scope = { window_start: lower.toISOString(), window_end: now.toISOString() }
