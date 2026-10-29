@@ -1105,6 +1105,30 @@ describe('validateDraft', () => {
     )
   })
 
+  it('tells agents which Android builds show a button per choice and which forms open the app', () => {
+    expect(ANDROID_CAPABILITIES_V1.fields.find((field) => field.path === 'reply')?.constraints).toMatchObject({
+      choice_buttons: { min_app_build: 66, questions: 1, multi_select: false, max_choices: 3, earlier_builds: 'in app' },
+      closed_and_multi_question: 'in app',
+    })
+    const choices = (count: number) =>
+      Array.from({ length: count }, (_, index) => ({ id: `c${index}`, label: `Choice ${index}` }))
+    const replyWith = (questions: NonNullable<NotificationDraftT['reply']>['questions']) =>
+      validateDraft(draft({ reply: { expires_in_seconds: 3600, questions } }), ANDROID_CAPABILITIES_V1).warnings
+        .filter((warning) => warning.path === 'reply')
+        .map((warning) => warning.message)
+
+    expect(replyWith([{ id: 'q', text: 'Pick', choices: choices(3) }])).toEqual([
+      expect.stringContaining('builds before 66'),
+    ])
+    for (const larger of [
+      [{ id: 'q', text: 'Pick', choices: choices(4) }],
+      [{ id: 'q', text: 'Pick', choices: choices(2), multi: true }],
+      [{ id: 'q', text: 'Pick', choices: choices(2) }, { id: 'w', text: 'Why?' }],
+    ]) {
+      expect(replyWith(larger)).toEqual([expect.stringContaining('rather than as notification buttons')])
+    }
+  })
+
   it('warns when a target requests Time Sensitive behavior without the capability', () => {
     const timeSensitive = draft({
       platform: { ios: { interruption_level: 'time_sensitive' } },

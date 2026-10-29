@@ -256,6 +256,14 @@ export const MACOS_CAPABILITIES_V1 = desktopCapabilities('macos')
 export const WINDOWS_CAPABILITIES_V1 = desktopCapabilities('windows')
 export const LINUX_CAPABILITIES_V1 = desktopCapabilities('linux')
 
+/**
+ * The first Android versionCode whose notification shows a button per choice.
+ * Every build distributed before it (up to 65) opens choice questions in the app.
+ */
+export const ANDROID_CHOICE_BUTTONS_MIN_APP_BUILD = 66
+/** Android shows at most three notification actions. */
+export const ANDROID_CHOICE_BUTTONS_MAX_CHOICES = 3
+
 /** Android 6+ with Google Play services, using an application-owned FCM data envelope. */
 export const ANDROID_CAPABILITIES_V1: CapabilityDocument = {
   schema_version: 1,
@@ -297,9 +305,18 @@ export const ANDROID_CAPABILITIES_V1: CapabilityDocument = {
       status: 'supported',
       constraints: {
         free_text: 'native RemoteInput on API 24+; in-app composer on API 23',
+        choice_buttons: {
+          min_app_build: ANDROID_CHOICE_BUTTONS_MIN_APP_BUILD,
+          questions: 1,
+          multi_select: false,
+          max_choices: ANDROID_CHOICE_BUTTONS_MAX_CHOICES,
+          earlier_builds: 'in app',
+        },
         closed_and_multi_question: 'in app',
         max_length: REPLY_MAX_LENGTH,
       },
+      reason:
+        `From app build ${ANDROID_CHOICE_BUTTONS_MIN_APP_BUILD}, one question with one answer and up to ${ANDROID_CHOICE_BUTTONS_MAX_CHOICES} choices shows a notification button per choice; with fewer than ${ANDROID_CHOICE_BUTTONS_MAX_CHOICES} choices an Other… button takes typed words. Earlier builds, multi-select questions, more choices or several questions open the exact question in the app. Choice descriptions and the recommended marker show in the app, never on notification buttons. Free text is always possible in the app.`,
     },
     {
       path: 'presentation.media',
@@ -606,17 +623,22 @@ export function validateDraft(
       }
     }
 
-    if (
-      document.platform === 'android' &&
-      typed.reply !== undefined &&
-      (typed.reply.questions.length > 1 ||
-        typed.reply.questions.some((question) => question.choices !== undefined))
-    ) {
-      warnings.push({
-        path: 'reply',
-        message:
-          'Android presents closed-choice and multi-question replies in the Companion App rather than as native banner choices.',
-      })
+    if (document.platform === 'android' && typed.reply !== undefined) {
+      const [first] = typed.reply.questions
+      const choices = first?.choices
+      if (typed.reply.questions.length > 1 || (choices !== undefined && (first?.multi === true || choices.length > ANDROID_CHOICE_BUTTONS_MAX_CHOICES))) {
+        warnings.push({
+          path: 'reply',
+          message:
+            `Android presents multi-select, multi-question and more-than-${ANDROID_CHOICE_BUTTONS_MAX_CHOICES}-choice replies in the Companion App rather than as notification buttons.`,
+        })
+      } else if (choices !== undefined) {
+        warnings.push({
+          path: 'reply',
+          message:
+            `Android app builds before ${ANDROID_CHOICE_BUTTONS_MIN_APP_BUILD} present closed-choice replies in the Companion App; later builds show a notification button per choice.`,
+        })
+      }
     }
 
     for (const field of document.fields) {

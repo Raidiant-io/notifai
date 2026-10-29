@@ -658,7 +658,7 @@ export const REPLY_SOURCES = [
   'action',
   /** iOS system message-style field, delivered as an INSendMessageIntent. */
   'intent',
-  /** The notification content extension's answer buttons. */
+  /** An answer button on the notification: iOS's content extension, Android's choice actions. */
   'choice',
   /** Android's native RemoteInput free-text action. */
   'remote_input',
