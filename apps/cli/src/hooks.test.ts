@@ -9,6 +9,7 @@ import {
 existsSync,
 mkdirSync,
 mkdtempSync,
+rmSync,
 readFileSync,
 utimesSync,
 writeFileSync
@@ -34,7 +35,8 @@ type CommandIo
 import {
 loadConfig,
 sanitizeSessionId,
-stateDir
+stateDir,
+updateProjectFolder
 } from './config.js'
 import { buildQuestions } from './commands-ask.js'
 import { hookAdapterPath,installHookAdapter } from './hook-adapter.js'
@@ -395,6 +397,29 @@ function askCommand(...args: Parameters<typeof askWithCurrency>) {
   void readCurrentGuidance({ ...args[0], io: { ...args[0].io, out: () => undefined } }, {})
   return askWithCurrency(...args)
 }
+
+describe('registered folder lifecycle', () => {
+  it('uses the folder-root Enablement decision for SessionStart in a descendant', async () => {
+    const h = harness()
+    const folder = mkdtempSync(path.join(os.tmpdir(), 'notifai-folder-lifecycle-'))
+    try {
+      const cwd = path.join(folder, 'notes')
+      mkdirSync(cwd)
+      updateProjectFolder('add', folder, 'Writing', h.env)
+      const binding = projectBinding(folder, h.env)!
+      disableProject(binding)
+      const deps = { ...h.deps, cwd }
+      await hookRunCommand(deps, 'session-start', stdin({ session_id: 'folder-disabled', cwd }), 'claude-code')
+      expect(h.io.outLines.join('\n')).not.toContain('You own Notification Requests')
+      h.io.outLines.length = 0
+      enableProject(binding)
+      await hookRunCommand(deps, 'session-start', stdin({ session_id: 'folder-enabled', cwd }), 'claude-code')
+      expect(h.io.outLines.join('\n')).toContain('You own Notification Requests')
+    } finally {
+      rmSync(folder, { recursive: true, force: true })
+    }
+  })
+})
 
 describe('OpenClaw generation fencing at the CLI boundary', () => {
 

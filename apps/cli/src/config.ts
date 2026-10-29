@@ -1,16 +1,21 @@
 import {
   INTERRUPTION_LEVELS,
+  PROJECT_IDENTIFIER_PATTERN,
   REPLY_MAX_WINDOW_SECONDS,
 } from '@raidiant/notifai-protocol'
 import { gitQuery } from './git-query.js'
 import { createHash } from 'node:crypto'
-import { existsSync, readFileSync } from 'node:fs'
+import { existsSync, readFileSync, realpathSync, statSync } from 'node:fs'
 import path from 'node:path'
 import { canonicalPath } from './local-path.js'
 import { parse as parseToml } from 'smol-toml'
 import { accountHome, configHome, stateHome } from './platform.js'
 import { isCliSoundRef } from './sound-ref.js'
 import { normalizeOrigin } from './url-policy.js'
+import { atomicWriteFileSync, ensurePrivateDirectory } from './atomic-file.js'
+import { withTargetFileLock } from './file-lock.js'
+import { sameLocalPath } from './local-path.js'
+import { projectSlugFrom } from './project-name.js'
 
 /**
  * Layered configuration with provenance. Most specific wins:
@@ -360,12 +365,105 @@ function canonicalHome(env: NodeJS.ProcessEnv): string | null {
   }
 }
 
+export interface ProjectFolder {
+  path: string
+  name: string
+}
+
+const projectNamePattern = new RegExp(PROJECT_IDENTIFIER_PATTERN)
+
+function validFolderProjectName(name: string): boolean {
+  return projectNamePattern.exec(name)?.[0] === name
+}
+
+function projectFoldersPath(env: NodeJS.ProcessEnv): string {
+  return path.join(globalConfigDir(env), 'project-folders.json')
+}
+
+/** User-owned machine-local registrations; never read from a Project directory. */
+export function listProjectFolders(env: NodeJS.ProcessEnv = process.env): ProjectFolder[] {
+  const file = projectFoldersPath(env)
+  let raw: unknown
+  try {
+    raw = JSON.parse(readFileSync(file, 'utf8'))
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return []
+    throw new Error('Cannot read folder Projects; repair project-folders.json in the Notifai config directory.', { cause: error })
+  }
+  const doc = raw as { version?: unknown; folders?: unknown } | null
+  if (doc?.version !== 1 || !Array.isArray(doc.folders) || !doc.folders.every((folder: unknown) => {
+    if (typeof folder !== 'object' || folder === null) return false
+    const entry = folder as Partial<ProjectFolder>
+    return typeof entry.path === 'string' && path.isAbsolute(entry.path) &&
+      typeof entry.name === 'string' && validFolderProjectName(entry.name)
+  })) throw new Error('Invalid folder Projects registry in the Notifai config directory.')
+  return (doc.folders as ProjectFolder[]).map(({ path: folderPath, name }) => ({ path: folderPath, name }))
+}
+
+/** Nearest registered ancestor, respecting path boundaries and symlink identity. */
+function containingProjectFolder(cwd: string, env: NodeJS.ProcessEnv): ProjectFolder | null {
+  let directory = cwd
+  const folders = listProjectFolders(env)
+  for (;;) {
+    const folder = folders.find((entry) => sameLocalPath(entry.path, directory))
+    if (folder !== undefined) return folder
+    const parent = path.dirname(directory)
+    if (parent === directory) return null
+    directory = parent
+  }
+}
+
+/** Serialize read/modify/write so concurrent desktop and CLI edits cannot lose registrations. */
+export function updateProjectFolder(
+  action: 'add' | 'remove' | 'rename',
+  directory: string,
+  name: string | undefined,
+  env: NodeJS.ProcessEnv = process.env,
+): ProjectFolder {
+  const folderPath = canonicalDir(directory)
+  const projectName = name === undefined ? null : projectSlugFrom(name)
+  if (action !== 'remove' && projectName === null) {
+    throw new Error('Project name must contain at least one letter or digit usable in a Project identifier.')
+  }
+  if (action === 'add') {
+    try {
+      if (!statSync(directory).isDirectory()) throw new Error('not a directory')
+      realpathSync.native(directory)
+    } catch {
+      throw new Error(`${directory} is not an existing directory.`)
+    }
+    if (folderPath === path.parse(folderPath).root || sameLocalPath(folderPath, accountHome(env))) {
+      throw new Error('The home directory and filesystem root cannot be folder Projects.')
+    }
+    if (findGitRoot(folderPath) !== null || gitCommonDirectory(folderPath) !== null) {
+      throw new Error(`${directory} is in a Git repository, which is already a Project.`)
+    }
+  }
+  const file = projectFoldersPath(env)
+  ensurePrivateDirectory(path.dirname(file))
+  return withTargetFileLock(file, () => {
+    const folders = listProjectFolders(env)
+    const index = folders.findIndex((folder) => sameLocalPath(folder.path, folderPath))
+    if (action === 'add' && index !== -1) throw new Error('This folder is already registered; use notifai project folder rename <path> --name <name>.')
+    if (action !== 'add' && index === -1) throw new Error('This folder is not registered; use notifai project folder list.')
+    const folder: ProjectFolder = { path: folderPath, name: action === 'remove' ? folders[index]!.name : projectName! }
+    if (action === 'remove') folders.splice(index, 1)
+    else if (action === 'rename') folders[index] = folder
+    else folders.push(folder)
+    atomicWriteFileSync(file, `${JSON.stringify({ version: 1, folders }, null, 2)}\n`, {
+      mode: 0o600, preserveMode: false, requireCurrentUserOwner: true,
+    })
+    return folder
+  })
+}
+
 /**
  * Which Project a folder belongs to: the one answer Project identity,
  * personal configuration and Project Enablement all use.
  *
  * - The folder's nearest Git checkout (a clone, linked worktree or submodule)
- *   is the root, and outside Git the folder itself is. Nothing committed to a
+ *   is the root. Outside Git a registered folder supplies the root and name;
+ *   otherwise the folder itself anchors explicitly configured Projects. Nothing committed to a
  *   checkout can move the root: a repository does not configure Notifai.
  * - The home folder is never a Project root: `~/.notifai` is where Notifai
  *   installs itself, and a Project there would contain every other folder.
@@ -377,6 +475,8 @@ export interface ProjectLocation {
   root: string
   /** Whether the root is a Git checkout, whose linked worktrees share one Project. */
   checkout: boolean
+  /** User-chosen name for a registered folder Project. */
+  name?: string
 }
 
 export function projectLocation(cwd: string, env: NodeJS.ProcessEnv = process.env): ProjectLocation | null {
@@ -389,6 +489,8 @@ export function projectLocation(cwd: string, env: NodeJS.ProcessEnv = process.en
   const home = canonicalHome(env)
   const checkoutRoot = findGitRoot(start)
   if (checkoutRoot !== null) return checkoutRoot === home ? null : { root: checkoutRoot, checkout: true }
+  const folder = containingProjectFolder(start, env)
+  if (folder !== null) return { root: folder.path, checkout: false, name: folder.name }
   return start === home ? null : { root: start, checkout: false }
 }
 

@@ -36,6 +36,7 @@ import {
   logoutCommand,
   projectDisableCommand,
   projectEnableCommand,
+  projectFolderCommand,
   projectStatusCommand,
   logsCommand,
   repliesCommand,
@@ -134,6 +135,7 @@ const defaultRunners = {
   sounds: soundsCommand,
   capabilities: capabilitiesCommand,
   projectEnable: projectEnableCommand,
+  projectFolder: projectFolderCommand,
   projectDisable: projectDisableCommand,
   projectStatus: projectStatusCommand,
   agentSessionRename: agentSessionRenameCommand,
@@ -251,7 +253,9 @@ export function buildProgram(deps: CommandDeps, options: BuildProgramOptions = {
       }
       options.beforeAction?.(admission)
       // Hooks and internal processes write to a harness, not to a reader.
-      if (!INTERNAL_COMMANDS.has(commandPath(actionCommand).split(' ')[0]!)) {
+      // Registry management must still report its own JSON error when that
+      // registry is unreadable; it needs no cwd Project or repository notice.
+      if (!INTERNAL_COMMANDS.has(commandPath(actionCommand).split(' ')[0]!) && !commandPath(actionCommand).startsWith('project folder ')) {
         for (const line of takeRepositoryConfigNotice(deps.cwd, deps.env) ?? []) deps.io.err(line)
       }
       const logger = deps.logger
@@ -288,7 +292,7 @@ export function buildProgram(deps: CommandDeps, options: BuildProgramOptions = {
       const processVerified = processIdentity !== null && processIdentityLiveness(processIdentity) === 'alive'
       const result = { ok: identity !== null && skill.ok && changelog.available && processVerified, build: identity, processVerified,
         changelog,
-        capabilities: { npm_adapter_routes: 1, local_continuity: LOCAL_CONTINUITY, local_continuity_compatible: LOCAL_CONTINUITY_CAPABILITIES.compatible },
+        capabilities: { project_folders: true, npm_adapter_routes: 1, local_continuity: LOCAL_CONTINUITY, local_continuity_compatible: LOCAL_CONTINUITY_CAPABILITIES.compatible },
         skill: skill.ok ? { digest: skill.bundle.manifest.digest, files: skill.bundle.manifest.files.length }
           : { error: skill.error } }
       deps.io.out(options.json ? JSON.stringify(result)
@@ -523,7 +527,7 @@ export function buildProgram(deps: CommandDeps, options: BuildProgramOptions = {
     .command('project')
     .helpGroup(GROUP.daily)
     .summary('Control Notifai for this Project')
-    .description('Inspect or change whether Notifai is on for this Project, a decision only the User makes')
+    .description('Inspect or change whether Notifai is on for this Project, or register a plain folder as a named Project on this computer')
   project.command('enable').description('Turn Notifai on for this Project: its guidance, notifications and questions').action(() => {
     exit(runners.projectEnable(deps))
   })
@@ -533,6 +537,22 @@ export function buildProgram(deps: CommandDeps, options: BuildProgramOptions = {
   project.command('status').description('Show whether Notifai is on for this Project').option('--json').action((opts: { json?: boolean }) => {
     exit(runners.projectStatus(deps, opts.json === true))
   })
+
+  const folder = project.command('folder')
+    .description('Manage named folder Projects on this computer; registrations stay in your Notifai config directory. Git repositories keep their own Project.')
+  folder.command('list').description('List registered folder Projects on this computer')
+    .option('--json', 'output {folders:[{path,name}]}')
+    .action((opts: { json?: boolean }) => { exit(runners.projectFolder(deps, 'list', undefined, opts)) })
+  for (const action of ['add', 'rename', 'remove'] as const) {
+    const command = folder.command(`${action} <path>`)
+      .description(action === 'add' ? 'Register an existing plain directory as a Project; nearest folder wins outside Git'
+        : action === 'rename' ? 'Change a registered folder Project name' : 'Remove a folder Project registration; leaves the directory untouched')
+      .option('--json', 'output {folder:{path,name}} (null after remove); errors are {ok:false,error}')
+    if (action !== 'remove') command.requiredOption('--name <name>', 'Project name, for example "Acme Client"; stored as a Project identifier such as acme-client')
+    command.action((directory: string, opts: { name?: string; json?: boolean }) => {
+      exit(runners.projectFolder(deps, action, directory, opts))
+    })
+  }
 
   const session = program
     .command('session')

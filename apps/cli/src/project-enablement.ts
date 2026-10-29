@@ -16,6 +16,8 @@ interface ProjectEnablementMarker {
 export interface ProjectBinding {
   project: string
   markerPath: string
+  /** Folder registration renames preserve the decision for this root. */
+  folder?: true
 }
 
 /**
@@ -31,7 +33,7 @@ export type ProjectEnablementState = 'enabled' | 'disabled' | 'unset'
  */
 export function inferredProjectName(cwd: string, env: NodeJS.ProcessEnv = process.env): string | null {
   const location = projectLocation(cwd, env)
-  return location === null ? null : inferInvocationContext(location.root, undefined, { branch: false }).project
+  return location === null ? null : location.name ?? inferInvocationContext(location.root, undefined, { branch: false }).project
 }
 
 /**
@@ -51,17 +53,18 @@ export function projectBinding(
 ): ProjectBinding | null {
   const location = projectLocation(cwd, env)
   if (location === null) return null
-  const project = explicitProject ?? inferInvocationContext(location.root, undefined, { branch: false }).project
+  const project = explicitProject ?? location.name ?? inferInvocationContext(location.root, undefined, { branch: false }).project
   if (project === null) return null
   const key = createHash('sha256')
     .update('notifai-project-enablement-v1\0')
     .update(projectRepositoryAnchor(location))
     .update('\0')
-    .update(project)
+    .update(location.name === undefined ? project : '')
     .digest('hex')
   return {
     project,
     markerPath: path.join(globalConfigDir(env), 'project-enablement', `${key}.json`),
+    ...(location.name === undefined ? {} : { folder: true as const }),
   }
 }
 
@@ -70,7 +73,7 @@ export function projectEnablementState(binding: ProjectBinding | null): ProjectE
   if (binding === null || !existsSync(binding.markerPath)) return 'unset'
   try {
     const marker = JSON.parse(readFileSync(binding.markerPath, 'utf8')) as Partial<ProjectEnablementMarker>
-    if (marker.version !== 1 || marker.project !== binding.project || typeof marker.enabled !== 'boolean') return 'unset'
+    if (marker.version !== 1 || (!binding.folder && marker.project !== binding.project) || typeof marker.enabled !== 'boolean') return 'unset'
     return marker.enabled ? 'enabled' : 'disabled'
   } catch {
     return 'unset'

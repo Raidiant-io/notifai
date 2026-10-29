@@ -58,6 +58,7 @@ export { cliUpdateCommand } from './commands-update.js'
 export {
   projectDisableCommand,
   projectEnableCommand,
+  projectFolderCommand,
   projectStatusCommand,
 } from './commands-project.js'
 export { agentSessionRenameCommand } from './commands-agent-sessions.js'

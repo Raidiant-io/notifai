@@ -3,6 +3,8 @@ import { type SourceContextT } from '@raidiant/notifai-protocol'
 import type { SourceContextHarness } from './harnesses.js'
 import { gitQuery } from './git-query.js'
 import { resolveSessionLabel } from './session-labels.js'
+import { projectSlugFrom } from './project-name.js'
+export { projectSlugFrom } from './project-name.js'
 
 export type GitCommand = (cwd: string, args: readonly string[]) => string | null
 
@@ -13,16 +15,6 @@ export interface InvocationContext {
   project: string | null
   branch?: string
   worktree?: string
-}
-
-/** Contract-valid Project slug, or null when the name has no safe characters. */
-export function projectSlugFrom(name: string): string | null {
-  const slug = name
-    .toLowerCase()
-    .replaceAll(/[^a-z0-9._-]+/g, '-')
-    .replaceAll(/^[^a-z0-9]+|[^a-z0-9._-]+$/g, '')
-    .slice(0, 64)
-  return slug.length > 0 && /^[a-z0-9]/.test(slug) ? slug : null
 }
 
 function usesWindowsPaths(...values: string[]): boolean {

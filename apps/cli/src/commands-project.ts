@@ -1,10 +1,38 @@
 import { loadLoggedConfig, EXIT, type CommandDeps } from './commands-core.js'
+import { listProjectFolders, updateProjectFolder } from './config.js'
+import path from 'node:path'
 import {
   disableProject,
   enableProject,
   projectBinding,
   projectEnablementState,
 } from './project-enablement.js'
+
+export function projectFolderCommand(
+  deps: CommandDeps,
+  action: 'add' | 'list' | 'remove' | 'rename',
+  directory: string | undefined,
+  flags: { name?: string; json?: boolean },
+): number {
+  try {
+    if (action === 'list') {
+      const folders = listProjectFolders(deps.env)
+      if (flags.json) deps.io.out(JSON.stringify({ folders }))
+      else if (folders.length === 0) deps.io.out('No folder Projects are registered on this computer.')
+      else for (const folder of folders) deps.io.out(`${folder.name}\t${folder.path}`)
+    } else {
+      const folder = updateProjectFolder(action, path.resolve(deps.cwd, directory ?? '.'), flags.name, deps.env)
+      if (flags.json) deps.io.out(JSON.stringify({ folder: action === 'remove' ? null : folder }))
+      else deps.io.out(`${action === 'remove' ? 'Removed' : action === 'rename' ? 'Renamed' : 'Added'} folder Project "${folder.name}" (${folder.path}).`)
+    }
+    return EXIT.ok
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error)
+    if (flags.json) deps.io.out(JSON.stringify({ ok: false, error: message }))
+    else deps.io.err(message)
+    return EXIT.usage
+  }
+}
 
 function bindingFor(deps: CommandDeps) {
   const config = loadLoggedConfig(deps, { cwd: deps.cwd, env: deps.env })

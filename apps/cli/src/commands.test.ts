@@ -53,6 +53,7 @@ type CommandIo
 } from './commands.js'
 import {
 personalProjectConfigPath,
+updateProjectFolder,
 stateDir
 } from './config.js'
 import { settleBeforeExit } from './exit-work.js'
@@ -443,6 +444,42 @@ describe('command contracts', () => {
       expect(JSON.parse(readFileSync(path.join(stateDir(env), 'codex-homes.json'), 'utf8'))).toEqual({ homes: [shadow] })
     } finally {
       hub.close()
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it.each([
+    { name: 'inferred', selection: {}, configured: false, expected: 'writing' },
+    { name: 'explicit', selection: { project: 'explicit' }, configured: true, expected: 'explicit' },
+    { name: 'configured', selection: {}, configured: true, expected: 'configured' },
+    { name: 'Projectless', selection: { projectless: true }, configured: true, expected: undefined },
+  ])('sends and asks with $name identity in a registered folder descendant', async ({ selection, configured, expected }) => {
+    const root = mkdtempSync(path.join(os.tmpdir(), 'notifai-folder-requests-'))
+    try {
+      const folder = path.join(root, 'documents')
+      const cwd = path.join(folder, 'notes')
+      mkdirSync(cwd, { recursive: true })
+      const env = isolatedEnv(root)
+      updateProjectFolder('add', folder, 'writing', env)
+      if (configured) writeProjectSettings(folder, env, 'project = "configured"\n')
+      const io = new CapturedIo()
+      const requests: SubmitNotificationRequestT[] = []
+      const client = {
+        submit: async (body: SubmitNotificationRequestT) => { requests.push(body); return receipt },
+        replies: async () => replyResponse([reply]),
+        closeReplies: async () => claimedReplyResponse([reply]),
+        putAgentAcknowledgement: async () => ({}),
+      } as unknown as ApiClient
+      const deps = { ...makeDeps(io, client), cwd, env }
+      expect(await sendCommand(deps, { kind: 'update', title: 'Writing', body: 'Draft finished.', ...selection })).toBe(EXIT.ok)
+      expect(await askCommand(deps, 'Publish it?', { title: 'Writing', wait: true, json: true, ...selection })).toBe(EXIT.ok)
+      expect(requests).toHaveLength(2)
+      for (const request of requests) {
+        expect(request.draft.project).toBe(expected)
+        expect(JSON.stringify(request)).not.toContain(folder)
+      }
+      expect(projectEnablementState(projectBinding(folder, env))).toBe(expected === undefined ? 'unset' : 'enabled')
+    } finally {
       rmSync(root, { recursive: true, force: true })
     }
   })
