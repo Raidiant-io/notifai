@@ -634,6 +634,14 @@ export const AnswerVersionView = Type.Object({
   source: Type.Union([Type.Literal('reply'), Type.Literal('edit')]),
   status: Type.Union(['superseded', 'current', 'delivered', 'presented', ...SESSION_MESSAGE_STATES].map(value => Type.Literal(value))),
   not_delivered_reason: Type.Union([Type.String(), Type.Null()]),
+  /**
+   * On a User's reply: true once the agent's computer has it, either fenced
+   * by a `deliver` close or returned by a close with no disposition that
+   * ended the window. Says Delivered on the reply label only; whether the
+   * answer can still be edited follows `status`. Absent from older services
+   * and on agent-reported answers.
+   */
+  agent_received: Type.Optional(Type.Boolean()),
   /** Complete answer at this version, not just the edited questions. */
   answers: Type.Array(ReplyAnswerView),
   text: Type.String(),
