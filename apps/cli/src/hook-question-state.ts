@@ -43,6 +43,13 @@ export function sourceContextAtHookEvent(
   const current: SourceContextT = {
     ...(source?.session_id !== undefined ? { session_id: source.session_id } : {}),
     ...(source?.session_label !== undefined ? { session_label: source.session_label } : {}),
+    // Without provenance the service freezes a fallback name as semantic.
+    ...(source?.session_label_source !== undefined
+      ? { session_label_source: source.session_label_source }
+      : {}),
+    ...(source?.session_label_previous_source !== undefined
+      ? { session_label_previous_source: source.session_label_previous_source }
+      : {}),
     ...(source?.harness !== undefined ? { harness: source.harness } : {}),
     ...(invocation?.branch !== undefined ? { branch: invocation.branch } : {}),
     ...(invocation?.worktree !== undefined ? { worktree: invocation.worktree } : {}),
