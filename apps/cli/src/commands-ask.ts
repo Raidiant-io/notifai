@@ -1,7 +1,9 @@
 /** Validation and durable registration for the agent-facing ask command. */
 import {
   CAPABILITIES_V1,
+  QUESTION_DETAIL_MAX_LENGTH,
   QUESTION_TEXT_MAX_LENGTH,
+  QUESTION_TITLE_MAX_LENGTH,
   REPLY_MAX_QUESTIONS,
   validateDraft,
   type NotificationDraftT,
@@ -178,12 +180,14 @@ interface AskFormQuestion {
   /** With several questions, a word or two naming this question's own decision: its header in a terminal form. */
   title?: string
   text: string
+  /** Short Markdown: why this question is asked and what rides on it, shown under its text. */
+  detail?: string
   choices?: AskFormChoice[]
   multi?: boolean
 }
 
 const FORM_SHAPE =
-  '--form must be JSON: {"title": "...", "summary": "...", "questions": [{"title"?, "text", "choices"?, "multi"?}], "body"?}; ' +
+  '--form must be JSON: {"title": "...", "summary": "...", "questions": [{"title"?, "text", "detail"?, "choices"?, "multi"?}], "body"?}; ' +
   'a choice is a label or {"label", "description"?, "recommended"?}.'
 
 const TITLE_GUIDANCE = 'it names the decision in a few words and is never the question itself (`notifai guidance`)'
@@ -193,6 +197,34 @@ export const MISSING_TITLE_NOTE =
   `notifai: pass --title (a form: its "title"); ${TITLE_GUIDANCE}. Until then the question is titled by the Agent Session name.`
 const missingQuestionTitlesNote = (numbers: number[]): string =>
   `notifai: give each question of a form its own "title", a word or two naming its decision; ${numbers.map(n => `question ${n}`).join(', ')} ${numbers.length === 1 ? 'has' : 'have'} none.`
+const longQuestionTitlesNote = (numbers: number[]): string =>
+  `notifai: keep each question's "title" to a word or two (${QUESTION_TITLE_MAX_LENGTH} characters on one line); devices leave out the title of ${numbers.map(n => `question ${n}`).join(', ')}.`
+
+/** A Markdown image: images belong in the form's Body, where the gallery shows them. */
+const MARKDOWN_IMAGE = /!\[[^\]]*\]\(/
+
+/** A question's `"detail"`, checked; empty when it has none. */
+function questionDetail(detail: unknown): { detail?: string } | { error: string } {
+  if (detail === undefined) return {}
+  if (typeof detail !== 'string') return { error: '"detail" must be a Markdown string.' }
+  const trimmed = detail.trim()
+  if (trimmed === '') return { error: '"detail" cannot be empty; leave it out instead.' }
+  const length = [...trimmed].length
+  if (length > QUESTION_DETAIL_MAX_LENGTH) {
+    return {
+      error:
+        `"detail" is ${length} characters; keep it within ${QUESTION_DETAIL_MAX_LENGTH}, a short paragraph ` +
+        'or two on why this question is asked, and put longer context, logs or images in the form "body".',
+    }
+  }
+  if (MARKDOWN_IMAGE.test(trimmed)) return { error: '"detail" cannot hold images; put them in the form "body".' }
+  return { detail: trimmed }
+}
+
+/** A question title devices can show: one line within the bound. */
+function showableTitle(title: string): boolean {
+  return [...title].length <= QUESTION_TITLE_MAX_LENGTH && !/[\u0000-\u001F\u007F-\u009F\u2028\u2029]/.test(title)
+}
 
 export interface BuiltQuestions {
   resumes?: string
@@ -283,6 +315,7 @@ export function buildQuestions(
     const questions: QuestionT[] = []
     const headers: string[] = []
     const untitled: number[] = []
+    const overlong: number[] = []
     const usedIds = new Set<string>()
     for (const [index, entry] of formQuestions.entries()) {
       if (typeof entry !== 'object' || entry === null || typeof (entry as AskFormQuestion).text !== 'string') {
@@ -292,22 +325,33 @@ export function buildQuestions(
       if (spec.title !== undefined && typeof spec.title !== 'string') {
         return { ok: false, error: `Question ${index + 1}: "title" must be a string.` }
       }
-      if (spec.title !== undefined && spec.title.trim() !== '') headers.push(spec.title.trim())
+      const ownTitle = spec.title?.trim() ?? ''
+      if (ownTitle !== '') headers.push(ownTitle)
       else if (titled && formQuestions.length > 1) {
         headers.push(`Question ${index + 1}`)
         untitled.push(index + 1)
       }
+      const detail = questionDetail(spec.detail)
+      if ('error' in detail) return { ok: false, error: `Question ${index + 1}: ${detail.error}` }
       const choices = formChoices(spec.choices)
       if ('error' in choices) return { ok: false, error: `Question ${index + 1}: ${choices.error}` }
       const built = buildOneQuestion(spec.text, choices.labels, choices.details, spec.multi === true, index, usedIds)
       if ('error' in built) return { ok: false, error: `Question ${index + 1}: ${built.error}` }
-      questions.push(built.question)
+      // Devices show a question's own title only in a form of several: one
+      // question is named by the form's title. An older form's long title
+      // still heads the terminal form; devices leave it out.
+      const several = formQuestions.length > 1
+      const showTitle = several && ownTitle !== '' && showableTitle(ownTitle)
+      if (several && ownTitle !== '' && !showTitle) overlong.push(index + 1)
+      const { id, ...rest } = built.question
+      questions.push({ id, ...(showTitle ? { title: ownTitle } : {}), ...rest, ...detail })
     }
     const body = flags.body ?? (record['body'] as string | undefined)
     const title = typeof record['title'] === 'string' ? record['title'].trim() : undefined
     const notes = [
       ...(titled && (title === undefined || title === '') ? [MISSING_TITLE_NOTE] : []),
       ...(untitled.length > 0 ? [missingQuestionTitlesNote(untitled)] : []),
+      ...(overlong.length > 0 ? [longQuestionTitlesNote(overlong)] : []),
     ]
     return {
       ok: true,

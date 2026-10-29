@@ -119,7 +119,9 @@ Make each question answerable from the notification alone. The Summary asks
 one question; a Body, when needed, adds the reasoning and stakes. Prefer
 closed choices that each say what choosing them does: describe a choice with
 \`--choice-description\` when its label alone cannot, and mark the one you
-recommend with \`--recommended '<label>'\`; never put "recommended" in a label. For a sign-in or a physical action, ask whether it is done;
+recommend with \`--recommended '<label>'\`; never put "recommended" in a label. In a form of several
+questions, keep each question's text to the question and put its own reasoning
+in that question's \`"detail"\`, not in the text or the form's Body. For a sign-in or a physical action, ask whether it is done;
 the reply is what resumes the work.
 
 Good:

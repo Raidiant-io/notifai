@@ -821,7 +821,7 @@ export function buildProgram(deps: CommandDeps, options: BuildProgramOptions = {
       '--literal-backslash-n',
       'allow the two-character sequence \\n in --body instead of treating it as a mistaken escaped newline',
     )
-    .option('--form <path>', 'ask several questions from a JSON file (use - for stdin), with "title", "summary" and "questions", each question carrying its own "title" when there are several')
+    .option('--form <path>', 'ask several questions from a JSON file (use - for stdin), with "title", "summary" and "questions", each question carrying its own "title" when there are several and an optional Markdown "detail"')
     .option('--form-json <json>', 'ask several questions from inline JSON; use --form for a file or stdin')
     .option('--resumes <work>', 'unblocked work this Agent Session does itself before reporting; reporting the answer is not that work')
     .option('--guidance-token <token>', 'local conversation token from guidance check, for hosts without an exact session id')

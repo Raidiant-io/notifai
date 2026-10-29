@@ -74,3 +74,43 @@ it('retains existing unambiguous ask IDs and rejects genuinely duplicate labels'
   expect(parseChoices(['Staging', 'Production'])).toMatchObject({ choices: [{ id: 'staging' }, { id: 'production' }] })
   expect(parseChoices(['Same', 'Same']).ok).toBe(false)
 })
+
+describe('form question titles and details', () => {
+  const ask = (questions: unknown[]) =>
+    buildQuestions({ form: JSON.stringify({ title: 'Release plan', summary: 'Two decisions.', questions }) }, undefined)
+
+  it('carries each question title and its Markdown detail to the devices', () => {
+    const built = ask([
+      { title: 'Ship day', text: 'Ship on Friday?', detail: '  Friday has **no** on-call cover.\n\nMonday is safe.  ', choices: ['Yes', 'No'] },
+      { title: 'Release notes', text: 'Anything to add?' },
+    ])
+    expect(built).toMatchObject({ ok: true, headers: ['Ship day', 'Release notes'] })
+    if (!built.ok) return
+    expect(built.notes).toBeUndefined()
+    expect(built.questions[0]).toMatchObject({ title: 'Ship day', text: 'Ship on Friday?', detail: 'Friday has **no** on-call cover.\n\nMonday is safe.' })
+    expect(built.questions[1]).toEqual({ id: expect.any(String), title: 'Release notes', text: 'Anything to add?' })
+  })
+
+  it('names one question by the form title alone, keeping its detail', () => {
+    const built = ask([{ title: 'Ship day', text: 'Ship on Friday?', detail: 'Why it matters.' }])
+    expect(built.ok && built.questions[0]).toEqual({ id: expect.any(String), text: 'Ship on Friday?', detail: 'Why it matters.' })
+  })
+
+  it('refuses a detail that is too long, empty, not text or holds an image, saying where the rest goes', () => {
+    expect(ask([{ text: 'A?', detail: 'x'.repeat(501) }, { text: 'B?' }])).toEqual({ ok: false, error: expect.stringMatching(/^Question 1: "detail" is 501 characters; keep it within 500.*form "body"/) })
+    expect(ask([{ text: 'A?', detail: '🚀'.repeat(500) }]).ok).toBe(true)
+    expect(ask([{ text: 'A?', detail: '  ' }])).toMatchObject({ ok: false, error: expect.stringContaining('cannot be empty') })
+    expect(ask([{ text: 'A?', detail: 3 }])).toMatchObject({ ok: false, error: expect.stringContaining('must be a Markdown string') })
+    expect(ask([{ text: 'A?', detail: 'See ![chart](media:1)' }])).toMatchObject({ ok: false, error: expect.stringContaining('cannot hold images') })
+  })
+
+  it('keeps an older form with a long title working: the terminal header stays, devices leave it out with a note', () => {
+    const long = 'A title far longer than a word or two, as older forms wrote'
+    const built = ask([{ title: long, text: 'A?' }, { title: 'Short', text: 'B?' }])
+    expect(built).toMatchObject({ ok: true, headers: [long, 'Short'] })
+    if (!built.ok) return
+    expect(built.questions[0]!.title).toBeUndefined()
+    expect(built.questions[1]!.title).toBe('Short')
+    expect(built.notes).toEqual([expect.stringContaining('devices leave out the title of question 1')])
+  })
+})

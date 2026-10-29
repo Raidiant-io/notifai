@@ -29,7 +29,9 @@ When creating a form file, write it in the system temp directory, never the repo
   "summary": "Two decisions before the release.",
   "body": "Optional standalone Markdown.",
   "questions": [
-    { "title": "Ship day", "text": "Ship on Friday?", "choices": [
+    { "title": "Ship day", "text": "Ship on Friday?",
+      "detail": "Friday has no on-call cover; a bad deploy waits until Monday.",
+      "choices": [
       "Yes",
       { "label": "No", "description": "Moves the release to Monday.", "recommended": true }
     ] },
@@ -39,7 +41,11 @@ When creating a form file, write it in the system temp directory, never the repo
 ```
 
 With several questions, each takes a `"title"` of a word or two naming its
-own decision. A choice is a label or
+own decision (at most 40 characters). A question's optional `"detail"` is
+short Markdown, at most 500 characters and no images, shown under its text in
+a quieter style: why this question is asked and what rides on it. Put each
+question's reasoning there, keep `"text"` to the question itself, and keep the
+form's `"body"` for context shared by every question. A choice is a label or
 `{"label", "description"?, "recommended"?}`, a description being one
 line of at most 160 characters; add `"multi": true` to a
 question whose choices may combine. Mark at most one choice per question as

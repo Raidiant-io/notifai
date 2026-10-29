@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "behavior_digest": "sha256:8418ea15284b3ea5f214ba28c1ce4c7b4f4e87190ee43940ae5d46ef17c81970",
+  "behavior_digest": "sha256:8951a0fbfb817a838c24763e005b4d986337784949a095acb17dd68b6a4306f7",
   "outcome": "guidance-updated",
   "surfaces_reviewed": [
     "lifecycle-hooks",
@@ -9,5 +9,5 @@
     "cli-readiness",
     "domain-terms"
   ],
-  "reason": "Reviewed all five surfaces for extending the T3 Code reopen to Codex. Lifecycle hooks: definitions and output unchanged; the recorded T3CODE_THREAD_ID now also accepts T3's percent-encoded delegated-task ids (up to 512 characters, first character alphanumeric, so never an option). Hub: a stopped Codex session whose place is t3 now gets the same t3 thread send as Claude Code; when the hooks recorded no thread (a Codex hook runs with T3's shared app-server environment, which names none) the thread comes from T3's statev2 projection by the strict strong nativeThreadRef match the session titles already use (exactly one row, read-only), and the data directory's own bin/t3 runs it. The hub's existing queued Codex wake stays; whichever wake runs first hands the input in and the prompt hook blocks the empty one (no turn, no model request). Notifai skill: references/harness-codex.md now says a conversation T3 Code let go continues in its own T3 thread (reopen.t3). Harness setup: unchanged. CLI readiness: the reopen.t3 description now names Codex; doctor unchanged. Domain terms: unchanged. skills/guidance-changes.json carries one new release note."
+  "reason": "Reviewed all five surfaces for per-question titles and details in forms. Each reply question may now carry an optional one-line title (at most 40 code points) and an optional short Markdown detail (at most 500 code points); `ask --form`/`--form-json` accept a question \"detail\", refuse one that is too long, empty, not a string or holds an image with what to change, and put each question's own title on the wire for forms of several questions, noting (not refusing) an older form's title too long for devices. Pushes leave titles and details out like choice descriptions, so the push-size refusal for oversized forms is unchanged. Notifai skill: the questions guidance topic now says to keep a form question's text to the question and put its reasoning in its \"detail\", not the text or the form's Body; references/send-details.md documents the key, its limit and where longer context goes, with the example updated. Lifecycle hooks: unchanged; Claude, Codex and OpenCode picker bindings and hand-backs send no detail, and harness forms keep their current mapping. Harness setup: unchanged. CLI readiness: the iPhone capability document's reply reason now says question titles and details show in the app; the --form help names the optional \"detail\". Domain terms: unchanged; \"detail\" is a form key, not a new glossary term. skills/guidance-changes.json carries the release note for this change."
 }
