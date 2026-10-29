@@ -1,7 +1,7 @@
 {
   "version": 1,
-  "behavior_digest": "sha256:ec4b7e6d0e3571ec4f6f3a2f54e9b18f00308124cbfbaf37293661fb29d57e58",
-  "outcome": "guidance-updated",
+  "behavior_digest": "sha256:56cb8d5fb5925642fd3394089b1f19b95fd2b67bbea9bc8ebc3726811fcd7722",
+  "outcome": "reviewed-no-impact",
   "surfaces_reviewed": [
     "lifecycle-hooks",
     "notifai-skill",
@@ -9,5 +9,5 @@
     "cli-readiness",
     "domain-terms"
   ],
-  "reason": "Reviewed all five surfaces for per-question titles and details in forms. Each reply question may now carry an optional one-line title (at most 40 code points) and an optional short Markdown detail (at most 500 code points); `ask --form`/`--form-json` accept a question \"detail\", refuse one that is too long, empty, not a string or holds an image with what to change, and put each question's own title on the wire for forms of several questions, noting (not refusing) an older form's title too long for devices. Pushes leave titles and details out like choice descriptions, so the push-size refusal for oversized forms is unchanged. Notifai skill: the questions guidance topic now says to keep a form question's text to the question and put its reasoning in its \"detail\", not the text or the form's Body; references/send-details.md documents the key, its limit and where longer context goes, with the example updated. Lifecycle hooks: unchanged; Claude, Codex and OpenCode picker bindings and hand-backs send no detail, and harness forms keep their current mapping. Harness setup: unchanged. CLI readiness: the iPhone capability document's reply reason now says question titles and details show in the app; the --form help names the optional \"detail\". Domain terms: unchanged; \"detail\" is a form key, not a new glossary term. skills/guidance-changes.json carries the release note for this change."
+  "reason": "Reviewed all five surfaces for two hook changes. (1) Handler names: Claude Code and Codex handlers now carry a statusMessage that names them; Codex installs that carry an integration revision keep their approved bytes and get no names, while installs without one (fresh since 14.4.2-beta.4) get names and Codex asks for approval once. Harness setup and CLI readiness: unchanged; the existing Codex approval reminder, doctor's native-approval-pending finding and `notifai doctor codex` already cover a changed handler, so no new instruction is needed. (2) Stop acknowledgement cap: a continuing Stop with another question pending now goes through the shared three-Stop acknowledgement hold instead of blocking on every Stop. Lifecycle hooks and the Notifai skill: unchanged; agents are already told to acknowledge an answer as soon as it arrives. Domain terms: unchanged."
 }
