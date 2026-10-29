@@ -1,7 +1,7 @@
 {
   "version": 1,
-  "behavior_digest": "sha256:d22825597da69584088f0e8d0174d6aaffd29524d0191435ddfe380f22a7ae3e",
-  "outcome": "reviewed-no-impact",
+  "behavior_digest": "sha256:8418ea15284b3ea5f214ba28c1ce4c7b4f4e87190ee43940ae5d46ef17c81970",
+  "outcome": "guidance-updated",
   "surfaces_reviewed": [
     "lifecycle-hooks",
     "notifai-skill",
@@ -9,5 +9,5 @@
     "cli-readiness",
     "domain-terms"
   ],
-  "reason": "Reviewed all five surfaces for the optional agent_received field on AnswerVersionView. It is a service response field the Companion Apps read to say Delivered on the User's reply label; the CLI never reads Answer Versions and sends nothing new. Lifecycle hooks: unchanged; close requests, dispositions and their responses are the same. Notifai skill: unchanged; agents still acknowledge answers as before, and no instruction depends on how the apps label delivery. Harness setup: unchanged. CLI readiness: unchanged; doctor and init do not inspect Answer Versions. Domain terms: unchanged; no new term, and the field documents the existing meaning of Delivered (the agent's computer has the reply). Agent-visible text: none changes."
+  "reason": "Reviewed all five surfaces for extending the T3 Code reopen to Codex. Lifecycle hooks: definitions and output unchanged; the recorded T3CODE_THREAD_ID now also accepts T3's percent-encoded delegated-task ids (up to 512 characters, first character alphanumeric, so never an option). Hub: a stopped Codex session whose place is t3 now gets the same t3 thread send as Claude Code; when the hooks recorded no thread (a Codex hook runs with T3's shared app-server environment, which names none) the thread comes from T3's statev2 projection by the strict strong nativeThreadRef match the session titles already use (exactly one row, read-only), and the data directory's own bin/t3 runs it. The hub's existing queued Codex wake stays; whichever wake runs first hands the input in and the prompt hook blocks the empty one (no turn, no model request). Notifai skill: references/harness-codex.md now says a conversation T3 Code let go continues in its own T3 thread (reopen.t3). Harness setup: unchanged. CLI readiness: the reopen.t3 description now names Codex; doctor unchanged. Domain terms: unchanged. skills/guidance-changes.json carries one new release note."
 }

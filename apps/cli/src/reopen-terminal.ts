@@ -115,7 +115,8 @@ export interface T3ThreadFacts {
   home: string | null
 }
 
-const T3_THREAD = /^[A-Za-z0-9][A-Za-z0-9:._-]{0,127}$/
+/** A T3 thread id: a UUID, or a prefixed one such as `mcp:<uuid>` or a delegated task's percent-encoded id. */
+export const T3_THREAD = /^[A-Za-z0-9][A-Za-z0-9:%._-]{0,511}$/
 
 function t3Cli(value: unknown): string | null {
   return typeof value === 'string' && value.length <= 1_024 && path.isAbsolute(value) && /^t3(\.exe|\.cmd)?$/i.test(path.basename(value)) ? value : null

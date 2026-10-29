@@ -1,5 +1,5 @@
 {
-  "current": "8f489b0e7c268ed598003d8902836557dbf770fbb7ddc08ebd2f5e7fdf212dcf",
+  "current": "33b1c24ff4c6d1b8f72f7694e2e6f0701e47da1db89c7877c753d74f6449db3b",
   "releases": [
     {
       "digest": "3e47b01bc6bbfb43e910c660b9964fab6459d75148c3c02dcbcd0be64cfb2963",
@@ -184,6 +184,10 @@
     {
       "digest": "8f489b0e7c268ed598003d8902836557dbf770fbb7ddc08ebd2f5e7fdf212dcf",
       "note": "A question form's room in the phone notification now depends on the Project's real name and avatar instead of the longest ones a Project may have, so ordinary forms of up to 10 questions fit: `references/send-details.md` now says 10 questions of about 60 characters with two or three short choices usually fit, fewer when they are longer (it used to say usually no more than 8 short questions). `notifai ask` learns each Project's room from the service on every send in that Project; until then it sizes a form for the longest name and avatar, so a form near the limit can be refused in a Project the CLI has not sent in yet. The `question_too_large` refusal, its message and remedy are unchanged."
+    },
+    {
+      "digest": "33b1c24ff4c6d1b8f72f7694e2e6f0701e47da1db89c7877c753d74f6449db3b",
+      "note": "A Codex conversation in T3 Code that has stopped now continues by itself in its own T3 Code thread when an answer or note arrives, as a Claude Code one already did: while T3 Code runs, Notifai sends that thread a Notifai wake through T3 Code's `t3` command. Notifai finds the thread from T3 Code's own record when the hooks could not name it (a Codex thread runs on T3 Code's shared Codex server, whose environment names no thread), and accepts T3 Code's longer delegated-task thread ids. `reopen.t3` covers both. Agents should not ask the User to resume such a conversation."
     }
   ]
 }

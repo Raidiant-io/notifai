@@ -135,7 +135,9 @@ terminal window running `codex resume` in its folder and Codex home, with the
 approval, sandbox and config options it ran with and never more permissive
 ones. A conversation the Codex app started and then unloaded continues inside
 the app, without opening on screen, while the app is running and the
-conversation is not archived (`reopen.codex_app`). When Notifai cannot
+conversation is not archived (`reopen.codex_app`). A conversation T3 Code
+started and then let go continues in its own T3 Code thread while T3 Code
+runs: Notifai sends that thread a Notifai wake (`reopen.t3`). When Notifai cannot
 reproduce how a conversation started, or its permissions changed since, it
 waits for the User instead. Do not ask the User to resume it.
 `notifai config set reopen.terminal off --yes` (or `notifai config set reopen.automatic off --yes` for every

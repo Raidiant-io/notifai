@@ -622,11 +622,8 @@ export class SessionReopen {
         if (target.harness !== 'codex') return waiting('place-waits')
         return await this.codexAppReopen(target, trigger, record, fresh, now, waiting)
       }
-      if (adapter === 't3') {
-        // Claude Code only: how T3 Code brings back a Codex thread it unloaded is not yet witnessed.
-        if (target.harness !== 'claude-code') return waiting('place-waits')
-        return await this.t3Reopen(target, trigger, record, fresh, now, waiting)
-      }
+      // A Codex thread also gets the wake the hub queued in its own queue: whichever runs first hands the input in, and the prompt hook blocks the other.
+      if (adapter === 't3') return await this.t3Reopen(target, trigger, record, fresh, now, waiting)
       const plan = await this.terminalPlan(target, settings)
       if ('wait' in plan) return waiting(plan.wait)
       const token = randomBytes(16).toString('hex')
@@ -814,10 +811,11 @@ export class SessionReopen {
   private async t3Reopen(target: ReopenTarget, trigger: ReopenTrigger, record: SessionRecord, fresh: string[], now: number,
     waiting: (reason: ReopenWait) => ReopenOutcome): Promise<ReopenOutcome> {
     const { env } = this.host
-    const homes = [target.claudeConfigDir ?? path.join(accountHome(env), '.claude'), path.join(accountHome(env), '.claude')]
-    if (this.host.claudeLive(homes, target.sessionId)) return waiting('live-elsewhere')
-    const thread = target.hooks?.t3 ?? null
-    const plan = t3Plan(thread, env, this.host.t3)
+    if (target.harness === 'claude-code') {
+      const homes = [target.claudeConfigDir ?? path.join(accountHome(env), '.claude'), path.join(accountHome(env), '.claude')]
+      if (this.host.claudeLive(homes, target.sessionId)) return waiting('live-elsewhere')
+    }
+    const plan = t3Plan(target.hooks?.t3 ?? null, { harness: target.harness, sessionId: target.sessionId }, env, this.host.t3)
     if ('wait' in plan) return waiting(plan.wait)
     const token = randomBytes(16).toString('hex')
     const before = { attempts: record.attempts, seen: record.seen, last: record.last }
@@ -827,7 +825,7 @@ export class SessionReopen {
     record.updated_at = now
     // Recorded before the send: the conversation can come back before it returns.
     this.save(record)
-    const sent = await sendT3Wake(plan, thread!.home, this.host.t3)
+    const sent = await sendT3Wake(plan, this.host.t3)
     if (sent !== true) {
       Object.assign(record, before)
       this.host.logger.info('hub.reopen', { event: 'launch-failed', session: target.sessionId, terminal: T3_CODE, detail: sent })

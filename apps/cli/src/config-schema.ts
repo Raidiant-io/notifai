@@ -307,7 +307,7 @@ const INFO: Record<ConfigKey, Omit<ConfigKeyInfo, 'key'>> = {
     },
     summary: 'What happens to a T3 Code conversation T3 Code stopped',
     detail:
-      '`when-running` (the default) continues a Claude Code conversation that T3 Code stopped after it sat idle, in the same T3 Code thread, while T3 Code is running: Notifai sends the thread a short Notifai wake, and the agent takes the answer from there. It shows in the thread like any message. Notifai never starts T3 Code, and never continues a conversation in another thread or app. `off` waits for you to send in the thread; the answer arrives then.',
+      '`when-running` (the default) continues a Claude Code or Codex conversation that T3 Code stopped, in the same T3 Code thread, while T3 Code is running: Notifai sends the thread a short Notifai wake, and the agent takes the answer from there. It shows in the thread like any message. Notifai never starts T3 Code, and never continues a conversation in another thread or app. `off` waits for you to send in the thread; the answer arrives then.',
   },
   'reopen.terminal_app': {
     label: 'Terminal app',

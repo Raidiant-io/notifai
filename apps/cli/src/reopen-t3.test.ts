@@ -15,6 +15,8 @@ function environment(): NodeJS.ProcessEnv {
 
 const THREAD = { thread: 'mcp:00000000-0000-4000-8000-000000000001', cli: '/Users/u/.t3/bin/t3', home: null }
 
+const DELEGATED = 'thread:delegated-task:command%3Amcp%3A00000000-0000-4000-8000-000000000002%3Adelegate-task%3A00000000-0000-4000-8000-000000000003'
+
 function rig(t3: Partial<T3Host> = {}) {
   const env = environment()
   const sends: { cli: string; home: string | null; thread: string; message: string }[] = []
@@ -43,6 +45,7 @@ function rig(t3: Partial<T3Host> = {}) {
       cli: (thread) => thread.cli,
       send: async (cli, home, thread, message) => { sends.push({ cli, home, thread, message }); return replies.shift() ?? true },
       pause: async () => undefined,
+      threadOf: () => null,
       ...t3,
     },
   }
@@ -80,20 +83,40 @@ describe('reopening a conversation T3 Code stopped', () => {
     expect(await failing.reopen.reopenFor(failing.target({ items: ['answer:r1:1', 'held:m2'] }), 'note')).toMatchObject({ outcome: 'launched' })
   })
 
-  it('waits while T3 Code is not running, without the thread, for a Codex thread, open elsewhere, or with reopen.t3 off', async () => {
+  it('waits while T3 Code is not running, without a safe thread, or with reopen.t3 off', async () => {
     const stopped = rig({ serverRunning: () => false })
     expect(await stopped.reopen.reopenFor(stopped.target(), 'answer')).toEqual({ outcome: 'waiting', reason: 't3-not-running' })
     const unknown = rig()
     expect(await unknown.reopen.reopenFor(unknown.target({ hooks: null }), 'answer')).toEqual({ outcome: 'waiting', reason: 'thread-unknown' })
-    const codex = rig()
-    expect(await codex.reopen.reopenFor(codex.target({ harness: 'codex' }), 'answer')).toEqual({ outcome: 'waiting', reason: 'place-waits' })
+    const unsafe = rig({ threadOf: () => '-rf --base-dir /tmp' })
+    expect(await unsafe.reopen.reopenFor(unsafe.target({ hooks: null }), 'answer')).toEqual({ outcome: 'waiting', reason: 'thread-unknown' })
     const off = rig()
     const file = path.join(off.env['XDG_CONFIG_HOME']!, 'notifai', 'config.toml')
     mkdirSync(path.dirname(file), { recursive: true })
     writeFileSync(file, '[reopen]\nt3 = "off"\n')
     expect(await off.reopen.reopenFor(off.target(), 'answer')).toEqual({ outcome: 'waiting', reason: 'off' })
     expect(reopenLine(reopenReport(off.env, 'darwin'))).not.toContain('T3 Code')
-    for (const each of [stopped, unknown, codex, off]) expect(each.sends).toEqual([])
+    for (const each of [stopped, unknown, unsafe, off]) expect(each.sends).toEqual([])
+  })
+
+  it('reopens a Codex thread on T3 Code\'s shared Codex server through the thread T3 Code records for it', async () => {
+    const { reopen, sends, target } = rig({ threadOf: (_home, harness, sessionId) => harness === 'codex' && sessionId === 'codex-thread' ? DELEGATED : null,
+      cli: (thread, home) => thread.cli ?? `${home}/bin/t3` })
+    // A Codex hook runs with the shared server's environment, which names no thread.
+    expect(await reopen.reopenFor(target({ sessionId: 'codex-thread', harness: 'codex', hooks: null }), 'answer')).toMatchObject({ outcome: 'launched' })
+    expect(sends).toEqual([expect.objectContaining({ thread: DELEGATED, message: sessionInputWake() })])
+  })
+
+  it('finds the thread in T3 Code\'s own record when the hooks recorded none, through the data directory\'s own t3', async () => {
+    const asked: string[] = []
+    const { reopen, sends, target } = rig({
+      threadOf: (home, harness, sessionId) => { asked.push(`${home}|${harness}|${sessionId}`); return DELEGATED },
+      cli: (thread, home) => thread.cli ?? `${home}/bin/t3`,
+    })
+    expect(await reopen.reopenFor(target({ hooks: null }), 'answer')).toMatchObject({ outcome: 'launched' })
+    expect(asked).toHaveLength(1)
+    expect(asked[0]).toMatch(/\/\.t3\|claude-code\|sess-t3$/)
+    expect(sends).toEqual([expect.objectContaining({ thread: DELEGATED, home: null, cli: expect.stringMatching(/\/\.t3\/bin\/t3$/) })])
   })
 
   it('counts a reopen nothing confirmed within its minute as no response, and stops after two', async () => {
@@ -115,6 +138,8 @@ describe('what T3 Code tells a hook', () => {
     expect(t3ThreadOf({ T3CODE_THREAD_ID: THREAD.thread, T3CODE_CLI_PATH: THREAD.cli })).toEqual(THREAD)
     expect(t3ThreadOf({ T3CODE_THREAD_ID: THREAD.thread, T3CODE_CLI_PATH: '/tmp/evil', T3CODE_HOME: 'relative' })).toEqual({ ...THREAD, cli: null })
     expect(t3ThreadOf({ T3CODE_THREAD_ID: 'a b; rm -rf /' })).toBeNull()
+    expect(t3ThreadOf({ T3CODE_THREAD_ID: '--base-dir' })).toBeNull()
+    expect(t3ThreadOf({ T3CODE_THREAD_ID: DELEGATED })?.thread).toBe(DELEGATED)
     expect(t3ThreadOf({})).toBeNull()
     expect(readReopenLaunch({ terminal: null, orca_pane: false, t3: THREAD })?.t3).toEqual(THREAD)
     expect(readReopenLaunch({ terminal: null, orca_pane: false })?.t3).toBeNull()
