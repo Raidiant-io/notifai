@@ -102,10 +102,11 @@ export function hasFetchableContent(draft: NotificationDraftT): boolean {
  * whole payload, as it will be sent, stays within `limitBytes` less
  * {@link PUSHED_BODY_HEADROOM_BYTES}: first the complete questions (choice
  * descriptions, question titles and details), then the Markdown Body. Apply it
- * last, after every other field (including the destination stamp). `has_body`,
- * `has_choice_descriptions` and `has_question_details` are unchanged
- * either way, so a push without them still tells the Companion App to fetch
- * them. When nothing is left to fetch, the content token is dropped.
+ * last, after every other field (including the destination stamp). `has_body`
+ * and `has_choice_descriptions` are unchanged either way, so a push without
+ * them still tells the Companion App to fetch them; `has_question_details` is
+ * added when question titles or details stay out. When nothing is left to
+ * fetch, the content token is dropped.
  */
 export function withPushedApnsContent(
   payload: Record<string, unknown>,
@@ -334,7 +335,6 @@ function notifaiKey(
         }
       : {}),
     ...(hasChoiceDescriptions(draft) ? { has_choice_descriptions: true } : {}),
-    ...(hasQuestionDetails(draft) ? { has_question_details: true } : {}),
     ...(draft.reply !== undefined ? { questions: pushedQuestions(draft.reply.questions) } : {}),
   }
 }

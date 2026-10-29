@@ -2221,10 +2221,13 @@ describe('question titles and details', () => {
     expect(ACCEPTED_NOTIFICATION_CONTRACT_FINGERPRINTS[0]).toBe(NOTIFICATION_CONTRACT_FINGERPRINT)
   })
 
-  it('pushes them only when they fit, flagging that they exist', () => {
+  it('pushes them when they fit, with no flag and no byte cost before they are added', () => {
     const asked = form(detailed, 'Context.')
     const base = notifaiOf(buildApnsEnvelope(asked, ids, null).payload)
-    expect(base['has_question_details']).toBe(true)
+    expect(base['has_question_details']).toBeUndefined()
+    const withoutDetails = form(detailed.map(({ title: _t, detail: _d, ...question }) => question), 'Context.')
+    expect(estimateApnsPayloadBytes(asked)).toBe(estimateApnsPayloadBytes(withoutDetails))
+    expect(estimateFcmPayloadBytes(asked)).toBe(estimateFcmPayloadBytes(withoutDetails))
     expect(base['questions']).toEqual([
       { id: 'day', text: 'Ship on Friday?', choices: [{ id: 'yes', label: 'Yes' }, { id: 'no', label: 'No' }] },
       { id: 'notes', text: 'Anything to add to the notes?' },
@@ -2232,10 +2235,10 @@ describe('question titles and details', () => {
     expect(base['content_token']).toBe(ids.contentToken)
     const pushed = notifaiOf(withPushedApnsContent(buildApnsEnvelope(asked, ids, null).payload, asked, LIMIT))
     expect(pushed['questions']).toEqual(asked.reply!.questions)
+    expect(pushed['has_question_details']).toBeUndefined()
     expect(pushed['content_token']).toBeUndefined()
 
     const data = buildFcmDataEnvelope(asked, ids, null).data
-    expect(JSON.parse(data['notifai']!)).toMatchObject({ has_question_details: true })
     const envelope = JSON.parse(withPushedFcmContent(data, asked, LIMIT)['notifai']!) as Record<string, unknown>
     expect(envelope['questions']).toEqual(asked.reply!.questions)
   })
@@ -2252,6 +2255,6 @@ describe('question titles and details', () => {
 
   it('sends no flag and keeps the old shape when no question has one', () => {
     const plain = form([{ id: 'a', text: 'A?' }])
-    expect(notifaiOf(buildApnsEnvelope(plain, ids, null).payload)['has_question_details']).toBeUndefined()
+    expect(notifaiOf(withPushedApnsContent(buildApnsEnvelope(plain, ids, null).payload, plain, LIMIT))['has_question_details']).toBeUndefined()
   })
 })

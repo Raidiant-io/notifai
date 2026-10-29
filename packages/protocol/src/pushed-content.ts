@@ -24,8 +24,9 @@ export function hasQuestionDetails(draft: NotificationDraftT): boolean {
 /**
  * The questions as every push carries them: choice descriptions and question
  * titles and details are left out, because they are optional content that may
- * not fit. `has_choice_descriptions` and `has_question_details` say they
- * exist, and the renderers add them back when they fit.
+ * not fit. `has_choice_descriptions` says descriptions exist; the renderers
+ * add everything back when it fits, and `has_question_details` only when
+ * titles or details stay out.
  */
 export function pushedQuestions(questions: readonly QuestionT[]): QuestionT[] {
   return questions.map(({ title: _title, detail: _detail, ...question }) =>
@@ -76,6 +77,13 @@ export function withFittingContent(
     const candidate = { ...key, body }
     if (fits(withToken(candidate, descriptionsMissing))) key = candidate
     else bodyMissing = true
+  }
+  // Only a push that leaves question titles or details out says they exist;
+  // a flag on every form push would cost each one its bytes. When even the
+  // flag does not fit, history brings them.
+  if (descriptionsMissing && hasQuestionDetails(draft)) {
+    const candidate = { ...key, has_question_details: true }
+    if (fits(withToken(candidate, true))) key = candidate
   }
   if (key === rest) return null
   return withToken(key, descriptionsMissing || bodyMissing)
