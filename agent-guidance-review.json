@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "behavior_digest": "sha256:35e21b448d18ebcc86a641ad8feabff4fddc5e01866faed0520430a47a00be85",
+  "behavior_digest": "sha256:a2525cc4e147c37cb913b5e0418ff8ebbcd292fda3062669c2afb188123d9f3f",
   "outcome": "guidance-updated",
   "surfaces_reviewed": [
     "lifecycle-hooks",
@@ -9,5 +9,5 @@
     "cli-readiness",
     "domain-terms"
   ],
-  "reason": "Reviewed all five surfaces for the remaining harness-neutral wording in harness setup docs. Harness setup: docs/HARNESSES.md says Claude Code's picker is answered in Claude Code or on the phone, and docs/USAGE.md says a handed-back form is answered in that form or on the phone, instead of 'in the terminal'; no setup step changes. Lifecycle hooks, Notifai skill, CLI readiness and domain terms: unchanged since the previous review, which already replaced conversation-meaning 'terminal' wording there. No CLI source changes, so skills/guidance-changes.json needs no new note."
+  "reason": "Reviewed all five surfaces for the unnamed Agent Session fallback. The CLI now names a session that sends before it is named after its agent app ('Claude Code session', 'Agent session' for an unknown harness) instead of a generated adjective-animal name, without a local collision suffix, and hook-linked questions carry session_label_source so the fallback stays replaceable. Lifecycle hooks: hook question submission now keeps label provenance; no hook text changed. Notifai skill: unchanged; 'Name the Agent Session' already tells agents to pass --session-label on every send and ask, and it never described the fallback. Harness setup: unchanged. CLI readiness: unchanged; no capability or doctor result depends on the fallback text. Domain terms: unchanged. Agent-facing text: the 'Heads up (source.session_label)' stderr line now says the User sees the session under the app-name fallback until it is named, and a guidance-change note records the change."
 }

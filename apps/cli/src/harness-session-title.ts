@@ -84,7 +84,7 @@ function safeSessionId(value: string): boolean {
  *
  * CLI title updates use this index; Desktop/app-server may only write the
  * explicit name in their state database. The index is scanned newest-first. Missing, oversized, or malformed local state is ordinary
- * adapter failure: callers retain the generated fallback path.
+ * adapter failure: callers retain the fallback path.
  */
 function readCodexIndexTitle(
   env: NodeJS.ProcessEnv,

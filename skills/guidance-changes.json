@@ -1,5 +1,5 @@
 {
-  "current": "db368a8f91bd08d90a11e89286babebd52215f5970c4a67f9af661531e3c05da",
+  "current": "a8266ca89397483d7ec9c8fadc0f86e9746944a10547be5f89f780c5d595f19d",
   "releases": [
     {
       "digest": "3e47b01bc6bbfb43e910c660b9964fab6459d75148c3c02dcbcd0be64cfb2963",
@@ -168,6 +168,10 @@
     {
       "digest": "db368a8f91bd08d90a11e89286babebd52215f5970c4a67f9af661531e3c05da",
       "note": "Wording no longer calls the conversation with an agent \"the terminal\", since many agents run in desktop apps. A question answered in Claude Code's picker or Codex's own question card is recorded on the User's devices as \"Answered in the agent session.\" instead of \"Answered in the terminal.\"; `notifai ask` and `notifai send --reply` refusals with question notifications off, the `ask_notifications` and `ask_grace_seconds` setting descriptions, `notifai doctor`, `notifai init` and the interactive question settings now say the question stays in the conversation. The skill's setup, Claude Code, Codex and diagnostics references say the same. Separately, when a question Notifai retires ended unanswered (Esc or \"Chat about this\" on a Claude Code picker, or the Agent Session ending), the CLI now tells the service so, and the User's devices show it as expired instead of answered elsewhere; a service that predates this is closed as before. Agents run nothing new."
+    },
+    {
+      "digest": "a8266ca89397483d7ec9c8fadc0f86e9746944a10547be5f89f780c5d595f19d",
+      "note": "An Agent Session that sends before it is named now reaches the User under its agent app's name, such as \"Claude Code session\" or \"Codex session\" (\"Agent session\" when the harness is unknown), instead of a generated name like \"Yellow Bear\". The `Heads up (source.session_label)` line now says the User sees that name until the session is named. Nothing else changes: keep passing a concise `--session-label` on every send and ask; the first name you pass, or a proven harness title, replaces the fallback once. A question opened through a harness picker in an unnamed session no longer freezes the fallback, so a later name still replaces it. Sessions already shown under a generated name keep it until they are named."
     }
   ]
 }

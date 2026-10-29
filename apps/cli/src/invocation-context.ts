@@ -141,7 +141,7 @@ export type SourceContextBuild =
   | {
       ok: true
       source?: SourceContextT
-      generatedSessionLabel?: string
+      fallbackSessionLabel?: string
       unchangedSessionLabel?: string
       rejectedSessionLabel?: { reason: string; label: string }
     }
@@ -208,7 +208,7 @@ export function buildSourceContext(input: SourceContextInput): SourceContextBuil
           ? {}
           : { rejectedSessionLabel: { reason: label.rejectedExplicitLabel, label: label.label } }),
         ...(label !== undefined && label.ok && label.source === 'fallback'
-          ? { generatedSessionLabel: label.label }
+          ? { fallbackSessionLabel: label.label }
           : {}),
       }
 }
