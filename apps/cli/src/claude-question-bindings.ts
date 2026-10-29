@@ -168,23 +168,75 @@ export function oneLine(text: string): string {
   return text.replace(/\s+/gu, ' ').trim()
 }
 
+/** A list marker a plain-text question may start a line with. */
+const BULLET = /^(?:[•·▪◦‣–—*+-])\s+/u
+
 /**
- * Text that fits the device. A picker question often opens with context and
- * ends with the question itself, so the closing sentences are kept; the whole
- * text goes into the body.
+ * The sentences of plain text, in order. A line break ends one, so a bullet
+ * line is its own; inside a line a sentence ends at `.`, `!` or `?` followed
+ * by a space, so a version number such as 14.4.2 or beta.6 stays whole.
+ */
+function sentencesOf(text: string): string[] {
+  return text.split(/\r?\n|\r/u)
+    .map((line) => oneLine(line).replace(BULLET, ''))
+    .flatMap((line) => line === '' ? [] : line.split(/(?<=[.!?…])\s+/u))
+}
+
+/**
+ * Text that fits the device, as one line. Text that fits is kept whole.
+ * Otherwise the question it asks: its last sentence ending in a question mark
+ * that fits. Without one, its closing sentences that fit, since a long
+ * question usually opens with context and ends with what it asks. Only when
+ * even the last sentence is too long are its opening words cut, with a
+ * closing ellipsis. It never starts with an ellipsis or part of a sentence.
+ * The whole text goes into the Body.
  */
 export function fit(text: string, max: number): string {
   const flat = oneLine(text)
   if (chars(flat) <= max) return flat
-  const sentences = flat.match(/[^.!?]+[.!?]+(?=\s|$)|[^.!?]+$/gu) ?? []
-  let tail = ''
-  for (let index = sentences.length - 1; index >= 0; index--) {
-    const next = oneLine(`${sentences[index]!} ${tail}`)
-    if (chars(`… ${next}`) > max) break
-    tail = next
+  const sentences = sentencesOf(text)
+  const asked = sentences.findLast((sentence) => sentence.endsWith('?') && chars(sentence) <= max)
+  if (asked !== undefined) return asked
+  let closing = ''
+  for (const sentence of sentences.toReversed()) {
+    const next = closing === '' ? sentence : `${sentence} ${closing}`
+    if (chars(next) > max) break
+    closing = next
   }
-  if (tail !== '') return `… ${tail}`
-  return `${[...flat].slice(0, max - 1).join('').trimEnd()}…`
+  if (closing !== '') return closing
+  const cut = [...flat].slice(0, max - 1).join('')
+  const space = cut.lastIndexOf(' ')
+  return `${(space > max / 2 ? cut.slice(0, space) : cut).trimEnd()}…`
+}
+
+/**
+ * Plain question text as Markdown that keeps its lines: each line its own
+ * paragraph, and a run of bullet lines (`•`, `-`, `*` and the like) one list.
+ * A Markdown renderer would otherwise join the lines into one paragraph.
+ */
+export function plainTextMarkdown(text: string): string {
+  const blocks: string[] = []
+  let list: string[] = []
+  const flush = () => {
+    if (list.length > 0) blocks.push(list.join('\n'))
+    list = []
+  }
+  for (const raw of text.split(/\r?\n|\r/u)) {
+    const line = oneLine(raw)
+    if (line === '') {
+      flush()
+      continue
+    }
+    const item = line.replace(BULLET, '')
+    if (item !== line) {
+      list.push(`- ${item}`)
+      continue
+    }
+    flush()
+    blocks.push(line)
+  }
+  flush()
+  return blocks.join('\n\n')
 }
 
 /** Preserve distinct native choices when normalization or shortening collides. */
@@ -255,8 +307,9 @@ function questionNotes(entry: PickerQuestion): string[] {
  * question; the device has no number control, so the Body states the range
  * and the answer arrives as the text the User typed. A question's own helper
  * line goes into the Body under that question. Long question text, labels and
- * descriptions are shortened to fit, and only then does the picker's full
- * wording go into the body. The Summary is the first question; the headers,
+ * descriptions are shortened to fit (a long question to the question it
+ * asks), and only then does that question's full wording go into the Body,
+ * with its lines and bullets kept. The Summary is the first question; the headers,
  * when the picker has any, become its title, so the question is never copied
  * into the title. An error names why the picker cannot be a device question
  * at all; it then stays in the terminal.
@@ -272,11 +325,15 @@ export function pickerForm(
   const questionIds = new Set<string>()
   const questions: QuestionT[] = []
   const shown: NativeQuestionShown[] = []
-  let detailed = false
+  /** Per question: its wording lost something on the device, and its options did. */
+  const reworded: boolean[] = []
+  const shortenedOptions: boolean[] = []
   for (const [index, entry] of picker.entries()) {
     const text = fit(entry.question, QUESTION_TEXT_MAX_LENGTH)
     if (text === '') return { error: 'empty-question' }
-    if (text !== entry.question.trim()) detailed = true
+    // A device question is one line, so a question written on several lines loses its layout.
+    reworded.push(text !== oneLine(entry.question) || /[\r\n]/u.test(entry.question.trim()))
+    shortenedOptions.push(false)
     if (entry.kind === 'text' || entry.kind === 'number') {
       if (entry.options.length > 0) return { error: 'unsupported-option-count' }
       questions.push({ id: uniqueId(slugify(text), `q${index + 1}`, questionIds), text })
@@ -299,9 +356,9 @@ export function pickerForm(
       const plain = plainLabels[position]!
       const label = fittedLabels[position]!
       if (label === '') return { error: 'empty-option' }
-      if (label !== plain) detailed = true
+      if (label !== plain) shortenedOptions[index] = true
       const description = option.description === undefined ? undefined : fitDescription(option.description)
-      if (description !== undefined && description !== oneLine(option.description!)) detailed = true
+      if (description !== undefined && description !== oneLine(option.description!)) shortenedOptions[index] = true
       const id = uniqueId(slugify(plain), `option-${position + 1}`, choiceIds)
       choices.push({
         id,
@@ -323,19 +380,22 @@ export function pickerForm(
   const headers = picker.flatMap((question) => question.header === undefined || oneLine(question.header) === '' ? [] : [oneLine(question.header)])
   const title = headers.length === 0 ? {} : { title: headers.join(' · ') }
   const summary = fit(questions[0]!.text, SUMMARY_MAX_LENGTH)
-  // Shortened wording puts every question's full wording in the Body; otherwise
-  // only a question with something to add beneath it appears there.
-  const sections = picker.flatMap((entry) => {
+  // Only a question with something the device does not show appears in the
+  // Body: its full wording when shortened, its notes, its options when shortened.
+  // Several questions are told apart by their device text in bold; the full
+  // wording itself is never bold, and keeps its lines.
+  const sections = picker.flatMap((entry, index) => {
     const notes = questionNotes(entry)
-    if (!detailed && notes.length === 0) return []
-    const options = detailed ? entry.options.map((option) => option.description === undefined
+    if (!reworded[index] && !shortenedOptions[index] && notes.length === 0) return []
+    const options = shortenedOptions[index] ? entry.options.map((option) => option.description === undefined
       ? `- ${oneLine(option.label)}`
       : `- **${oneLine(option.label)}**: ${oneLine(option.description)}`) : []
     return [[
-      `**${oneLine(entry.question)}**`,
-      ...notes.flatMap((note) => ['', note]),
-      ...(options.length === 0 ? [] : ['', ...options]),
-    ].join('\n')]
+      ...(picker.length > 1 ? [`**${questions[index]!.text}**`] : []),
+      ...(reworded[index] ? [plainTextMarkdown(entry.question)] : []),
+      ...notes,
+      ...(options.length === 0 ? [] : [options.join('\n')]),
+    ].join('\n\n')]
   })
   if (sections.length === 0) return { questions, ...title, summary, shown }
   return { questions, ...title, summary, body: sections.join('\n\n'), shown }

@@ -121,7 +121,8 @@ it('carries a card question longer than a device question, with its full wording
   const pending = readSessionState(SESSION, h.env).pending!
   expect(pending).toHaveLength(1)
   expect([...pending[0]!.questions![0]!.text].length).toBeLessThanOrEqual(240)
-  expect(pending[0]!.questions![0]!.text).toContain('dates and amounts the bank wants covered.')
+  // The closing sentence is what the card asks; whole sentences only, never a leading ellipsis.
+  expect(pending[0]!.questions![0]!.text).toBe('Please send the recipient\'s full legal name, your current address, and the dates and amounts the bank wants covered.')
   expect(pending[0]!.body).toContain(long)
 })
 

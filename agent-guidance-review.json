@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "behavior_digest": "sha256:56cb8d5fb5925642fd3394089b1f19b95fd2b67bbea9bc8ebc3726811fcd7722",
+  "behavior_digest": "sha256:16f5f8bdc6b8a0269bb73b3e227e8cb5378ca486ed01c9938fad89cd2a01635e",
   "outcome": "reviewed-no-impact",
   "surfaces_reviewed": [
     "lifecycle-hooks",
@@ -9,5 +9,5 @@
     "cli-readiness",
     "domain-terms"
   ],
-  "reason": "Reviewed all five surfaces for two hook changes. (1) Handler names: Claude Code and Codex handlers now carry a statusMessage that names them; Codex installs that carry an integration revision keep their approved bytes and get no names, while installs without one (fresh since 14.4.2-beta.4) get names and Codex asks for approval once. Harness setup and CLI readiness: unchanged; the existing Codex approval reminder, doctor's native-approval-pending finding and `notifai doctor codex` already cover a changed handler, so no new instruction is needed. (2) Stop acknowledgement cap: a continuing Stop with another question pending now goes through the shared three-Stop acknowledgement hold instead of blocking on every Stop. Lifecycle hooks and the Notifai skill: unchanged; agents are already told to acknowledge an answer as soon as it arrives. Domain terms: unchanged."
+  "reason": "Reviewed all five surfaces for how a long harness question reaches devices. A Claude Code picker, Codex card or OpenCode question longer than a device question is now shortened to the question it asks (its last question-mark sentence, else its closing whole sentences, never a fragment after an ellipsis), and its full wording goes into the Body with its lines and bullet lists kept instead of one bold paragraph; only a question that was shortened or has notes appears there. Lifecycle hooks: the picker, card and form hook outputs to agents are unchanged. Notifai skill: the harness references already say long wording is shortened for devices and the Body keeps the full wording, which stays true. Harness setup, CLI readiness and domain terms: unchanged."
 }

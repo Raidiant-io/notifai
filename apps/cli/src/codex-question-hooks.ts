@@ -1,6 +1,6 @@
 /** Codex's structured card is the source of its device question. */
 import { QUESTION_TEXT_MAX_LENGTH } from '@raidiant/notifai-protocol'
-import { fit, fitChoiceLabels, oneLine, withoutRecommendedSuffix } from './claude-question-bindings.js'
+import { fit, fitChoiceLabels, oneLine, plainTextMarkdown, withoutRecommendedSuffix } from './claude-question-bindings.js'
 import { matchCodexCardHandback } from './codex-card-handback.js'
 import { buildAskDraft, buildQuestions } from './commands-ask.js'
 import { makeClient, type CommandDeps } from './commands-core.js'
@@ -88,10 +88,21 @@ async function routeCard(deps: CommandDeps, envelope: HookEnvelope, logger: Logg
       ...(singleRecommendation && markers[position] !== null ? { recommended: true } : {}),
     }))
   })
-  const shortened = raw.some((entry, index) => texts[index] !== (entry.title as string).trim() ||
-    ((entry.options as string[] | undefined) ?? []).some((option, position) => choices[index]![position]!.label !== option))
-  const body = shortened ? raw.map(entry => [`**${oneLine(entry.title as string)}**`,
-    ...((entry.options as string[] | undefined)?.length ? ['', ...(entry.options as string[]).map(option => `- ${oneLine(option)}`)] : [])].join('\n')).join('\n\n') : undefined
+  // As for a picker, only a question the device shows shortened appears in the
+  // Body: its full wording with its lines kept, and its options when shortened.
+  const sections = raw.flatMap((entry, index) => {
+    const title = entry.title as string
+    const options = (entry.options as string[] | undefined) ?? []
+    const reworded = texts[index] !== oneLine(title) || /[\r\n]/u.test(title.trim())
+    const shortenedOptions = options.some((option, position) => choices[index]![position]!.label !== option)
+    if (!reworded && !shortenedOptions) return []
+    return [[
+      ...(raw.length > 1 ? [`**${texts[index]}**`] : []),
+      ...(reworded ? [plainTextMarkdown(title)] : []),
+      ...(shortenedOptions ? [options.map(option => `- ${oneLine(option)}`).join('\n')] : []),
+    ].join('\n\n')]
+  })
+  const body = sections.length === 0 ? undefined : sections.join('\n\n')
   // A card has no heading and no headers, so the draft titles it by the Agent Session name.
   const form = buildQuestions({ form: JSON.stringify({ summary: texts[0],
     questions: raw.map((_entry, index) => ({ text: texts[index], ...(choices[index] === undefined ? {} : { choices: choices[index] }) })),

@@ -8,6 +8,7 @@ import { handBackInput,recordHandBack,type ClaudePickerInput } from './claude-pi
 import {
 claudePickerAnswers,
 claudeTerminalAnswers,
+fit,
 pickerForm,
 pickerHeading,
 pickerQuestions,
@@ -205,6 +206,40 @@ describe('a Claude Code picker as a device question', () => {
     expect(form.shown[1]).toEqual({ title: 'Which checks should run first?', labels: { lint: 'Lint', tests: 'Tests', 'end-to-end': 'End to end' } })
     // Option descriptions ride on their choices, so nothing needed a Body.
     expect(form.body).toBeUndefined()
+  })
+
+  it('asks a long multi-line picker question by its question, and keeps its lines in a plain Body', () => {
+    const context = [
+      'Deploy the server to production so CLI 14.4.2-beta.6 can publish? Production runs Oct 28 code, and the new beta sends ' +
+        'per-question titles and details that production would refuse. What changes for people:',
+      '• Each question in a form can show its own title and explanation',
+      '• Forms get more room in the phone push (up to ~10 questions)',
+      '• Answers show \'Delivered\' correctly, and withdrawn or refused questions show the right state',
+      '• Dashboard: the App Review sign-in is gone, and the sign-in email is no longer remembered in the browser',
+      'No database migrations. If you say no or wait, beta.6 can\'t publish and beta.5 stays the newest beta.',
+    ]
+    const question = context.join('\n')
+    const form = pickerForm(pickerQuestions(picker([{ question, labels: ['Deploy now', 'Wait'], header: 'Prod deploy' }]))!) as PickerForm
+    // The device asks the picker's question, never a trailing fragment after an ellipsis.
+    const asked = 'Deploy the server to production so CLI 14.4.2-beta.6 can publish?'
+    expect(form.questions[0]!.text).toBe(asked)
+    expect(form.summary).toBe(asked)
+    expect(form.title).toBe('Prod deploy')
+    // The Body keeps every line as Markdown that renders as lines and a list, and nothing is bold.
+    expect(form.body).toBe([
+      context[0],
+      context.slice(1, 5).map((line) => line.replace('• ', '- ')).join('\n'),
+      context[5],
+    ].join('\n\n'))
+    // The picker answer still keys on the exact wording.
+    expect(form.shown[0]!.title).toBe(question)
+  })
+
+  it('shortens a long question without a question mark to its closing sentences, else its opening words', () => {
+    const context = 'The release notes are drafted and the changelog lists every fix since the last beta. '.repeat(3)
+    expect(fit(`${context}Pick how to ship it.`, 60)).toBe('Pick how to ship it.')
+    const sentence = 'word '.repeat(80).trim()
+    expect(fit(sentence, 40)).toBe(`${'word '.repeat(7).trim()}…`)
   })
 
   it('refuses only what no device question can carry', () => {
