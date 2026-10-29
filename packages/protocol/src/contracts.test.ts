@@ -18,8 +18,10 @@ import {
   defaultDeliveryPolicy,
   effectiveKind,
   estimateApnsPayloadBytes,
+  estimateDeliveredPayloadBytes,
   estimateFcmPayloadBytes,
   IOS_CAPABILITIES_V1,
+  projectIdentityPushBytes,
   MACOS_CAPABILITIES_V1,
   WINDOWS_CAPABILITIES_V1,
   LINUX_CAPABILITIES_V1,
@@ -2123,5 +2125,59 @@ describe('choice descriptions and the recommended choice', () => {
     expect(JSON.parse(data['notifai']!)['questions'][0].choices[0]).toEqual({ id: 'now', label: 'Deploy now', recommended: true })
     const envelope = JSON.parse(withPushedFcmContent(data, asked, LIMIT)['notifai']!) as Record<string, unknown>
     expect(envelope['questions']).toEqual(asked.reply!.questions)
+  })
+})
+
+describe("push size with the Project's real identity", () => {
+  const identity = {
+    name: 'Notifai',
+    imageUrl: 'https://notifai.invalid/api/v1/projects/proj_AAAAAAAAAAAAAAAAAAAAAA/avatar.png?rev=generated%3Av1',
+    avatarRevision: 'generated:v1',
+  }
+  const inProject = draft({
+    project: 'notifai',
+    source: { session_id: 'session-1', session_label: 'Gentle Salmon' },
+    reply: { expires_in_seconds: 3600, questions: [{ id: 'q1', text: 'Ship it?', choices: [{ id: 'yes', label: 'Yes' }, { id: 'no', label: 'No' }] }] },
+  })
+
+  it('estimates the exact envelope for the identity given', () => {
+    const ids = {
+      requestId: 'req_00000000000000000000000000',
+      deliveryId: 'del_00000000000000000000000000',
+      receiptToken: '0'.repeat(RECEIPT_TOKEN_LENGTH),
+      contentToken: '0'.repeat(CONTENT_TOKEN_LENGTH),
+      createdAt: new Date(0),
+    }
+    const fcm = buildFcmDataEnvelope(inProject, ids, null, identity, new Date(0), null, { agentAcknowledgementRequired: true })
+    expect(estimateFcmPayloadBytes(inProject, { projectIdentity: identity })).toBe(
+      new TextEncoder().encode(JSON.stringify(fcm.data)).length,
+    )
+    const apns = buildApnsEnvelope(inProject, ids, null, identity, new Date(0), null, { agentAcknowledgementRequired: true })
+    expect(estimateApnsPayloadBytes(inProject, { projectIdentity: identity })).toBe(
+      new TextEncoder().encode(JSON.stringify(apns.payload)).length,
+    )
+  })
+
+  it('reserves the longest identity when none is given, as older callers expect', () => {
+    expect(estimateFcmPayloadBytes(inProject) - estimateFcmPayloadBytes(inProject, { projectIdentity: identity })).toBeGreaterThan(600)
+    expect(validateDraft(inProject, IOS_CAPABILITIES_V1, { projectIdentity: identity }).ok).toBe(true)
+  })
+
+  it.each(['ios', 'android'] as const)('adds the identity bytes reported for %s to an estimate without one', (platform) => {
+    const bytes = projectIdentityPushBytes(inProject, platform, identity)
+    expect(bytes).toBeGreaterThan(0)
+    expect(estimateDeliveredPayloadBytes(inProject, platform, { projectIdentity: null }) + bytes).toBe(
+      estimateDeliveredPayloadBytes(inProject, platform, { projectIdentity: identity }),
+    )
+  })
+
+  it.each(['ios', 'android'] as const)('reserves on %s what the service adds after accepting a draft', (platform) => {
+    const plain = platform === 'ios'
+      ? estimateApnsPayloadBytes(inProject, { projectIdentity: identity })
+      : estimateFcmPayloadBytes(inProject, { projectIdentity: identity })
+    // The device id stamp, a custom sound (and its hash on Android) and a label of the longest length.
+    expect(estimateDeliveredPayloadBytes(inProject, platform, { projectIdentity: identity }) - plain).toBeGreaterThan(
+      platform === 'ios' ? 100 : 180,
+    )
   })
 })

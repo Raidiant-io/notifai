@@ -1,5 +1,5 @@
 {
-  "current": "124e49f92c3806bc135715221cbac3f9389d4c2b2be09f19c7c1c7ef801b52ef",
+  "current": "8f489b0e7c268ed598003d8902836557dbf770fbb7ddc08ebd2f5e7fdf212dcf",
   "releases": [
     {
       "digest": "3e47b01bc6bbfb43e910c660b9964fab6459d75148c3c02dcbcd0be64cfb2963",
@@ -180,6 +180,10 @@
     {
       "digest": "124e49f92c3806bc135715221cbac3f9389d4c2b2be09f19c7c1c7ef801b52ef",
       "note": "A Claude Code conversation that T3 Code stopped after it sat idle now continues by itself when an answer or note arrives for it: while T3 Code runs, Notifai sends its own T3 Code thread a Notifai wake through T3 Code's `t3` command, the conversation comes back in that thread, and the agent takes the answer from there. It never continues in another thread or app, and never starts T3 Code; while T3 Code is not running it waits for the User as before. `reopen.t3` (`when-running` by default, or `off`) is the new per-place setting, and doctor's `Reopen:` line names T3 Code threads. A Codex thread in T3 Code still waits for the User. Agents should not ask the User to resume such a conversation."
+    },
+    {
+      "digest": "8f489b0e7c268ed598003d8902836557dbf770fbb7ddc08ebd2f5e7fdf212dcf",
+      "note": "A question form's room in the phone notification now depends on the Project's real name and avatar instead of the longest ones a Project may have, so ordinary forms of up to 10 questions fit: `references/send-details.md` now says 10 questions of about 60 characters with two or three short choices usually fit, fewer when they are longer (it used to say usually no more than 8 short questions). `notifai ask` learns each Project's room from the service on every send in that Project; until then it sizes a form for the longest name and avatar, so a form near the limit can be refused in a Project the CLI has not sent in yet. The `question_too_large` refusal, its message and remedy are unchanged."
     }
   ]
 }

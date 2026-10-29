@@ -225,7 +225,7 @@ export async function heldAskWait(deps: CommandDeps, input: HeldWaitInput): Prom
   // Every limit fails before an upload starts; the real ids replace the
   // placeholders only after this passes.
   const placeholders = (flags.image ?? []).map((_, index) => `med_pending_${index + 1}`)
-  const preflight = buildAskDraft(config, built, flags, source.invocation, placeholders, waitSeconds)
+  const preflight = buildAskDraft(config, built, flags, source.invocation, placeholders, waitSeconds, deps.env)
   if (!preflight.ok) {
     return reportAskFailure(deps, flags, { code: preflight.code ?? 'invalid_draft', check_id: 'draft', exit_code: EXIT.usage, message: preflight.error, remedy: preflight.remedy ?? 'fix the reported field and retry' })
   }
@@ -237,7 +237,7 @@ export async function heldAskWait(deps: CommandDeps, input: HeldWaitInput): Prom
     return reportAskFailure(deps, flags, { code: 'invalid_input', check_id: 'media', exit_code: EXIT.usage,
       message: `Could not fingerprint an image: ${String(err)}`, remedy: 'fix the reported image and retry' })
   }
-  const semantic = buildAskDraft(config, built, flags, source.invocation, semanticImages, waitSeconds)
+  const semantic = buildAskDraft(config, built, flags, source.invocation, semanticImages, waitSeconds, deps.env)
   if (!semantic.ok) {
     return reportAskFailure(deps, flags, { code: semantic.code ?? 'invalid_draft', check_id: 'draft', exit_code: EXIT.usage, message: semantic.error, remedy: semantic.remedy ?? 'fix the reported field and retry' })
   }
@@ -262,7 +262,7 @@ export async function heldAskWait(deps: CommandDeps, input: HeldWaitInput): Prom
     }
     mediaIds.push(uploaded.mediaId)
   }
-  const ready = buildAskDraft(config, built, flags, source.invocation, mediaIds, waitSeconds)
+  const ready = buildAskDraft(config, built, flags, source.invocation, mediaIds, waitSeconds, deps.env)
   if (!ready.ok) {
     settleSendAttempt(deps.env, attempt.attemptId)
     return reportAskFailure(deps, flags, { code: ready.code ?? 'invalid_draft', check_id: 'draft', exit_code: EXIT.usage, message: ready.error, remedy: ready.remedy ?? 'fix the reported field and retry' })

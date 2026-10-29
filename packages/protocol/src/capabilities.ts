@@ -12,11 +12,17 @@ import {
   MEDIA_MAX_ITEMS,
   NOTIFICATION_IMAGE_MAX_BYTES,
   NOTIFICATION_CONTRACT_FINGERPRINT,
+  SESSION_LABEL_MAX_LENGTH,
   type DesktopPlatform,
   type Platform,
 } from './notification.js'
 import { BODY_MAX_LENGTH, SUMMARY_MAX_LENGTH } from './content.js'
-import { buildApnsEnvelope, CONTENT_TOKEN_LENGTH, RECEIPT_TOKEN_LENGTH } from './apns.js'
+import {
+  buildApnsEnvelope,
+  CONTENT_TOKEN_LENGTH,
+  RECEIPT_TOKEN_LENGTH,
+  type ProjectIdentity,
+} from './apns.js'
 import { buildFcmDataEnvelope } from './fcm.js'
 
 /**
@@ -459,6 +465,7 @@ function isCapabilityDocumentList(
 export function validateDraft(
   draft: unknown,
   capabilities: CapabilityDocument | readonly CapabilityDocument[] = IOS_CAPABILITIES_V1,
+  options: PayloadEstimateOptions = {},
 ): ValidationReport {
   const errors: ValidationIssue[] = []
   const warnings: CapabilityWarning[] = []
@@ -661,7 +668,7 @@ export function validateDraft(
     }
 
     if (document.payload_limit_bytes === null) continue
-    const estimated = estimatePayloadBytes(typed, document.platform)
+    const estimated = estimatePayloadBytes(typed, document.platform, options)
     if (estimated > document.payload_limit_bytes) {
       const provider = document.platform === 'android' ? 'FCM' : 'APNs'
       errors.push({
@@ -692,8 +699,25 @@ function draftValueAtPath(draft: NotificationDraftT, path: string): unknown {
   return value
 }
 
-function estimatePayloadBytes(draft: NotificationDraftT, platform: Platform): number {
-  return platform === 'android' ? estimateFcmPayloadBytes(draft) : estimateApnsPayloadBytes(draft)
+function estimatePayloadBytes(
+  draft: NotificationDraftT,
+  platform: Platform,
+  options: PayloadEstimateOptions,
+): number {
+  return platform === 'android'
+    ? estimateFcmPayloadBytes(draft, options)
+    : estimateApnsPayloadBytes(draft, options)
+}
+
+/** What a push size estimate assumes about the Project's name and avatar. */
+export interface PayloadEstimateOptions {
+  /**
+   * The Project identity the service will put in the push. Omitted: the
+   * longest identity the service allows (a 128-character name, a 500-character
+   * signed avatar URL and a 128-character revision), so a draft that fits
+   * fits any Project. `null`: none, as for a draft without a Project.
+   */
+  projectIdentity?: ProjectIdentity | null
 }
 
 const ESTIMATED_ENVELOPE_IDS = {
@@ -708,24 +732,48 @@ const ESTIMATED_ENVELOPE_IDS = {
   createdAt: new Date(0),
 } as const
 const ESTIMATED_MEDIA_URL = 'https://x.invalid/'.padEnd(500, 'a')
+/**
+ * Longest signed URL the service puts in a push for a custom Project avatar
+ * or a media preview. The service sizes a custom avatar with this bound; a
+ * generated avatar URL is short and exact.
+ */
+export const SIGNED_PUSH_URL_MAX_LENGTH = 500
 const ESTIMATED_PROJECT_IDENTITY = {
   name: 'n'.padEnd(128, 'n'),
-  imageUrl: 'https://x.invalid/'.padEnd(500, 'a'),
+  imageUrl: 'https://x.invalid/'.padEnd(SIGNED_PUSH_URL_MAX_LENGTH, 'a'),
   avatarRevision: 'a'.repeat(128),
 } as const
+
+function estimatedIdentity(
+  draft: NotificationDraftT,
+  options: PayloadEstimateOptions,
+): ProjectIdentity | null {
+  if (draft.project === undefined) return null
+  return options.projectIdentity === undefined ? ESTIMATED_PROJECT_IDENTITY : options.projectIdentity
+}
 
 /**
  * Conservative byte accounting for the exact APNs envelope. A fixed-length
  * signed media URL keeps pre-flight validation safe before a real URL exists.
  */
-export function estimateApnsPayloadBytes(draft: NotificationDraftT): number {
+export function estimateApnsPayloadBytes(
+  draft: NotificationDraftT,
+  options: PayloadEstimateOptions = {},
+): number {
+  return utf8Length(JSON.stringify(estimatedApnsPayload(draft, options)))
+}
+
+function estimatedApnsPayload(
+  draft: NotificationDraftT,
+  options: PayloadEstimateOptions,
+): Record<string, unknown> {
   const envelope = buildApnsEnvelope(
     draft,
     ESTIMATED_ENVELOPE_IDS,
     draft.presentation.media !== undefined ? ESTIMATED_MEDIA_URL : null,
-    // A project may resolve to a sender name and signed avatar URL at dispatch;
-    // reserve worst-case room so acceptance implies deliverability.
-    draft.project !== undefined ? ESTIMATED_PROJECT_IDENTITY : null,
+    // A project resolves to a sender name and avatar URL at dispatch; the
+    // caller passes the identity it knows, or the worst case is reserved.
+    estimatedIdentity(draft, options),
     // ISO-8601 instants are fixed width, so any date reserves the real room.
     draft.reply !== undefined ? new Date(0) : null,
     // Retirement answer context is server-derived and absent from authored drafts.
@@ -737,20 +785,124 @@ export function estimateApnsPayloadBytes(draft: NotificationDraftT): number {
     // is fixed width and text is deliberately absent from push envelopes.
     draft.lifecycle?.tier === 'done' ? { createdAt: new Date(0), replyId: 'rpl_00000000000000000000000000' } : null,
   )
-  return new TextEncoder().encode(JSON.stringify(envelope.payload)).length
+  return envelope.payload
 }
 
 /** Conservative byte accounting for the exact FCM data map rendered for Android. */
-export function estimateFcmPayloadBytes(draft: NotificationDraftT): number {
+export function estimateFcmPayloadBytes(
+  draft: NotificationDraftT,
+  options: PayloadEstimateOptions = {},
+): number {
+  return utf8Length(JSON.stringify(estimatedFcmData(draft, options)))
+}
+
+function estimatedFcmData(
+  draft: NotificationDraftT,
+  options: PayloadEstimateOptions,
+  soundHash: string | null = null,
+): { notifai: string } {
   const envelope = buildFcmDataEnvelope(
     draft,
     ESTIMATED_ENVELOPE_IDS,
     draft.presentation.media !== undefined ? ESTIMATED_MEDIA_URL : null,
-    draft.project !== undefined ? ESTIMATED_PROJECT_IDENTITY : null,
+    estimatedIdentity(draft, options),
     draft.reply !== undefined ? new Date(0) : null,
     null,
     draft.reply !== undefined ? { agentAcknowledgementRequired: true } : null,
     draft.lifecycle?.tier === 'done' ? { createdAt: new Date(0), replyId: 'rpl_00000000000000000000000000' } : null,
+    soundHash,
   )
-  return new TextEncoder().encode(JSON.stringify(envelope.data)).length
+  return envelope.data
+}
+
+/** Device Installation ids are `dev_` and 16 random bytes in base64url. */
+const ESTIMATED_DEVICE_ID = `dev_${'A'.repeat(22)}`
+/** Custom sound ids are `snd_` and 16 random bytes in base64url. */
+const ESTIMATED_CUSTOM_SOUND = `snd_${'A'.repeat(22)}`
+/** A custom sound's content hash: SHA-256 in hex. */
+const ESTIMATED_SOUND_HASH = '0'.repeat(64)
+
+/**
+ * The size of the push the service sends for this draft, as far as anyone can
+ * know before it is sent: the draft with the given Project identity, plus
+ * what the service adds after accepting it, each at its longest. That is the
+ * device's `device_id`, a custom sound in place of any shipped one (Android
+ * also carries its `sound_hash`), an iPhone interruption level from Project
+ * settings, and the Agent Session's current label of up to
+ * {@link SESSION_LABEL_MAX_LENGTH} characters. The service refuses a draft
+ * this puts over the platform's limit, and the CLI checks the same rule
+ * before registering a question.
+ */
+export function estimateDeliveredPayloadBytes(
+  draft: NotificationDraftT,
+  platform: 'ios' | 'android',
+  options: PayloadEstimateOptions = {},
+): number {
+  const dispatched = withLongestDispatchChanges(draft, platform)
+  if (platform === 'android') {
+    const data = estimatedFcmData(dispatched, options, ESTIMATED_SOUND_HASH)
+    const notifai = { ...(JSON.parse(data.notifai) as Record<string, unknown>), device_id: ESTIMATED_DEVICE_ID }
+    return utf8Length(JSON.stringify({ ...data, notifai: JSON.stringify(notifai) }))
+  }
+  const payload = estimatedApnsPayload(dispatched, options)
+  const notifai = payload['notifai'] as Record<string, unknown>
+  return utf8Length(JSON.stringify({ ...payload, notifai: { ...notifai, device_id: ESTIMATED_DEVICE_ID } }))
+}
+
+/**
+ * Bytes a Project identity adds to this draft's push on one platform: what
+ * the service reports as `project_identity_push_bytes`. Identity fields are
+ * separate keys, so a client can add the reported bytes to an estimate made
+ * with `projectIdentity: null`.
+ */
+export function projectIdentityPushBytes(
+  draft: NotificationDraftT,
+  platform: 'ios' | 'android',
+  projectIdentity: ProjectIdentity | null,
+): number {
+  if (draft.project === undefined || projectIdentity === null) return 0
+  return (
+    estimateDeliveredPayloadBytes(draft, platform, { projectIdentity }) -
+    estimateDeliveredPayloadBytes(draft, platform, { projectIdentity: null })
+  )
+}
+
+function withLongestDispatchChanges(
+  draft: NotificationDraftT,
+  platform: 'ios' | 'android',
+): NotificationDraftT {
+  const options = draft.platform?.[platform]
+  // Silence stays silent; any other sound may resolve to a custom one.
+  const sound = options?.sound === null ? null : ESTIMATED_CUSTOM_SOUND
+  const platformOptions = platform === 'ios'
+    ? {
+        ...draft.platform?.ios,
+        sound,
+        interruption_level: draft.platform?.ios?.interruption_level ?? 'time-sensitive',
+      }
+    : { ...draft.platform?.android, sound }
+  const source = draft.source
+  const label = source?.session_label ?? ''
+  const longestLabel = 'x'.repeat(SESSION_LABEL_MAX_LENGTH)
+  return {
+    ...draft,
+    platform: { ...draft.platform, [platform]: platformOptions },
+    ...(source?.session_id !== undefined
+      ? {
+          source: {
+            ...source,
+            // Compared as Android carries it: JSON inside JSON.
+            session_label: escapedLength(label) > escapedLength(longestLabel) ? label : longestLabel,
+          },
+        }
+      : {}),
+  }
+}
+
+function escapedLength(value: string): number {
+  return utf8Length(JSON.stringify(JSON.stringify(value)))
+}
+
+function utf8Length(value: string): number {
+  return new TextEncoder().encode(value).length
 }

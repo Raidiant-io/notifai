@@ -514,6 +514,14 @@ export interface SubmissionReceipt {
   agent_acknowledgement_text_required: boolean
   /** True when idempotency returned a previously accepted request. */
   replayed: boolean
+  /**
+   * Bytes the Project's name and avatar add to each phone push, by platform,
+   * as the service sized them for this request. Present only for a request
+   * with a Project, from services that size the Project's identity by its
+   * real length. A client may remember it to check later drafts in that
+   * Project before sending them; the service still checks every draft.
+   */
+  project_identity_push_bytes?: { ios: number; android: number }
   overall: OverallState
   deliveries: DeliveryOutcome[]
   warnings: SubmissionWarning[]

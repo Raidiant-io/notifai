@@ -132,6 +132,7 @@ import {
 } from './question-timing.js'
 import { buildDraft, UNTITLED_FORM_TITLE } from './send.js'
 import { questionPushOverflow } from './question-push-budget.js'
+import { rememberedProjectIdentityPushBytes } from './project-push-identity.js'
 import { forgetOpencodeSession } from './opencode-shell-session.js'
 
 /**
@@ -261,7 +262,9 @@ async function prepareQuestionSubmission(
   )
   let build = draftWith(options.source)
   if (build.ok && options.registeredSource !== undefined && !isDeepStrictEqual(options.registeredSource, options.source) &&
-      questionPushOverflow(build.draft) !== null) {
+      questionPushOverflow(build.draft, build.draft.project === undefined
+        ? undefined
+        : rememberedProjectIdentityPushBytes(ctx.env, ctx.config.base_url.value, build.draft.project)) !== null) {
     build = draftWith(options.registeredSource)
   }
   if (!build.ok) return { error: build.error }

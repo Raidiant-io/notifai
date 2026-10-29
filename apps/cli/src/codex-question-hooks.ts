@@ -100,7 +100,7 @@ async function routeCard(deps: CommandDeps, envelope: HookEnvelope, logger: Logg
   if (!form.ok) return unsupported(form.error)
   const source = resolveDraftInvocation({ ...deps, cwd }, {}, { harness: 'codex', label: 'Codex', sessionId })
   if (!source.ok) return null
-  const draft = buildAskDraft(config, form, {}, source.invocation, [])
+  const draft = buildAskDraft(config, form, {}, source.invocation, [], undefined, deps.env)
   if (!draft.ok) return null
   recordTurnStart(sessionId, deps.env, owner.key, envelope.turn_id)
   if (currentCodexTurn(sessionId, deps.env, owner.key) !== envelope.turn_id) return null

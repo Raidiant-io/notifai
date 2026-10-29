@@ -1,7 +1,19 @@
-import { CAPABILITY_DOCUMENTS_V1, estimateFcmPayloadBytes, validateDraft } from '@raidiant/notifai-protocol'
-import { describe, expect, it } from 'vitest'
+import {
+  CAPABILITY_DOCUMENTS_V1,
+  estimateFcmPayloadBytes,
+  projectIdentityPushBytes,
+  validateDraft,
+  type NotificationDraftT,
+  type SubmissionReceipt,
+} from '@raidiant/notifai-protocol'
+import { rmSync } from 'node:fs'
+import path from 'node:path'
+import { afterEach, describe, expect, it } from 'vitest'
 import { buildAskDraft, buildQuestions } from './commands-ask.js'
 import { loadConfig } from './config.js'
+import { makeClient, type CommandDeps } from './commands-core.js'
+import { stateDir } from './config.js'
+import { rememberedProjectIdentityPushBytes, rememberProjectIdentityPushBytes } from './project-push-identity.js'
 import { questionPushOverflow } from './question-push-budget.js'
 
 /**
@@ -40,12 +52,15 @@ function checklistForm(count: number): string {
   })
 }
 
+function config() {
+  return loadConfig({ cwd: '/', env: { HOME: '/nonexistent-notifai-home' } })
+}
+
 /** As `ask` builds it in a Project, from a linked worktree: the case the incident hit. */
 function askDraft(form: string) {
   const built = buildQuestions({ form }, undefined)
   if (!built.ok) throw new Error(built.error)
-  const config = loadConfig({ cwd: '/', env: { HOME: '/nonexistent-notifai-home' } })
-  return buildAskDraft(config, built, { project: 'notifai' }, {
+  return buildAskDraft(config(), built, { project: 'notifai' }, {
     source: { session_id: 'a'.repeat(36), session_label: 'Gentle Salmon', harness: 'claude-code', branch: 'feature/cleanup', worktree: 'cleanup' },
   }, [])
 }
@@ -80,7 +95,7 @@ describe('the phone push budget at registration', () => {
   })
 
   it('does not count the Body or choice descriptions, which the apps fetch when they do not fit', () => {
-    expect(askDraft(sampleForm(8, 60, { description: 'd'.repeat(150), body: 'Background. '.repeat(400) })))
+    expect(askDraft(sampleForm(7, 60, { description: 'd'.repeat(150), body: 'Background. '.repeat(400) })))
       .toMatchObject({ ok: true })
   })
 
@@ -95,5 +110,64 @@ describe('the phone push budget at registration', () => {
     }
     expect(validateDraft(padded, CAPABILITY_DOCUMENTS_V1).ok).toBe(true)
     expect(questionPushOverflow(padded)).toMatchObject({ platform: 'android', provider: 'FCM', limit: 4096 })
+  })
+})
+
+describe("the phone push budget with the Project identity the service reported", () => {
+  /** What a service reports for a Project with no name and a generated avatar. */
+  const generated = {
+    name: null,
+    imageUrl: 'https://api.notifai.sh/api/v1/projects/proj_AAAAAAAAAAAAAAAAAAAAAA/avatar.png?rev=generated%3Av1',
+    avatarRevision: 'generated:v1',
+  }
+  const custom = { name: 'Notifai', imageUrl: 'x'.repeat(500), avatarRevision: `med_${'A'.repeat(22)}` }
+
+  function remember(identity: typeof generated | typeof custom): void {
+    const draft = askDraft(sampleForm(1, 60))
+    if (!draft.ok) throw new Error(draft.error)
+    rememberProjectIdentityPushBytes(process.env, config().base_url.value, 'notifai', {
+      ios: projectIdentityPushBytes(draft.draft, 'ios', identity),
+      android: projectIdentityPushBytes(draft.draft, 'android', identity),
+    })
+  }
+
+  afterEach(() => rmSync(path.join(stateDir(process.env), 'project-push-identity.json'), { force: true }))
+
+  it('accepts a 10-question form of ordinary length in a Project with a generated avatar', () => {
+    remember(generated)
+    const draft = askDraft(sampleForm(10, 60))
+    expect(draft).toMatchObject({ ok: true })
+    expect(draft.ok && draft.draft.reply?.questions).toHaveLength(10)
+  })
+
+  it('accepts 8 titled questions of ordinary length in a Project with a custom image', () => {
+    remember(custom)
+    expect(askDraft(sampleForm(8, 60))).toMatchObject({ ok: true })
+  })
+
+  it.each([
+    ['in a Project with a custom image', 60, custom],
+    ['of about 110 characters a question, whatever the Project', 110, generated],
+  ] as const)('still refuses a 10-question form %s', (_name, length, identity) => {
+    remember(identity)
+    expect(askDraft(sampleForm(10, length))).toMatchObject({ ok: false, code: 'question_too_large' })
+  })
+
+  it("sizes a Project it has not heard about for the longest identity", () => {
+    expect(askDraft(sampleForm(10, 60))).toMatchObject({ ok: false, code: 'question_too_large' })
+  })
+
+  it('learns the bytes from every accepted submission in a Project', async () => {
+    const baseUrl = 'https://notifai.invalid'
+    const receipt = { request_id: 'req_x', project_identity_push_bytes: { ios: 180, android: 210 } } as unknown as SubmissionReceipt
+    const deps = {
+      env: process.env,
+      clientFactory: () => ({ submit: async () => receipt }),
+    } as unknown as CommandDeps
+    const client = makeClient(deps, baseUrl, null)
+    const draft = { project: 'notifai' } as unknown as NotificationDraftT
+    await client.submit({ idempotency_key: 'learn-identity', draft }, 0)
+    expect(rememberedProjectIdentityPushBytes(process.env, baseUrl, 'notifai')).toEqual({ ios: 180, android: 210 })
+    expect(rememberedProjectIdentityPushBytes(process.env, 'https://other.invalid', 'notifai')).toBeUndefined()
   })
 })

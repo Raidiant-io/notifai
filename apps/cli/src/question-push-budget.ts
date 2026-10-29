@@ -10,17 +10,10 @@
  */
 import {
   CAPABILITY_DOCUMENTS_V1,
-  estimateApnsPayloadBytes,
-  estimateFcmPayloadBytes,
+  estimateDeliveredPayloadBytes,
   type NotificationDraftT,
 } from '@raidiant/notifai-protocol'
-
-/**
- * Room the service adds to each device's push: its `device_id` stamp. The
- * worst case measures 45 bytes in an FCM envelope (41 in APNs); the reserve
- * leaves headroom for a longer id.
- */
-export const DESTINATION_STAMP_RESERVE_BYTES = 64
+import type { ProjectIdentityPushBytes } from './project-push-identity.js'
 
 /** The background submitter's collapse key: `notifai-hook-` and 8 random bytes in base64url. */
 const SUBMISSION_COLLAPSE_KEY_PLACEHOLDER = `notifai-hook-${'x'.repeat(11)}`
@@ -28,7 +21,7 @@ const SUBMISSION_COLLAPSE_KEY_PLACEHOLDER = `notifai-hook-${'x'.repeat(11)}`
 export interface QuestionPushOverflow {
   platform: string
   provider: 'APNs' | 'FCM'
-  /** Estimated bytes, the service's stamp reserve included. */
+  /** Estimated bytes, with what the service adds at its longest. */
   bytes: number
   limit: number
 }
@@ -36,18 +29,27 @@ export interface QuestionPushOverflow {
 /**
  * The tightest platform this draft overflows, or null when it fits all of
  * them. Every routed platform counts: the User's devices can change between
- * registration and submission.
+ * registration and submission. The service's own rule sizes the push
+ * (`estimateDeliveredPayloadBytes`): with `projectIdentity`, the bytes the
+ * service last reported for this Project's name and avatar; without it, the
+ * longest identity a Project can have.
  */
-export function questionPushOverflow(draft: NotificationDraftT): QuestionPushOverflow | null {
+export function questionPushOverflow(
+  draft: NotificationDraftT,
+  projectIdentity?: ProjectIdentityPushBytes,
+): QuestionPushOverflow | null {
   const submitted: NotificationDraftT = draft.delivery.collapse_key === null
     ? { ...draft, delivery: { ...draft.delivery, collapse_key: SUBMISSION_COLLAPSE_KEY_PLACEHOLDER } }
     : draft
   let worst: QuestionPushOverflow | null = null
   for (const document of CAPABILITY_DOCUMENTS_V1) {
     if (document.payload_limit_bytes === null) continue
+    if (document.platform !== 'ios' && document.platform !== 'android') continue
     const provider = document.platform === 'android' ? 'FCM' : 'APNs'
-    const bytes = (provider === 'FCM' ? estimateFcmPayloadBytes(submitted) : estimateApnsPayloadBytes(submitted)) +
-      DESTINATION_STAMP_RESERVE_BYTES
+    const bytes = projectIdentity === undefined || submitted.project === undefined
+      ? estimateDeliveredPayloadBytes(submitted, document.platform)
+      : estimateDeliveredPayloadBytes(submitted, document.platform, { projectIdentity: null }) +
+        projectIdentity[document.platform]
     if (bytes <= document.payload_limit_bytes) continue
     if (worst === null || bytes - document.payload_limit_bytes > worst.bytes - worst.limit) {
       worst = { platform: document.platform, provider, bytes, limit: document.payload_limit_bytes }

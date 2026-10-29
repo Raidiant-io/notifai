@@ -44,6 +44,7 @@ import { enableProjectUnlessDisabled, inferredProjectName, projectBinding, proje
 import { spawnQuestionSettlement } from './question-settlement-process.js'
 import { answerCannotReturnRemedy, heldAskWait, heldWaitRoute } from './commands-ask-wait.js'
 import { opencodeHandBack } from './opencode-hand-back.js'
+import { rememberedProjectIdentityPushBytes } from './project-push-identity.js'
 import {
   QUESTION_PUSH_OVERFLOW_REMEDY,
   questionPushOverflow,
@@ -414,6 +415,8 @@ export function buildAskDraft(
   mediaIds: string[],
   /** A held wait's window ends at its deadline; every other route keeps `reply_window_seconds`. */
   replyWindowSeconds?: number,
+  /** Where the CLI remembers each Project's push identity size. */
+  env: NodeJS.ProcessEnv = process.env,
 ): { ok: true; draft: NotificationDraftT; platform: Platform } | { ok: false; error: string; code?: 'question_too_large'; remedy?: string } {
   const result = buildDraft(
     config,
@@ -443,7 +446,11 @@ export function buildAskDraft(
     }
   }
   // The draft validates for one platform; a question routes to every platform.
-  const overflow = questionPushOverflow(result.draft)
+  const project = result.draft.project
+  const overflow = questionPushOverflow(
+    result.draft,
+    project === undefined ? undefined : rememberedProjectIdentityPushBytes(env, config.base_url.value, project),
+  )
   if (overflow !== null) {
     return {
       ok: false,
@@ -1004,7 +1011,7 @@ async function uploadAskMedia(
     }
     mediaIds.push(uploaded.mediaId)
   }
-  const ready = buildAskDraft(config, built, flags, invocation, mediaIds)
+  const ready = buildAskDraft(config, built, flags, invocation, mediaIds, undefined, deps.env)
   if (!ready.ok) {
     return askFailure(deps, flags, ready.code ?? 'invalid_draft', 'draft', ready.error, ready.remedy ?? 'fix the reported field and retry')
   }
@@ -1290,7 +1297,7 @@ export function askCommand(
   // Placeholders let every body, source, project, media, and payload limit fail
   // before an upload starts. The real ids replace them only after this passes.
   const placeholders = (flags.image ?? []).map((_, index) => `med_pending_${index + 1}`)
-  const preflight = buildAskDraft(routingConfig, built, flags, source.invocation, placeholders)
+  const preflight = buildAskDraft(routingConfig, built, flags, source.invocation, placeholders, undefined, deps.env)
   if (!preflight.ok) {
     return askFailure(deps, flags, preflight.code ?? 'invalid_draft', 'draft', preflight.error, preflight.remedy ?? 'fix the reported field and retry')
   }

@@ -389,7 +389,7 @@ function registerPickerQuestion(
   const source = resolveDraftInvocation({ ...deps, cwd, io: { ...deps.io, err: () => undefined } }, {},
     { harness: 'claude-code', label: 'Claude Code', sessionId })
   if (!source.ok) return { reason: 'source-invalid' }
-  const draft = buildAskDraft(config, form, {}, source.invocation, [])
+  const draft = buildAskDraft(config, form, {}, source.invocation, [], undefined, deps.env)
   if (!draft.ok) return { reason: 'invalid-draft', detail: { error: draft.error } }
   const presentation = draft.draft.presentation
   let registered: RegisteredQuestion

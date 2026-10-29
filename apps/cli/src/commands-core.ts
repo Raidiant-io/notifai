@@ -21,6 +21,7 @@ import {
 import { type CodexWakeAdapters } from './codex-wake.js'
 import type { CodexReviewSeams } from './codex-hook-review.js'
 import { loadConfig, type CliConfig } from './config.js'
+import { rememberProjectIdentityPushBytes } from './project-push-identity.js'
 import type { CredentialStore, MachineCredential } from './credentials.js'
 import { type HookAdapterTarget } from './hook-adapter.js'
 import { logConfigResolved, logSettingsFrom, nullLogger, type Logger } from './logging.js'
@@ -210,13 +211,26 @@ export function makeClient(
   bearer: string | null,
   options?: ClientOptions,
 ): ApiClient {
-  return (deps.clientFactory ?? createClient)(baseUrl, bearer, {
+  const client = (deps.clientFactory ?? createClient)(baseUrl, bearer, {
     ...options,
     logger: log(deps),
     cliVersion: packageVersion(),
     capabilities: SHIPPED_CLI_CAPABILITIES,
     notificationContractFingerprint: NOTIFICATION_CONTRACT_FINGERPRINT,
   })
+  // Every send learns how much room its Project's name and avatar take, so
+  // the next question form in that Project is sized for them.
+  if (typeof client.submit !== 'function' || Object.isFrozen(client)) return client
+  const submit = client.submit.bind(client)
+  client.submit = async (body, waitSeconds) => {
+    const receipt = await submit(body, waitSeconds)
+    const project = body.draft.project
+    if (project !== undefined && receipt?.project_identity_push_bytes !== undefined) {
+      rememberProjectIdentityPushBytes(deps.env, baseUrl, project, receipt.project_identity_push_bytes)
+    }
+    return receipt
+  }
+  return client
 }
 
 export function resolvedBaseUrl(config: CliConfig, credential: MachineCredential | null): string {

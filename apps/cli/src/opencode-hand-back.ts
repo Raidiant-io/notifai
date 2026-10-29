@@ -66,7 +66,7 @@ async function handBackQuestion(
   const { flags, config } = input
   const built = { ...input.built, questions }
   const placeholders = (flags.image ?? []).map((_, index) => `med_pending_${index + 1}`)
-  const preflight = buildAskDraft(config, built, flags, invocation, placeholders)
+  const preflight = buildAskDraft(config, built, flags, invocation, placeholders, undefined, deps.env)
   if (!preflight.ok) {
     return reportAskFailure(deps, flags, { code: preflight.code ?? 'invalid_draft', check_id: 'draft', exit_code: EXIT.usage,
       message: preflight.error, remedy: preflight.remedy ?? 'fix the reported field and retry' })
@@ -93,7 +93,7 @@ async function handBackQuestion(
     }
     mediaIds.push(uploaded.mediaId)
   }
-  const ready = buildAskDraft(config, built, flags, invocation, mediaIds)
+  const ready = buildAskDraft(config, built, flags, invocation, mediaIds, undefined, deps.env)
   if (!ready.ok) {
     return reportAskFailure(deps, flags, { code: ready.code ?? 'invalid_draft', check_id: 'draft', exit_code: EXIT.usage,
       message: ready.error, remedy: ready.remedy ?? 'fix the reported field and retry' })
