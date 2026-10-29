@@ -1,7 +1,7 @@
 {
   "version": 1,
-  "behavior_digest": "sha256:16f5f8bdc6b8a0269bb73b3e227e8cb5378ca486ed01c9938fad89cd2a01635e",
-  "outcome": "reviewed-no-impact",
+  "behavior_digest": "sha256:40a1bee7c22c5fe1fb87adfcf7c2fa89cc95af3c717aea3a261fa2615d8ce9e3",
+  "outcome": "guidance-updated",
   "surfaces_reviewed": [
     "lifecycle-hooks",
     "notifai-skill",
@@ -9,5 +9,5 @@
     "cli-readiness",
     "domain-terms"
   ],
-  "reason": "Reviewed all five surfaces for how a long harness question reaches devices. A Claude Code picker, Codex card or OpenCode question longer than a device question is now shortened to the question it asks (its last question-mark sentence, else its closing whole sentences, never a fragment after an ellipsis), and its full wording goes into the Body with its lines and bullet lists kept instead of one bold paragraph; only a question that was shortened or has notes appears there. Lifecycle hooks: the picker, card and form hook outputs to agents are unchanged. Notifai skill: the harness references already say long wording is shortened for devices and the Body keeps the full wording, which stays true. Harness setup, CLI readiness and domain terms: unchanged."
+  "reason": "Reviewed all five surfaces for named folder Projects. Outside a Git repository, a folder the User registered with `notifai project folder add <path> --name <name>` (or any folder inside it) now supplies the Project; a Git repository inside it keeps its own, and explicit, configured and --projectless choices still win. Notifai skill: the setup section now names the command for when the User asks to make a plain folder a Project, beside the per-project enable/disable switch; the release note says the same. Lifecycle hooks: SessionStart guidance and Project Enablement follow the inferred folder Project for descendant folders (covered by the change's tests); hook wording is unchanged. CLI readiness: doctor and project status report the folder Project the same way as an inferred Git Project; no new readiness state. Harness setup and domain terms: unchanged (a Project is still the Account-owned identity; only its inference source widened)."
 }

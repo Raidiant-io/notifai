@@ -273,7 +273,9 @@ hooks, this skill (machine-wide) and command approval into those apps. Hooks
 let Notifai activate in their Agent Sessions where it is on, send questions to
 their devices and bring answers back; to keep questions in the conversation, they
 turn off “Send questions to my devices” (`ask_notifications`) instead.
-`notifai project enable` and `disable` are the per-project switch.
+`notifai project enable` and `disable` are the per-project switch. When the
+User asks to make a plain folder outside Git a Project, run
+`notifai project folder add <path> --name <name>`.
 
 Branch on `states`, `can_send` and `question_routing_ready`; a nonzero exit is
 a gap to close, never to bypass. A state marked `informational` is not a gap:

@@ -1,5 +1,5 @@
 {
-  "current": "72ef41f6efc416d6cd68f349da7c27385e8aa6f418eb208c12451ff4775ffc32",
+  "current": "dabed7e138e804241b345ef05ff99b0147db5d6b358b1182d6800e255f73707e",
   "releases": [
     {
       "digest": "3e47b01bc6bbfb43e910c660b9964fab6459d75148c3c02dcbcd0be64cfb2963",
@@ -206,7 +206,7 @@
       "note": "A long Claude Code picker, Codex card or OpenCode question now reaches devices as the question it asks: its last sentence ending in a question mark, else its closing whole sentences, never a fragment after an ellipsis. Its full wording goes into the Body with its lines kept and its bullet lines as a list, no longer as one bold paragraph. Only a question that was shortened or has notes appears in the Body. Nothing changes in what agents do: write the picker as usual, and the answer still maps back to the exact picker wording."
     },
     {
-      "digest": "72ef41f6efc416d6cd68f349da7c27385e8aa6f418eb208c12451ff4775ffc32",
+      "digest": "dabed7e138e804241b345ef05ff99b0147db5d6b358b1182d6800e255f73707e",
       "note": "Agents can now make a plain folder a Project by name on this computer: `notifai project folder add <path> --name <name>`, with `list`, `rename` and `remove` (each takes `--json`). Outside a Git repository, a send or ask from that folder or any folder inside it then carries that Project. A Git repository inside the folder keeps its own Project, and an explicit, configured or `--projectless` choice still wins. Do it when the User asks; the folder's path never leaves the computer."
     }
   ]
