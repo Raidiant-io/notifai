@@ -45,6 +45,11 @@ import { spawnQuestionSettlement } from './question-settlement-process.js'
 import { answerCannotReturnRemedy, heldAskWait, heldWaitRoute } from './commands-ask-wait.js'
 import { opencodeHandBack } from './opencode-hand-back.js'
 import {
+  QUESTION_PUSH_OVERFLOW_REMEDY,
+  questionPushOverflow,
+  questionPushOverflowMessage,
+} from './question-push-budget.js'
+import {
   buildDraft,
   parseChoices,
   rejectAccidentalEscapedNewlines,
@@ -409,7 +414,7 @@ export function buildAskDraft(
   mediaIds: string[],
   /** A held wait's window ends at its deadline; every other route keeps `reply_window_seconds`. */
   replyWindowSeconds?: number,
-): { ok: true; draft: NotificationDraftT; platform: Platform } | { ok: false; error: string } {
+): { ok: true; draft: NotificationDraftT; platform: Platform } | { ok: false; error: string; code?: 'question_too_large'; remedy?: string } {
   const result = buildDraft(
     config,
     {
@@ -429,11 +434,22 @@ export function buildAskDraft(
   if (!result.ok) return result
   const capabilities = CAPABILITIES_V1.describe(result.platform)
   if (capabilities === null) return { ok: false, error: 'No iOS capability contract is available.' }
-  const validation = validateDraft(result.draft, capabilities)
-  if (!validation.ok) {
+  // Push size is checked below for every platform, with a remedy.
+  const problems = validateDraft(result.draft, capabilities).errors.filter((issue) => issue.code !== 'payload_too_large')
+  if (problems.length > 0) {
     return {
       ok: false,
-      error: validation.errors.map((issue) => `${issue.path}: ${issue.message}`).join('\n'),
+      error: problems.map((issue) => `${issue.path}: ${issue.message}`).join('\n'),
+    }
+  }
+  // The draft validates for one platform; a question routes to every platform.
+  const overflow = questionPushOverflow(result.draft)
+  if (overflow !== null) {
+    return {
+      ok: false,
+      code: 'question_too_large',
+      error: questionPushOverflowMessage(overflow, built.questions.length),
+      remedy: QUESTION_PUSH_OVERFLOW_REMEDY,
     }
   }
   return { ok: true, draft: result.draft, platform: result.platform }
@@ -990,7 +1006,7 @@ async function uploadAskMedia(
   }
   const ready = buildAskDraft(config, built, flags, invocation, mediaIds)
   if (!ready.ok) {
-    return askFailure(deps, flags, 'invalid_draft', 'draft', ready.error, 'fix the reported field and retry')
+    return askFailure(deps, flags, ready.code ?? 'invalid_draft', 'draft', ready.error, ready.remedy ?? 'fix the reported field and retry')
   }
   return recordRegisteredQuestion(deps, sessionId, built, ready.draft, service, flags.json === true, flags.wait === true, rootKey, asker)
 }
@@ -1276,7 +1292,7 @@ export function askCommand(
   const placeholders = (flags.image ?? []).map((_, index) => `med_pending_${index + 1}`)
   const preflight = buildAskDraft(routingConfig, built, flags, source.invocation, placeholders)
   if (!preflight.ok) {
-    return askFailure(deps, flags, 'invalid_draft', 'draft', preflight.error, 'fix the reported field and retry')
+    return askFailure(deps, flags, preflight.code ?? 'invalid_draft', 'draft', preflight.error, preflight.remedy ?? 'fix the reported field and retry')
   }
   // The duplicate guard runs before any upload, so a repeat of an open question
   // costs no media round trip; registration repeats it under the session lock.

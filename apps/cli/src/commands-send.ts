@@ -1062,6 +1062,7 @@ async function questionStatusCommand(
       return EXIT.ok
     }
     deps.io.out(`question ${question.question_id} — ${question.state} as ${question.request_id}`)
+    if (question.state === 'retired') deps.io.out(`  Reason: ${describeQuestionEnd(question)}`)
     printEvidenceSnapshot(deps, snapshot)
     deps.io.out(
       `  Recovery: inspect or close ${question.question_id}; do not register a replacement for the same question.`,
@@ -1086,6 +1087,9 @@ function questionStatusOutput(local: QuestionStateView, evidence: EvidenceSnapsh
     frozen_request_id: local.frozen_request_id,
     provider_acceptance: evidence?.overall ?? 'not_available',
     companion_receipt: receipt,
+    ...(local.state === 'retired' || local.state === 'withdrawn'
+      ? { end_reason: local.reason ?? 'not_recorded', ...(local.detail === undefined ? {} : { end_detail: local.detail }) }
+      : {}),
     evidence,
     recovery: {
       inspect: `notifai status ${local.question_id}`,
@@ -1108,13 +1112,36 @@ function printLocalQuestionStatus(deps: CommandDeps, local: QuestionStateView): 
   } else if (local.state === 'withdrawn') {
     deps.io.out('  Submission: not submitted — the local registration was withdrawn')
     deps.io.out('  Provider Acceptance: not available — no Notification Request was created')
+    deps.io.out(`  Reason: ${describeQuestionEnd(local)}`)
+  } else if (local.reason === 'rejected_by_service') {
+    deps.io.out('  Submission: refused by the service — the User never saw this question')
+    deps.io.out('  Provider Acceptance: not available — no Notification Request was created')
+    deps.io.out(`  Reason: ${describeQuestionEnd(local)}`)
   } else {
     deps.io.out('  Submission: retired before local promotion; service acceptance is not proven locally')
     deps.io.out('  Provider Acceptance: not available')
+    deps.io.out(`  Reason: ${describeQuestionEnd(local)}`)
   }
   deps.io.out(
     `  Recovery: inspect or close ${local.question_id}; do not register a replacement for the same question.`,
   )
+}
+
+/** Why a retired or withdrawn question ended, in a status line. */
+function describeQuestionEnd(local: QuestionStateView): string {
+  switch (local.reason) {
+    case 'closed': return 'closed with `notifai close`'
+    case 'answered_elsewhere': return 'the User answered in the conversation'
+    case 'answered_in_terminal': return "the User answered in the harness's own form"
+    case 'form_closed': return 'the harness question form closed without an answer'
+    case 'expired': return 'nobody answered before the question stopped being live'
+    case 'session_ended': return 'the Agent Session ended first'
+    case 'rejected_by_service':
+      return `the service refused it${local.detail === undefined ? '' : ` (${local.detail})`}`
+    case undefined: return 'not recorded (ended before this CLI recorded reasons)'
+    // A reason a newer CLI recorded in the same state file.
+    default: return local.reason
+  }
 }
 
 function printEvidenceSnapshot(deps: CommandDeps, snapshot: EvidenceSnapshot): void {

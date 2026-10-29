@@ -25,6 +25,7 @@ import type {
   HookEnvelope,
   OrphanRetirement,
   PendingQuestion,
+  QuestionEndReason,
   RetiringQuestion,
   SessionState,
 } from './hook-types.js'
@@ -135,6 +136,8 @@ export function parkForRetirement(
   env: NodeJS.ProcessEnv,
   pending: PendingQuestion,
   state: LifecycleEndState,
+  /** Why it ended, when more specific than the lifecycle state the device shows. */
+  end?: QuestionEndReason,
 ): void {
   const retirement = retiringQuestion(pending, state)
   if (retirement === null) return
@@ -146,6 +149,7 @@ export function parkForRetirement(
         { ...current, retiring: [...already, retirement] },
         pending,
         state === 'answered' ? 'answered' : 'retired',
+        state === 'answered' ? undefined : { reason: end ?? state },
       )
     }
     const retiring = [...already]
@@ -158,6 +162,7 @@ export function parkForRetirement(
       { ...current, retiring },
       pending,
       state === 'answered' ? 'answered' : 'retired',
+      state === 'answered' ? undefined : { reason: end ?? state },
     )
   })
 }
@@ -170,7 +175,8 @@ export function parkForRetirement(
 export function retireQueuedQuestions(
   sessionId: string,
   env: NodeJS.ProcessEnv,
-  questionId?: string,
+  questionId: string | undefined,
+  reason: QuestionEndReason,
 ): { withdrawn: PendingQuestion[]; retiring: RetiringQuestion[] } {
   const withdrawn: PendingQuestion[] = []
   const retiring: RetiringQuestion[] = []
@@ -190,10 +196,10 @@ export function retireQueuedQuestions(
         retiring.push(retirement)
         const queue = [...(next.retiring ?? [])]
         if (!queue.some((item) => item.request_id === retirement.request_id)) queue.push(retirement)
-        next = rememberQuestionState({ ...next, retiring: queue }, entry, 'retired')
+        next = rememberQuestionState({ ...next, retiring: queue }, entry, 'retired', { reason })
       } else {
         withdrawn.push(entry)
-        next = rememberQuestionState(next, entry, 'withdrawn')
+        next = rememberQuestionState(next, entry, 'withdrawn', { reason })
       }
     }
     return next
@@ -310,6 +316,7 @@ export async function drainRetirements(
         },
         entry,
         entry.state === 'answered' ? 'answered' : 'retired',
+        entry.state === 'answered' ? undefined : { reason: entry.state },
       ))
     }
   }
@@ -427,6 +434,7 @@ export async function retirePendings(
         remembered,
         entry,
         state === 'answered' ? 'answered' : 'retired',
+        state === 'answered' ? undefined : { reason: state },
       ),
       next,
     )

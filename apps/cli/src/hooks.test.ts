@@ -1,5 +1,5 @@
 import {
-CAPABILITIES_V1,type ClaimDeliveryAttemptRequestT,type ListRepliesResponse,
+CAPABILITIES_V1,estimateFcmPayloadBytes,validateDraft,type ClaimDeliveryAttemptRequestT,type ListRepliesResponse,
 type ReplyView,
 type SubmissionReceipt,
 type SubmitNotificationRequestT
@@ -18,7 +18,7 @@ import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { describe,expect,it,vi } from 'vitest'
 import { type ClaudeWakeAdapters } from './claude-wake.js'
-import { type ApiClient } from './client.js'
+import { ApiCallError, type ApiClient } from './client.js'
 import { guidanceShowCommand as readCurrentGuidance } from './commands-guidance.js'
 import {
 EXIT,
@@ -27,6 +27,7 @@ askCommand as askWithCurrency,
 closeCommand,
 hookRunCommand,
 repliesCommand,
+statusCommand,
 type CommandDeps,
 type CommandIo
 } from './commands.js'
@@ -35,6 +36,7 @@ loadConfig,
 sanitizeSessionId,
 stateDir
 } from './config.js'
+import { buildQuestions } from './commands-ask.js'
 import { hookAdapterPath,installHookAdapter } from './hook-adapter.js'
 import {
 registerQuestion as persistQuestion,
@@ -1371,5 +1373,153 @@ describe('Session Message acknowledgement debt', () => {
     h.io.outLines.length = 0
     await hookRunCommand(h.deps, 'user-prompt-submit', stdin({ session_id: 'answer-debt', cwd: h.deps.cwd, prompt: 'next' }), harnessName)
     expect(h.io.outLines.join('\n')).not.toContain('req_owed')
+  })
+})
+
+/**
+ * The same form shapes as question-push-budget.test.ts: a title per question,
+ * two or three choices, one recommended.
+ */
+function sampleForm(count: number, textLength: number): string {
+  const sentence = 'Close the older tracking issue now that the replacement work shipped and its parts are done? '
+  const text = (index: number) => `${index + 1}. ${sentence.repeat(4)}`.slice(0, textLength).trimEnd()
+  return JSON.stringify({
+    title: 'Old issues to retire',
+    summary: `${count} old issues: keep or retire?`,
+    questions: Array.from({ length: count }, (_, index) => ({
+      title: `Issue ${index + 1}`,
+      text: text(index),
+      choices: [
+        { label: 'Close it', recommended: true },
+        { label: 'Keep it for later' },
+        ...(index % 3 === 0 ? [{ label: 'Ask me again next week' }] : []),
+      ],
+    })),
+  })
+}
+
+/** Short yes/no checks: the kind of 10-question form that fits a phone push. */
+function checklistForm(count: number): string {
+  return JSON.stringify({
+    title: 'Release checks',
+    summary: `${count} release checks`,
+    questions: Array.from({ length: count }, (_, index) => ({
+      title: `Check ${index + 1}`,
+      text: `Ship component ${index + 1} as it is today?`,
+      choices: ['Yes', 'No'],
+    })),
+  })
+}
+
+/**
+ * A form too large for a phone push used to register, then the service refused
+ * it in the background and the question ended `retired` with no reason
+ * anywhere. Submission now carries what fits, and a refusal says why.
+ */
+describe('a form against the phone push limit', () => {
+  /** The service's rule: iPhone and Android pushes, after its device stamp, fit 4096 bytes. */
+  function sizeCheckingService(h: Harness): void {
+    const factory = h.deps.clientFactory!
+    h.deps.clientFactory = () => {
+      const base = factory()
+      return {
+        ...base,
+        submit: async (body: SubmitNotificationRequestT, waitSeconds: number) => {
+          const documents = [CAPABILITIES_V1.describe('ios')!, CAPABILITIES_V1.describe('android')!]
+          const stamped = estimateFcmPayloadBytes(body.draft) + 45
+          const tooLarge = validateDraft(body.draft, documents).errors.find((issue) => issue.code === 'payload_too_large') ??
+            (stamped > 4096 ? { code: 'payload_too_large', path: 'platform.android',
+              message: `Estimated android FCM payload is ${stamped} bytes; the limit is 4096.` } : undefined)
+          if (tooLarge !== undefined) {
+            throw new ApiCallError(422, 'payload_too_large', 'The draft was not accepted.', null, [tooLarge])
+          }
+          return base.submit(body, waitSeconds)
+        },
+      } as ApiClient
+    }
+  }
+
+  function registerForm(h: Harness, sessionId: string, form: string): string {
+    const built = buildQuestions({ form }, undefined)
+    if (!built.ok) throw new Error(built.error)
+    const registered = persistQuestion(sessionId, h.env, {
+      question: built.questions[0]!.text,
+      title: built.title!,
+      summary: built.summary,
+      questions: built.questions,
+      project: 'notifai',
+      source: { session_id: sessionId, session_label: 'Gentle Salmon', harness: 'codex' },
+    }, NOW)
+    return registered.question_id
+  }
+
+  async function settle(h: Harness, sessionId: string): Promise<void> {
+    await hookRunCommand(h.deps, 'question-submission', stdin({ session_id: sessionId, cwd: h.deps.cwd }), 'codex')
+  }
+
+  function retiredLog(h: Harness): Array<Record<string, unknown> | undefined> {
+    return readFileSync(activeLogPath(h.env), 'utf8').split('\n').filter(Boolean)
+      .map((line) => JSON.parse(line) as { event: string; data?: Record<string, unknown> })
+      .filter((record) => record.event === 'ask.retired')
+      .map((record) => record.data)
+  }
+
+  it.each([
+    ['an 8-question form', 8, sampleForm(8, 60)],
+    ['a 10-question form', 10, checklistForm(10)],
+  ])('submits %s that ask accepted', async (_name, count, form) => {
+    const h = harness([])
+    sizeCheckingService(h)
+    writeGlobalConfig(h, 'ask_grace_seconds = 0\n')
+    const sessionId = `form-fits-${count}`
+    writeSessionState(sessionId, h.env, { harness: 'codex', last_prompt_at: AWAY })
+    const questionId = registerForm(h, sessionId, form)
+
+    await settle(h, sessionId)
+
+    const pushed = h.recorder.submitted.filter((entry) => isQuestionSubmit(entry))
+    expect(pushed).toHaveLength(1)
+    expect(pushed[0]!.draft.reply?.questions).toHaveLength(count)
+    expect(inspectQuestionState(questionId, h.env)).toMatchObject({ found: true, question: { state: 'live', submitted: true } })
+  })
+
+  it('records, logs and shows why the service refused a form registered before ask checked its size', async () => {
+    const h = harness([])
+    sizeCheckingService(h)
+    writeGlobalConfig(h, 'ask_grace_seconds = 0\n')
+    const sessionId = 'form-too-large'
+    writeSessionState(sessionId, h.env, { harness: 'codex', last_prompt_at: AWAY })
+    const questionId = registerForm(h, sessionId, sampleForm(8, 110))
+
+    await settle(h, sessionId)
+
+    expect(h.recorder.submitted.filter((entry) => isQuestionSubmit(entry))).toHaveLength(0)
+    expect(inspectQuestionState(questionId, h.env)).toMatchObject({ found: true, question: {
+      state: 'retired', submitted: false, reason: 'rejected_by_service',
+      detail: expect.stringMatching(/^payload_too_large, HTTP 422: platform\.android: Estimated android FCM payload is \d+ bytes; the limit is 4096\.$/),
+    } })
+    expect(retiredLog(h)).toEqual([expect.objectContaining({
+      question_id: questionId, state: 'retired', reason: 'rejected_by_service', submitted: false,
+    })])
+
+    h.io.outLines.length = 0
+    expect(await statusCommand(h.deps, questionId, {})).toBe(EXIT.ok)
+    expect(h.io.outLines).toContain('  Submission: refused by the service — the User never saw this question')
+    expect(h.io.outLines.find((line) => line.startsWith('  Reason: '))).toMatch(/^ {2}Reason: the service refused it \(payload_too_large, HTTP 422: /)
+    h.io.outLines.length = 0
+    expect(await statusCommand(h.deps, questionId, { json: true })).toBe(EXIT.ok)
+    expect(JSON.parse(h.io.outLines.join('\n'))).toMatchObject({ state: 'retired', submitted: false, end_reason: 'rejected_by_service' })
+  })
+
+  it('records why a closed question ended and logs it once', async () => {
+    const h = harness([])
+    const sessionId = 'closed-before-submission'
+    writeSessionState(sessionId, h.env, { harness: 'codex', last_prompt_at: AWAY })
+    const questionId = registerForm(h, sessionId, checklistForm(2))
+
+    expect(await closeCommand(h.deps, questionId, { json: true })).toBe(EXIT.ok)
+
+    expect(inspectQuestionState(questionId, h.env)).toMatchObject({ found: true, question: { state: 'withdrawn', reason: 'closed' } })
+    expect(retiredLog(h)).toEqual([expect.objectContaining({ question_id: questionId, state: 'withdrawn', reason: 'closed' })])
   })
 })

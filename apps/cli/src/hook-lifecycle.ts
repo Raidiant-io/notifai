@@ -77,6 +77,7 @@ import {
   questionSubmissionAttempted,
   queuedQuestionStillEligible,
   rememberQuestionState,
+  type QuestionEnd,
   sourceContextAtHookEvent,
   summarizeRequestIds,
 } from './hook-question-state.js'
@@ -95,6 +96,7 @@ import {
   sessionStatePath,
   updateSessionState,
   writeSessionStateUnlocked,
+  logQuestionEnds,
   recordSessionNotified,
 } from './hook-session-state.js'
 import { currentProcessIdentity, pidExists, processIdentityLiveness } from './process-identity.js'
@@ -129,6 +131,7 @@ import {
   QUESTION_WAITER_CEILING_SECONDS,
 } from './question-timing.js'
 import { buildDraft, UNTITLED_FORM_TITLE } from './send.js'
+import { questionPushOverflow } from './question-push-budget.js'
 import { forgetOpencodeSession } from './opencode-shell-session.js'
 
 /**
@@ -220,6 +223,12 @@ async function prepareQuestionSubmission(
     media?: MediaItemT[] | undefined
     project?: string | undefined
     source?: SourceContextT | undefined
+    /**
+     * The source `ask` checked at registration. When this hook's Git location
+     * would push the form past a phone's payload limit, the form goes with
+     * the registered source instead, which fit.
+     */
+    registeredSource?: SourceContextT | undefined
     /** How long the server keeps accepting an answer. */
     windowSeconds: number
     /** Absolute owner deadline persisted before submit. */
@@ -233,7 +242,7 @@ async function prepareQuestionSubmission(
   if (answerable.length === 0) {
     return { error: 'no device can answer a question yet; leaving this to the terminal' }
   }
-  const build = buildDraft(
+  const draftWith = (source: SourceContextT | undefined) => buildDraft(
     ctx.config,
     {
       title: options.title ?? options.source?.session_label ?? UNTITLED_FORM_TITLE,
@@ -248,8 +257,13 @@ async function prepareQuestionSubmission(
       questions: options.questions,
       collapseKey,
     },
-    options.source === undefined ? {} : { source: options.source },
+    source === undefined ? {} : { source },
   )
+  let build = draftWith(options.source)
+  if (build.ok && options.registeredSource !== undefined && !isDeepStrictEqual(options.registeredSource, options.source) &&
+      questionPushOverflow(build.draft) !== null) {
+    build = draftWith(options.registeredSource)
+  }
   if (!build.ok) return { error: build.error }
 
   return {
@@ -736,6 +750,19 @@ function isTerminalDraftRejection(err: ApiCallError): boolean {
   return err.status === 422 || (err.status === 400 && err.code === 'invalid_request')
 }
 
+/**
+ * The service's refusal as a recorded reason: its code, status, and first
+ * rejected field. Service validation messages name fields and limits, never
+ * the question's own text.
+ */
+function serviceRejection(err: ApiCallError): QuestionEnd {
+  const first = Array.isArray(err.details) ? err.details[0] as { path?: unknown; message?: unknown } | undefined : undefined
+  const specific = typeof first?.message === 'string'
+    ? `${typeof first.path === 'string' && first.path !== '' ? `${first.path}: ` : ''}${first.message}`
+    : err.message
+  return { reason: 'rejected_by_service', detail: `${err.code}, HTTP ${err.status}: ${specific}`.slice(0, 300) }
+}
+
 // ---------------------------------------------------------------------------
 // UserPromptSubmit — the user is at the keyboard
 // ---------------------------------------------------------------------------
@@ -1000,6 +1027,7 @@ async function answerPrompt(
         remembered,
         entry,
         questionSubmissionAttempted(entry) ? 'retired' : 'withdrawn',
+        { reason: 'answered_elsewhere' },
       ),
       next,
     )
@@ -2062,6 +2090,7 @@ async function admitDueQuestions(
           ...(entry.media !== undefined ? { media: entry.media } : {}),
           ...(entry.project !== undefined ? { project: entry.project } : {}),
           ...(eventSource !== undefined ? { source: eventSource } : {}),
+          ...(entry.source !== undefined ? { registeredSource: entry.source } : {}),
           windowSeconds: replyWindowSeconds,
           ownerDeadlineAt,
         })
@@ -2145,6 +2174,7 @@ async function admitDueQuestions(
               ...(entry.media !== undefined ? { media: entry.media } : {}),
               ...(entry.project !== undefined ? { project: entry.project } : {}),
               ...(eventSource !== undefined ? { source: eventSource } : {}),
+              ...(entry.source !== undefined ? { registeredSource: entry.source } : {}),
               windowSeconds: replyWindowSeconds,
               ownerDeadlineAt,
             })
@@ -2177,7 +2207,7 @@ async function admitDueQuestions(
               admissionConfirmed = true
             } catch (retryErr) {
               if (retryErr instanceof ApiCallError && isTerminalDraftRejection(retryErr)) {
-                dropPendingQuestion(sessionId, ctx.env, entry)
+                dropPendingQuestion(sessionId, ctx.env, entry, 'retired', serviceRejection(retryErr))
                 notes.push(
                   `reminted draft was also rejected (${retryErr.code}, HTTP ${retryErr.status}); retiring the question so it is not retried forever`,
                 )
@@ -2193,7 +2223,7 @@ async function admitDueQuestions(
               err = retryErr
             }
           } else {
-            dropPendingQuestion(sessionId, ctx.env, entry)
+            dropPendingQuestion(sessionId, ctx.env, entry, 'retired', serviceRejection(err))
             notes.push(
               `question submission was rejected (${err.code}, HTTP ${err.status}); retiring it because the current draft will never be accepted`,
             )
@@ -2276,7 +2306,7 @@ async function admitDueQuestions(
           if (!retiring.some((parked) => parked.request_id === retirement.request_id)) {
             retiring.push(retirement)
           }
-          return rememberQuestionState({ ...current, retiring }, live, 'retired')
+          return rememberQuestionState({ ...current, retiring }, live, 'retired', { reason: 'answered_elsewhere' })
         })
       }
       if (sessionHasEnded(sessionId, ctx.env)) {
@@ -2655,6 +2685,7 @@ export function handleSessionEnd(
       stateWithHistory,
       entry,
       entry.request_id === undefined && entry.submission === undefined ? 'withdrawn' : 'retired',
+      { reason: 'session_ended' },
     )
   }
   for (const answer of [...(state.accepted?.answers ?? []), ...(state.delivered_answers ?? []), ...(state.waiting_answers ?? [])]) {
@@ -2665,6 +2696,7 @@ export function handleSessionEnd(
       stateWithHistory,
       retirement,
       retirement.state === 'answered' ? 'answered' : 'retired',
+      retirement.state === 'answered' ? undefined : { reason: retirement.state },
     )
   }
   const orphans: RetiringQuestion[] = [...(state.retiring ?? [])]
@@ -2729,12 +2761,14 @@ export function handleSessionEnd(
       }
       for (const field of CLOSED_SESSION_DROPS) delete preserved[field]
       writeSessionStateUnlocked(sessionStatePath(sessionId, env), sessionId, preserved)
+      logQuestionEnds(sessionId, env, state, preserved)
       notes.push('preserved native answer reports for this exact session')
       return { notes, log: { outcome: 'native-report-preserved', ...log } }
     }
     clearSessionStateUnlocked(sessionId, env)
     if ((history?.length ?? 0) > 0) {
       writeSessionStateUnlocked(sessionStatePath(sessionId, env), sessionId, { question_history: history! })
+      logQuestionEnds(sessionId, env, state, { question_history: history! })
     }
     return { notes, log: { outcome: 'cleaned', ...log } }
   })

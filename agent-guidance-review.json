@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "behavior_digest": "sha256:708a89267a9d4d92dd9a5ecde762a35931ee14f6f7af106763ae47e8ae4e60e3",
+  "behavior_digest": "sha256:5f70792a5d2ee1fd6a09656a4665b6583cbe9d2a8f1296b38bb85bff4c67cb60",
   "outcome": "guidance-updated",
   "surfaces_reviewed": [
     "lifecycle-hooks",
@@ -9,5 +9,5 @@
     "cli-readiness",
     "domain-terms"
   ],
-  "reason": "Reviewed all five surfaces for restoring the generated unnamed Agent Session fallback. The CLI again names a session that sends before it is named with a generated adjective-animal name (with a ' \u00b7 2' suffix when another local session already shows it) instead of its agent app's name, which was never published; hook-linked questions keep session_label_source, so the fallback stays replaceable. Lifecycle hooks: hook question submission keeps label provenance; no hook text changed. Notifai skill: unchanged; 'Name the Agent Session' already tells agents to pass --session-label on every send and ask and never described the fallback. Harness setup: unchanged. CLI readiness: unchanged; no capability or doctor result depends on the fallback text. Domain terms: unchanged. Agent-facing text: the 'Heads up (source.session_label)' stderr line keeps saying the User sees the session under that name until it is named, now naming it as generated; skills/guidance-changes.json replaces the unpublished app-name note with one that describes the generated name and the picker fix."
+  "reason": "Reviewed all five surfaces for the phone push limit on ask forms and recorded question end reasons. Lifecycle hooks: background submission keeps its order and outputs; when the hook's Git location would push a registered form past the phone push limit it submits with the registered source, and every retirement or withdrawal now records a local reason code and logs ask.retired. No hook prints new text, and the retirement state sent to the service is unchanged. Notifai skill: references/send-details.md now says a form's questions and choice labels must fit one phone notification of about 4 KB (usually no more than 8 short questions), that ask refuses a larger form before registering anything and says how to split it, and that the Body and choice descriptions do not count. SKILL.md keeps 'up to 10 questions', still the count cap. Harness setup: unchanged. CLI readiness: unchanged; doctor and init do not read question history. Domain terms: unchanged; retired, withdrawn, Notification Request and Question Routing keep their meaning. New agent-visible text: the ask refusal (code question_too_large, message and remedy) and the status Reason line and end_reason/end_detail JSON fields, described in the guidance change note."
 }

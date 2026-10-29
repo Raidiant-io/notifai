@@ -222,7 +222,7 @@ async function closePendingQuestions(deps: CommandDeps, json: boolean): Promise<
     return EXIT.ok
   }
 
-  const { withdrawn, retiring } = retireQueuedQuestions(sessionId, deps.env)
+  const { withdrawn, retiring } = retireQueuedQuestions(sessionId, deps.env, undefined, 'closed')
   const admitted = await closeAdmittedQuestions(deps, sessionId,
     [...new Set([...(initial.retiring ?? []), ...retiring].map(entry => entry.request_id))])
   if (admitted.code !== EXIT.ok) return admitted.code
@@ -242,7 +242,7 @@ async function closePendingQuestions(deps: CommandDeps, json: boolean): Promise<
       try {
         await retireReplies(authed.client, entry.request_id)
         parkClosedQuestion(sessionId, deps.env, entry)
-        dropPendingQuestion(sessionId, deps.env, entry)
+        dropPendingQuestion(sessionId, deps.env, entry, 'retired', { reason: 'closed' })
         closed.push(entry.request_id)
       } catch (err) {
         return reportError(deps, err, { operation: 'close', request_id: entry.request_id })
@@ -302,7 +302,7 @@ async function closeLocalQuestion(
   if (entry === undefined) return null
 
   if (entry.request_id === undefined) {
-    const { withdrawn, retiring } = retireQueuedQuestions(sessionId, deps.env, entry.question_id)
+    const { withdrawn, retiring } = retireQueuedQuestions(sessionId, deps.env, entry.question_id, 'closed')
     // Admission may have completed and promoted this entry after the first
     // read. Re-resolve it so the live close path owns that ordering.
     if (withdrawn.length === 0 && retiring.length === 0) {
@@ -342,7 +342,7 @@ async function closeLocalQuestion(
   try {
     const response = await retireReplies(authed.client, entry.request_id)
     parkClosedQuestion(sessionId, deps.env, entry)
-    dropPendingQuestion(sessionId, deps.env, entry)
+    dropPendingQuestion(sessionId, deps.env, entry, 'retired', { reason: 'closed' })
     if (json) {
       deps.io.out(
         JSON.stringify(
@@ -383,7 +383,7 @@ function forgetClosedQuestion(deps: CommandDeps, requestId: string): void {
   )
   if (entry === undefined) return
   parkClosedQuestion(sessionId, deps.env, entry)
-  dropPendingQuestion(sessionId, deps.env, entry)
+  dropPendingQuestion(sessionId, deps.env, entry, 'retired', { reason: 'closed' })
 }
 
 function parkClosedQuestion(
@@ -392,7 +392,7 @@ function parkClosedQuestion(
   entry: PendingQuestion,
 ): void {
   try {
-    parkForRetirement(sessionId, env, entry, 'expired')
+    parkForRetirement(sessionId, env, entry, 'expired', 'closed')
   } catch {
     // Incomplete identifiers cannot be retired on a device; dropping the
     // local record is still the right way to stop a later Stop from waiting.

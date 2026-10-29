@@ -227,7 +227,7 @@ export async function heldAskWait(deps: CommandDeps, input: HeldWaitInput): Prom
   const placeholders = (flags.image ?? []).map((_, index) => `med_pending_${index + 1}`)
   const preflight = buildAskDraft(config, built, flags, source.invocation, placeholders, waitSeconds)
   if (!preflight.ok) {
-    return reportAskFailure(deps, flags, { code: 'invalid_draft', check_id: 'draft', exit_code: EXIT.usage, message: preflight.error, remedy: 'fix the reported field and retry' })
+    return reportAskFailure(deps, flags, { code: preflight.code ?? 'invalid_draft', check_id: 'draft', exit_code: EXIT.usage, message: preflight.error, remedy: preflight.remedy ?? 'fix the reported field and retry' })
   }
   const credential = deps.store.load()!
   let semanticImages: string[]
@@ -239,7 +239,7 @@ export async function heldAskWait(deps: CommandDeps, input: HeldWaitInput): Prom
   }
   const semantic = buildAskDraft(config, built, flags, source.invocation, semanticImages, waitSeconds)
   if (!semantic.ok) {
-    return reportAskFailure(deps, flags, { code: 'invalid_draft', check_id: 'draft', exit_code: EXIT.usage, message: semantic.error, remedy: 'fix the reported field and retry' })
+    return reportAskFailure(deps, flags, { code: semantic.code ?? 'invalid_draft', check_id: 'draft', exit_code: EXIT.usage, message: semantic.error, remedy: semantic.remedy ?? 'fix the reported field and retry' })
   }
   const attempt = beginSendAttempt({
     env: deps.env, credential, fingerprint: sendDraftFingerprint(semantic.draft, credential), retry: false, now: now(),
@@ -265,7 +265,7 @@ export async function heldAskWait(deps: CommandDeps, input: HeldWaitInput): Prom
   const ready = buildAskDraft(config, built, flags, source.invocation, mediaIds, waitSeconds)
   if (!ready.ok) {
     settleSendAttempt(deps.env, attempt.attemptId)
-    return reportAskFailure(deps, flags, { code: 'invalid_draft', check_id: 'draft', exit_code: EXIT.usage, message: ready.error, remedy: 'fix the reported field and retry' })
+    return reportAskFailure(deps, flags, { code: ready.code ?? 'invalid_draft', check_id: 'draft', exit_code: EXIT.usage, message: ready.error, remedy: ready.remedy ?? 'fix the reported field and retry' })
   }
   let submissionDraft: NotificationDraftT
   try {

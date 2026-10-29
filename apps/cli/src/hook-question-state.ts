@@ -14,6 +14,7 @@ import type {
   PendingQuestion,
   PendingSubmissionIntent,
   QuestionDeliveryState,
+  QuestionEndReason,
   QuestionHistoryEntry,
   QuestionTerminalState,
   SessionState,
@@ -28,6 +29,15 @@ export interface QuestionStateView {
   submitted: boolean | null
   request_id: string | null
   frozen_request_id: string | null
+  /** Why a retired or withdrawn question ended, when this CLI recorded it. */
+  reason?: QuestionEndReason
+  detail?: string
+}
+
+/** How a question ended without an answer, and the service's words when it refused it. */
+export interface QuestionEnd {
+  reason: QuestionEndReason
+  detail?: string
 }
 
 export type QuestionStateLookup =
@@ -76,6 +86,7 @@ export function rememberQuestionState(
   current: SessionState,
   question: QuestionIdentity,
   state: QuestionTerminalState,
+  end?: QuestionEnd,
 ): SessionState {
   if (question.question_id === undefined) return current
   const existing = (current.question_history ?? []).find(
@@ -92,11 +103,19 @@ export function rememberQuestionState(
     requestId === undefined && terminalState !== 'withdrawn'
       ? question.submission?.request_id ?? existing?.frozen_request_id
       : undefined
+  // The first recorded reason stands: a later sweep (SessionEnd, a drained
+  // retirement) only repeats what already happened.
+  const ended = terminalState === 'answered'
+    ? undefined
+    : existing?.reason !== undefined
+      ? { reason: existing.reason, ...(existing.detail === undefined ? {} : { detail: existing.detail }) }
+      : end
   const record: QuestionHistoryEntry = {
     question_id: question.question_id,
     state: terminalState,
     ...(requestId === undefined ? {} : { request_id: requestId }),
     ...(frozenRequestId === undefined ? {} : { frozen_request_id: frozenRequestId }),
+    ...(ended === undefined ? {} : { reason: ended.reason, ...(ended.detail === undefined ? {} : { detail: ended.detail }) }),
   }
   const history = [
     ...(current.question_history ?? []).filter(
@@ -174,6 +193,9 @@ export function inspectQuestionState(
   )
   // Expiry retires a natively answered question like a silent one; it was still answered.
   const answeredNatively = hasSettledNativeAnswer(state, questionId)
+  const ended = history?.reason === undefined
+    ? {}
+    : { reason: history.reason, ...(history.detail === undefined ? {} : { detail: history.detail }) }
   if (retiring?.question_id !== undefined) {
     const unconfirmed = history?.request_id === undefined &&
       history?.frozen_request_id === retiring.request_id
@@ -186,6 +208,7 @@ export function inspectQuestionState(
         submitted: unconfirmed ? null : true,
         request_id: unconfirmed ? null : retiring.request_id,
         frozen_request_id: unconfirmed ? retiring.request_id : null,
+        ...(retiring.state === 'answered' || answeredNatively ? {} : ended),
       },
     }
   }
@@ -204,6 +227,7 @@ export function inspectQuestionState(
               : false,
         request_id: history.request_id ?? null,
         frozen_request_id: history.frozen_request_id ?? null,
+        ...(answeredNatively && history.state === 'retired' ? {} : ended),
       },
     }
   }
@@ -223,13 +247,14 @@ export function dropPendingQuestion(
   env: NodeJS.ProcessEnv,
   entry: PendingQuestion,
   terminalState: QuestionTerminalState = 'retired',
+  end?: QuestionEnd,
 ): void {
   updateSessionState(sessionId, env, (current) => {
     const pending = pendingList(current).filter((candidate) => !isSamePending(candidate, entry))
     const next: SessionState = { ...current }
     if (pending.length > 0) next.pending = pending
     else delete next.pending
-    return rememberQuestionState(next, entry, terminalState)
+    return rememberQuestionState(next, entry, terminalState, end)
   })
 }
 

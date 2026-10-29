@@ -68,8 +68,8 @@ async function handBackQuestion(
   const placeholders = (flags.image ?? []).map((_, index) => `med_pending_${index + 1}`)
   const preflight = buildAskDraft(config, built, flags, invocation, placeholders)
   if (!preflight.ok) {
-    return reportAskFailure(deps, flags, { code: 'invalid_draft', check_id: 'draft', exit_code: EXIT.usage,
-      message: preflight.error, remedy: 'fix the reported field and retry' })
+    return reportAskFailure(deps, flags, { code: preflight.code ?? 'invalid_draft', check_id: 'draft', exit_code: EXIT.usage,
+      message: preflight.error, remedy: preflight.remedy ?? 'fix the reported field and retry' })
   }
   // The duplicate guard runs before any upload; registration repeats it under the lock.
   const open = findOpenEqualQuestion(readSessionState(sessionId, deps.env), questions)
@@ -95,8 +95,8 @@ async function handBackQuestion(
   }
   const ready = buildAskDraft(config, built, flags, invocation, mediaIds)
   if (!ready.ok) {
-    return reportAskFailure(deps, flags, { code: 'invalid_draft', check_id: 'draft', exit_code: EXIT.usage,
-      message: ready.error, remedy: 'fix the reported field and retry' })
+    return reportAskFailure(deps, flags, { code: ready.code ?? 'invalid_draft', check_id: 'draft', exit_code: EXIT.usage,
+      message: ready.error, remedy: ready.remedy ?? 'fix the reported field and retry' })
   }
   const { draft } = ready
   let registered

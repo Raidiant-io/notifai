@@ -516,7 +516,31 @@ export interface QuestionHistoryEntry {
   request_id?: string
   /** Reserved idempotent identity that was never locally promoted. */
   frozen_request_id?: string
+  /** Why a retired or withdrawn question ended; the first recorded reason stands. */
+  reason?: QuestionEndReason
+  /** The service's own words for `rejected_by_service`: its error code and message, never question content. */
+  detail?: string
 }
+
+/**
+ * Why a question ended without an answer reaching the agent, as `notifai status`
+ * and the `ask.retired` log record name it.
+ */
+export type QuestionEndReason =
+  /** The agent ran `notifai close`. */
+  | 'closed'
+  /** The User's next prompt answered it in the conversation. */
+  | 'answered_elsewhere'
+  /** The User answered in the harness's own form or card. */
+  | 'answered_in_terminal'
+  /** The harness question form closed without an answer. */
+  | 'form_closed'
+  /** The answer window ran out. */
+  | 'expired'
+  /** The Agent Session ended first. */
+  | 'session_ended'
+  /** The service refused the question; `detail` carries its code and message. */
+  | 'rejected_by_service'
 
 export interface HookOutcome {
   /** Written to stdout verbatim — the harness parses this as output. */

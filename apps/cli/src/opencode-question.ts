@@ -619,7 +619,7 @@ function claimRegistration(
 /** Let a hand-back wait for its form again, or drop what a form that never opened registered. */
 function releaseRegistration(carriage: Carriage, env: NodeJS.ProcessEnv, state: QuestionTerminalState = 'withdrawn'): void {
   if (carriage.created) {
-    dropPendingQuestion(carriage.sessionId, env, carriage.entry, state)
+    dropPendingQuestion(carriage.sessionId, env, carriage.entry, state, { reason: 'form_closed' })
     return
   }
   updateSessionState(carriage.sessionId, env, (current) => {
@@ -1120,7 +1120,7 @@ async function runForm(deps: CommandDeps, pipe: PluginPipe): Promise<number> {
         return retained
       }),
     }))
-  } else dropPendingQuestion(registration.sessionId, deps.env, registration.entry, terminal)
+  } else dropPendingQuestion(registration.sessionId, deps.env, registration.entry, terminal, { reason: 'form_closed' })
   dropOpenForm(deps.env, registration.requestId)
   logger.info('hook.end', { hook: 'opencode-question', outcome, request_id: registration.requestId,
     question_id: registration.entry.question_id })

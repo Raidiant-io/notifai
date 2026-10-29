@@ -14,7 +14,10 @@ User asked for it on this send. `--sound` takes a shipped name or a custom
 name/id from `notifai sounds`.
 
 `ask --form-json '{…}'` asks up to 10 questions decided together, answered as one
-reply. Quote inline JSON for your shell as the skill's Send section explains,
+reply. Its questions and choice labels must also fit one phone notification of
+about 4 KB, which is usually no more than 8 short questions. `ask` refuses a
+larger form before registering anything and says how to split it; the Body and
+choice descriptions do not count. Quote inline JSON for your shell as the skill's Send section explains,
 line breaks and all. `--form <path>` reads a JSON file, and `--form -` reads
 stdin; paths are always paths, even when their names start with `{`.
 When creating a form file, write it in the system temp directory, never the repository.

@@ -14,6 +14,7 @@ import path from 'node:path'
 import { atomicWriteFileSync } from './atomic-file.js'
 import { sanitizeSessionId, sessionConfigPath, stateDir } from './config.js'
 import { withFileLock } from './file-lock.js'
+import { bootstrapLogger } from './logging.js'
 import type { HookHarness, PendingQuestion, SessionState } from './hook-types.js'
 import { processIdentityLiveness, type ProcessIdentity } from './process-identity.js'
 import { systemMonotonicNs } from './monotonic-clock.js'
@@ -625,6 +626,7 @@ export function settleSessionState(
     const next = settle(current)
     if (next === current) return
     writeSessionStateUnlocked(file, sessionId, next)
+    logQuestionEnds(sessionId, env, current, next)
   })
 }
 
@@ -644,8 +646,43 @@ export function updateSessionState(
     // is not rewritten and flushed again. A missing file is still created.
     if (next === current && existsSync(file)) return current
     writeSessionStateUnlocked(file, sessionId, next)
+    logQuestionEnds(sessionId, env, current, next)
     return next
   })
+}
+
+/**
+ * Log each question that this write ended unanswered as `ask.retired`, with
+ * its reason. Every retirement and withdrawal lands in `question_history`
+ * through a session-state write, so logging here misses none of them.
+ */
+export function logQuestionEnds(
+  sessionId: string,
+  env: NodeJS.ProcessEnv,
+  before: SessionState,
+  after: SessionState,
+): void {
+  const prior = new Map((before.question_history ?? []).map((entry) => [entry.question_id, entry.state]))
+  const ended = (after.question_history ?? []).filter((entry) =>
+    (entry.state === 'retired' || entry.state === 'withdrawn') && prior.get(entry.question_id) !== entry.state)
+  if (ended.length === 0) return
+  try {
+    const logger = bootstrapLogger({ env })
+    for (const entry of ended) {
+      logger.info('ask.retired', {
+        session: sessionId,
+        question_id: entry.question_id,
+        state: entry.state,
+        reason: entry.reason ?? 'not_recorded',
+        ...(entry.detail === undefined ? {} : { detail: entry.detail }),
+        submitted: entry.request_id !== undefined ? true : entry.frozen_request_id !== undefined ? null : false,
+        ...(entry.request_id === undefined ? {} : { request_id: entry.request_id }),
+        ...(entry.frozen_request_id === undefined ? {} : { frozen_request_id: entry.frozen_request_id }),
+      })
+    }
+  } catch {
+    // A log that cannot be written never fails the state change it describes.
+  }
 }
 
 /** Record the current installation when an owner session starts. */

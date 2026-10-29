@@ -239,7 +239,7 @@ export async function reportCodexTerminalAnswers(ctx: Pick<HookContext, 'client'
         native_answer_operations: (next.native_answer_operations ?? []).filter(op => op.question_id !== registration.question_id),
       }, new Set([registration.question_id]))
       next = rememberQuestionState({ ...withdrawn, codex_question_bindings: (withdrawn.codex_question_bindings ?? []).map(item =>
-        item.question_id === registration.question_id ? { ...item, terminal_answered: true as const } : item) }, pending, 'withdrawn')
+        item.question_id === registration.question_id ? { ...item, terminal_answered: true as const } : item) }, pending, 'withdrawn', { reason: 'answered_in_terminal' })
     }
     return next
   })
@@ -272,8 +272,8 @@ export async function reportCodexTerminalAnswers(ctx: Pick<HookContext, 'client'
         if (pending === undefined) continue
         updateSessionState(sessionId, ctx.env, current => ({ ...terminateCodexQuestions(current, new Set([operation.question_id])),
           native_answer_operations: (current.native_answer_operations ?? []).filter(op => op.submission_id !== operation.submission_id) }))
-        parkForRetirement(sessionId, ctx.env, pending, 'answered_elsewhere')
-        dropPendingQuestion(sessionId, ctx.env, pending)
+        parkForRetirement(sessionId, ctx.env, pending, 'answered_elsewhere', 'answered_in_terminal')
+        dropPendingQuestion(sessionId, ctx.env, pending, 'retired', { reason: 'answered_in_terminal' })
       }
     }
   }

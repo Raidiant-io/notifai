@@ -1,5 +1,5 @@
 {
-  "current": "0fa1b7b2fe157cc2960bd6870c75f3397c620caa8a7b0db27c9c565738f0bb02",
+  "current": "7f7b6b5018936d5b08441abd72f17a72e0b23b3037d43199b820d1612e18f6d1",
   "releases": [
     {
       "digest": "3e47b01bc6bbfb43e910c660b9964fab6459d75148c3c02dcbcd0be64cfb2963",
@@ -172,6 +172,10 @@
     {
       "digest": "0fa1b7b2fe157cc2960bd6870c75f3397c620caa8a7b0db27c9c565738f0bb02",
       "note": "The `Heads up (source.session_label)` line, printed when an Agent Session sends before it is named, now says the User sees the session under its generated name, such as \"Yellow Bear\", until it is named. A question opened through a harness picker in an unnamed session no longer freezes that generated name, so the first name you pass, or a proven harness title, still replaces it once. Nothing else changes: keep passing a concise `--session-label` on every send and ask."
+    },
+    {
+      "digest": "7f7b6b5018936d5b08441abd72f17a72e0b23b3037d43199b820d1612e18f6d1",
+      "note": "`notifai ask` now refuses, before registering anything, a form whose questions and choice labels do not fit one phone notification (about 4 KB, usually no more than 8 short questions; the Body and choice descriptions do not count). The refusal has code `question_too_large`, names the size, and says to split the questions into smaller forms or shorten question texts, choice labels, the title or the summary. Such a form used to register, then end `retired` in the background with no reason, and the User never saw it. `notifai status <question_id>` now says why a retired or withdrawn question ended: a `Reason:` line, and `end_reason` (with `end_detail` for a service refusal) in `--json`; a service refusal reads \"refused by the service — the User never saw this question\". The local log records each such end as `ask.retired` with its reason."
     }
   ]
 }

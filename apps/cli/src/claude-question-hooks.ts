@@ -194,18 +194,19 @@ export function withdrawPickerQuestion(
       state.accepted?.answers.some((answer) => answer.pending.question_id === questionId) ||
       state.native_answer_operations?.some((op) => op.question_id === questionId) ||
       hasSettledNativeAnswer(state, questionId)) return 'answered'
+  const reason = end === 'answered_elsewhere' ? 'answered_in_terminal' : 'form_closed'
   if (entry.request_id === undefined) {
-    const { retiring } = retireQueuedQuestions(sessionId, env, questionId)
+    const { retiring } = retireQueuedQuestions(sessionId, env, questionId, reason)
     return retiring.length > 0 ? 'retiring' : 'withdrawn'
   }
   updateSessionState(sessionId, env, (current) => terminateCodexQuestions(current, new Set([questionId])))
   try {
-    parkForRetirement(sessionId, env, entry, end)
+    parkForRetirement(sessionId, env, entry, end, reason)
   } catch {
     // Incomplete identifiers cannot be retired on a device; dropping the
     // local record still stops this session waiting on it.
   }
-  dropPendingQuestion(sessionId, env, entry)
+  dropPendingQuestion(sessionId, env, entry, 'retired', { reason })
   return 'retiring'
 }
 
