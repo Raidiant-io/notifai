@@ -1,7 +1,7 @@
 {
   "version": 1,
-  "behavior_digest": "sha256:799782ad325a1fd8362fe60317f30e80835df9c4b07ca0ddf1b5f6cef314fe76",
-  "outcome": "guidance-updated",
+  "behavior_digest": "sha256:d22825597da69584088f0e8d0174d6aaffd29524d0191435ddfe380f22a7ae3e",
+  "outcome": "reviewed-no-impact",
   "surfaces_reviewed": [
     "lifecycle-hooks",
     "notifai-skill",
@@ -9,5 +9,5 @@
     "cli-readiness",
     "domain-terms"
   ],
-  "reason": "Reviewed all five surfaces for sizing a question form's phone push by the Project's real name and avatar. Lifecycle hooks: background submission keeps its order and outputs; its fallback to the registered source now uses the same size rule, and every submission records the Project identity size the service reports in local state. No hook prints new text. Notifai skill: references/send-details.md now says 10 questions of about 60 characters with two or three short choices usually fit, fewer when they are longer, replacing 'usually no more than 8 short questions'; the refusal, its remedy and the note that the Body and choice descriptions do not count are unchanged. SKILL.md keeps 'up to 10 questions', still the count cap. Harness setup: unchanged. CLI readiness: unchanged; doctor and init do not size question forms. Domain terms: unchanged; Project, Notification Request and Question Routing keep their meaning. Agent-visible text: the question_too_large message and remedy are unchanged; the guidance change note says forms are sized for the Project's real identity once the CLI has sent in that Project."
+  "reason": "Reviewed all five surfaces for the optional agent_received field on AnswerVersionView. It is a service response field the Companion Apps read to say Delivered on the User's reply label; the CLI never reads Answer Versions and sends nothing new. Lifecycle hooks: unchanged; close requests, dispositions and their responses are the same. Notifai skill: unchanged; agents still acknowledge answers as before, and no instruction depends on how the apps label delivery. Harness setup: unchanged. CLI readiness: unchanged; doctor and init do not inspect Answer Versions. Domain terms: unchanged; no new term, and the field documents the existing meaning of Delivered (the agent's computer has the reply). Agent-visible text: none changes."
 }
