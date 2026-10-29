@@ -21,6 +21,7 @@ import {
   LOG_LEVELS,
   ON_OFF_CONFIG_KEYS,
   REOPEN_CODEX_APP_POLICIES,
+  REOPEN_T3_POLICIES,
   REOPEN_FOCUS,
   REOPEN_PERMISSION_MODES,
   REOPEN_TERMINAL_APPS,
@@ -263,7 +264,7 @@ const INFO: Record<ConfigKey, Omit<ConfigKeyInfo, 'key'>> = {
     machineOnly: true,
     summary: 'Whether Notifai reopens a stopped conversation when an answer arrives',
     detail:
-      'On (the default), when an answer or note arrives for a conversation that a restart, a crash or its app stopped, Notifai opens it again where it was, so the agent gets it right away. It never opens a conversation anywhere else, and never one you closed yourself.\n\nOff, every stopped conversation waits for you to open it again; what arrived is handed to it then.\n\nThis is the switch for every place at once. `reopen.terminal` and `reopen.codex_app` set each place on its own. `on` and `off` are accepted as well as `true` and `false`.',
+      'On (the default), when an answer or note arrives for a conversation that a restart, a crash or its app stopped, Notifai opens it again where it was, so the agent gets it right away. It never opens a conversation anywhere else, and never one you closed yourself.\n\nOff, every stopped conversation waits for you to open it again; what arrived is handed to it then.\n\nThis is the switch for every place at once. `reopen.terminal`, `reopen.codex_app` and `reopen.t3` set each place on its own. `on` and `off` are accepted as well as `true` and `false`.',
     example: 'false',
   },
   'reopen.terminal': {
@@ -293,6 +294,20 @@ const INFO: Record<ConfigKey, Omit<ConfigKeyInfo, 'key'>> = {
     summary: 'What happens to a Codex app conversation the app stopped',
     detail:
       '`when-running` (the default) continues a conversation the Codex app started inside the app while the app is running, on macOS, without opening it or bringing the app to the front. A conversation from a terminal or another app never opens in the Codex app, and an archived one waits. Notifai never starts the Codex app. `off` waits for you to open it; the answer runs when you do.',
+  },
+  'reopen.t3': {
+    label: 'Reopen in T3 Code',
+    group: 'reopen',
+    kind: 'enum',
+    machineOnly: true,
+    choices: REOPEN_T3_POLICIES,
+    choiceHints: {
+      'when-running': 'continue it in its T3 Code thread while T3 Code runs',
+      off: 'wait for you to send in the thread',
+    },
+    summary: 'What happens to a T3 Code conversation T3 Code stopped',
+    detail:
+      '`when-running` (the default) continues a Claude Code conversation that T3 Code stopped after it sat idle, in the same T3 Code thread, while T3 Code is running: Notifai sends the thread a short Notifai wake, and the agent takes the answer from there. It shows in the thread like any message. Notifai never starts T3 Code, and never continues a conversation in another thread or app. `off` waits for you to send in the thread; the answer arrives then.',
   },
   'reopen.terminal_app': {
     label: 'Terminal app',

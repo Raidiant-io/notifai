@@ -105,29 +105,63 @@ export function systemTerminalProbe(env: NodeJS.ProcessEnv, platform: NodeJS.Pla
 const TERMINAL_APPS: ReadonlySet<string> = new Set<TerminalApp>(['terminal', 'iterm2', 'ghostty', 'wezterm', 'kitty', 'alacritty', 'gnome-terminal',
   'konsole', 'xterm', 'x-terminal-emulator', 'xdg-terminal-exec'])
 
+/** The T3 Code thread a conversation runs in, as T3 Code tells the harness it starts. */
+export interface T3ThreadFacts {
+  /** `T3CODE_THREAD_ID`: the thread `t3 thread send` addresses. */
+  thread: string
+  /** `T3CODE_CLI_PATH`: the `t3` of the T3 Code that runs it. */
+  cli: string | null
+  /** `T3CODE_HOME`, when T3 Code runs from a data directory other than the default one. */
+  home: string | null
+}
+
+const T3_THREAD = /^[A-Za-z0-9][A-Za-z0-9:._-]{0,127}$/
+
+function t3Cli(value: unknown): string | null {
+  return typeof value === 'string' && value.length <= 1_024 && path.isAbsolute(value) && /^t3(\.exe|\.cmd)?$/i.test(path.basename(value)) ? value : null
+}
+
+function t3Home(value: unknown): string | null {
+  return typeof value === 'string' && value.length <= 1_024 && path.isAbsolute(value) ? value : null
+}
+
+/** What T3 Code put in this hook's environment, or null outside T3 Code. */
+export function t3ThreadOf(env: NodeJS.ProcessEnv): T3ThreadFacts | null {
+  const thread = env['T3CODE_THREAD_ID']
+  if (thread === undefined || !T3_THREAD.test(thread)) return null
+  return { thread, cli: t3Cli(env['T3CODE_CLI_PATH']), home: t3Home(env['T3CODE_HOME']) }
+}
+
 /**
  * Keep what a session's prompt and start hooks see that a reopen needs: the
- * terminal (from the hook's own environment) and the permission mode the
- * harness reports. Written only when it changed.
+ * terminal (from the hook's own environment), the T3 Code thread it runs in,
+ * and the permission mode the harness reports. Written only when it changed.
  */
 export function recordReopenLaunch(sessionId: string, env: NodeJS.ProcessEnv, permissionMode: unknown, platform: NodeJS.Platform = process.platform): void {
   const seen = terminalSeen(env, platform)
   const mode = typeof permissionMode === 'string' && /^[A-Za-z]{1,32}$/.test(permissionMode) ? permissionMode : null
   const current = readSessionState(sessionId, env).reopen_launch
-  const next = { terminal: seen.app, terminal_seen: seen.seen, orca_pane: seen.orcaPane, permission_mode: mode ?? current?.permission_mode ?? null }
+  const t3 = t3ThreadOf(env)
+  const next = { terminal: seen.app, terminal_seen: seen.seen, orca_pane: seen.orcaPane, permission_mode: mode ?? current?.permission_mode ?? null,
+    ...(t3 === null ? {} : { t3 }) }
   if (current !== undefined && current.terminal === next.terminal && current.terminal_seen === next.terminal_seen &&
-      current.orca_pane === next.orca_pane && current.permission_mode === next.permission_mode) return
+      current.orca_pane === next.orca_pane && current.permission_mode === next.permission_mode &&
+      JSON.stringify(current.t3 ?? null) === JSON.stringify(t3)) return
   updateSessionState(sessionId, env, (state) => ({ ...state, reopen_launch: next }))
 }
 
 /** The recorded facts, validated. */
-export function readReopenLaunch(value: unknown): { terminal: TerminalApp | null; terminal_seen: string | null; orca_pane: boolean; permission_mode: string | null } | null {
+export function readReopenLaunch(value: unknown): { terminal: TerminalApp | null; terminal_seen: string | null; orca_pane: boolean; permission_mode: string | null;
+  t3: T3ThreadFacts | null } | null {
   if (typeof value !== 'object' || value === null) return null
   const record = value as Record<string, unknown>
   const terminal = typeof record['terminal'] === 'string' && TERMINAL_APPS.has(record['terminal']) ? record['terminal'] as TerminalApp : null
   const seen = typeof record['terminal_seen'] === 'string' && record['terminal_seen'].length <= 32 ? record['terminal_seen'] : null
   const mode = typeof record['permission_mode'] === 'string' && /^[A-Za-z]{1,32}$/.test(record['permission_mode']) ? record['permission_mode'] : null
-  return { terminal, terminal_seen: seen, orca_pane: record['orca_pane'] === true, permission_mode: mode }
+  const rawT3 = typeof record['t3'] === 'object' && record['t3'] !== null ? record['t3'] as Record<string, unknown> : null
+  const t3 = rawT3 !== null && typeof rawT3['thread'] === 'string' && T3_THREAD.test(rawT3['thread'])
+    ? { thread: rawT3['thread'], cli: t3Cli(rawT3['cli']), home: t3Home(rawT3['home']) } : null
+  return { terminal, terminal_seen: seen, orca_pane: record['orca_pane'] === true, permission_mode: mode, t3 }
 }
 
 const MAC_APPS: Readonly<Partial<Record<TerminalApp, string>>> = {

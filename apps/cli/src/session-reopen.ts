@@ -13,9 +13,10 @@
  *
  * - `reopen.automatic`: off, and every stopped conversation waits for the User;
  * - a place's policy: `reopen.terminal` (a new terminal window, see
- *   `reopen-terminal.ts`) and `reopen.codex_app` (the Codex app runs the
- *   thread's queued wake while it is running, see `reopen-codex-app.ts`).
- *   Every other place waits.
+ *   `reopen-terminal.ts`), `reopen.codex_app` (the Codex app runs the
+ *   thread's queued wake while it is running, see `reopen-codex-app.ts`) and
+ *   `reopen.t3` (T3 Code's thread gets a Notifai wake while T3 Code runs,
+ *   see `reopen-t3.ts`). Every other place waits.
  *
  * Rules that no setting changes:
  * - Notifai never moves a conversation: it reopens only in the place the
@@ -37,7 +38,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { atomicWriteFileSync } from './atomic-file.js'
 import { parseDescriptor } from './claude-wake.js'
-import { machineSetting, type ReopenCodexAppPolicy, type ReopenFocus, type ReopenPermissionMode, type ReopenTerminalApp,
+import { machineSetting, type ReopenCodexAppPolicy, type ReopenFocus, type ReopenPermissionMode, type ReopenT3Policy, type ReopenTerminalApp,
   type ReopenTerminalPolicy } from './config.js'
 import type { CodexAttachState } from './codex-attach-signal.js'
 import { codexSubcommand, codexThreadHolders } from './codex-session-end.js'
@@ -70,8 +71,10 @@ import {
   terminalEnvironment,
   type TerminalApp,
   type TerminalLaunch,
+  type T3ThreadFacts,
   type TerminalProbe,
 } from './reopen-terminal.js'
+import { sendT3Wake, systemT3Host, t3Plan, type T3Host, type T3Wait } from './reopen-t3.js'
 import type { SessionPlace } from './session-place.js'
 
 /** A reopen not confirmed by the conversation coming back within this long counts as no response (Proposal). */
@@ -97,6 +100,7 @@ export interface ReopenSettings {
   automatic: boolean
   terminal: ReopenTerminalPolicy
   codexApp: ReopenCodexAppPolicy
+  t3: ReopenT3Policy
   terminalApp: ReopenTerminalApp
   terminalCommand: string | null
   focus: ReopenFocus
@@ -109,6 +113,7 @@ export function reopenSettings(env: NodeJS.ProcessEnv): ReopenSettings {
     automatic: machineSetting('reopen.automatic', env).value,
     terminal: machineSetting('reopen.terminal', env).value,
     codexApp: machineSetting('reopen.codex_app', env).value,
+    t3: machineSetting('reopen.t3', env).value,
     terminalApp: machineSetting('reopen.terminal_app', env).value,
     terminalCommand: machineSetting('reopen.terminal_command', env).value,
     focus: machineSetting('reopen.focus', env).value,
@@ -117,18 +122,20 @@ export function reopenSettings(env: NodeJS.ProcessEnv): ReopenSettings {
 }
 
 /** The adapter that may reopen a place, and whether its policy lets it; null for a place that always waits. */
-export type ReopenAdapterId = 'terminal' | 'codex-app'
+export type ReopenAdapterId = 'terminal' | 'codex-app' | 't3'
 
 export function placeAdapter(place: SessionPlace): ReopenAdapterId | null {
   if (place === 'terminal') return 'terminal'
   if (place === 'codex-app') return 'codex-app'
+  if (place === 't3') return 't3'
   return null
 }
 
 /** Whether the settings let this adapter act at all. */
 export function adapterAllowed(settings: ReopenSettings, adapter: ReopenAdapterId): boolean {
   if (!settings.automatic) return false
-  return adapter === 'terminal' ? settings.terminal === 'automatic' : settings.codexApp !== 'off'
+  if (adapter === 'terminal') return settings.terminal === 'automatic'
+  return adapter === 'codex-app' ? settings.codexApp !== 'off' : settings.t3 !== 'off'
 }
 
 // -- what a reopen needs to know ------------------------------------------------------
@@ -287,12 +294,13 @@ export function readCodexTurnPostures(transcriptPath: string | null): CodexTurnP
   }
 }
 
-/** What a session's hooks last saw: the terminal and the permission mode (kept in its session state as `reopen_launch`). */
+/** What a session's hooks last saw: the terminal, the permission mode and the T3 Code thread (kept in its session state as `reopen_launch`). */
 export interface HookLaunchFacts {
   terminal: TerminalApp | null
   terminal_seen: string | null
   orca_pane: boolean
   permission_mode: string | null
+  t3?: T3ThreadFacts | null
 }
 
 /** One stopped conversation, as the hub knows it. */
@@ -331,10 +339,12 @@ export type ReopenWait = 'off' | 'place-waits' | 'orca-pane' | 'folder-missing' 
   'launch-unknown' |
   /** Its permission posture cannot be reproduced exactly; or (Codex) it changed since the thread started, so its command line no longer says it. */
   'permission-unknown' | 'permission-changed' |
-  CodexAppWait | 'app-started'
+  CodexAppWait | 'app-started' | T3Wait
 
 /** What a Codex app attempt records in place of a terminal's name. */
 const CODEX_APP = 'codex-app'
+/** What a T3 Code attempt records in place of a terminal's name. */
+const T3_CODE = 't3'
 
 export type ReopenOutcome =
   | { outcome: 'launched'; token: string; terminal: string }
@@ -384,6 +394,8 @@ export interface ReopenHost {
   open(launch: TerminalLaunch, cwd: string, display?: Readonly<Record<string, string>>): Promise<true | string>
   /** The running Codex app, for its own conversations. */
   codexApp: CodexAppHost
+  /** T3 Code's own CLI, for its threads. */
+  t3: T3Host
 }
 
 /** The real machine, for the hub. */
@@ -409,6 +421,7 @@ export function systemReopenHost(env: NodeJS.ProcessEnv, logger: Logger, launche
     queueCodexWake: async () => undefined,
     open: (launch, cwd, display) => openWindow(launch, cwd, { ...env, ...display }),
     codexApp: systemCodexAppHost(launcher),
+    t3: systemT3Host(env),
     ...overrides,
   }
 }
@@ -609,6 +622,11 @@ export class SessionReopen {
         if (target.harness !== 'codex') return waiting('place-waits')
         return await this.codexAppReopen(target, trigger, record, fresh, now, waiting)
       }
+      if (adapter === 't3') {
+        // Claude Code only: how T3 Code brings back a Codex thread it unloaded is not yet witnessed.
+        if (target.harness !== 'claude-code') return waiting('place-waits')
+        return await this.t3Reopen(target, trigger, record, fresh, now, waiting)
+      }
       const plan = await this.terminalPlan(target, settings)
       if ('wait' in plan) return waiting(plan.wait)
       const token = randomBytes(16).toString('hex')
@@ -654,7 +672,8 @@ export class SessionReopen {
     const record = readSessionRecord(env, sessionId)
     if (record?.last?.outcome !== 'launched' || record.last.token === undefined) return
     const pid = guardPid(env, record.last.token)
-    const outcome = pid !== null ? 'confirmed' : 'resumed'
+    // A T3 Code thread comes back in the thread Notifai sent to: there is no window to confirm it.
+    const outcome = pid !== null || record.last.terminal === T3_CODE ? 'confirmed' : 'resumed'
     removeAttempt(env, record.last.token)
     const now = this.host.now()
     record.last = { ...record.last, outcome, ...(pid === null ? {} : { pid }) }
@@ -713,7 +732,8 @@ export class SessionReopen {
       const version = attemptAppVersion(env, record.last.token)
       if (version !== null) recordCodexAppFault(reopenDir(env), version, 'no-response', now)
     }
-    const ran = record.last.token === undefined ? false : guardPid(env, record.last.token) !== null
+    // A T3 Code send has no window: what ran is the send itself.
+    const ran = record.last.terminal === T3_CODE || (record.last.token === undefined ? false : guardPid(env, record.last.token) !== null)
     removeAttempt(env, record.last.token)
     record.last = { ...record.last, outcome: 'no-response', reason: ran ? 'not-back' : 'window-did-not-run' }
     record.updated_at = now
@@ -784,6 +804,38 @@ export class SessionReopen {
     this.host.logger.info('hub.reopen', { event: 'launched', session: target.sessionId, trigger, harness: target.harness, terminal: CODEX_APP,
       route: sent.route, attempt: record.attempts })
     return { outcome: 'launched', token, terminal: CODEX_APP }
+  }
+
+  /**
+   * The T3 Code adapter (`reopen-t3.ts`): the thread the conversation runs in
+   * gets a Notifai wake through T3 Code's own CLI, and T3 Code brings the
+   * conversation back in that thread. Its coming back confirms the attempt.
+   */
+  private async t3Reopen(target: ReopenTarget, trigger: ReopenTrigger, record: SessionRecord, fresh: string[], now: number,
+    waiting: (reason: ReopenWait) => ReopenOutcome): Promise<ReopenOutcome> {
+    const { env } = this.host
+    const homes = [target.claudeConfigDir ?? path.join(accountHome(env), '.claude'), path.join(accountHome(env), '.claude')]
+    if (this.host.claudeLive(homes, target.sessionId)) return waiting('live-elsewhere')
+    const thread = target.hooks?.t3 ?? null
+    const plan = t3Plan(thread, env, this.host.t3)
+    if ('wait' in plan) return waiting(plan.wait)
+    const token = randomBytes(16).toString('hex')
+    const before = { attempts: record.attempts, seen: record.seen, last: record.last }
+    record.attempts += 1
+    record.seen = [...record.seen, ...fresh].slice(-200)
+    record.last = { at: now, trigger, outcome: 'launched', token, terminal: T3_CODE, items: fresh.slice(0, 50) }
+    record.updated_at = now
+    // Recorded before the send: the conversation can come back before it returns.
+    this.save(record)
+    const sent = await sendT3Wake(plan, thread!.home, this.host.t3)
+    if (sent !== true) {
+      Object.assign(record, before)
+      this.host.logger.info('hub.reopen', { event: 'launch-failed', session: target.sessionId, terminal: T3_CODE, detail: sent })
+      return waiting('launch-failed')
+    }
+    this.host.logger.info('hub.reopen', { event: 'launched', session: target.sessionId, trigger, harness: target.harness, terminal: T3_CODE,
+      attempt: record.attempts })
+    return { outcome: 'launched', token, terminal: T3_CODE }
   }
 
   /** The terminal adapter's preflight and its launch, or why it waits. */
@@ -893,6 +945,7 @@ export function reopenReport(env: NodeJS.ProcessEnv, platform: NodeJS.Platform =
     automatic: machineSetting('reopen.automatic', env).source,
     terminal: machineSetting('reopen.terminal', env).source,
     codex_app: machineSetting('reopen.codex_app', env).source,
+    t3: machineSetting('reopen.t3', env).source,
   }
   const sessions = sessionRecords(env)
     .filter((record) => record.last !== null)
@@ -908,6 +961,7 @@ export function reopenReport(env: NodeJS.ProcessEnv, platform: NodeJS.Platform =
     terminal: settings.terminal,
     codex_app: settings.codexApp,
     codex_app_available: platform === 'darwin',
+    t3: settings.t3,
     terminal_app: settings.terminalApp,
     focus: settings.focus,
     permission_mode: settings.permissionMode,
@@ -932,6 +986,7 @@ export function reopenLine(report: ReturnType<typeof reopenReport>): string {
   const places = [
     ...(report.terminal === 'automatic' ? [`terminals automatically${where}`] : []),
     ...(report.codex_app_available && report.codex_app !== 'off' ? ['the Codex app while it runs'] : []),
+    ...(report.t3 !== 'off' ? ['T3 Code threads while T3 Code runs'] : []),
   ]
   if (places.length === 0) return 'Reopen: off; every stopped conversation waits for you'
   return `Reopen: ${places.join('; ')}; other apps wait for you`

@@ -1,5 +1,5 @@
 {
-  "current": "7f7b6b5018936d5b08441abd72f17a72e0b23b3037d43199b820d1612e18f6d1",
+  "current": "124e49f92c3806bc135715221cbac3f9389d4c2b2be09f19c7c1c7ef801b52ef",
   "releases": [
     {
       "digest": "3e47b01bc6bbfb43e910c660b9964fab6459d75148c3c02dcbcd0be64cfb2963",
@@ -176,6 +176,10 @@
     {
       "digest": "7f7b6b5018936d5b08441abd72f17a72e0b23b3037d43199b820d1612e18f6d1",
       "note": "`notifai ask` now refuses, before registering anything, a form whose questions and choice labels do not fit one phone notification (about 4 KB, usually no more than 8 short questions; the Body and choice descriptions do not count). The refusal has code `question_too_large`, names the size, and says to split the questions into smaller forms or shorten question texts, choice labels, the title or the summary. Such a form used to register, then end `retired` in the background with no reason, and the User never saw it. `notifai status <question_id>` now says why a retired or withdrawn question ended: a `Reason:` line, and `end_reason` (with `end_detail` for a service refusal) in `--json`; a service refusal reads \"refused by the service — the User never saw this question\". The local log records each such end as `ask.retired` with its reason."
+    },
+    {
+      "digest": "124e49f92c3806bc135715221cbac3f9389d4c2b2be09f19c7c1c7ef801b52ef",
+      "note": "A Claude Code conversation that T3 Code stopped after it sat idle now continues by itself when an answer or note arrives for it: while T3 Code runs, Notifai sends its own T3 Code thread a Notifai wake through T3 Code's `t3` command, the conversation comes back in that thread, and the agent takes the answer from there. It never continues in another thread or app, and never starts T3 Code; while T3 Code is not running it waits for the User as before. `reopen.t3` (`when-running` by default, or `off`) is the new per-place setting, and doctor's `Reopen:` line names T3 Code threads. A Codex thread in T3 Code still waits for the User. Agents should not ask the User to resume such a conversation."
     }
   ]
 }

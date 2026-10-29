@@ -201,9 +201,11 @@ export interface SessionState {
   claude_permission_mode?: string
   /**
    * What this session's hooks last saw that a reopen needs (see
-   * `session-reopen.ts`): the terminal it runs in and its permission mode.
+   * `session-reopen.ts`): the terminal it runs in, its permission mode, and
+   * the T3 Code thread it runs in (`T3CODE_THREAD_ID`, `T3CODE_CLI_PATH`).
    */
-  reopen_launch?: { terminal: string | null; terminal_seen: string | null; orca_pane: boolean; permission_mode: string | null }
+  reopen_launch?: { terminal: string | null; terminal_seen: string | null; orca_pane: boolean; permission_mode: string | null;
+    t3?: { thread: string; cli: string | null; home: string | null } }
   /**
    * The Claude Code picker now on screen: the device question it registered,
    * the digest of the questions it shows, and the hook process waiting on its

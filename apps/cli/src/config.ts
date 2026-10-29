@@ -119,6 +119,7 @@ export interface CliConfig {
   'reopen.automatic': ResolvedValue<boolean>
   'reopen.terminal': ResolvedValue<ReopenTerminalPolicy>
   'reopen.codex_app': ResolvedValue<ReopenCodexAppPolicy>
+  'reopen.t3': ResolvedValue<ReopenT3Policy>
   'reopen.terminal_app': ResolvedValue<ReopenTerminalApp>
   'reopen.terminal_command': ResolvedValue<string | null>
   'reopen.focus': ResolvedValue<ReopenFocus>
@@ -129,6 +130,8 @@ export const REOPEN_TERMINAL_POLICIES = ['automatic', 'off'] as const
 export type ReopenTerminalPolicy = (typeof REOPEN_TERMINAL_POLICIES)[number]
 export const REOPEN_CODEX_APP_POLICIES = ['when-running', 'off'] as const
 export type ReopenCodexAppPolicy = (typeof REOPEN_CODEX_APP_POLICIES)[number]
+export const REOPEN_T3_POLICIES = ['when-running', 'off'] as const
+export type ReopenT3Policy = (typeof REOPEN_T3_POLICIES)[number]
 export const REOPEN_TERMINAL_APPS = ['auto', 'terminal', 'iterm2', 'ghostty', 'wezterm', 'kitty', 'alacritty', 'gnome-terminal', 'konsole', 'custom'] as const
 export type ReopenTerminalApp = (typeof REOPEN_TERMINAL_APPS)[number]
 export const REOPEN_FOCUS = ['background', 'front'] as const
@@ -156,6 +159,7 @@ export const CONFIG_KEYS = [
   'reopen.automatic',
   'reopen.terminal',
   'reopen.codex_app',
+  'reopen.t3',
   'reopen.terminal_app',
   'reopen.terminal_command',
   'reopen.focus',
@@ -171,7 +175,7 @@ export type ConfigKey = (typeof CONFIG_KEYS)[number]
  * runs on it.
  */
 export const MACHINE_ONLY_CONFIG_KEYS: readonly ConfigKey[] = ['updates.automatic', 'reopen.automatic', 'reopen.terminal', 'reopen.codex_app',
-  'reopen.terminal_app', 'reopen.terminal_command', 'reopen.focus', 'reopen.permission_mode']
+  'reopen.t3', 'reopen.terminal_app', 'reopen.terminal_command', 'reopen.focus', 'reopen.permission_mode']
 
 /** Keys whose TOML value must be a list of normalized http(s) origins. */
 export const ORIGIN_LIST_CONFIG_KEYS: readonly ConfigKey[] = ['media_origins', 'approve_origins']
@@ -204,6 +208,7 @@ export const ENUM_CONFIG_VALUES: Partial<Record<ConfigKey, readonly string[]>> =
   log_level: LOG_LEVELS,
   'reopen.terminal': REOPEN_TERMINAL_POLICIES,
   'reopen.codex_app': REOPEN_CODEX_APP_POLICIES,
+  'reopen.t3': REOPEN_T3_POLICIES,
   'reopen.terminal_app': REOPEN_TERMINAL_APPS,
   'reopen.focus': REOPEN_FOCUS,
   'reopen.permission_mode': REOPEN_PERMISSION_MODES,
@@ -249,6 +254,8 @@ const DEFAULTS = {
   'reopen.automatic': true,
   'reopen.terminal': 'automatic',
   'reopen.codex_app': 'when-running',
+  // A T3 Code thread T3 idled out continues in that thread (2026-10-29).
+  'reopen.t3': 'when-running',
   'reopen.terminal_app': 'auto',
   'reopen.terminal_command': null,
   'reopen.focus': 'background',
@@ -607,6 +614,7 @@ export function loadConfig(options: {
     'reopen.automatic': resolve('reopen.automatic'),
     'reopen.terminal': resolve('reopen.terminal'),
     'reopen.codex_app': resolve('reopen.codex_app'),
+    'reopen.t3': resolve('reopen.t3'),
     'reopen.terminal_app': resolve('reopen.terminal_app'),
     'reopen.terminal_command': resolve('reopen.terminal_command'),
     'reopen.focus': resolve('reopen.focus'),

@@ -47,10 +47,13 @@ possibly hours later: check that the work it answers still applies.
 A terminal conversation the machine stopped reopens by itself when an answer or
 note arrives: a new terminal window runs `claude --resume` in its folder, in the
 permission mode it last ran in and never a more permissive one. When Notifai
-cannot reproduce how it started, it waits for the User instead. Do not ask the
-User to resume it.
-`notifai config set reopen.terminal off --yes` (or `notifai config set reopen.automatic off --yes` for every
-place) makes it wait for the User; change these only when the User asks.
+cannot reproduce how it started, it waits for the User instead. A conversation
+T3 Code stopped after it sat idle continues by itself in its own T3 Code thread
+while T3 Code runs: Notifai sends that thread a Notifai wake. Do not ask the
+User to resume either.
+`notifai config set reopen.terminal off --yes` (`reopen.t3` for T3 Code, or
+`reopen.automatic` for every place) makes it wait for the User; change these
+only when the User asks.
 
 ## Questions
 

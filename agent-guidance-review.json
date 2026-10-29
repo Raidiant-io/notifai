@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "behavior_digest": "sha256:5f70792a5d2ee1fd6a09656a4665b6583cbe9d2a8f1296b38bb85bff4c67cb60",
+  "behavior_digest": "sha256:a0763b5056688090551976c753fbb2c3edb06e779f07dcee2ebd8d7700c959ea",
   "outcome": "guidance-updated",
   "surfaces_reviewed": [
     "lifecycle-hooks",
@@ -9,5 +9,5 @@
     "cli-readiness",
     "domain-terms"
   ],
-  "reason": "Reviewed all five surfaces for the phone push limit on ask forms and recorded question end reasons. Lifecycle hooks: background submission keeps its order and outputs; when the hook's Git location would push a registered form past the phone push limit it submits with the registered source, and every retirement or withdrawal now records a local reason code and logs ask.retired. No hook prints new text, and the retirement state sent to the service is unchanged. Notifai skill: references/send-details.md now says a form's questions and choice labels must fit one phone notification of about 4 KB (usually no more than 8 short questions), that ask refuses a larger form before registering anything and says how to split it, and that the Body and choice descriptions do not count. SKILL.md keeps 'up to 10 questions', still the count cap. Harness setup: unchanged. CLI readiness: unchanged; doctor and init do not read question history. Domain terms: unchanged; retired, withdrawn, Notification Request and Question Routing keep their meaning. New agent-visible text: the ask refusal (code question_too_large, message and remedy) and the status Reason line and end_reason/end_detail JSON fields, described in the guidance change note."
+  "reason": "Reviewed all five surfaces for reopening a Claude Code conversation T3 Code stopped. Lifecycle hooks: definitions and output unchanged; the SessionStart, UserPromptSubmit and Stop handlers that already keep reopen_launch now also keep the T3 Code thread T3 Code names in the hook's own environment (T3CODE_THREAD_ID, T3CODE_CLI_PATH when its basename is t3, T3CODE_HOME when absolute), in local session state only; nothing new is sent. The hub, for a stopped claude-code session whose place is t3, runs that t3 with `thread send <thread> -` and the existing token-less Notifai wake text, only while the T3 Code server named by <T3 home>/userdata/server-runtime.json runs, never for a Codex thread, within the existing two-attempt and burst limits, retrying a busy T3 database twice; the conversation coming back confirms it. Notifai skill: references/harness-claude-code.md now says a conversation T3 Code stopped continues in its own thread while T3 Code runs and names reopen.t3; references/diagnostics.md names the T3 Code thread in the Reopen row. Harness setup: unchanged. CLI readiness: new machine-only setting reopen.t3 (when-running default, off), and doctor's Reopen line adds 'T3 Code threads while T3 Code runs'; ask readiness unchanged. Domain terms: unchanged. skills/guidance-changes.json carries one new release note for this change."
 }
