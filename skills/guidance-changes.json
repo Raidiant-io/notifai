@@ -1,5 +1,5 @@
 {
-  "current": "6f4538193e5ea098c347ecf5933d31ac97b58a3f0131933970105d290c71500c",
+  "current": "c44e290ee345d7cf997acd18bb92bebc00aa38541987f3be8f3210b93e9186df",
   "releases": [
     {
       "digest": "3e47b01bc6bbfb43e910c660b9964fab6459d75148c3c02dcbcd0be64cfb2963",
@@ -228,6 +228,10 @@
     {
       "digest": "6f4538193e5ea098c347ecf5933d31ac97b58a3f0131933970105d290c71500c",
       "note": "Name your Agent Session once: pass `--session-label` on your first send or ask and leave it off after that, since the name stays. To change it after a complete change of job, use `notifai session rename`."
+    },
+    {
+      "digest": "c44e290ee345d7cf997acd18bb92bebc00aa38541987f3be8f3210b93e9186df",
+      "note": "When you acknowledge an answer, note or edit that arrived through Notifai, also show it in the conversation: a bold label line, the User's words verbatim in a `>` quote, then one line naming the work. `notifai guidance` (topic `acknowledgements`) gives the exact shape."
     }
   ]
 }

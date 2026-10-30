@@ -231,7 +231,9 @@ notifai acknowledge <request_id> --text '<the concrete work this reply sets in m
 ```
 
 Name only work this Agent Session will do itself. Keep the text under 200 characters. When acknowledgement text is off,
-Notifai gives the command without `--text`; run exactly that. Then resume the
+Notifai gives the command without `--text`; run exactly that. Either way, show
+what arrived in the conversation, quoted verbatim in the shape
+`acknowledgements` gives. Then resume the
 committed work without asking them to confirm again: it is work you are
 resuming, not approval you received.
 

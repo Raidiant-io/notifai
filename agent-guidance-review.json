@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "behavior_digest": "sha256:630bc457a9eeb14d77a45f1ddd9ee92e7e90368484eca40266a6be8eba3a65df",
+  "behavior_digest": "sha256:89d5e575e8e5d7739582306070b6385bc76d80f3276c61247ee70725bf5c0ab7",
   "outcome": "guidance-updated",
   "surfaces_reviewed": [
     "lifecycle-hooks",
@@ -9,5 +9,5 @@
     "cli-readiness",
     "domain-terms"
   ],
-  "reason": "Reviewed all five surfaces for naming an Agent Session once. The CLI freezes the first accepted name and ignores a repeated --session-label, so the Notifai skill's 'Name the Agent Session' section now says to pass it on the first send or ask and leave it off afterwards, and the rename paragraph no longer says to keep passing the new name. The send and ask --session-label help says the same. Lifecycle hooks, harness setup, CLI readiness and domain terms are unchanged; the unreleased earlier note no longer tells agents to repeat the label."
+  "reason": "The acknowledgements topic now has agents show each answer, note or edit that arrived through Notifai in the conversation: a bold label line, the User's words verbatim in a > quote, then one line naming the work. The skill points to that shape from its acknowledge step. Lifecycle hooks still hand over the acknowledge command and already send agents to the skill and guidance; harness setup, CLI readiness and domain terms are unaffected, since the quote is conversation text and the sent acknowledgement still names only the work."
 }

@@ -156,9 +156,45 @@ Good:
 Bad:
 
 - \`Acknowledged.\` / \`Got it!\` — shows nothing was understood
-- \`You chose "Deploy now".\` — echoes the reply instead of naming the work
+- \`You chose "Deploy now".\` — echoes the reply instead of naming the work;
+  the quote belongs in the conversation
 - \`Deploying now, and I'll also refactor the retry logic.\` — promises work
   the reply did not cause
+
+## In the conversation
+
+When you acknowledge an answer, note or edit that arrived through Notifai,
+also show it in the conversation, every time in the same shape: a bold label
+line, the User's words verbatim in a \`>\` quote, then one line naming the same
+work your acknowledgement names.
+
+\`\`\`markdown
+**💬 Answer received · Production deploy**
+> **Wait for off-peak**
+> and ping me when it's live
+
+Scheduling the deploy for 02:00 UTC; I'll notify you once it's live.
+\`\`\`
+
+\`\`\`markdown
+**📝 Note received**
+> Use the staging DB for the migration test, not prod.
+>
+> Also skip the cache warmup this time.
+
+Pointing the migration test at staging and dropping the warmup step now.
+\`\`\`
+
+- The label is \`💬 Answer received · <question title>\`, \`📝 Note received\`
+  or \`✏️ Edit received · <question title>\`.
+- Quote exactly what the User sent, never a summary or a correction. A chosen
+  choice's label goes in bold and typed text plain beneath it. For a form,
+  quote each answer under its question's text in italics. Start every line
+  with \`>\`, blank lines too.
+- When their words contain a code fence, put them in a \`text\` code block under
+  the label instead of a quote.
+- An answer given in the harness's own question form is already in the
+  conversation; don't quote it again.
 `
 
 /**
