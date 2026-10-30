@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "behavior_digest": "sha256:89d5e575e8e5d7739582306070b6385bc76d80f3276c61247ee70725bf5c0ab7",
+  "behavior_digest": "sha256:5a06e0b69ba2c42812a7d57aa034466cc1da3b58c146bb56676d74951f5af613",
   "outcome": "guidance-updated",
   "surfaces_reviewed": [
     "lifecycle-hooks",
@@ -9,5 +9,5 @@
     "cli-readiness",
     "domain-terms"
   ],
-  "reason": "The acknowledgements topic now has agents show each answer, note or edit that arrived through Notifai in the conversation: a bold label line, the User's words verbatim in a > quote, then one line naming the work. The skill points to that shape from its acknowledge step. Lifecycle hooks still hand over the acknowledge command and already send agents to the skill and guidance; harness setup, CLI readiness and domain terms are unaffected, since the quote is conversation text and the sent acknowledgement still names only the work."
+  "reason": "The acknowledgements topic now has agents put a lone > line between quoted lines when they quote the User in the conversation, because a CommonMark renderer (Hermes' render mode) joined a chosen choice and its typed text into one line. Codex, OpenCode and Grok kept them apart either way. Lifecycle hooks, harness setup, CLI readiness and domain terms are unaffected; the skill already points to this topic."
 }

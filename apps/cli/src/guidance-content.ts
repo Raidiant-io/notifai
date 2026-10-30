@@ -171,6 +171,7 @@ work your acknowledgement names.
 \`\`\`markdown
 **💬 Answer received · Production deploy**
 > **Wait for off-peak**
+>
 > and ping me when it's live
 
 Scheduling the deploy for 02:00 UTC; I'll notify you once it's live.
@@ -190,7 +191,8 @@ Pointing the migration test at staging and dropping the warmup step now.
 - Quote exactly what the User sent, never a summary or a correction. A chosen
   choice's label goes in bold and typed text plain beneath it. For a form,
   quote each answer under its question's text in italics. Start every line
-  with \`>\`, blank lines too.
+  with \`>\`, and put a lone \`>\` line between lines: some renderers join
+  quoted lines that have none.
 - When their words contain a code fence, put them in a \`text\` code block under
   the label instead of a quote.
 - An answer given in the harness's own question form is already in the
