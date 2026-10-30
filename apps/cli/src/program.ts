@@ -62,6 +62,7 @@ import { admitNativeCommand, portableNativeReport, type NativeAdmission } from '
 import { resumeAttendantCommand } from './attendant-update.js'
 import { buildIdentity } from './distribution.js'
 import { nativeInstallCommand, type NativeInstallFlags } from './commands-native-installation.js'
+import { releaseChannelCommand } from './commands-release-channel.js'
 import { nativeUninstallCommand, type NativeUninstallFlags } from './commands-native-uninstall.js'
 import { shippedSkillBundle } from './skill-integrity.js'
 import { installedChangelog } from './update-handoff.js'
@@ -126,6 +127,7 @@ const defaultRunners = {
   updateCheck: cliUpdateCheckCommand,
   updateSkill: updateSkillCommand,
   updateResume: updateResumeCommand,
+  releaseChannel: releaseChannelCommand,
   login: loginCommand,
   logout: logoutCommand,
   authAdopt: authAdoptCommand,
@@ -507,6 +509,17 @@ export function buildProgram(deps: CommandDeps, options: BuildProgramOptions = {
         return
       }
       exit(opts.resume ? await runners.updateResume(deps, opts) : opts.refreshSkill ? await runners.updateSkill(deps, opts) : opts.check ? await runners.updateCheck(deps, opts) : await runners.update(deps, opts))
+    })
+
+  program
+    .command('channel')
+    .helpGroup(GROUP.start)
+    .summary('Show or choose the release channel')
+    .description('Show this computer\'s release channel, or choose stable or beta. Choosing installs a newer release on that channel now; when there is none, the active build stays until the channel offers a newer one. It never installs an older version.')
+    .argument('[channel]', 'stable or beta; omit to show the saved channel')
+    .option('--json', 'machine-readable output')
+    .action(async (channel: string | undefined, opts: { json?: boolean }) => {
+      exit(await runners.releaseChannel(deps, channel, opts))
     })
 
   // Asked of a staged, not yet active build by the automatic updater: what

@@ -34,7 +34,7 @@ import { claimNow, type PendingNotice } from './pending-notice.js'
 import type { Installation } from './installation.js'
 import { ContinuityPending } from './local-continuity.js'
 import type { Logger } from './logging.js'
-import { compareReleasePrecedence, isSemVer } from './version.js'
+import { compareReleasePrecedence, isPrerelease, isSemVer } from './version.js'
 
 /** One release lookup a day per machine. */
 export const AUTOMATIC_LOOKUP_INTERVAL_MS = 24 * 60 * 60 * 1000
@@ -125,6 +125,15 @@ function patchRecord(env: NodeJS.ProcessEnv, patch: Partial<AutomaticUpdateRecor
   } catch { /* The record is a report; the next attempt writes it again. */ }
 }
 
+/** A changed channel makes the staged update and today's lookup stale: the
+ * next pass looks up the new channel instead of waiting a day. */
+export function forgetAutomaticLookup(env: NodeJS.ProcessEnv): void {
+  try {
+    updateAutomaticUpdateRecord(env, ({ checked_at: _checked, ...record }) => ({
+      record: { ...record, staged: null, waiting_for: [], hook_changes: [], schema: 1 }, result: undefined }))
+  } catch { /* The record is a report; the next daily lookup replaces it. */ }
+}
+
 /** What `update --check --json` reports about automatic updates on this machine. */
 export function automaticUpdateReport(env: NodeJS.ProcessEnv, options: { runsHere: boolean }) {
   const setting = automaticUpdatesSetting(env)
@@ -209,7 +218,8 @@ export async function attemptAutomaticUpdate(host: AutomaticUpdateHost): Promise
     }
 
     const staged = readAutomaticUpdateRecord(env).staged
-    if (!staged || staged.build === active.build ||
+    // A beta staged before the channel became stable never activates on it.
+    if (!staged || staged.build === active.build || (channel === 'stable' && isPrerelease(staged.version)) ||
         compareReleasePrecedence(staged.version, active.version) !== 'after') {
       if (staged) patchRecord(env, { staged: null, waiting_for: [], hook_changes: [] })
       return { outcome: 'current' }

@@ -1,5 +1,5 @@
 {
-  "current": "dabed7e138e804241b345ef05ff99b0147db5d6b358b1182d6800e255f73707e",
+  "current": "bbedc1c819d38041453b698f4f9b14c1a70d354e6293e67cd621f9ac156d5970",
   "releases": [
     {
       "digest": "3e47b01bc6bbfb43e910c660b9964fab6459d75148c3c02dcbcd0be64cfb2963",
@@ -208,6 +208,10 @@
     {
       "digest": "dabed7e138e804241b345ef05ff99b0147db5d6b358b1182d6800e255f73707e",
       "note": "Agents can now make a plain folder a Project by name on this computer: `notifai project folder add <path> --name <name>`, with `list`, `rename` and `remove` (each takes `--json`). Outside a Git repository, a send or ask from that folder or any folder inside it then carries that Project. A Git repository inside the folder keeps its own Project, and an explicit, configured or `--projectless` choice still wins. Do it when the User asks; the folder's path never leaves the computer."
+    },
+    {
+      "digest": "bbedc1c819d38041453b698f4f9b14c1a70d354e6293e67cd621f9ac156d5970",
+      "note": "`notifai channel` now shows this computer's release channel, and `notifai channel stable` or `notifai channel beta` changes it (each takes `--json`). Choosing a channel installs a newer release on it at once and never an older one: leaving beta keeps the active beta until a newer stable release replaces it, which automatic updates then install. Plain `notifai update` in that state reports that nothing newer is available instead of failing. When the User asks to change channel, use `notifai channel`; `notifai update --channel stable --allow-downgrade` stays the explicit return to the older stable release now."
     }
   ]
 }

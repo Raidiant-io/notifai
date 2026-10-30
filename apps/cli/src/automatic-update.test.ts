@@ -11,8 +11,12 @@ import {
 attemptAutomaticUpdate,
 parseActivationPlan,
 readAutomaticUpdateRecord,
+updateAutomaticUpdateRecord,
 type AutomaticUpdateHost
 } from './automatic-update.js'
+import type { CommandDeps } from './commands-core.js'
+import { nativeUpdateCommand } from './commands-native-installation.js'
+import { releaseChannelCommand } from './commands-release-channel.js'
 import { beginSessionIncarnation,lifecycleStamp,writeSessionState } from './hook-session-state.js'
 import { Installation } from './installation.js'
 import { nullLogger } from './logging.js'
@@ -37,8 +41,10 @@ function fixture() {
   const releases = new Map<string, { inventory: string; archive: Buffer }>()
   const channels: Record<'stable' | 'beta', { sequence: number; version: string; withdrawn: string[] } | null> = { stable: null, beta: null }
   const requests: string[] = []
+  const network = { up: true }
   const fetcher = (async (input: string) => {
     const url = String(input)
+    if (!network.up) throw new TypeError('fetch failed')
     requests.push(url)
     for (const name of ['stable', 'beta'] as const) {
       if (url.endsWith(`/${name}.json`)) {
@@ -81,7 +87,7 @@ function fixture() {
     await installation.installRelease({ channel, source, expectedGeneration: 0 })
   }
   const env: NodeJS.ProcessEnv = { XDG_STATE_HOME: path.join(root, 'state'), XDG_CONFIG_HOME: path.join(root, 'config') }
-  return { root, env, installation, options, publish, point, install, requests, channels }
+  return { root, env, installation, options, publish, point, install, requests, channels, network }
 }
 
 type Fixture = Awaited<ReturnType<typeof fixture>>
@@ -160,6 +166,108 @@ describe('automatic updates', () => {
     expect(await attemptAutomaticUpdate({ ...host(f).host, running: () => running })).toEqual({ outcome: 'activated', from: '1.0.0', to: '1.1.0' })
     expect(install(f)).toMatchObject({ pending: false, channel: 'stable' })
     expect(activeVersion(f)).toBe('1.1.0')
+  })
+})
+
+describe('choosing a release channel', () => {
+  const DAY = 24 * 60 * 60 * 1000
+  function command(f: Fixture) {
+    const printed: Record<string, unknown>[] = []
+    const deps: CommandDeps = { cwd: f.root, env: f.env,
+      io: { out: (text) => { printed.push(JSON.parse(text) as Record<string, unknown>) }, err: () => {}, confirm: async () => false, openUrl: () => {} },
+      store: { load: () => null, save: () => {}, clear: () => {}, describe: () => 'test' } }
+    const update = async (_deps: CommandDeps, channel: 'stable' | 'beta') => {
+      const nested: string[] = []
+      await nativeUpdateCommand({ ...deps, io: { ...deps.io, out: (text) => { nested.push(text) } } }, { channel, json: true },
+        { installation: f.installation, prepareHooks: () => true, resume: () => ({ ok: true, files_complete: true, migration_complete: true }) })
+      return JSON.parse(nested.join('')) as Record<string, unknown>
+    }
+    const run = async (channel?: string) => ({
+      code: await releaseChannelCommand(deps, channel, { json: true }, { installation: f.installation, update }), report: printed.at(-1)! })
+    const plainUpdate = async (flags: { channel?: string; allowDowngrade?: boolean } = {}) => ({
+      code: await nativeUpdateCommand(deps, { ...flags, json: true }, { installation: f.installation, prepareHooks: () => true,
+        resume: () => ({ ok: true, files_complete: true, migration_complete: true }) }), report: printed.at(-1)! })
+    return { run, plainUpdate }
+  }
+
+  it('leaving beta keeps the newer beta and saves stable; the next newer stable release replaces it automatically', async () => {
+    const f = fixture()
+    await f.publish('0.9.0'); f.point('stable', '0.9.0')
+    await f.publish('1.0.0-beta.1'); await f.install('1.0.0-beta.1', 'beta')
+    const { run, plainUpdate } = command(f)
+    expect(await run()).toEqual({ code: 0, report: { ok: true, operation: 'show', changed: false, channel: 'beta',
+      active_version: '1.0.0-beta.1', waiting_for_stable: false } })
+
+    const generation = install(f).active!.generation
+    expect(await run('stable')).toEqual({ code: 0, report: { ok: true, operation: 'set', changed: true, channel: 'stable',
+      previous_channel: 'beta', active_version: '1.0.0-beta.1', previous_version: '1.0.0-beta.1', waiting_for_stable: true } })
+    expect(install(f)).toMatchObject({ channel: 'stable', pending: false, active: { generation: generation + 1 } })
+    expect((await run()).report).toMatchObject({ channel: 'stable', active_version: '1.0.0-beta.1', waiting_for_stable: true })
+
+    // Neither an explicit nor an automatic update installs the older stable release or a newer beta.
+    expect(await plainUpdate()).toMatchObject({ code: 0, report: { ok: true, changed: false, version: '1.0.0-beta.1', channel: 'stable' } })
+    await f.publish('1.0.0-beta.2'); f.point('beta', '1.0.0-beta.2')
+    expect(await attemptAutomaticUpdate(host(f).host)).toEqual({ outcome: 'current' })
+    expect(activeVersion(f)).toBe('1.0.0-beta.1')
+
+    await f.publish('1.0.0'); f.point('stable', '1.0.0')
+    expect(await attemptAutomaticUpdate(host(f, { now: () => NOW + 2 * DAY }).host)).toEqual({ outcome: 'activated', from: '1.0.0-beta.1', to: '1.0.0' })
+    expect(install(f)).toMatchObject({ channel: 'stable' })
+  })
+
+  it('saves the channel offline and lets a stale staged beta go when leaving beta', async () => {
+    const f = fixture()
+    await f.publish('0.9.0'); f.point('stable', '0.9.0')
+    await f.publish('1.0.0-beta.1'); await f.install('1.0.0-beta.1', 'beta')
+    await f.publish('1.0.0-beta.2'); f.point('beta', '1.0.0-beta.2')
+    const held: ActivationPlan = { ...PLAN, hook_changes: [{ harness: 'codex', file: 'hooks.json' }] } as ActivationPlan
+    expect((await attemptAutomaticUpdate(host(f, { plan: async () => held }).host)).outcome).not.toBe('activated')
+    const staged = readAutomaticUpdateRecord(f.env).staged
+    expect(staged).toMatchObject({ version: '1.0.0-beta.2' })
+
+    f.network.up = false
+    const { run, plainUpdate } = command(f)
+    const { code, report } = await run('stable')
+    expect(code).toBe(0)
+    expect(report).toMatchObject({ ok: true, channel: 'stable', active_version: '1.0.0-beta.1', waiting_for_stable: true })
+    expect(typeof report['release_check_error']).toBe('string')
+    expect(readAutomaticUpdateRecord(f.env)).toMatchObject({ staged: null })
+    expect(readAutomaticUpdateRecord(f.env).checked_at).toBeUndefined()
+
+    // Even a staged beta that survived the switch never activates on stable.
+    f.network.up = true
+    updateAutomaticUpdateRecord(f.env, record => ({ record: { ...record, checked_at: NOW, staged: staged! }, result: undefined }))
+    expect(await attemptAutomaticUpdate(host(f).host)).toEqual({ outcome: 'current' })
+    expect(activeVersion(f)).toBe('1.0.0-beta.1')
+
+    // The explicit return to the signed stable release still works.
+    expect(await plainUpdate({ channel: 'stable', allowDowngrade: true })).toMatchObject({ code: 0, report: { ok: true, version: '0.9.0', channel: 'stable' } })
+  })
+
+  it('choosing beta installs a newer beta now and never an older build', async () => {
+    const f = fixture()
+    await f.publish('1.0.0'); await f.install('1.0.0', 'stable')
+    await f.publish('0.9.0-beta.1'); f.point('beta', '0.9.0-beta.1')
+    const { run } = command(f)
+    expect(await run('beta')).toMatchObject({ code: 0, report: { ok: true, channel: 'beta', active_version: '1.0.0' } })
+    expect((await run()).report).not.toHaveProperty('update')
+
+    expect((await run('stable')).report).toMatchObject({ channel: 'stable', active_version: '1.0.0', waiting_for_stable: false })
+    await f.publish('1.1.0-beta.1'); f.point('beta', '1.1.0-beta.1')
+    const { code, report } = await run('beta')
+    expect(code).toBe(0)
+    expect(report).toMatchObject({ ok: true, channel: 'beta', previous_channel: 'stable', active_version: '1.1.0-beta.1',
+      previous_version: '1.0.0', update: { ok: true, version: '1.1.0-beta.1' } })
+  })
+
+  it('refuses without a standalone installation and rejects unknown channels', async () => {
+    const f = fixture()
+    const printed: string[] = []
+    const deps = { cwd: f.root, env: f.env, io: { out: (text: string) => { printed.push(text) }, err: () => {}, confirm: async () => false, openUrl: () => {} },
+      store: { load: () => null, save: () => {}, clear: () => {}, describe: () => 'test' } } as CommandDeps
+    expect(await releaseChannelCommand(deps, 'nightly', { json: true })).toBe(2)
+    expect(await releaseChannelCommand(deps, undefined, { json: true })).toBe(1)
+    expect(JSON.parse(printed.at(-1)!)).toMatchObject({ ok: false, code: 'native_installation_required', channel: null })
   })
 })
 

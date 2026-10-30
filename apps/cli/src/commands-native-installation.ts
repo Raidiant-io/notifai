@@ -11,6 +11,7 @@ import { ContinuityPending } from './local-continuity.js'
 import { npmRepairCommand } from './commands-npm-repair.js'
 import { integrationRecoveryCommand } from './commands-integration-recovery.js'
 import { prepareClaudeHooksForRuntime } from './commands-hook-install.js'
+import { compareReleasePrecedence } from './version.js'
 
 function stagedRecovery(deps: CommandDeps, installation?: Installation): string {
   try {
@@ -100,6 +101,18 @@ export async function nativeUpdateCommand(deps: CommandDeps, flags: NativeUpdate
     if (flags.rollback) {
       const retained = before.active?.previous
       if (retained) prepare(installation.versionRelease(retained).version)
+    }
+    // An older release on the saved channel is no update: a beta kept after
+    // choosing stable stays active until stable offers something newer.
+    if (!flags.rollback && !flags.allowDowngrade && channel === before.channel) {
+      const found = await installation.stageRelease({ channel, expectedGeneration: previous.generation,
+        accept: version => compareReleasePrecedence(version, previous.version) !== 'before' })
+      if (!found.staged) {
+        const message = `Notifai ${previous.version} stays active: the ${channel} channel offers nothing newer yet.`
+        emit({ ok: true, operation: 'update', changed: false, version: previous.version, channel,
+          channel_target_version: found.version, message }, message)
+        return EXIT.ok
+      }
     }
     const activation = flags.rollback ? installation.rollback(previous.generation) : await installation.installRelease({
       channel, source: before.source!, expectedGeneration: previous.generation,

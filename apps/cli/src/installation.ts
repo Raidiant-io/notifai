@@ -1248,26 +1248,44 @@ export class Installation {
       if ((from === null) !== (previous === null)) throw new Error('Installation metadata is incomplete; repair it first')
       this.checkStable(previous)
       this.assertNotWithdrawn(candidate.inventory.version)
-      if (from?.active === input.build) {
-        if (previous!.channel === input.channel) return { changed: false, active: from, launcher_update_pending: previous!.launcherUpdatePending }
-        const to = { ...from, generation: from.generation + 1 }
-        const transaction: Transaction = { schema: 1, kind: 'channel', from, to, previous,
-          next: { ...previous!, channel: input.channel } }
-        this.save('transaction.json', transaction)
-        this.options.observe?.('prepared')
-        this.finish(transaction)
-        return { changed: true, active: to, launcher_update_pending: transaction.next.launcherUpdatePending }
-      }
-      const order = from ? compareReleasePrecedence(candidate.inventory.version, this.verifyVersion(from.active).inventory.version) : 'after'
+      if (from?.active === input.build) return this.saveChannel(from, previous!, input.channel)
+      const current = from ? this.verifyVersion(from.active).inventory.version : null
+      const order = current ? compareReleasePrecedence(candidate.inventory.version, current) : 'after'
       if (order !== 'after') {
         const stable = this.channelRecord('stable')?.record
-        if (!(order === 'before' && input.allowStableDowngrade === true && input.channel === 'stable' && previous?.channel === 'beta' &&
+        // A beta kept after choosing stable may still return explicitly.
+        const leavingBeta = previous?.channel === 'beta' || (current !== null && isPrerelease(current))
+        if (!(order === 'before' && input.allowStableDowngrade === true && input.channel === 'stable' && leavingBeta &&
               stable?.version === candidate.inventory.version && stable.inventory_sha256 === hash(readFileSync(path.join(candidate.directory, 'inventory.json'))))) {
           throw new Error('Use explicit rollback or an authorized return to the signed stable target; release identities cannot be replaced')
         }
       }
       return this.commit(from, previous, input.build, input.source, input.channel)
     })
+  }
+  /** Save another channel for the active build without activating anything.
+   * Leaving beta keeps a newer prerelease active; only a newer release on the
+   * saved channel replaces it, so this never moves the installation backwards. */
+  changeChannel(input: { channel: ReleaseChannel; expectedGeneration: number }): ActivationResult {
+    if (!['stable', 'beta'].includes(input.channel)) throw new Error('Unknown release channel')
+    this.prepareRoot()
+    return this.mutate(() => {
+      if (present(this.file('transaction.json'))) throw new Error('Recover the pending installation transaction first')
+      const from = this.readActive(), previous = this.readInstall()
+      if (!from || !previous) throw new Error('No managed installation is active')
+      if (from.generation !== input.expectedGeneration) throw new Error('Installation changed; inspect before retrying')
+      this.checkStable(previous)
+      return this.saveChannel(from, previous, input.channel)
+    })
+  }
+  private saveChannel(from: ActiveGeneration, previous: InstallRecord, channel: ReleaseChannel): ActivationResult {
+    if (previous.channel === channel) return { changed: false, active: from, launcher_update_pending: previous.launcherUpdatePending }
+    const to = { ...from, generation: from.generation + 1 }
+    const transaction: Transaction = { schema: 1, kind: 'channel', from, to, previous, next: { ...previous, channel } }
+    this.save('transaction.json', transaction)
+    this.options.observe?.('prepared')
+    this.finish(transaction)
+    return { changed: true, active: to, launcher_update_pending: transaction.next.launcherUpdatePending }
   }
   private commit(from: ActiveGeneration | null, previous: InstallRecord | null, build: string, source: InstallSource, channel: ReleaseChannel): ActivationResult {
     // Historical readers remain authenticated, but can never become an active

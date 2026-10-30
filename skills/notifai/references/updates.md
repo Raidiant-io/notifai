@@ -141,9 +141,13 @@ published writer fence.
 
 ### Native runtime recovery
 
-Ordinary `notifai update` keeps the saved release channel. Choose beta with
-`--channel beta`. A beta-to-stable downgrade requires both `--channel stable`
-and `--allow-downgrade`; it can select only the signed stable target.
+Ordinary `notifai update` keeps the saved release channel; `notifai channel
+--json` shows it. When the User chooses another channel, run `notifai channel
+stable --json` or `notifai channel beta --json`: it saves the channel and
+installs a newer release on it now, never an older one. Leaving beta keeps the
+active beta until a newer stable release replaces it. A beta-to-stable
+downgrade instead requires `notifai update --channel stable --allow-downgrade`;
+it can select only the signed stable target.
 `notifai update --rollback` restores the retained verified previous build and
 its saved channel without downloading an arbitrary historical release.
 

@@ -92,8 +92,14 @@ files (`--directory`, `--inventory`) and pinning (`--version`, `--channel`);
 
 ## Updates
 
-`notifai update` keeps the saved channel. `--channel stable --allow-downgrade`
-moves from beta to stable, `--rollback` restores the previous verified build,
+`notifai update` keeps the saved channel. `notifai channel [stable|beta]`
+shows or saves the channel (`--json` for programs): a newer release on the
+chosen channel is installed at once, and otherwise the active build stays until
+the channel offers a newer one, so choosing stable while a newer beta is active
+waits for the next stable release instead of downgrading. The JSON report always
+carries `channel`, `active_version` and `waiting_for_stable`.
+`notifai update --channel stable --allow-downgrade` returns from beta to the
+signed stable release now, `--rollback` restores the previous verified build,
 and `--repair` or `--abandon` recover an interrupted update. Each step reports
 its own result, and partial work prints a recovery command.
 
