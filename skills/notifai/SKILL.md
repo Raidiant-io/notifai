@@ -114,14 +114,10 @@ config from supplying Project identity. A User-disabled Project refuses
 
 ### Name the Agent Session
 
-Name the Agent Session when the current environment exposes its exact
-identifier. Pass `--session-label`: 2-6 words about the Agent Session's job,
-never the Project, branch, status, result, identifier, hash, or filesystem
-path. Passing it without an exact Agent Session is a usage error;
-without that identifier, omit `--session-label` and skip renaming.
-
-Pass the same `--session-label` on every send and ask; to rename, use
-`notifai session rename`.
+Pass the same `--session-label` on every send and ask: 2-6 words about the
+Agent Session's job, never the Project, branch, status, result, identifier,
+hash, or filesystem path. Where the harness does not identify the Agent
+Session, the CLI sets it aside. To rename, use `notifai session rename`.
 
 At each change of job, check whether the name still describes the work. If the
 job changed completely enough that the old name would mislead the User, run

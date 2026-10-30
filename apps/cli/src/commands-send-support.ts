@@ -73,6 +73,11 @@ export function resolveDraftInvocation(
       `Heads up (source.session_label): No semantic Agent Session title was available, so the User sees this Agent Session under the generated name "${source.generatedSessionLabel}" until it is named. Pass --session-label with a concise task name when one is available.`,
     )
   }
+  if (source.droppedSessionLabel === true) {
+    deps.io.err(
+      'Heads up (source.session_label): This harness does not identify its Agent Session here, so the supplied label names nothing and was set aside.',
+    )
+  }
   if (source.rejectedSessionLabel !== undefined) {
     deps.io.err(
       `Heads up (source.session_label): Ignored the supplied label: ${source.rejectedSessionLabel.reason} Named this Agent Session ${JSON.stringify(source.rejectedSessionLabel.label)} from the harness title instead.`,

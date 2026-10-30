@@ -29,8 +29,8 @@ Delegated work stays under the parent Agent Session and its Notification
 Request ownership; Cursor starts no separately activated context for it.
 Current Cursor shells identify their conversation through
 `CURSOR_CONVERSATION_ID`. Sends use that exact Agent Session, and
-`--session-label` can name it. Older shells without that marker remain
-detection-only: omit `--session-label` there.
+`--session-label` names it. Older shells without that marker remain
+detection-only, and the CLI sets `--session-label` aside there.
 
 On the macOS Cursor TUI, a completed turn holds its native Stop hook open for
 up to one hour. After this conversation has sent a Notification Request, that

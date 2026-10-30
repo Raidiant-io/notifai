@@ -136,6 +136,8 @@ export type SourceContextBuild =
       generatedSessionLabel?: string
       unchangedSessionLabel?: string
       rejectedSessionLabel?: { reason: string; label: string }
+      /** A label given where no harness identifies the Agent Session: nothing to name, so it is set aside. */
+      droppedSessionLabel?: true
     }
   | { ok: false; error: string }
 
@@ -143,13 +145,11 @@ export type SourceContextBuild =
 export function buildSourceContext(input: SourceContextInput): SourceContextBuild {
   const sessionId =
     input.sessionId ?? input.env['NOTIFAI_SESSION_ID'] ?? input.activeHarness?.sessionId
-  const explicitLabel = input.sessionLabel ?? input.env['NOTIFAI_SESSION_LABEL']
-  if (explicitLabel !== undefined && (sessionId === undefined || sessionId === '')) {
-    return {
-      ok: false,
-      error: '--session-label (or NOTIFAI_SESSION_LABEL) names an Agent Session only where the harness identifies it, and none does here: omit it.',
-    }
-  }
+  const givenLabel = input.sessionLabel ?? input.env['NOTIFAI_SESSION_LABEL']
+  // Agents cannot see whether their harness identifies the session, so they
+  // always pass a label; where none is identified, it has nothing to name.
+  const droppedLabel = givenLabel !== undefined && sessionId === undefined
+  const explicitLabel = droppedLabel ? undefined : givenLabel
   if (sessionId === '') {
     return { ok: false, error: '--session-id must not be empty.' }
   }
@@ -188,10 +188,12 @@ export function buildSourceContext(input: SourceContextInput): SourceContextBuil
     ...(input.invocation.branch !== undefined ? { branch: input.invocation.branch } : {}),
     ...(input.invocation.worktree !== undefined ? { worktree: input.invocation.worktree } : {}),
   }
+  const dropped = droppedLabel ? { droppedSessionLabel: true as const } : {}
   return Object.keys(source).length === 0
-    ? { ok: true }
+    ? { ok: true, ...dropped }
     : {
         ok: true,
+        ...dropped,
         source,
         ...(label?.ignoredExplicitLabel === true
           ? { unchangedSessionLabel: label.label }

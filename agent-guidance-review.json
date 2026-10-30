@@ -1,7 +1,7 @@
 {
   "version": 1,
-  "behavior_digest": "sha256:e7fe2cea67bf31f0ffe0c2c6a24535585ad0c7360ee672ff4aadb26c92c074e5",
-  "outcome": "reviewed-no-impact",
+  "behavior_digest": "sha256:652c331bf1451e56cca8f722a8a35d617348fa1ee974a141a45509a5e47df895",
+  "outcome": "guidance-updated",
   "surfaces_reviewed": [
     "lifecycle-hooks",
     "notifai-skill",
@@ -9,5 +9,5 @@
     "cli-readiness",
     "domain-terms"
   ],
-  "reason": "Reviewed all five surfaces for naming an unlabelled Claude Code Agent Session after Claude Code's own title: the hook keeps the session's transcript path, and the title reader takes the newest custom-title, else ai-title, from that transcript. Lifecycle hooks, the Notifai skill, harness setup, CLI readiness and domain terms say nothing about where Claude Code names come from, and agents keep passing --session-label as before, so no guidance text changes; the release note says nothing changes in what agents do."
+  "reason": "Reviewed all five surfaces for making --session-label unconditional. Notifai skill: 'Name the Agent Session' now says to pass the same --session-label on every send and ask and that the CLI sets it aside where the harness does not identify the Agent Session, replacing the rule that asked agents to judge whether the environment exposes an exact identifier. The Cursor reference and the Cursor rename refusal no longer tell agents to omit it. CLI: a label with no identified Agent Session is set aside with a stderr note instead of a usage error. Lifecycle hooks, harness setup, CLI readiness and domain terms are unchanged; the release note tells agents to always pass the label."
 }

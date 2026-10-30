@@ -1,5 +1,5 @@
 {
-  "current": "7ced161e89f5eb330e2c91c99e2f15c06463ab0a4b78cdcb3840a8d5fa88ce6d",
+  "current": "cc3e5a3fce6802cdc2b5256618f5c52f385deb3f3a3d14b08a629c4bd3434edd",
   "releases": [
     {
       "digest": "3e47b01bc6bbfb43e910c660b9964fab6459d75148c3c02dcbcd0be64cfb2963",
@@ -220,6 +220,10 @@
     {
       "digest": "7ced161e89f5eb330e2c91c99e2f15c06463ab0a4b78cdcb3840a8d5fa88ce6d",
       "note": "A Claude Code Agent Session without a `--session-label` is now named after the title Claude Code shows for it: the User's rename, or else the short title Claude Code writes for every session. A session already shown under a generated name takes that title once. Nothing changes in what agents do."
+    },
+    {
+      "digest": "cc3e5a3fce6802cdc2b5256618f5c52f385deb3f3a3d14b08a629c4bd3434edd",
+      "note": "Pass the same `--session-label` on every send and ask. Where the harness does not identify the Agent Session, the CLI now sets the label aside with a one-line note instead of failing the send, so you no longer need to judge whether it can name the session."
     }
   ]
 }

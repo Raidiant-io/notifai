@@ -3,6 +3,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
 import { generatedSessionLabel } from './generated-session-label.js'
+import { buildSourceContext } from './invocation-context.js'
 import { resolveSessionLabel } from './session-labels.js'
 
 const roots: string[] = []
@@ -72,5 +73,21 @@ describe('unnamed Agent Session fallback', () => {
     expect(resolveSessionLabel({
       env, sessionId: 'app-named', harness: 'claude-code', explicitLabel: 'Fix the parser',
     })).toMatchObject({ label: 'Fix the parser', source: 'explicit', previousSource: 'fallback' })
+  })
+})
+
+describe('a label where no harness identifies the Agent Session', () => {
+  it('is set aside instead of failing the send, and still names an identified session', () => {
+    const env = environment()
+    const unidentified = buildSourceContext({ env, invocation: { branch: 'main' }, sessionLabel: 'Fix the parser' })
+    expect(unidentified).toMatchObject({ ok: true, droppedSessionLabel: true, source: { branch: 'main' } })
+    expect(unidentified.ok && unidentified.source?.session_label).toBeUndefined()
+    expect(buildSourceContext({ env: { ...env, NOTIFAI_SESSION_LABEL: 'Fix the parser' }, invocation: {} }))
+      .toEqual({ ok: true, droppedSessionLabel: true })
+    const identified = buildSourceContext({
+      env, invocation: {}, sessionLabel: 'Fix the parser', activeHarness: { harness: 'claude-code', sessionId: 'exact-session' },
+    })
+    expect(identified).toMatchObject({ ok: true, source: { session_id: 'exact-session', session_label: 'Fix the parser' } })
+    expect(identified).not.toHaveProperty('droppedSessionLabel')
   })
 })
