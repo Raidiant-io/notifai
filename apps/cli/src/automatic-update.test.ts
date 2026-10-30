@@ -269,6 +269,19 @@ describe('choosing a release channel', () => {
     expect(await releaseChannelCommand(deps, undefined, { json: true })).toBe(1)
     expect(JSON.parse(printed.at(-1)!)).toMatchObject({ ok: false, code: 'native_installation_required', channel: null })
   })
+
+  it('names the channels Stable and Beta for people', async () => {
+    const f = fixture()
+    await f.publish('0.9.0'); f.point('stable', '0.9.0')
+    await f.publish('1.0.0-beta.1'); await f.install('1.0.0-beta.1', 'beta')
+    const printed: string[] = []
+    const deps = { cwd: f.root, env: f.env, io: { out: (text: string) => { printed.push(text) }, err: () => {}, confirm: async () => false, openUrl: () => {}, interactive: true },
+      store: { load: () => null, save: () => {}, clear: () => {}, describe: () => 'test' } } as CommandDeps
+    await releaseChannelCommand(deps, undefined, {}, { installation: f.installation })
+    await releaseChannelCommand(deps, 'stable', {}, { installation: f.installation })
+    expect(printed).toEqual(['Release channel: Beta. Notifai 1.0.0-beta.1 is active.',
+      'Release channel: Stable. Notifai 1.0.0-beta.1 stays until a newer Stable release replaces it.'])
+  })
 })
 
 describe('activation plan parsing', () => {

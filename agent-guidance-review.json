@@ -1,7 +1,7 @@
 {
   "version": 1,
-  "behavior_digest": "sha256:b917af23386508999280a84f0a0bee1e67008c5db520aedc7564fa7797ce8199",
-  "outcome": "guidance-updated",
+  "behavior_digest": "sha256:688db382f300aacaa94a764276082d3431f05f2d07423ad0c01fec874aad3af9",
+  "outcome": "reviewed-no-impact",
   "surfaces_reviewed": [
     "lifecycle-hooks",
     "notifai-skill",
@@ -9,5 +9,5 @@
     "cli-readiness",
     "domain-terms"
   ],
-  "reason": "Reviewed all five surfaces for the release channel command. `notifai channel` shows the saved channel offline; `notifai channel stable|beta` saves it, installs a newer release on that channel at once, and otherwise keeps the active build, so leaving beta keeps a newer beta until a newer stable release replaces it. Notifai skill: the updates reference now names `notifai channel` for a User-chosen channel change and keeps `notifai update --channel stable --allow-downgrade` as the explicit return to the older stable release; the release note says the same. CLI readiness: plain `notifai update` on a kept beta now reports that nothing newer is available instead of a downgrade refusal; `update --check` output is unchanged. Lifecycle hooks: unchanged; automatic updates still never switch channels and now drop a beta staged before the switch to stable. Harness setup and domain terms: unchanged."
+  "reason": "Reviewed all five surfaces for naming the release channels Stable and Beta in human output of `notifai channel` and the plain `notifai update` wait message. JSON reports, command arguments and the skill's `notifai channel stable|beta` instructions keep the `stable` and `beta` values, so the Notifai skill, lifecycle hooks, harness setup, CLI readiness and domain terms need no change; the release note says nothing changes in what agents do."
 }

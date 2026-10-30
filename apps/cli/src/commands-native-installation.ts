@@ -108,7 +108,7 @@ export async function nativeUpdateCommand(deps: CommandDeps, flags: NativeUpdate
       const found = await installation.stageRelease({ channel, expectedGeneration: previous.generation,
         accept: version => compareReleasePrecedence(version, previous.version) !== 'before' })
       if (!found.staged) {
-        const message = `Notifai ${previous.version} stays active: the ${channel} channel offers nothing newer yet.`
+        const message = `Notifai ${previous.version} stays active: the ${channel === 'stable' ? 'Stable' : 'Beta'} channel offers nothing newer yet.`
         emit({ ok: true, operation: 'update', changed: false, version: previous.version, channel,
           channel_target_version: found.version, message }, message)
         return EXIT.ok

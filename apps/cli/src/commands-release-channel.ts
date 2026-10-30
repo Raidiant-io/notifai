@@ -6,6 +6,9 @@ import type { ReleaseChannel } from './release-distribution.js'
 import { managedInstallation } from './native-installation.js'
 import { compareReleasePrecedence, isPrerelease } from './version.js'
 
+/** How people read a channel; JSON keeps the `stable` and `beta` values. */
+const CHANNEL_NAMES: Record<ReleaseChannel, string> = { stable: 'Stable', beta: 'Beta' }
+
 interface ReleaseChannelSeams {
   installation?: Installation
   /** Installs a newer release on the chosen channel; production runs `notifai update --channel`. */
@@ -58,8 +61,8 @@ export async function releaseChannelCommand(deps: CommandDeps, requested: string
       waiting_for_stable: status.channel === 'stable' && isPrerelease(active.version) }
   }
   const describe = (current: ReturnType<typeof state>) => current.waiting_for_stable
-    ? `Release channel: stable. Notifai ${current.version} stays until a newer stable release replaces it.`
-    : `Release channel: ${current.channel}. Notifai ${current.version} is active.`
+    ? `Release channel: Stable. Notifai ${current.version} stays until a newer Stable release replaces it.`
+    : `Release channel: ${CHANNEL_NAMES[current.channel]}. Notifai ${current.version} is active.`
   try {
     const before = state()
     if (requested === undefined || requested === before.channel) {

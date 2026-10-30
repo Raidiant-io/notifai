@@ -1,5 +1,5 @@
 {
-  "current": "bbedc1c819d38041453b698f4f9b14c1a70d354e6293e67cd621f9ac156d5970",
+  "current": "b459b8f28f5727ac7f7f398b6f8cb05f586ffcafe325bbbe1200e04c757beb7c",
   "releases": [
     {
       "digest": "3e47b01bc6bbfb43e910c660b9964fab6459d75148c3c02dcbcd0be64cfb2963",
@@ -212,6 +212,10 @@
     {
       "digest": "bbedc1c819d38041453b698f4f9b14c1a70d354e6293e67cd621f9ac156d5970",
       "note": "`notifai channel` now shows this computer's release channel, and `notifai channel stable` or `notifai channel beta` changes it (each takes `--json`). Choosing a channel installs a newer release on it at once and never an older one: leaving beta keeps the active beta until a newer stable release replaces it, which automatic updates then install. Plain `notifai update` in that state reports that nothing newer is available instead of failing. When the User asks to change channel, use `notifai channel`; `notifai update --channel stable --allow-downgrade` stays the explicit return to the older stable release now."
+    },
+    {
+      "digest": "b459b8f28f5727ac7f7f398b6f8cb05f586ffcafe325bbbe1200e04c757beb7c",
+      "note": "What `notifai channel` and `notifai update` print for people now names the release channels Stable and Beta. The `--json` reports and the command arguments keep the values `stable` and `beta`. Nothing changes in what agents do."
     }
   ]
 }
