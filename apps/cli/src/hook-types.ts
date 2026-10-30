@@ -195,6 +195,8 @@ export interface SessionState {
   waiting_answers?: AnsweredPending[]
   /** The title the User gave this session in the harness itself, as its hooks last reported it. */
   harness_session_title?: string
+  /** Claude Code's transcript for this session, whose title entries name it when the User has not. */
+  claude_transcript_path?: string
   /** Host lookup selectors captured by this exact session, never the shared Hub's launcher. */
   harness_title_env?: Record<string, string>
   /** Claude Code's permission mode, as this session's own hooks last reported it. */

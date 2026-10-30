@@ -39,6 +39,7 @@ stateDir,
 updateProjectFolder
 } from './config.js'
 import { buildQuestions } from './commands-ask.js'
+import { readClaudeSessionTitle } from './harness-session-title.js'
 import { hookAdapterPath,installHookAdapter } from './hook-adapter.js'
 import {
 registerQuestion as persistQuestion,
@@ -893,6 +894,19 @@ describe('user-prompt-submit hook', () => {
     const h = harness()
     await hookRunCommand(h.deps, 'user-prompt-submit', stdin({ session_id: 's10' }))
     expect(readSessionState('s10', h.env).last_prompt_at).toBe(NOW)
+  })
+
+  it('names a Claude Code session after the title Claude Code wrote, never a subagent\'s transcript', async () => {
+    const h = harness()
+    const sessionId = 'claude-titled'
+    const transcript = path.join(h.env['HOME']!, '.claude', 'projects', '-repo', `${sessionId}.jsonl`)
+    mkdirSync(path.dirname(transcript), { recursive: true })
+    writeFileSync(transcript, `${JSON.stringify({ type: 'ai-title', aiTitle: 'Repair the parser', sessionId })}\n`)
+    await hookRunCommand(h.deps, 'user-prompt-submit',
+      stdin({ session_id: sessionId, transcript_path: transcript, agent_id: 'child' }), 'claude-code')
+    expect(readClaudeSessionTitle(h.env, sessionId)).toBeUndefined()
+    await hookRunCommand(h.deps, 'user-prompt-submit', stdin({ session_id: sessionId, transcript_path: transcript }), 'claude-code')
+    expect(readClaudeSessionTitle(h.env, sessionId)).toBe('Repair the parser')
   })
 })
 

@@ -103,7 +103,7 @@ import {
   stageSessionAnswers,
 } from './session-inputs.js'
 import { receiveSessionInputs } from './commands-receive.js'
-import { recordClaudeSessionTitle } from './harness-session-title.js'
+import { recordClaudeSessionTitle, recordClaudeTranscriptPath } from './harness-session-title.js'
 import { recordClaudePermissionMode } from './claude-command-approval.js'
 import { recordReopenLaunch } from './reopen-terminal.js'
 import {
@@ -380,12 +380,14 @@ export async function hookRunCommand(
     try { observeLoadedIntegration(envelope.session_id, harness, integrationRevision, deps.env) }
     catch { /* Observation failure never disrupts existing question delivery. */ }
   }
-  // Claude Code reports the User's own session title on these two events. A
-  // subagent's callback names the child, never the session.
+  // Claude Code reports the User's own session title on these two events, and
+  // the transcript that holds the title it generates itself. A subagent's
+  // callback names the child, never the session.
   if (harness === 'claude-code' && (event === 'session-start' || event === 'user-prompt-submit') &&
       envelope.session_id !== undefined && envelope.agent_id === undefined) {
     try {
       recordClaudeSessionTitle(envelope.session_id, deps.env, envelope.session_title)
+      recordClaudeTranscriptPath(envelope.session_id, deps.env, envelope.transcript_path)
     } catch {
       // A title is an enrichment; failing to keep one never fails the hook.
     }

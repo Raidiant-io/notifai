@@ -61,7 +61,7 @@ const OUTPUT_CHUNK = 256 * 1024
 const QUIET_STATE_FIELDS: ReadonlySet<string> = new Set([
   'grok_activation_context', 'integration_observation', 'runtime_builds', 'codex_native_turn', 'codex_tool_hook',
   'harness', 'activation_cwd', 'codex_stop_definition_fingerprint', 'codex_handler_fingerprints', 'last_prompt_at', 'last_stop_at', 'question_history',
-  'harness_session_title', 'codex_question_marker_counter', 'codex_card_tool', 'reopen_launch', 'claude_permission_mode', 'input_wake_unanswered',
+  'harness_session_title', 'claude_transcript_path', 'codex_question_marker_counter', 'codex_card_tool', 'reopen_launch', 'claude_permission_mode', 'input_wake_unanswered',
 ])
 
 /** Variables the launcher scrubs before it starts the runtime, and the admission markers the runtime consumes. */

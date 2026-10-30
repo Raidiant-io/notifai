@@ -1,5 +1,5 @@
 {
-  "current": "b459b8f28f5727ac7f7f398b6f8cb05f586ffcafe325bbbe1200e04c757beb7c",
+  "current": "7ced161e89f5eb330e2c91c99e2f15c06463ab0a4b78cdcb3840a8d5fa88ce6d",
   "releases": [
     {
       "digest": "3e47b01bc6bbfb43e910c660b9964fab6459d75148c3c02dcbcd0be64cfb2963",
@@ -216,6 +216,10 @@
     {
       "digest": "b459b8f28f5727ac7f7f398b6f8cb05f586ffcafe325bbbe1200e04c757beb7c",
       "note": "What `notifai channel` and `notifai update` print for people now names the release channels Stable and Beta. The `--json` reports and the command arguments keep the values `stable` and `beta`. Nothing changes in what agents do."
+    },
+    {
+      "digest": "7ced161e89f5eb330e2c91c99e2f15c06463ab0a4b78cdcb3840a8d5fa88ce6d",
+      "note": "A Claude Code Agent Session without a `--session-label` is now named after the title Claude Code shows for it: the User's rename, or else the short title Claude Code writes for every session. A session already shown under a generated name takes that title once. Nothing changes in what agents do."
     }
   ]
 }

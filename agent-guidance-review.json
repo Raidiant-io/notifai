@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "behavior_digest": "sha256:688db382f300aacaa94a764276082d3431f05f2d07423ad0c01fec874aad3af9",
+  "behavior_digest": "sha256:e7fe2cea67bf31f0ffe0c2c6a24535585ad0c7360ee672ff4aadb26c92c074e5",
   "outcome": "reviewed-no-impact",
   "surfaces_reviewed": [
     "lifecycle-hooks",
@@ -9,5 +9,5 @@
     "cli-readiness",
     "domain-terms"
   ],
-  "reason": "Reviewed all five surfaces for naming the release channels Stable and Beta in human output of `notifai channel` and the plain `notifai update` wait message. JSON reports, command arguments and the skill's `notifai channel stable|beta` instructions keep the `stable` and `beta` values, so the Notifai skill, lifecycle hooks, harness setup, CLI readiness and domain terms need no change; the release note says nothing changes in what agents do."
+  "reason": "Reviewed all five surfaces for naming an unlabelled Claude Code Agent Session after Claude Code's own title: the hook keeps the session's transcript path, and the title reader takes the newest custom-title, else ai-title, from that transcript. Lifecycle hooks, the Notifai skill, harness setup, CLI readiness and domain terms say nothing about where Claude Code names come from, and agents keep passing --session-label as before, so no guidance text changes; the release note says nothing changes in what agents do."
 }

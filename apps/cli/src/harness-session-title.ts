@@ -1,4 +1,4 @@
-import { readFileSync, statSync } from 'node:fs'
+import { closeSync, fstatSync, openSync, readFileSync, readSync, statSync } from 'node:fs'
 import path from 'node:path'
 import { configHome } from './install-hooks.js'
 import type { ActiveHarnessSession } from './commands-harness-context.js'
@@ -49,9 +49,80 @@ export function recordClaudeSessionTitle(
   updateSessionState(sessionId, env, (state) => ({ ...state, harness_session_title: title }))
 }
 
+/**
+ * Keep where Claude Code writes this session's transcript, as its hooks report
+ * it. Only a path to `<session id>.jsonl` is kept, so a hook payload cannot
+ * point the title reader at another session's transcript or another file.
+ */
+export function recordClaudeTranscriptPath(
+  sessionId: string,
+  env: NodeJS.ProcessEnv,
+  reported: unknown,
+): void {
+  if (typeof reported !== 'string' || !safeSessionId(sessionId)) return
+  if (!path.isAbsolute(reported) || path.basename(reported) !== `${sessionId}.jsonl`) return
+  if (readSessionState(sessionId, env).claude_transcript_path === reported) return
+  updateSessionState(sessionId, env, (state) => ({ ...state, claude_transcript_path: reported }))
+}
+
+/** Claude Code repeats its title entries as the transcript grows, so the newest part holds the current one. */
+const TRANSCRIPT_TITLE_WINDOW_BYTES = 1024 * 1024
+
+/**
+ * Read the title Claude Code itself shows for this session: the newest
+ * `custom-title` (a User rename) or, failing that, the newest `ai-title`
+ * (the short name Claude Code writes for every session). Both are names Claude
+ * Code generated or the User chose, never a prompt preview. Missing, foreign
+ * or malformed entries leave the generated fallback in place.
+ */
+function readClaudeTranscriptTitle(file: string, sessionId: string): string | undefined {
+  let descriptor: number | undefined
+  try {
+    // The path was recorded from this session's own hook and names its own transcript.
+    descriptor = openSync(file, 'r') // lgtm [js/path-injection]
+    const size = fstatSync(descriptor).size
+    const length = Math.min(size, TRANSCRIPT_TITLE_WINDOW_BYTES)
+    if (length <= 0) return undefined
+    const buffer = Buffer.alloc(length)
+    readSync(descriptor, buffer, 0, length, size - length)
+    const lines = buffer.toString('utf8').split('\n')
+    let generated: string | undefined
+    // The first line may be cut by the window; JSON.parse rejects it.
+    for (let index = lines.length - 1; index >= 0; index -= 1) {
+      const line = lines[index]!
+      if (!line.includes('"custom-title"') && !line.includes('"ai-title"')) continue
+      let entry: { type?: unknown; sessionId?: unknown; customTitle?: unknown; aiTitle?: unknown }
+      try {
+        entry = JSON.parse(line) as typeof entry
+      } catch {
+        continue
+      }
+      if (entry.sessionId !== sessionId) continue
+      if (entry.type === 'custom-title') {
+        const title = usableTitle(entry.customTitle)
+        if (title !== undefined) return title
+      } else if (entry.type === 'ai-title' && generated === undefined) {
+        generated = usableTitle(entry.aiTitle)
+      }
+    }
+    return generated
+  } catch {
+    return undefined
+  } finally {
+    if (descriptor !== undefined) {
+      try { closeSync(descriptor) } catch { /* A title is an enrichment. */ }
+    }
+  }
+}
+
 export function readClaudeSessionTitle(env: NodeJS.ProcessEnv, sessionId: string): string | undefined {
   if (!safeSessionId(sessionId)) return undefined
-  return usableTitle(readSessionState(sessionId, env).harness_session_title)
+  const state = readSessionState(sessionId, env)
+  const reported = usableTitle(state.harness_session_title)
+  if (reported !== undefined) return reported
+  return state.claude_transcript_path === undefined
+    ? undefined
+    : readClaudeTranscriptTitle(state.claude_transcript_path, sessionId)
 }
 
 export type CodexSessionTitleLookup = (
