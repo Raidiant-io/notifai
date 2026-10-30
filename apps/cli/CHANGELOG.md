@@ -8,6 +8,40 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 This project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 and [Conventional Commits](https://www.conventionalcommits.org/en/v1.0.0/).
 
+## [14.4.2](https://github.com/Raidiant-io/notifai/compare/v14.4.1...v14.4.2) (2026-10-30)
+
+### Features
+
+* A plain folder outside Git can now be a Project on this computer: `notifai project folder add <path> --name <name>`, with `list`, `rename` and `remove` (each takes `--json`). A send or ask from that folder, or any folder inside it, then carries that Project. A Git repository inside the folder keeps its own Project, and an explicit, configured or `--projectless` choice still wins. The folder's path never leaves the computer. Notifai for Mac 0.1.6 manages the same list under Folders as Projects in Settings.
+* `notifai doctor codex` helps you approve Notifai's Codex hooks. Run it in a terminal: it finds the Codex homes where they still wait, such as a T3 Code account's own home, and opens Codex's own hook review in each one, with no sign-in. You approve there and it checks the result. Notifai never approves its hooks itself, and when an agent runs the command it only says what you should run.
+* A conversation T3 Code stopped after it sat idle now continues by itself in its own T3 Code thread when an answer or note arrives, for Claude Code and Codex alike. It never continues in another thread or app and never starts T3 Code; while T3 Code is not running it waits for you as before. `reopen.t3` (`when-running` by default, or `off`) controls it.
+* Each question of a `notifai ask --form` form can carry its own short title and an optional Markdown `"detail"` explaining why it is asked. Your devices show them with the question.
+* Notifai's hooks now have short names. Claude Code shows the name while a hook runs, and fresh Codex installs show them in `/hooks`. Codex installs that already carry an integration revision keep their approved hooks exactly as they are.
+* `notifai channel` shows the release channel this computer follows, Stable or Beta, and `notifai channel stable` or `notifai channel beta` changes it (add `--json` for a machine-readable answer). Choosing Beta installs a newer beta at once. Choosing Stable keeps the build you have until a newer Stable release replaces it through automatic updates, and never installs an older build. `notifai config explain updates.automatic` shows whether automatic updates are on, and `notifai config set updates.automatic false` turns them off. Notifai for Mac and Windows carry the same two choices from their Settings.
+* Agents now show each answer, note or edit that reached them through Notifai in the conversation: a bold label line, your words verbatim in a quote, then one line naming the work it sets in motion.
+
+### Bug Fixes
+
+* On Grok, Notifai no longer holds back an agent's first tool to deliver its guidance. Grok showed the agent only the start of that text, so agents reported that Notifai had blocked them and never got the guidance. It now arrives whole with the first tool result.
+* A Claude Code session that sends without `--session-label` now reaches your devices under the title Claude Code gives it (your rename, else Claude Code's own title) instead of a generated name. A session already shown under a generated name takes that title once.
+* `--session-label` is never a usage error anymore: where the harness does not identify the Agent Session, Notifai sets the label aside with a one-line note and still sends. Agents name a session once, on their first send or ask.
+* Quoted replies keep each line apart in renderers that used to join them, such as Hermes' Markdown mode.
+* A long Claude Code picker, Codex card or OpenCode question now reaches your devices as the question it asks: its last sentence ending in a question mark, else its closing whole sentences, never a fragment after an ellipsis. Its full wording goes into the Body with its lines kept and its bullet lines as a list, instead of one bold paragraph. Answers still map back to the exact picker wording.
+* A Codex session keeps the Notifai hooks it loaded when it started. After an update adds or changes one, `notifai update --resume` no longer says the update is done for that session: it names the hooks the session is missing and says a new Codex session picks them up. `notifai doctor` names them too, and only treats it as a problem when a feature needs one (answers at turn end, Notes during a busy turn, question cards).
+* New Codex installs no longer add an `--integration-revision` argument to their hook commands. Existing installs keep their commands exactly as they are, so nothing needs approving again. `notifai doctor` asks Codex itself whether the hooks are approved when it can.
+* A Codex thread whose Notifai hooks Codex skips, such as one started with its own `CODEX_HOME` for another account, now shows as running in the Notifai apps once it sends. Until its hooks are approved in that home it takes no notes and can't ask questions.
+* The agent in such a thread is told once to remind you to approve the hooks, with the step that works there: `notifai doctor codex` in a terminal on that machine, the same on every platform and app. In Orca one approval in `~/.codex` covers every account. `notifai init` and its done message give the same step.
+* With a symlinked `~/.codex`, hooks you approved are no longer reported as waiting for approval.
+* `notifai ask` refuses a form too large for a phone notification before registering it, with what to shorten, instead of letting it vanish. How much fits now depends on the Project's real name and avatar, so ordinary forms of up to 10 questions fit. `notifai status` says why a retired question ended.
+* A question nobody answered (Esc or "Chat about this" on Claude Code's picker, or the session ending) now shows as expired on your devices instead of answered elsewhere, and wording no longer calls the agent conversation "the terminal".
+* An unnamed Agent Session keeps a generated name until it is named, and a question opened through a harness picker no longer freezes that name.
+* A missing acknowledgement of an answer now holds an agent's turn for at most three Stops in a row in every case.
+* Notifai handles unexpected answers from the server more safely: replies with missing or malformed fields are refused with a clear error instead of being used.
+
+### Documentation
+
+* The Notifai skill tells agents to run `notifai project folder add <path> --name <name>` when you ask them to make a plain folder outside Git a Project.
+
 ## [14.4.1](https://github.com/Raidiant-io/notifai/compare/v14.4.0...v14.4.1) (2026-10-27)
 
 ### Bug Fixes
