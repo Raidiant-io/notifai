@@ -556,6 +556,7 @@ const outputIosFields = {
 /** Questions read from retained content: preserve additions and older authoring limits. */
 export const QuestionView = Type.Object({
   id: Type.String(), text: Type.String(), multi: Type.Optional(Type.Boolean()),
+  title: Type.Optional(Type.String()), detail: Type.Optional(Type.String()),
   choices: Type.Optional(Type.Array(Type.Object({
     id: Type.String(), label: Type.String(), description: Type.Optional(Type.String()),
     recommended: Type.Optional(Type.Literal(true)),
