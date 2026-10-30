@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "behavior_digest": "sha256:5a06e0b69ba2c42812a7d57aa034466cc1da3b58c146bb56676d74951f5af613",
+  "behavior_digest": "sha256:fcc37b4cf68643483448b3c751f6c0d42a17ec0c0b28a9d569262861c3c0247b",
   "outcome": "guidance-updated",
   "surfaces_reviewed": [
     "lifecycle-hooks",
@@ -9,5 +9,5 @@
     "cli-readiness",
     "domain-terms"
   ],
-  "reason": "The acknowledgements topic now has agents put a lone > line between quoted lines when they quote the User in the conversation, because a CommonMark renderer (Hermes' render mode) joined a chosen choice and its typed text into one line. Codex, OpenCode and Grok kept them apart either way. Lifecycle hooks, harness setup, CLI readiness and domain terms are unaffected; the skill already points to this topic."
+  "reason": "Grok activation now rides only on the first tool result (PostToolUse/PostToolUseFailure additionalContext) instead of a PreToolUse deny. Grok 1.0.70 shows the model only 256 characters of a deny reason, so the guidance never arrived and agents reported that Notifai blocked their first tool; reproduced in an isolated Grok, where additionalContext arrived whole. The Grok harness reference now says the first tool result carries guidance and refreshed guidance. Harness setup, CLI readiness and domain terms are unaffected."
 }

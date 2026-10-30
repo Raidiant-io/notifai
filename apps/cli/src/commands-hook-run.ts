@@ -550,18 +550,9 @@ export async function hookRunCommand(
   if (event === 'pre-tool-use') {
     start({ cwd })
     try {
-      if (harness === 'grok' && lifecycleEnabled()) {
-        const context = claimGrokActivation(envelope, cwd, deps.env, [
-          pendingAgentUpdateNotice({ env: deps.env, now: now(), updateCommand: updateCliCommand(deps) }),
-          pendingIntegrationFaultNotice({ ...deps, cwd }, 'grok'),
-        ].filter((notice): notice is PendingNotice => notice !== undefined))
-        // Passive Grok events discard context. Its tool gate can return it
-        // before even the first Notification Request has side effects.
-        if (context !== undefined) deps.io.out(JSON.stringify({ decision: 'deny',
-          reason: `${context}\n\nFollow this context before retrying the tool.` }))
-        else grokQuestionFormGate(deps, envelope, cwd)
-      }
-      if (harness === 'grok' && !lifecycleEnabled()) grokQuestionFormGate(deps, envelope, cwd)
+      // Activation rides on PostToolUse. Grok 1.0.70 cuts a deny reason to
+      // 256 characters, so activation sent as one read only as a blocked tool.
+      if (harness === 'grok') grokQuestionFormGate(deps, envelope, cwd)
       const changed = harness === 'codex' && lifecycleEnabled() ? guidanceChangeFor(deps, harness, envelope, cwd) : undefined
       let wrote = false
       const io = { ...deps.io, out: (line: string) => {

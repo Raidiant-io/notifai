@@ -1,5 +1,5 @@
 {
-  "current": "c48fc47f9442e4c37e545c4542cb62855bb08188bb9a442d73084bbf75256c80",
+  "current": "a7b7b01da436d6a82c8678e495afc609fa7155f04b4f657411cb61ff25e13d63",
   "releases": [
     {
       "digest": "3e47b01bc6bbfb43e910c660b9964fab6459d75148c3c02dcbcd0be64cfb2963",
@@ -236,6 +236,10 @@
     {
       "digest": "c48fc47f9442e4c37e545c4542cb62855bb08188bb9a442d73084bbf75256c80",
       "note": "When you quote the User's words in the conversation, put a lone `>` line between quoted lines, including between a chosen choice and the text typed with it: some renderers join quoted lines that have none."
+    },
+    {
+      "digest": "a7b7b01da436d6a82c8678e495afc609fa7155f04b4f657411cb61ff25e13d63",
+      "note": "On Grok, session guidance now arrives with the first tool result instead of holding that tool back, so the first tool runs normally. Nothing changes in what agents do."
     }
   ]
 }
