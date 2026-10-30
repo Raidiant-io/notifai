@@ -702,7 +702,7 @@ export function buildProgram(deps: CommandDeps, options: BuildProgramOptions = {
     .addOption(new Option('--session-id <id>', 'low-level automation override for an opaque exact Agent Session (env: NOTIFAI_SESSION_ID)').hideHelp())
     .option(
       '--session-label <text>',
-      'initial Agent Session name; repeat the same name, use session rename for a changed job (env: NOTIFAI_SESSION_LABEL)',
+      'name this Agent Session; needed only on its first send or ask, then use session rename for a changed job (env: NOTIFAI_SESSION_LABEL)',
     )
     .optionsGroup(SEND_GROUP.presentation)
     .option('--collapse-key <key>', 'replace earlier notifications with the same key')
@@ -872,7 +872,7 @@ export function buildProgram(deps: CommandDeps, options: BuildProgramOptions = {
     .option('--projectless', 'deliberately omit Project identity for this question')
     .option(
       '--session-label <text>',
-      'initial Agent Session name; repeat the same name, use session rename for a changed job (env: NOTIFAI_SESSION_LABEL)',
+      'name this Agent Session; needed only on its first send or ask, then use session rename for a changed job (env: NOTIFAI_SESSION_LABEL)',
     )
     .action(async (question: string | undefined, opts: {
       title?: string

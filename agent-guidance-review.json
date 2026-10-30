@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "behavior_digest": "sha256:652c331bf1451e56cca8f722a8a35d617348fa1ee974a141a45509a5e47df895",
+  "behavior_digest": "sha256:630bc457a9eeb14d77a45f1ddd9ee92e7e90368484eca40266a6be8eba3a65df",
   "outcome": "guidance-updated",
   "surfaces_reviewed": [
     "lifecycle-hooks",
@@ -9,5 +9,5 @@
     "cli-readiness",
     "domain-terms"
   ],
-  "reason": "Reviewed all five surfaces for making --session-label unconditional. Notifai skill: 'Name the Agent Session' now says to pass the same --session-label on every send and ask and that the CLI sets it aside where the harness does not identify the Agent Session, replacing the rule that asked agents to judge whether the environment exposes an exact identifier. The Cursor reference and the Cursor rename refusal no longer tell agents to omit it. CLI: a label with no identified Agent Session is set aside with a stderr note instead of a usage error. Lifecycle hooks, harness setup, CLI readiness and domain terms are unchanged; the release note tells agents to always pass the label."
+  "reason": "Reviewed all five surfaces for naming an Agent Session once. The CLI freezes the first accepted name and ignores a repeated --session-label, so the Notifai skill's 'Name the Agent Session' section now says to pass it on the first send or ask and leave it off afterwards, and the rename paragraph no longer says to keep passing the new name. The send and ask --session-label help says the same. Lifecycle hooks, harness setup, CLI readiness and domain terms are unchanged; the unreleased earlier note no longer tells agents to repeat the label."
 }

@@ -1,5 +1,5 @@
 {
-  "current": "cc3e5a3fce6802cdc2b5256618f5c52f385deb3f3a3d14b08a629c4bd3434edd",
+  "current": "6f4538193e5ea098c347ecf5933d31ac97b58a3f0131933970105d290c71500c",
   "releases": [
     {
       "digest": "3e47b01bc6bbfb43e910c660b9964fab6459d75148c3c02dcbcd0be64cfb2963",
@@ -223,7 +223,11 @@
     },
     {
       "digest": "cc3e5a3fce6802cdc2b5256618f5c52f385deb3f3a3d14b08a629c4bd3434edd",
-      "note": "Pass the same `--session-label` on every send and ask. Where the harness does not identify the Agent Session, the CLI now sets the label aside with a one-line note instead of failing the send, so you no longer need to judge whether it can name the session."
+      "note": "Where the harness does not identify the Agent Session, the CLI now sets `--session-label` aside with a one-line note instead of failing the send, so you no longer need to judge whether it can name the session."
+    },
+    {
+      "digest": "6f4538193e5ea098c347ecf5933d31ac97b58a3f0131933970105d290c71500c",
+      "note": "Name your Agent Session once: pass `--session-label` on your first send or ask and leave it off after that, since the name stays. To change it after a complete change of job, use `notifai session rename`."
     }
   ]
 }
