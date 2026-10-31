@@ -637,6 +637,9 @@ function fnv1a64(value: string): string {
 export const NOTIFICATION_CONTRACT_FINGERPRINT =
   'notification-draft/' + fnv1a64(JSON.stringify(NotificationDraft))
 
+/** Last schema before optional choice previews; valid for every previewless draft. */
+export const PRE_CHOICE_PREVIEW_CONTRACT_FINGERPRINT = 'notification-draft/485faedfc93f7bcf'
+
 /**
  * Every fingerprint a service on this schema accepts: its own, then each
  * earlier schema whose every draft this one still accepts. A client sending
@@ -644,6 +647,7 @@ export const NOTIFICATION_CONTRACT_FINGERPRINT =
  */
 export const ACCEPTED_NOTIFICATION_CONTRACT_FINGERPRINTS: readonly string[] = [
   NOTIFICATION_CONTRACT_FINGERPRINT,
+  PRE_CHOICE_PREVIEW_CONTRACT_FINGERPRINT,
   // Before question titles and details.
   'notification-draft/bc248d61f2da3bcd',
   // Before choice descriptions and the recommended choice.

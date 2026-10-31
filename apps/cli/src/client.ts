@@ -50,6 +50,8 @@ import {
   CAPABILITIES_HEADER,
   CLI_VERSION_HEADER,
   NOTIFICATION_CONTRACT_HEADER,
+  NOTIFICATION_CONTRACT_FINGERPRINT,
+  PRE_CHOICE_PREVIEW_CONTRACT_FINGERPRINT,
 } from '@raidiant/notifai-protocol'
 import type { Logger } from './logging.js'
 
@@ -317,6 +319,12 @@ export function createClient(
     const timeout = AbortSignal.timeout(limitMs)
     const signals = [timeout, ...(abort === undefined ? [] : [abort]), ...(options.signal === undefined ? [] : [options.signal])]
     const signal = signals.length === 1 ? timeout : AbortSignal.any(signals)
+    // Describe the effective submitted schema after optional-field negotiation.
+    // Previewless drafts are valid on the previous service, including ordinary
+    // notifications sent by an updated CLI before the service is updated.
+    const submission = apiPath.startsWith('/api/v1/notifications?') ? body as SubmitNotificationRequestT | undefined : undefined
+    const previewless = submission !== undefined && options.notificationContractFingerprint === NOTIFICATION_CONTRACT_FINGERPRINT &&
+      !submission.draft.reply?.questions.some(q => q.choices?.some(c => c.preview !== undefined))
     let response: Response
     try {
       response = await fetch(`${root}${apiPath}`, {
@@ -325,6 +333,7 @@ export function createClient(
           ...(body !== undefined ? { 'content-type': 'application/json' } : {}),
           ...(bearer ? { authorization: bearer } : {}),
           ...clientHeaders,
+          ...(bearer && previewless ? { [NOTIFICATION_CONTRACT_HEADER]: PRE_CHOICE_PREVIEW_CONTRACT_FINGERPRINT } : {}),
         },
         signal,
         ...(bearer ? { redirect: 'error' as const } : {}),

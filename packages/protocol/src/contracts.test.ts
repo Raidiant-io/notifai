@@ -2233,6 +2233,7 @@ describe('question titles and details', () => {
 
   it('still accepts every draft of the previous schema', () => {
     expect(ACCEPTED_NOTIFICATION_CONTRACT_FINGERPRINTS).toContain('notification-draft/bc248d61f2da3bcd')
+    expect(ACCEPTED_NOTIFICATION_CONTRACT_FINGERPRINTS).toContain('notification-draft/485faedfc93f7bcf')
     expect(ACCEPTED_NOTIFICATION_CONTRACT_FINGERPRINTS[0]).toBe(NOTIFICATION_CONTRACT_FINGERPRINT)
   })
 

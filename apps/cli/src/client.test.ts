@@ -2,6 +2,7 @@ import {
 CAPABILITIES_HEADER,
 CLI_VERSION_HEADER,
 NOTIFICATION_CONTRACT_HEADER,
+NOTIFICATION_CONTRACT_FINGERPRINT,
 } from '@raidiant/notifai-protocol'
 import { createServer,type Server } from 'node:http'
 import type { AddressInfo } from 'node:net'
@@ -54,6 +55,8 @@ it('discovers setup issues and sends an authenticated replacement snapshot over 
 
 it.each([['choice_previews'], [], null])('gates option previews on server feature discovery: %j', async (features) => {
   const submissions: unknown[] = []
+  const expectedFingerprint = features?.includes('choice_previews') ? NOTIFICATION_CONTRACT_FINGERPRINT : 'notification-draft/485faedfc93f7bcf'
+  const fingerprints: unknown[] = []
   let probes = 0
   const baseUrl = await serving(async (request, response) => {
     response.setHeader('content-type', 'application/json')
@@ -63,12 +66,18 @@ it.each([['choice_previews'], [], null])('gates option previews on server featur
       response.end(JSON.stringify({ features: features ?? [] }))
       return
     }
+    fingerprints.push(request.headers[NOTIFICATION_CONTRACT_HEADER])
+    if (request.headers[NOTIFICATION_CONTRACT_HEADER] !== expectedFingerprint && request.headers[NOTIFICATION_CONTRACT_HEADER] !== 'notification-draft/485faedfc93f7bcf') {
+      response.statusCode = 409
+      response.end(JSON.stringify({ error: { code: 'feature_unavailable', message: 'Update is waiting for the service.' } }))
+      return
+    }
     let raw = ''
     for await (const chunk of request) raw += chunk
     submissions.push(JSON.parse(raw))
     response.end('{}')
   })
-  const client = createClient(baseUrl, null)
+  const client = createClient(baseUrl, 'Bearer machine', { notificationContractFingerprint: NOTIFICATION_CONTRACT_FINGERPRINT })
   const choice = { id: 'a', label: 'Grid', preview: 'A  B\nC  D' }
   const request = { idempotency_key: 'preview-test', draft: { schema_version: 1 as const,
     presentation: { title: 'Layout', summary: 'Which layout?' }, targets: { mode: 'all' as const },
@@ -77,6 +86,10 @@ it.each([['choice_previews'], [], null])('gates option previews on server featur
   } }
   await client.submit(request, 0)
   await client.submit(request, 0)
+  expect(probes).toBe(1)
+  expect(fingerprints).toEqual([expectedFingerprint, expectedFingerprint])
+  await client.submit({ ...request, draft: { ...request.draft, reply: undefined } }, 0)
+  expect(fingerprints.at(-1)).toBe('notification-draft/485faedfc93f7bcf')
   expect(probes).toBe(1)
   expect(submissions[0]).toMatchObject({ draft: { reply: { questions: [{ choices: [
     features?.includes('choice_previews') ? choice : { id: 'a', label: 'Grid' }, { id: 'b', label: 'List' },
