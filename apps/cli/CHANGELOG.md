@@ -8,6 +8,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 This project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 and [Conventional Commits](https://www.conventionalcommits.org/en/v1.0.0/).
 
+## [14.5.0-beta.1](https://github.com/Raidiant-io/notifai/compare/v14.4.2...v14.5.0-beta.1) (2026-10-31)
+
+### Features
+
+* Setup now looks for the agent apps that are really installed on your computer. A leftover settings folder from an app you removed no longer counts, and Codex inside the ChatGPT app on Mac, and the Codex command on Windows, are recognised. A later `notifai init` offers an app you installed since, keeps your earlier choices (including "none") and skips an app name it doesn't know instead of failing.
+* `notifai doctor` now reports each agent app on its own: whether it is installed and connected, and what is still missing for it (hooks, approval, plugin or guidance), so a problem with one app no longer looks like a problem with all of them. `notifai doctor --json` carries the same report as `agent_apps`.
+* Notifai for Mac and Windows can now show what is left to set up on this computer: a one-line offer on Home to connect the agent apps it found, and an Agent apps page in Settings. Your Companion Apps also warn you when Codex is still waiting for you to approve Notifai's hooks, and the warning goes away once you approve them.
+
+### Bug Fixes
+
+* An update that was downloaded but is waiting for your running agent sessions to end now finishes by itself on the next `notifai` command once they have ended, checking at most once a minute so commands stay quick. Running sessions keep the version they started with, the automatic-update switch is respected, and an update that can't safely share your local data still waits for it to be safe.
+* `notifai doctor` no longer calls a downloaded update that is only waiting for sessions to end a problem to repair. It reports it as ready. An interrupted installation still asks for recovery.
+* If Notifai is interrupted just as a waiting update finishes, it still brings your installed skill and hooks up to date afterwards instead of forgetting that step.
+
 ## [14.4.2](https://github.com/Raidiant-io/notifai/compare/v14.4.1...v14.4.2) (2026-10-30)
 
 ### Features
