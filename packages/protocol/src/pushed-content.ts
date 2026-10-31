@@ -8,7 +8,7 @@ import type { NotificationDraftT, QuestionT } from './notification.js'
 export function hasChoiceDescriptions(draft: NotificationDraftT): boolean {
   return (
     draft.reply?.questions.some((question) =>
-      question.choices?.some((choice) => choice.description !== undefined),
+      question.choices?.some((choice) => choice.description !== undefined || choice.preview !== undefined),
     ) ?? false
   )
 }
@@ -34,7 +34,7 @@ export function pushedQuestions(questions: readonly QuestionT[]): QuestionT[] {
       ? question
       : {
           ...question,
-          choices: question.choices.map(({ description: _description, ...choice }) => choice),
+          choices: question.choices.map(({ description: _description, preview: _preview, ...choice }) => choice),
         },
   )
 }

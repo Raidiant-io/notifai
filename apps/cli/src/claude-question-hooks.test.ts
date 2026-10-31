@@ -190,6 +190,18 @@ function setup(options: { signedIn?: boolean; enabled?: boolean; leased?: boolea
 }
 
 describe('a Claude Code picker as a device question', () => {
+  it('carries option previews with their exact monospace layout to devices', () => {
+    const preview = '┌─────┐\n│ A B │\n└─────┘'
+    const questions = pickerQuestions({ questions: [{ question: 'Which layout?', options: [
+      { label: 'Grid', description: 'Two columns', preview }, { label: 'List', preview: 'A\nB' },
+    ] }] })!
+    expect(questions[0]!.options[0]).toMatchObject({ preview })
+    const form = pickerForm(questions) as PickerForm
+    expect(form.questions[0]!.choices![0]).toMatchObject({ label: 'Grid', description: 'Two columns', preview })
+    const overlong = pickerForm([{ question: 'Which?', multiSelect: false, options: [{ label: 'A', preview: 'x'.repeat(4001) }, { label: 'B' }] }]) as PickerForm
+    expect(overlong.questions[0]!.choices![0]).toEqual({ id: 'a', label: 'A' })
+  })
+
   it('keeps short pickers as they are and maps every device id back to the picker', () => {
     const form = pickerForm(pickerQuestions(FORM)!) as PickerForm
     const described = (id: string, label: string) => ({ id, label, description: `Choose ${label}` })

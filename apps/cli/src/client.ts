@@ -363,6 +363,20 @@ export function createClient(
     }
   }
 
+  // New optional fields are admitted only by services that advertise them.
+  // Probe once per client, only for drafts that actually carry a preview.
+  let choicePreviews: Promise<boolean> | undefined
+  async function compatibleSubmission(body: SubmitNotificationRequestT): Promise<SubmitNotificationRequestT> {
+    if (!body.draft.reply?.questions.some(q => q.choices?.some(c => c.preview !== undefined))) return body
+    choicePreviews ??= call<FeaturesResponse>('GET', '/api/v1/features', undefined, 0, AbortSignal.timeout(2000))
+      .then(result => Array.isArray(result.features) && result.features.includes('choice_previews')).catch(() => false)
+    if (await choicePreviews) return body
+    return { ...body, draft: { ...body.draft, reply: { ...body.draft.reply,
+      questions: body.draft.reply.questions.map(q => q.choices === undefined ? q : { ...q,
+        choices: q.choices.map(({ preview: _preview, ...choice }) => choice) }),
+    } } }
+  }
+
   return {
     beginPairing: (body) => call('POST', '/api/v1/pairings', body),
     pollPairing: (pairingId, pollVerifier) =>
@@ -391,8 +405,8 @@ export function createClient(
     compatibility: () => call('GET', '/api/v1/compatibility'),
     features: (options) => call('GET', '/api/v1/features', undefined, 0, options?.signal),
     putMachineSetupIssues: (body, options) => call('PUT', '/api/v1/machine/setup-issues', body, 0, options?.signal),
-    submit: (body, waitSeconds) =>
-      call('POST', `/api/v1/notifications?wait_seconds=${waitSeconds}`, body, waitSeconds),
+    submit: async (body, waitSeconds) =>
+      call('POST', `/api/v1/notifications?wait_seconds=${waitSeconds}`, await compatibleSubmission(body), waitSeconds),
     evidence: (requestId) => call('GET', `/api/v1/notifications/${encodeURIComponent(requestId)}`),
     replies: (requestId, { waitSeconds, afterSeq }) =>
       call(

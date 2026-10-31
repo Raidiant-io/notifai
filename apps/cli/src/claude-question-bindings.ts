@@ -25,6 +25,7 @@ import { isDeepStrictEqual } from 'node:util'
 import {
   CHOICE_DESCRIPTION_MAX_LENGTH,
   CHOICE_LABEL_MAX_LENGTH,
+  CHOICE_PREVIEW_MAX_LENGTH,
   QUESTION_TEXT_MAX_LENGTH,
   REPLY_MAX_CHOICES,
   REPLY_MAX_QUESTIONS,
@@ -78,7 +79,7 @@ export interface PickerQuestion {
   kind?: 'text' | 'number' | (string & {})
   /** The helper line the extended schema shows under the question. */
   description?: string
-  options: Array<{ label: string; description?: string }>
+  options: Array<{ label: string; description?: string; preview?: string }>
   multiSelect: boolean
   number?: PickerNumber
 }
@@ -108,9 +109,9 @@ export function pickerQuestions(toolInput: unknown): PickerQuestion[] | null {
     const shown: PickerQuestion['options'] = []
     for (const option of options) {
       if (typeof option !== 'object' || option === null) return null
-      const { label, description: optionDescription } = option as { label?: unknown; description?: unknown }
+      const { label, description: optionDescription, preview } = option as { label?: unknown; description?: unknown; preview?: unknown }
       if (typeof label !== 'string') return null
-      shown.push({ label, ...(typeof optionDescription === 'string' && optionDescription.trim() !== '' ? { description: optionDescription } : {}) })
+      shown.push({ label, ...(typeof preview === 'string' && preview.trim() !== '' ? { preview } : {}), ...(typeof optionDescription === 'string' && optionDescription.trim() !== '' ? { description: optionDescription } : {}) })
     }
     questions.push({
       question,
@@ -363,6 +364,7 @@ export function pickerForm(
       choices.push({
         id,
         label,
+        ...(option.preview === undefined || [...option.preview].length > CHOICE_PREVIEW_MAX_LENGTH ? {} : { preview: option.preview }),
         ...(description === undefined || description === '' ? {} : { description }),
         ...(plain !== option.label ? { recommended: true as const } : {}),
       })

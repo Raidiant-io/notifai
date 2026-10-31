@@ -46,6 +46,7 @@ export const SERVER_FEATURES = [
   'notification_content_batch',
   'read_sync',
   'setup_issues',
+  'choice_previews',
 ] as const
 export type ServerFeature = (typeof SERVER_FEATURES)[number]
 

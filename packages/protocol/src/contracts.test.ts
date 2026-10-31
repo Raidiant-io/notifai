@@ -2056,6 +2056,21 @@ describe('choice descriptions and the recommended choice', () => {
       reply: { expires_in_seconds: 86400, questions: [{ id: 'deploy', text: 'Deploy migration 0007?', choices: questionChoices }] },
     })
 
+  it('accepts multiline option previews and fetches them when they exceed the push budget', () => {
+    const preview = '┌─────┐\n│ A B │\n└─────┘'
+    const withPreview = asking([{ id: 'a', label: 'Grid', preview }, { id: 'b', label: 'List' }])
+    expect(validateDraft(withPreview).ok).toBe(true)
+    const compact = buildApnsEnvelope(withPreview, ids)
+    expect(notifaiOf(withPushedApnsContent(compact.payload, withPreview, LIMIT))).toMatchObject({ has_choice_descriptions: true, questions: [{ choices: [{ preview }, {}] }] })
+    const wordy = asking(Array.from({ length: 6 }, (_, i) => ({ id: `c${i}`, label: `Choice ${i}`, preview: 'x'.repeat(4000) })))
+    expect(validateDraft(wordy).ok).toBe(true)
+    const large = buildApnsEnvelope(wordy, ids)
+    expect(new TextEncoder().encode(JSON.stringify(large.payload)).length).toBeLessThanOrEqual(LIMIT)
+    expect(notifaiOf(large.payload)).toMatchObject({ has_choice_descriptions: true, content_token: ids.contentToken })
+    expect(JSON.stringify(notifaiOf(large.payload)['questions'])).not.toContain('preview')
+    expect(validateDraft(asking([{ id: 'a', label: 'A', preview: 'x'.repeat(4001) }, { id: 'b', label: 'B' }])).ok).toBe(false)
+  })
+
   it('accepts one plain-text line per choice and at most one recommended choice', () => {
     expect(validateDraft(asking())).toEqual({ ok: true, errors: [], warnings: [] })
     const longest = 'é'.repeat(CHOICE_DESCRIPTION_MAX_LENGTH)

@@ -1,5 +1,5 @@
 {
-  "current": "2cdd7320e45bae13e99773d74f69a928bf23f08b70f9390db64d34b24bb9da87",
+  "current": "048264c47b1892625f0698dd7b8af82911963bd52507bb469add0bd0387f0bb8",
   "releases": [
     {
       "digest": "3e47b01bc6bbfb43e910c660b9964fab6459d75148c3c02dcbcd0be64cfb2963",
@@ -272,6 +272,10 @@
     {
       "digest": "2cdd7320e45bae13e99773d74f69a928bf23f08b70f9390db64d34b24bb9da87",
       "note": "A waiting downloaded update now retries on ordinary notifai commands, at most once a minute, so repeated commands stay quick. Running sessions keep their version; the automatic-update switch and local-data safety checks still apply. After the update, the hub finishes updating the installed skill and the hooks it may change."
+    },
+    {
+      "digest": "048264c47b1892625f0698dd7b8af82911963bd52507bb469add0bd0387f0bb8",
+      "note": "Previews on the choices of a native Claude Code question now reach the User's Companion Apps. Each preview appears under its choice in monospace, with its line breaks and spacing kept. A preview longer than 4,000 characters stays in the terminal only, and the choice still appears without it. Nothing changes in how you ask: keep using the harness's native question with previews when a choice is easier to judge by seeing it."
     }
   ]
 }

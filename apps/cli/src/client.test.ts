@@ -52,6 +52,39 @@ it('discovers setup issues and sends an authenticated replacement snapshot over 
   expect(requests[1]!.body).toEqual({ issues: [] })
 })
 
+it.each([['choice_previews'], [], null])('gates option previews on server feature discovery: %j', async (features) => {
+  const submissions: unknown[] = []
+  let probes = 0
+  const baseUrl = await serving(async (request, response) => {
+    response.setHeader('content-type', 'application/json')
+    if (request.url === '/api/v1/features') {
+      probes++
+      response.statusCode = features === null ? 404 : 200
+      response.end(JSON.stringify({ features: features ?? [] }))
+      return
+    }
+    let raw = ''
+    for await (const chunk of request) raw += chunk
+    submissions.push(JSON.parse(raw))
+    response.end('{}')
+  })
+  const client = createClient(baseUrl, null)
+  const choice = { id: 'a', label: 'Grid', preview: 'A  B\nC  D' }
+  const request = { idempotency_key: 'preview-test', draft: { schema_version: 1 as const,
+    presentation: { title: 'Layout', summary: 'Which layout?' }, targets: { mode: 'all' as const },
+    delivery: { ttl_seconds: 3600, collapse_key: null },
+    reply: { expires_in_seconds: 3600, questions: [{ id: 'q', text: 'Which layout?', choices: [choice, { id: 'b', label: 'List' }] }] },
+  } }
+  await client.submit(request, 0)
+  await client.submit(request, 0)
+  expect(probes).toBe(1)
+  expect(submissions[0]).toMatchObject({ draft: { reply: { questions: [{ choices: [
+    features?.includes('choice_previews') ? choice : { id: 'a', label: 'Grid' }, { id: 'b', label: 'List' },
+  ] }] } } })
+  expect(JSON.stringify(submissions[0]).includes('\"preview\":')).toBe(features?.includes('choice_previews') ?? false)
+  expect(choice.preview).toBe('A  B\nC  D')
+})
+
 describe('a server that never answers', () => {
   it('gives up instead of hanging until the harness kills the hook', async () => {
     // Accepts the request, holds the socket open, writes nothing — ever.

@@ -160,6 +160,9 @@ export const CHOICE_LABEL_MAX_LENGTH = 40
  */
 export const CHOICE_DESCRIPTION_MAX_LENGTH = 160
 
+/** Multiline plain text shown in a monospace option preview. */
+export const CHOICE_PREVIEW_MAX_LENGTH = 4000
+
 /**
  * One answer in a closed question. The id is the agent-facing token — stable,
  * machine-checkable, and never shown to the user; the label is the human text
@@ -177,6 +180,7 @@ export const ReplyChoice = Type.Object(
     description: Type.Optional(
       Type.String({ pattern: plainTextLinePattern(CHOICE_DESCRIPTION_MAX_LENGTH) }),
     ),
+    preview: Type.Optional(Type.String({ minLength: 1, maxLength: CHOICE_PREVIEW_MAX_LENGTH })),
     /** The asking agent recommends this answer. At most one choice per question. */
     recommended: Type.Optional(Type.Literal(true)),
   },
