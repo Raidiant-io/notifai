@@ -27,6 +27,7 @@ import {
  * of the same name at registration, or before offering the action a feature
  * names. Clients ignore names they do not know.
  *
+ * - `setup_issues`: machine-reported setup snapshots and the Account setup-issue view.
  * - `session_stopped_hold`: a stopped Agent Session (presence `out_of_reach`
  *   with `accepts_messages: true`) accepts Session Notes and post-read Answer
  *   Edits and holds them until it is reopened.
@@ -44,6 +45,7 @@ export const SERVER_FEATURES = [
   'question_dismiss',
   'notification_content_batch',
   'read_sync',
+  'setup_issues',
 ] as const
 export type ServerFeature = (typeof SERVER_FEATURES)[number]
 

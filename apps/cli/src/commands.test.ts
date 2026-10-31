@@ -786,6 +786,14 @@ it('resumes the same init after a required CLI update becomes current', async ()
     expect(done?.message).toContain('To start: Claude Code: open a new session')
     expect(done?.message).toContain("Claude Code can now run Notifai's commands without asking.")
     expect(io.outros).toEqual(['All set ✨'])
+
+    const settingsBefore = readFileSync(settingsFile('claude-code', env), 'utf8')
+    const choiceBefore = readFileSync(path.join(stateDir(env), 'setup-apps.json'), 'utf8')
+    io.prompts = []
+    expect(await initCommand(deps, { skills: false })).toBe(EXIT.ok)
+    expect(io.prompts).toEqual([])
+    expect(readFileSync(settingsFile('claude-code', env), 'utf8')).toBe(settingsBefore)
+    expect(readFileSync(path.join(stateDir(env), 'setup-apps.json'), 'utf8')).toBe(choiceBefore)
   })
 
   /** A phone that is installed during the run once `installed` returns true. */
@@ -1192,7 +1200,8 @@ describe('guided setup', () => {
 
   it('asks which agent apps to connect before anything else, once, and never for an agent that chose the older flags', async () => {
     const { deps, io } = journey({ connected: true, devices: () => [phone] })
-    mkdirSync(path.join(deps.env['HOME']!, '.codex'), { recursive: true })
+    mkdirSync(path.join(deps.env['HOME']!, '.local', 'bin'), { recursive: true })
+    writeFileSync(path.join(deps.env['HOME']!, '.local', 'bin', 'codex'), '#!/bin/sh\n', { mode: 0o755 })
     await initCommand(deps, { json: true })
     const result = JSON.parse(io.outLines.join('\n')) as { message: string; states: { id: string; status: string; technical: unknown }[] }
     expect(result.states[0]).toMatchObject({ id: 'apps', status: 'gap', technical: {
@@ -1211,6 +1220,77 @@ describe('guided setup', () => {
     await initCommand(deps, { json: true })
     const later = JSON.parse(io.outLines.join('\n')) as { states: { id: string }[] }
     expect(later.states.map((state) => state.id)).not.toContain('apps')
+  })
+
+  it('offers an app installed after setup while preserving an explicit decline', async () => {
+    const { deps, io } = journey({ connected: true, devices: () => [phone] })
+    const home = deps.env['HOME']!
+    const bin = path.join(home, '.local', 'bin')
+    mkdirSync(bin, { recursive: true })
+    writeFileSync(path.join(bin, 'codex'), '#!/bin/sh\n', { mode: 0o755 })
+    // The first choice declines Codex. A newly installed Cursor is a new choice.
+    const { saveAppsChoice } = await import('./setup-journey.js')
+    saveAppsChoice(deps.env, [], Date.now(), ['codex'])
+    writeFileSync(path.join(bin, 'cursor-agent'), '#!/bin/sh\n', { mode: 0o755 })
+    await initCommand(deps, { json: true })
+    const report = JSON.parse(io.outLines.join('\n'))
+    expect(report.states[0]).toMatchObject({ id: 'apps', status: 'gap' })
+    expect(report.states[0].technical.preselected).toEqual(['cursor'])
+  })
+
+  it('keeps wired apps preselected when an app installed later reopens setup', async () => {
+    const { deps, io } = journey({ connected: true, devices: () => [phone] })
+    expect(hooksInstallCommand(deps, { harness: 'claude-code', narrate: false })).toBe(EXIT.ok)
+    const before = readFileSync(settingsFile('claude-code', deps.env), 'utf8')
+    const bin = path.join(deps.env['HOME']!, '.local', 'bin')
+    mkdirSync(bin, { recursive: true })
+    writeFileSync(path.join(bin, 'cursor-agent'), '#!/bin/sh\n', { mode: 0o755 })
+    io.outLines = []
+    await initCommand(deps, { json: true })
+    const report = JSON.parse(io.outLines.join('\n'))
+    expect(report.states[0]).toMatchObject({ id: 'apps', technical: { detected: ['cursor'], preselected: ['claude-code', 'cursor'] } })
+    expect(readFileSync(settingsFile('claude-code', deps.env), 'utf8')).toBe(before)
+  })
+
+  it('offers legacy exclusions interactively but preserves them without a human selection', async () => {
+    const { deps, io } = journey({ connected: true, devices: () => [phone] })
+    const bin = path.join(deps.env['HOME']!, '.local', 'bin')
+    mkdirSync(bin, { recursive: true })
+    writeFileSync(path.join(bin, 'codex'), '#!/bin/sh\n', { mode: 0o755 })
+    mkdirSync(stateDir(deps.env), { recursive: true })
+    const choice = path.join(stateDir(deps.env), 'setup-apps.json')
+    writeFileSync(choice, JSON.stringify({ apps: [], chosen_at: '2026-01-01T00:00:00.000Z' }))
+    await initCommand(deps, { json: true })
+    expect(JSON.parse(io.outLines.join('\n')).states.some((state: { id: string }) => state.id === 'apps')).toBe(false)
+    const interactive = new InteractiveIo()
+    let defaults: readonly string[] = []
+    interactive.multiselect = async (_message, _options, selected) => { defaults = selected ?? []; return [] }
+    await initCommand({ ...deps, io: interactive }, { skills: false })
+    expect(defaults).toEqual(['codex'])
+    expect(JSON.parse(readFileSync(choice, 'utf8')).declined).toEqual(['codex'])
+  })
+
+  it('returns per-id unsupported results and preserves known choices for newer callers', async () => {
+    const { deps, io } = journey({ connected: true, devices: () => [phone] })
+    await initCommand(deps, { json: true, apps: 'cursor,future-agent', hooks: false, skills: false })
+    const result = JSON.parse(io.outLines.join('\n'))
+    expect(result.apps).toEqual(['cursor'])
+    expect(result.skipped_apps).toEqual([{ id: 'future-agent', status: 'unsupported' }])
+    const choice = path.join(stateDir(deps.env), 'setup-apps.json')
+    const before = readFileSync(choice, 'utf8')
+    io.outLines = []
+    await initCommand(deps, { json: true, apps: 'future-agent', hooks: false, skills: false })
+    expect(readFileSync(choice, 'utf8')).toBe(before)
+  })
+
+  it('adds all supported app rows to doctor JSON without replacing readiness fields', async () => {
+    const { deps, io } = journey({ connected: true, devices: () => [phone] })
+    await doctorCommand(deps, { json: true })
+    const report = JSON.parse(io.outLines.join('\n'))
+    expect(report.states).toBeInstanceOf(Array)
+    expect(report.agent_apps.supported_ids).toEqual(['claude-code', 'codex', 'cursor', 'opencode', 'openclaw', 'hermes', 'grok'])
+    expect(report.agent_apps.apps).toHaveLength(7)
+    expect(report.agent_apps.apps.every((app: { detected: boolean; connected: boolean }) => !app.detected && !app.connected)).toBe(true)
   })
 
   it('opens the approval page once, says so once, and keeps the same code open while the agent waits', async () => {

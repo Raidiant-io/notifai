@@ -1,5 +1,6 @@
 import { Type, type Static } from '@sinclair/typebox'
 import { Value } from '@sinclair/typebox/value'
+import { SetupIssue } from './setup-issues.js'
 import { NotificationHistoryItem } from './history.js'
 import { SessionMessageView, SessionPresenceView } from './sessions.js'
 
@@ -22,6 +23,8 @@ export const CompanionChangesPage = Type.Object({
   notifications: Type.Array(NotificationHistoryItem),
   session_messages: Type.Array(SessionMessageView),
   presence: Type.Union([Type.Array(SessionPresenceEntry), Type.Null()]),
+  /** Full current setup-issue set when changed; null when unchanged. */
+  setup_issues: Type.Optional(Type.Union([Type.Array(SetupIssue), Type.Null()])),
   /** Opaque Account-bound position; a missing/empty value cannot be committed. */
   next_cursor: Type.String({ minLength: 1 }),
   has_more: Type.Boolean(),

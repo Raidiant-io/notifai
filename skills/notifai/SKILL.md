@@ -266,7 +266,8 @@ Companion App, or grants notification permission: never emulate those, claim
 to approve hooks yourself, or claim an unlisted harness.
 
 The User makes one decision: which agent apps to connect. The first run asks
-it as the `apps` gap; ask once, then rerun with `--apps <ids>`. Setup installs
+it as the `apps` gap; a later run can offer a newly detected app. Ask when that
+gap appears, then rerun with `--apps <ids>`. Setup installs
 hooks, this skill (machine-wide) and command approval into those apps. Hooks
 let Notifai activate in their Agent Sessions where it is on, send questions to
 their devices and bring answers back; to keep questions in the conversation, they

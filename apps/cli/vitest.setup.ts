@@ -1,5 +1,17 @@
 import os from 'node:os'
 import path from 'node:path'
+import { vi } from 'vitest'
+import type * as AgentDetection from './src/agent-app-detection.js'
+
+// Presence discovery also searches fixed system install locations. Never let
+// the developer's installed apps select integrations in disposable-account tests.
+// Pure candidate tests can still supply an explicit filesystem predicate.
+vi.mock('./src/agent-app-detection.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof AgentDetection>()
+  return { ...actual, detectAgentApps: (env: NodeJS.ProcessEnv, platform: NodeJS.Platform,
+    runnable?: (file: string) => boolean) => actual.detectAgentApps(env, platform,
+      runnable ?? (file => file.startsWith(`${os.tmpdir()}${path.sep}`) && actual.runnableAgentFile(file, platform))) }
+})
 
 /**
  * Fail closed if the CLI suite was started without its disposable account.

@@ -1,5 +1,5 @@
 {
-  "current": "fa5e369aed22ed085caf1f21e8aaba0a0733fe37f5666ceae6233b6388e72c59",
+  "current": "2ffcd9643d9b0b171af2473906fd4bda934f6849a9380ed4337a295cbf022df7",
   "releases": [
     {
       "digest": "3e47b01bc6bbfb43e910c660b9964fab6459d75148c3c02dcbcd0be64cfb2963",
@@ -246,11 +246,23 @@
       "note": "notifai doctor reports a downloaded update that is waiting for current agent sessions to end as ready, with nothing to repair. An interrupted installation still asks for recovery. Automatic retries keep waiting until those sessions end."
     },
     {
+      "digest": "8ace792ccec0b0a7dc992748f38251ef1a12c6262061ba78aa3121f33d7a8a61",
+      "note": "Setup distinguishes executable presence from leftover configuration, offers newly detected apps while preserving existing choices and declines, and skips unknown app ids from newer callers individually. Doctor adds a per-agent-app setup report with scoped hooks, native trust, plugin and guidance gaps. When setup reports an apps gap, use its preselected ids (or detected ids with an older CLI); a later independent setup can omit --apps to discover newly installed apps. Native hook approval remains the User's action in the harness."
+    },
+    {
+      "digest": "826fa0718a2a66fb6e6a276634fe1994b58707fc714a1ac523ab9ed707f90483",
+      "note": "Agent app discovery also recognizes Codex bundled inside the macOS ChatGPT app and the documented standalone Windows Codex command location. Windows ChatGPT installations without a discoverable Codex command remain a documented detection gap; configuration and cache folders alone never count as an installed app."
+    },
+    {
       "digest": "859364d1a4e03712057e45322d5bd9256b3d542adf5820ecb668921745048a0e",
       "note": "A downloaded update that was waiting now finishes on the next ordinary notifai command, once current agent sessions allow it. Commands keep working while it waits. Running sessions keep their version, the automatic-update switch is respected, and updates that can't safely share local data keep their safety checks."
     },
     {
       "digest": "fa5e369aed22ed085caf1f21e8aaba0a0733fe37f5666ceae6233b6388e72c59",
+      "note": "A waiting downloaded update now retries on ordinary notifai commands, at most once a minute, so repeated commands stay quick. Running sessions keep their version; the automatic-update switch and local-data safety checks still apply. After the update, the hub finishes updating the installed skill and the hooks it may change."
+    },
+    {
+      "digest": "2ffcd9643d9b0b171af2473906fd4bda934f6849a9380ed4337a295cbf022df7",
       "note": "A waiting downloaded update now retries on ordinary notifai commands, at most once a minute, so repeated commands stay quick. Running sessions keep their version; the automatic-update switch and local-data safety checks still apply. After the update, the hub finishes updating the installed skill and the hooks it may change."
     }
   ]

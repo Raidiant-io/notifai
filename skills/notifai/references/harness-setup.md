@@ -83,12 +83,15 @@ to send, setup isn't watching that step: end your turn and rerun when the
 User replies. A run cut off by your tool's timeout is harmless: rerun it. If
 the User says they're done, rerun; if they say later or stop, end your turn.
 
-**Which agent apps.** The first run asks it as the `apps` gap: its `message`
-is the question, `technical.supported` lists every app (`id`, `name`) and
-`technical.detected` the ids found on this computer. Ask it once, in your
-harness's question tool as a multi-select with the found apps preselected if
-it has one, otherwise as written. Then rerun with `--apps <ids>`
-(comma-separated, or `detected`) and keep `--apps` on every later run. Setup
+**Which agent apps.** An `apps` gap asks for a selection on first setup or
+when a newly detected app becomes available. Its `message` is the question;
+`technical.supported` lists every app (`id`, `name`), `technical.detected`
+lists the apps found, and `technical.preselected` preserves existing choices
+and excludes recorded declines. Use `preselected` for a multi-select (fall
+back to `detected` with an older CLI), otherwise relay the message. Rerun
+with `--apps <ids>` (comma-separated, or `detected` to explicitly choose all
+found apps), keeping that answer for this setup run. A later independent
+setup can omit `--apps` to discover new apps. Setup
 installs hooks, the skill (machine-wide) and command approval into those apps
 without asking anything else. If the User wants none, rerun with
 `--no-hooks --no-skills` instead.
@@ -149,7 +152,7 @@ are worth separating before you report either as broken.
 Setup installs hooks, the skill and command approval into the agent apps the
 User chose with `--apps`. There is no scope to ask about: Notifai installs one
 lifecycle mechanism per harness, for this machine, and the skill machine-wide.
-To connect another app later, rerun setup with the new `--apps` list. Codex
+To connect another app later, rerun setup or pass the new `--apps` list. Codex
 also needs the User to approve the Notifai hooks: setup's done message says
 how, for the Codex surface it runs in, and never waits for it.
 
