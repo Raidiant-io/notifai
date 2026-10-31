@@ -4,6 +4,7 @@ AttendanceBatchResponse,
 AttendanceRequestT,
 AttendanceResponse,
 CompatibilityResponse,
+MachineSetupIssue,
 } from '@raidiant/notifai-protocol'
 import { spawn,type ChildProcess } from 'node:child_process'
 import { mkdirSync,mkdtempSync,readFileSync,rmSync,writeFileSync } from 'node:fs'
@@ -21,6 +22,7 @@ import { ExchangeDriver,type AttendedSession,type ExchangeHost } from './hub-exc
 import { credentialGenerationPath,encodeFrame,ensurePrivateDirectory,FrameDecoder,hubLockPath,hubSocketPath,requestHub } from './hub-ipc.js'
 import { HUB_WRITE_MARGIN_MS,SessionLease } from './hub-lease.js'
 import { Hub,HUB_IDLE_EXIT_MS,type HubOptions,type PeerCredentials } from './hub.js'
+import { checkCodexHooksTrust } from './hub-setup-issues.js'
 import { recordClaudeSessionTitle } from './harness-session-title.js'
 import { resolveSessionLabel } from './session-labels.js'
 import { nullLogger,type Logger } from './logging.js'
@@ -109,6 +111,7 @@ interface FakeService {
 }
 
 function fakeService(options: {
+  setupIssues?: (issues: MachineSetupIssue[]) => void
   capabilities?: string[]
   batch?: (body: AttendanceBatchRequestT) => AttendanceBatchResponse | Error
   single?: (sessionId: string, body: AttendanceRequestT) => AttendanceResponse
@@ -135,6 +138,11 @@ function fakeService(options: {
   const client = new Proxy({} as ApiClient, {
     get(_target, property) {
       if (property === 'then') return undefined
+      if (property === 'features') return async () => ({ features: options.setupIssues === undefined ? [] : ['setup_issues'] })
+      if (property === 'putMachineSetupIssues') return async (body: { issues: MachineSetupIssue[] }) => {
+        options.setupIssues?.(structuredClone(body.issues))
+        return { ok: true }
+      }
       if (property === 'upgradeAgentSessionLabel' && options.upgrade !== undefined) return options.upgrade
       if (property === 'compatibility') {
         return async (): Promise<CompatibilityResponse> => ({ cli: {} as CompatibilityResponse['cli'], platforms: [],
@@ -1145,12 +1153,17 @@ describe('hub and Codex SessionEnd', () => {
       const env = hubEnv()
       const transcript = codexRollout(env, 'T3 Code')
       const codexHome = path.dirname(path.dirname(transcript))
+      writeFileSync(path.join(codexHome, 'hooks.json'), JSON.stringify({ hooks: {
+        SessionStart: [{ hooks: [{ type: 'command', command: '/x/notifai hook session-start --harness codex' }] }],
+      } }))
       recordSessionNotified(SESSION, env, Date.now())
       const { app, host } = await server()
-      const service = fakeService()
-      const { hub, done } = startHub(env, service, new Map(), memoryStore(), 100,
+      const issues: MachineSetupIssue[][] = []
+      const service = fakeService({ setupIssues: (snapshot) => issues.push(snapshot) })
+      const peers = new Map<number, PeerCredentials>()
+      const { hub, done } = startHub(env, service, peers, memoryStore(), 100,
         { codexHostHoldsThread: (_home, _id, pid) => pid === host.pid, codexHostKind: () => 'app-server' },
-        { codexThreadHolders: () => [host.pid] })
+        { codexThreadHolders: () => [host.pid], codexHooksTrust: (env, cwd) => checkCodexHooksTrust(env, cwd, async () => null) })
       try {
         await hubListening(env)
         send(env, codexHome)
@@ -1158,12 +1171,23 @@ describe('hub and Codex SessionEnd', () => {
         expect(running(service)[0]).toMatchObject({ accepts_messages: false })
         expect(hub.sessions.get(SESSION)?.registration).toMatchObject({ place: 't3', codexHome, harnessProcess: host })
         await until(() => (JSON.parse(readFileSync(attendantStatusPath(SESSION, env), 'utf8')) as Record<string, unknown>)['phase'] === 'attending')
+        await until(() => issues.some((snapshot) => snapshot.length > 0))
+        expect(issues.at(-1)).toMatchObject([{ kind: 'codex_hooks_unapproved', session_ids: [SESSION], host: 't3' }])
+        const child = await registered(env, SESSION, 900498, peerOf(900498, { ...host, comm: 'codex' }), peers, {
+          harness: 'codex', harness_pid: host.pid, harness_start: host.start, codex_home: codexHome,
+          transcript_path: transcript, originator_override: 'T3 Code',
+        })
+        try {
+          expect(child.frames[0]).toEqual({ type: 'registered', session_id: SESSION })
+          await until(() => issues.at(-1)?.length === 0)
+        } finally { child.socket.destroy() }
       } finally {
         app.kill('SIGKILL')
         hub.requestExit('test')
         service.release()
         await done
       }
+      expect(issues.at(-1)).toEqual([])
     })
 
     it('is not attended when nothing holds the thread', async () => {
@@ -1189,21 +1213,27 @@ describe('hub and Codex SessionEnd', () => {
       const codexHome = path.dirname(path.dirname(transcript))
       recordSessionNotified(SESSION, env, Date.now())
       const { app, host } = await server()
-      const service = fakeService()
+      const issues: MachineSetupIssue[][] = []
+      const service = fakeService({ setupIssues: (snapshot) => issues.push(snapshot) })
       const options = { codexHostHoldsThread: (_home: string | null, _id: string, pid: number) => pid === host.pid, codexHostKind: () => 'app-server' as const }
-      const first = startHub(env, service, new Map(), memoryStore(), 100, options, { codexThreadHolders: () => [host.pid] })
+      const setup = { codexThreadHolders: () => [host.pid], codexHooksTrust: async () => true }
+      const first = startHub(env, service, new Map(), memoryStore(), 100, options, setup)
       let second: { hub: Hub; done: Promise<number> } | null = null
       try {
         await hubListening(env)
         send(env, codexHome)
         await until(() => running(service).length > 0)
+        await until(() => issues.at(-1)?.length === 1)
         first.hub.requestExit('test-crash')
         service.release()
         await first.done
+        expect(issues.at(-1)).toEqual([])
 
-        second = startHub(env, service, new Map(), memoryStore(), 100, options, { codexThreadHolders: () => [host.pid] })
+        second = startHub(env, service, new Map(), memoryStore(), 100, options, setup)
         await hubListening(env)
         await until(() => second!.hub.sessions.has(SESSION))
+        // Adoption re-diagnoses the home without requiring another send.
+        await until(() => issues.at(-1)?.length === 1)
         const before = service.batches.length
         send(env, codexHome)
         await until(() => running(service, before).length > 0)

@@ -32,6 +32,26 @@ async function serving(handler: Parameters<typeof createServer>[1]): Promise<str
   return `http://127.0.0.1:${port}`
 }
 
+it('discovers setup issues and sends an authenticated replacement snapshot over the wire', async () => {
+  const requests: { method: string; url: string; authorization: string | undefined; body: unknown }[] = []
+  const baseUrl = await serving(async (request, response) => {
+    const chunks: Buffer[] = []
+    for await (const chunk of request) chunks.push(Buffer.from(chunk))
+    const raw = Buffer.concat(chunks).toString()
+    requests.push({ method: request.method!, url: request.url!, authorization: request.headers.authorization, body: raw === '' ? null : JSON.parse(raw) })
+    response.setHeader('content-type', 'application/json')
+    response.end(JSON.stringify(request.url === '/api/v1/features' ? { features: ['setup_issues'] } : { ok: true }))
+  })
+  const client = createClient(baseUrl, 'Bearer test-machine')
+  expect(await client.features()).toEqual({ features: ['setup_issues'] })
+  expect(await client.putMachineSetupIssues({ issues: [] })).toEqual({ ok: true })
+  expect(requests.map(({ method, url, authorization }) => ({ method, url, authorization }))).toEqual([
+    { method: 'GET', url: '/api/v1/features', authorization: 'Bearer test-machine' },
+    { method: 'PUT', url: '/api/v1/machine/setup-issues', authorization: 'Bearer test-machine' },
+  ])
+  expect(requests[1]!.body).toEqual({ issues: [] })
+})
+
 describe('a server that never answers', () => {
   it('gives up instead of hanging until the harness kills the hook', async () => {
     // Accepts the request, holds the socket open, writes nothing — ever.

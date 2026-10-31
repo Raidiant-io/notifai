@@ -1,5 +1,5 @@
 {
-  "current": "2ffcd9643d9b0b171af2473906fd4bda934f6849a9380ed4337a295cbf022df7",
+  "current": "2cdd7320e45bae13e99773d74f69a928bf23f08b70f9390db64d34b24bb9da87",
   "releases": [
     {
       "digest": "3e47b01bc6bbfb43e910c660b9964fab6459d75148c3c02dcbcd0be64cfb2963",
@@ -254,6 +254,10 @@
       "note": "Agent app discovery also recognizes Codex bundled inside the macOS ChatGPT app and the documented standalone Windows Codex command location. Windows ChatGPT installations without a discoverable Codex command remain a documented detection gap; configuration and cache folders alone never count as an installed app."
     },
     {
+      "digest": "7d5b508636882efc4ca37e760cbcf0b736076e31c64bffca2126418c98e72984",
+      "note": "The hub reports missing Codex hook approval to compatible Companion Apps and clears the warning when the condition ends. Existing agent guidance is unchanged: continue work while approval is outstanding, and leave approval to the User."
+    },
+    {
       "digest": "859364d1a4e03712057e45322d5bd9256b3d542adf5820ecb668921745048a0e",
       "note": "A downloaded update that was waiting now finishes on the next ordinary notifai command, once current agent sessions allow it. Commands keep working while it waits. Running sessions keep their version, the automatic-update switch is respected, and updates that can't safely share local data keep their safety checks."
     },
@@ -263,6 +267,10 @@
     },
     {
       "digest": "2ffcd9643d9b0b171af2473906fd4bda934f6849a9380ed4337a295cbf022df7",
+      "note": "A waiting downloaded update now retries on ordinary notifai commands, at most once a minute, so repeated commands stay quick. Running sessions keep their version; the automatic-update switch and local-data safety checks still apply. After the update, the hub finishes updating the installed skill and the hooks it may change."
+    },
+    {
+      "digest": "2cdd7320e45bae13e99773d74f69a928bf23f08b70f9390db64d34b24bb9da87",
       "note": "A waiting downloaded update now retries on ordinary notifai commands, at most once a minute, so repeated commands stay quick. Running sessions keep their version; the automatic-update switch and local-data safety checks still apply. After the update, the hub finishes updating the installed skill and the hooks it may change."
     }
   ]

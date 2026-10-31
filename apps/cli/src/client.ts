@@ -25,6 +25,9 @@ import type {
   CloseRepliesResponse,
   CloseRetirementState,
   CompatibilityResponse,
+  FeaturesResponse,
+  PutMachineSetupIssuesRequest,
+  PutMachineSetupIssuesResponse,
   GetSessionMessageAcknowledgementResponse,
   RecoveryAction,
   ListRepliesResponse,
@@ -123,6 +126,8 @@ export interface ApiClient {
     appBuild?: string,
   ): Promise<CapabilityDocument>
   compatibility(): Promise<CompatibilityResponse>
+  features(options?: { signal?: AbortSignal }): Promise<FeaturesResponse>
+  putMachineSetupIssues(body: PutMachineSetupIssuesRequest, options?: { signal?: AbortSignal }): Promise<PutMachineSetupIssuesResponse>
   submit(body: SubmitNotificationRequestT, waitSeconds: number): Promise<SubmissionReceipt>
   evidence(requestId: string): Promise<EvidenceSnapshot>
   replies(
@@ -384,6 +389,8 @@ export function createClient(
       return call('GET', `/api/v1/capabilities/${encodeURIComponent(platform)}${suffix}`)
     },
     compatibility: () => call('GET', '/api/v1/compatibility'),
+    features: (options) => call('GET', '/api/v1/features', undefined, 0, options?.signal),
+    putMachineSetupIssues: (body, options) => call('PUT', '/api/v1/machine/setup-issues', body, 0, options?.signal),
     submit: (body, waitSeconds) =>
       call('POST', `/api/v1/notifications?wait_seconds=${waitSeconds}`, body, waitSeconds),
     evidence: (requestId) => call('GET', `/api/v1/notifications/${encodeURIComponent(requestId)}`),
