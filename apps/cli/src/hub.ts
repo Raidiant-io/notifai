@@ -67,6 +67,7 @@ import {
   type SessionIncarnation,
 } from './hook-session-state.js'
 import { ExchangeDriver, type AttendedSession, type HubClock } from './hub-exchange.js'
+import { HubSetupIssues, type CodexHooksTrust } from './hub-setup-issues.js'
 import {
   attemptAutomaticUpdate,
   candidatePlan,
@@ -302,6 +303,8 @@ export interface HubOptions {
   codexThreadHeld?: (codexHome: string | null, threadId: string) => boolean | 'unknown'
   /** Test seam: which processes have a Codex thread loaded; production asks `lsof` or `/proc`. */
   codexThreadHolders?: (codexHome: string | null, threadId: string) => number[] | 'unknown'
+  /** Test seam; production performs a bounded, read-only trust check per affected Codex home. */
+  codexHooksTrust?: CodexHooksTrust
   /** Test seam: the Orca terminal host above a harness in an Orca pane; production walks the process table. */
   orcaTerminalHostOf?: (harnessPid: number) => ProcessIdentity | null
   /** Test seam: the process that started another; production asks `ps`. */
@@ -1101,6 +1104,7 @@ export class Hub {
   readonly clock: HubClock
   readonly logger: Logger
   readonly driver: ExchangeDriver
+  private readonly setupIssues: HubSetupIssues
   readonly sessions = new Map<string, HubSession>()
   private readonly ended = new Map<string, EndedSession>()
   private readonly settlements = new Map<string, { rerun: boolean }>()
@@ -1171,6 +1175,15 @@ export class Hub {
     this.clock = options.clock ?? { monotonic: () => performance.now(), wall: () => Date.now() }
     this.logger = log(deps)
     this.logger.bind({ cmd: 'hub' })
+    this.setupIssues = new HubSetupIssues({
+      now: () => this.clock.monotonic(),
+      connection: () => {
+        const client = this.client()
+        const key = this.credentialKey()
+        return client === null || key === null ? null : { client, key, signal: this.waiterSignal() }
+      },
+      ...(options.codexHooksTrust === undefined ? {} : { checkTrust: options.codexHooksTrust }),
+    })
     this.reopen = options.reopen === undefined ? null : new SessionReopen(systemReopenHost(deps.env, this.logger, launcherExecutable(), {
       now: () => this.clock.wall(),
       codexHolders: (home, id) => (this.options.codexThreadHolders ?? codexThreadHolders)(home, id),
@@ -1506,6 +1519,7 @@ export class Hub {
     if (this.attachWatchTimer !== null) clearInterval(this.attachWatchTimer)
     if (this.updateTimer !== null) clearTimeout(this.updateTimer)
     this.driver.stop()
+    await this.setupIssues.stop()
     // A loop stuck on something that never settles must not keep this hub, and every claim it holds, alive.
     let waited: ReturnType<typeof setTimeout> | undefined
     await Promise.race([this.exchange, new Promise<void>((resolve) => { waited = setTimeout(resolve, SHUTDOWN_EXCHANGE_WAIT_MS) })])
@@ -1724,6 +1738,8 @@ export class Hub {
             if (frame['type'] === 'register' && session === null) {
               const result = await this.register(link, frame, socket)
               if (typeof result === 'string') { refuse(result); return }
+              const registration = this.parseRegistration(frame)
+              if (registration?.harness === 'codex') this.setupIssues.hooked(this.sessionEnv(registration))
               session = result
               link.send({ type: 'registered', session_id: result.id })
               return
@@ -1767,6 +1783,10 @@ export class Hub {
         const session = sessionId === null ? undefined : this.sessions.get(sessionId)
         if (session !== undefined) {
           this.attendHeldThread(session)
+          if (session.harness === 'codex' && session.ending === null && session.stopped === null &&
+              (session.child === null || session.child.closed)) {
+            this.setupIssues.attend(session.id, session.env, session.registration.cwd ?? this.deps.cwd, session.registration.place)
+          }
           session.lease.needsFresh = true
           this.driver.poke()
         } else if (sessionId !== null && frame['harness'] === 'codex') {
@@ -2339,6 +2359,7 @@ export class Hub {
         return
       }
       this.sessions.set(sessionId, session)
+      this.setupIssues.attend(sessionId, env, registration.cwd ?? this.deps.cwd, registration.place)
       this.logger.info('hub.session', { event: 'attended-unhooked', session: sessionId, harness: 'codex', place: registration.place })
       session.writeStatus(true)
       session.lease.needsFresh = true
@@ -2524,6 +2545,7 @@ export class Hub {
    */
   endSession(session: HubSession, reason: EndReason, successor: string | null = null): void {
     if (session.ending !== null) return
+    this.setupIssues.ended(session.id)
     const deliveryLease = session.lease.generation === null ? null : { incarnation: session.lease.incarnation, generation: session.lease.generation }
     const nothingWaiting = !owesWhileStopped(session.id, session.env, this.clock.wall(), deliveryLease, this.clock.wall(), session.held)
     session.ending = reason
@@ -3014,6 +3036,7 @@ export class Hub {
   forget(session: HubSession, reason: string): void {
     if (this.sessions.get(session.id) !== session) return
     this.sessions.delete(session.id)
+    this.setupIssues.ended(session.id)
     session.lease.setPhase('exited', reason)
     session.writeStatus(true)
     if (session.claimToken !== null) releaseClaimFile(attendantClaimPath(session.id, session.env), session.claimToken)
@@ -3279,6 +3302,9 @@ export class Hub {
     }
     this.sessions.set(sessionId, session)
     const now = this.clock.wall()
+    if (session.harness === 'codex' && session.notified && placeReceives(registration.place)) {
+      this.setupIssues.attend(sessionId, env, registration.cwd ?? this.deps.cwd, registration.place)
+    }
     session.lease.setPhase('uncertain', 'session-child-disconnected')
     session.writeStatus(true)
     this.logger.info('hub.session', { event: 'adopted', session: sessionId, harness: record.harness })
@@ -3589,6 +3615,7 @@ export class Hub {
   // -- housekeeping --------------------------------------------------------------
 
   private safetyTick(): void {
+    this.setupIssues.tick()
     if (nativeUninstallPending(this.env)) {
       // The uninstall waits for every launcher image: the children go too.
       for (const session of this.sessions.values()) session.child?.send({ type: 'bye' })

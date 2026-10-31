@@ -8,8 +8,9 @@
  *
  * It describes the configuration on disk, never what a running thread loaded:
  * `session-handlers.ts` answers that from the session's SessionStart record.
- * Asking costs one short-lived app-server, so only explicit commands (doctor,
- * `update --resume`) ask; hooks never do.
+ * Asking costs one short-lived app-server: explicit commands (doctor,
+ * `update --resume`) and the hub's bounded check of affected homes ask;
+ * hooks never do.
  */
 import { realpathSync } from 'node:fs'
 import path from 'node:path'
