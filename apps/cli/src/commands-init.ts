@@ -101,6 +101,8 @@ import {
   freshSetupRun,
   isSshSession,
   loadAppsChoice,
+  declinedApps,
+  skippedApps,
   loadSetupRun,
   messageDigest,
   noPhoneMessage,
@@ -966,14 +968,9 @@ export async function initCommand(deps: CommandDeps, flags: InitFlags): Promise<
   const hostPlatform = deps.hookPlatform ?? process.platform
   const detected = detectedHarnesses(deps.env, hostPlatform)
   let apps: HookInstallableHarness[] | null = null
-  if (flags.apps !== undefined) {
-    const parsed = parseApps(flags.apps, detected)
-    if (typeof parsed === 'string') {
-      workingDeps.io.err(parsed)
-      return EXIT.usage
-    }
-    apps = parsed
-  }
+  const skipped = skippedApps(flags.apps ?? '')
+  if (flags.apps !== undefined) apps = parseApps(flags.apps, detected)
+  for (const app of skipped) workingDeps.io.err(`Skipping unsupported agent app "${app.id}"; this CLI does not know it.`)
   const scopeFromFlags = checkSkillScopeFlags(workingDeps, flags)
   if (scopeFromFlags === 'usage') return EXIT.usage
   let resolved: InitFlags = { ...flags }
@@ -1010,17 +1007,19 @@ export async function initCommand(deps: CommandDeps, flags: InitFlags): Promise<
   const legacyChoice = flags.hooks !== undefined || flags.skills !== undefined || flags.claudeCommands !== undefined ||
     flags.codexCommands !== undefined || flags.skillsHarness !== undefined || flags.skillsScope !== undefined
   let askApps = false
-  // An answer to the apps question is kept, "none" included, so a later run
-  // never asks it again.
-  let answered = apps !== null
+  // Keep the previous choice, including none; only newly detected apps reopen it.
+  let answered = apps !== null && (skipped.length === 0 || apps.length > 0)
+  const remembered = loadAppsChoice(deps.env)
+  const declinedChoices = declinedApps(deps.env, workingDeps.io.interactive !== true)
+  const existing = [...new Set([...installed, ...(remembered ?? [])])]
+  const newlyDetected = detected.filter(app => !existing.includes(app) && !declinedChoices.includes(app))
+  const preselected = HOOK_INSTALLABLE_HARNESSES.filter(app => existing.includes(app) || newlyDetected.includes(app))
   if (apps === null && !(json && legacyChoice)) {
-    const remembered = installed.length > 0 ? null : loadAppsChoice(deps.env)
-    if (installed.length > 0) apps = installed
-    else if (remembered !== null) apps = remembered
+    if (newlyDetected.length === 0 && (installed.length > 0 || remembered !== null)) apps = existing
     else if (workingDeps.io.interactive === true) {
       answered = true
       apps = workingDeps.io.multiselect === undefined
-        ? [...detected]
+        ? [...preselected]
         : appsFrom(await workingDeps.io.multiselect(
             APPS_QUESTION,
             HOOK_INSTALLABLE_HARNESSES.map((app) => ({
@@ -1028,13 +1027,13 @@ export async function initCommand(deps: CommandDeps, flags: InitFlags): Promise<
               label: appChoiceName(app),
               ...(detected.includes(app) ? { hint: 'found' } : {}),
             })),
-            [...detected],
+            [...preselected],
           ))
     } else if (json) askApps = true
   }
-  if (answered && apps !== null) saveAppsChoice(deps.env, apps, startedAt)
+  if (answered && apps !== null) saveAppsChoice(deps.env, apps, startedAt, detected)
   // The older flags saying no to hooks are an answer too: no agent apps.
-  else if (apps === null && flags.hooks === false && installed.length === 0) saveAppsChoice(deps.env, [], startedAt)
+  else if (apps === null && flags.hooks === false && installed.length === 0) saveAppsChoice(deps.env, [], startedAt, detected)
 
   let failed = false
   if (apps !== null) {
@@ -1073,11 +1072,11 @@ export async function initCommand(deps: CommandDeps, flags: InitFlags): Promise<
   let readiness = await assess()
 
   if (askApps) {
-    const question = appsGapState(detected)
+    const question = appsGapState(detected, preselected)
     readiness = { ...readiness, states: [question, ...readiness.states] }
     run.relayed = messageDigest(question.message!)
     saveSetupRun(deps.env, run, now())
-    deps.io.out(JSON.stringify({ ...readinessJson(readiness), message: question.message, waiting: false, stopped: false, apps: null }, null, 2))
+    deps.io.out(JSON.stringify({ ...readinessJson(readiness), message: question.message, waiting: false, stopped: false, apps: null, skipped_apps: skipped }, null, 2))
     return EXIT.failed
   }
 
@@ -1396,6 +1395,7 @@ export async function initCommand(deps: CommandDeps, flags: InitFlags): Promise<
       waiting,
       stopped: stoppedAt !== null,
       apps: resolved.chosenApps ?? null,
+      skipped_apps: skipped,
     }, null, 2))
   } else {
     await printInitClose(deps, readiness, resolved, loginBlocker, declined, {
@@ -1427,16 +1427,17 @@ function installedApps(deps: CommandDeps): HookInstallableHarness[] {
 }
 
 /** The first gap of a setup that has not chosen its agent apps yet. */
-function appsGapState(detected: readonly HookInstallableHarness[]): ReadinessState {
+function appsGapState(detected: readonly HookInstallableHarness[], preselected: readonly HookInstallableHarness[]): ReadinessState {
   return {
     id: 'apps',
     title: 'Agent apps',
     status: 'gap',
     detail: 'the User has not chosen which agent apps to connect',
-    message: appsQuestionMessage(detected),
+    message: appsQuestionMessage(detected, preselected),
     technical: {
       supported: HOOK_INSTALLABLE_HARNESSES.map((id) => ({ id, name: appChoiceName(id) })),
       detected: [...detected],
+      preselected: [...preselected],
     },
     remedy: {
       by: 'user-here',

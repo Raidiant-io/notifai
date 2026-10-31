@@ -1,5 +1,5 @@
 {
-  "current": "438cbfa05f30a48cf6b1049c4c296f7a1d4a8fa1d0d41c4bd240d33eed8b00a3",
+  "current": "8ace792ccec0b0a7dc992748f38251ef1a12c6262061ba78aa3121f33d7a8a61",
   "releases": [
     {
       "digest": "3e47b01bc6bbfb43e910c660b9964fab6459d75148c3c02dcbcd0be64cfb2963",
@@ -244,6 +244,10 @@
     {
       "digest": "438cbfa05f30a48cf6b1049c4c296f7a1d4a8fa1d0d41c4bd240d33eed8b00a3",
       "note": "notifai doctor reports a downloaded update that is waiting for current agent sessions to end as ready, with nothing to repair. An interrupted installation still asks for recovery. Automatic retries keep waiting until those sessions end."
+    },
+    {
+      "digest": "8ace792ccec0b0a7dc992748f38251ef1a12c6262061ba78aa3121f33d7a8a61",
+      "note": "Setup distinguishes executable presence from leftover configuration, offers newly detected apps while preserving existing choices and declines, and skips unknown app ids from newer callers individually. Doctor adds a per-agent-app setup report with scoped hooks, native trust, plugin and guidance gaps. When setup reports an apps gap, use its preselected ids (or detected ids with an older CLI); a later independent setup can omit --apps to discover newly installed apps. Native hook approval remains the User's action in the harness."
     }
   ]
 }

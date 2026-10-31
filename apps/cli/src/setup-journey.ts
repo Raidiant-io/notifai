@@ -115,9 +115,25 @@ export function loadAppsChoice(env: NodeJS.ProcessEnv): HookInstallableHarness[]
   }
 }
 
-export function saveAppsChoice(env: NodeJS.ProcessEnv, apps: readonly HookInstallableHarness[], now: number): void {
+/** Explicit declines apply to apps present when the choice was made. Older
+ * records did not retain that evidence; preserve their exclusions conservatively. */
+export function declinedApps(env: NodeJS.ProcessEnv, preserveLegacy = true): HookInstallableHarness[] {
   try {
-    atomicWriteFileSync(appsChoicePath(env), `${JSON.stringify({ apps, chosen_at: new Date(now).toISOString() })}\n`, {
+    const parsed = JSON.parse(readFileSync(appsChoicePath(env), 'utf8')) as { apps?: unknown; declined?: unknown }
+    if (!Array.isArray(parsed.apps)) return []
+    return HOOK_INSTALLABLE_HARNESSES.filter(app => Array.isArray(parsed.declined)
+      ? parsed.declined.includes(app) : preserveLegacy && !(parsed.apps as unknown[]).includes(app))
+  } catch { return [] }
+}
+
+export function saveAppsChoice(env: NodeJS.ProcessEnv, apps: readonly HookInstallableHarness[], now: number,
+  detected: readonly HookInstallableHarness[] = HOOK_INSTALLABLE_HARNESSES): void {
+  try {
+    const declined = [...new Set([...declinedApps(env, false), ...detected])].filter(app => !apps.includes(app))
+    const old = loadAppsChoice(env)
+    if (old !== null && JSON.stringify(old) === JSON.stringify(apps) &&
+      JSON.stringify(declinedApps(env)) === JSON.stringify(declined)) return
+    atomicWriteFileSync(appsChoicePath(env), `${JSON.stringify({ apps, declined, chosen_at: new Date(now).toISOString() })}\n`, {
       mode: 0o600,
       requireCurrentUserOwner: true,
     })
@@ -132,13 +148,9 @@ export function isSshSession(env: NodeJS.ProcessEnv): boolean {
 }
 
 /** `--apps`: comma-separated agent app ids, or `detected`. */
-export function parseApps(value: string, detected: readonly HookInstallableHarness[]): HookInstallableHarness[] | string {
+export function parseApps(value: string, detected: readonly HookInstallableHarness[]): HookInstallableHarness[] {
   const ids = value.split(',').map((id) => id.trim()).filter((id) => id !== '')
   if (ids.length === 1 && ids[0] === 'detected') return [...detected]
-  const unknown = ids.filter((id) => !(HOOK_INSTALLABLE_HARNESSES as readonly string[]).includes(id))
-  if (unknown.length > 0) {
-    return `Unknown agent app "${unknown[0]}". Use comma-separated ids from: ${HOOK_INSTALLABLE_HARNESSES.join(', ')}, or \`detected\`.`
-  }
   return HOOK_INSTALLABLE_HARNESSES.filter((id) => ids.includes(id))
 }
 
@@ -171,7 +183,11 @@ const NEXT_STEP: Record<HookInstallableHarness, string> = {
 }
 
 /** The one question an agent asks: which agent apps to connect. */
-export function appsQuestionMessage(detected: readonly HookInstallableHarness[]): string {
+export function appsQuestionMessage(detected: readonly HookInstallableHarness[], preselected: readonly HookInstallableHarness[] = detected): string {
+  if (detected.join(',') !== preselected.join(',')) {
+    return `**Which agent apps should Notifai connect?**\n\nFound on this computer: ${joinNames(detected.map(appChoiceName)) || 'none'}. ` +
+      `Selected: ${joinNames(preselected.map(appChoiceName)) || 'none'}. Keep this selection, or change it.`
+  }
   return detected.length === 0
     ? '**Which agent apps should Notifai connect?**\n\nI found none on this computer. Pick the ones you use.'
     : `**Which agent apps should Notifai connect?**\n\nFound on this computer: ${joinNames(detected.map(appChoiceName))}. Keep these, or pick others.`
@@ -361,4 +377,11 @@ export function partialTerminalLines(left: Leftover, email: string | null, phone
   return left === 'plan'
     ? [`Almost there. Set up${account}, except your plan.`, 'Choose a plan in the Notifai app on your phone.']
     : [`Almost there. Set up${account}, except your phone.`, `Finish your phone any time: ${phoneUrl}`]
+}
+
+/** Per-id compatibility results for callers newer than this CLI. */
+export function skippedApps(value: string): { id: string; status: 'unsupported' }[] {
+  return [...new Set(value.split(',').map(id => id.trim()).filter(Boolean))]
+    .filter(id => id !== 'detected' && !(HOOK_INSTALLABLE_HARNESSES as readonly string[]).includes(id))
+    .map(id => ({ id, status: 'unsupported' }))
 }

@@ -1,3 +1,4 @@
+import { agentAppsReport } from './agent-apps.js'
 import { visibleInputWakeFault } from './session-inputs.js'
 import { automaticUpdateReport, automaticUpdatesRunHere } from './automatic-update.js'
 import { processArguments, reopenLine, reopenReport, reopenStalledLine } from './session-reopen.js'
@@ -1038,6 +1039,7 @@ export async function doctorCommand(
     deps.io.out(
       JSON.stringify(
         { ...readinessJson(readiness), ok, exit_code: ok ? EXIT.ok : EXIT.failed,
+          agent_apps: agentAppsReport(deps, readiness.states),
           npm_repairs: pendingNpmRepairs(deps.env),
           updates: automaticUpdateReport(deps.env, { runsHere: updatesRunHere }),
           reopen: reopenReport(deps.env, deps.hookPlatform ?? process.platform),
@@ -1520,7 +1522,7 @@ function hookChecks(deps: CommandDeps, codexTrust: CodexTrust): HookCheck[] {
   }
 
   const wired = new Set(installations.map((installation) => installation.harness))
-  const unwired = detectedHarnesses(deps.env).filter((harness) => !wired.has(harness))
+  const unwired = detectedHarnesses(deps.env, deps.hookPlatform).filter((harness) => !wired.has(harness))
   if (unwired.length > 0) {
     checks.push({
       name: 'hooks (detected)',

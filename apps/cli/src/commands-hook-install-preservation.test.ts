@@ -272,13 +272,14 @@ describe('shared Machine configuration repair', () => {
 })
 
 
-it('detects only the selected Claude home, just as it does for Codex', () => {
+it('a selected Claude config folder is not installation evidence', () => {
   const f = fixture('')
   const selected = path.join(f.deps.cwd, 'claude-profile')
   f.deps.env['CLAUDE_CONFIG_DIR'] = selected
   mkdirSync(selected)
-  expect(detectedHarnesses(f.deps.env)).toContain('claude-code')
-  rmSync(selected, { recursive: true })
-  mkdirSync(path.join(f.deps.env['HOME']!, '.claude'))
   expect(detectedHarnesses(f.deps.env)).not.toContain('claude-code')
+  const bin = path.join(f.deps.env['HOME']!, '.local', 'bin')
+  mkdirSync(bin, { recursive: true })
+  writeFileSync(path.join(bin, 'claude'), '#!/bin/sh\n', { mode: 0o755 })
+  expect(detectedHarnesses(f.deps.env)).toContain('claude-code')
 })

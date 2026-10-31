@@ -52,8 +52,10 @@ found on this computer preselected), then installs hooks, the Notifai skill
 approval for Claude Code and Codex into those apps without asking anything
 else. `--apps <ids>` answers the question up front: comma-separated ids
 (`claude-code`, `codex`, `cursor`, `opencode`, `openclaw`, `hermes`, `grok`) or
-`detected`. The answer is remembered, so a later run never asks again, even
-when it was none.
+`detected`. The answer is remembered, including declines. A later run offers
+newly detected apps with existing choices kept; unchanged setup needs no new
+selection. Unknown ids from a newer caller are skipped individually.
+See [agent app detection and setup status](AGENT-APPS.md) for the JSON contract.
 
 To connect this computer, setup opens the approval page in your browser and
 shows a QR that a signed-in Companion App can scan instead. Check that the code

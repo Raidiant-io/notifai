@@ -1,3 +1,4 @@
+import { detectAgentApps } from './agent-app-detection.js'
 import { CURSOR_STOP_TIMEOUT_SECONDS } from './hook-events.js'
 import { encodeWindowsCodexCommand, decodeWindowsCodexCommand } from './windows-codex-command.js'
 import type { ClaudeHookFormName } from './claude-hook-form.js'
@@ -26,14 +27,12 @@ import {
 } from './hook-adapter.js'
 import {
   OPENCODE_PLUGIN_FILENAME,
-  opencodeConfigDir,
   opencodePluginPath,
   opencodePluginTarget,
   type OpencodePluginLine,
 } from './opencode-plugin.js'
 import {
   legacyOpenclawProjectPluginPath,
-  openclawHasGlobalEvidence,
   openclawPluginPath,
   openclawPluginTarget,
 } from './openclaw-plugin.js'
@@ -1017,31 +1016,11 @@ function ourHandlerEvents(document: SettingsDocument | null): string[] {
  * and the like) are content the repository controls, and content cannot
  * choose what Notifai installs for every Project on the machine.
  */
-function globalHarnessEvidence(
-  env: NodeJS.ProcessEnv = process.env,
-  platform: NodeJS.Platform | HookHostPlatform = process.platform,
-): HookInstallableHarness[] {
-  const home = harnessAccountHome(env, platform)
-  const found: HookInstallableHarness[] = []
-  if (existsSync(configHome(env, 'CLAUDE_CONFIG_DIR', '.claude', platform))) found.push('claude-code')
-  if (existsSync(codexGlobalDir(env, platform))) found.push('codex')
-  if (existsSync(path.join(home, '.cursor'))) found.push('cursor')
-  if (existsSync(opencodeConfigDir(env, platform))) found.push('opencode')
-  if (openclawHasGlobalEvidence(existsSync, env, platform)) found.push('openclaw')
-  if (env['HERMES_SESSION_ID'] || (env['HERMES_HOME']?.trim() && existsSync(env['HERMES_HOME']))) {
-    found.push('hermes')
-  }
-  if (existsSync(configHome(env, 'GROK_HOME', '.grok', platform))) found.push('grok')
-  return found
-}
-
-/** Every supported harness this machine shows evidence of, in declared order. */
 export function detectedHarnesses(
   env: NodeJS.ProcessEnv = process.env,
   platform: NodeJS.Platform | HookHostPlatform = process.platform,
 ): HookInstallableHarness[] {
-  const seen = new Set(globalHarnessEvidence(env, platform))
-  return HOOK_INSTALLABLE_HARNESSES.filter((harness) => seen.has(harness))
+  return detectAgentApps(env, platform === 'posix' ? 'linux' : platform)
 }
 
 /**
