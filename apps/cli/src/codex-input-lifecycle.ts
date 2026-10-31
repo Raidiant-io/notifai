@@ -3,7 +3,7 @@ import { readNativeTurnSnapshot } from './codex-native-turn.js'
 import { codexHostKind, type CodexHostKind } from './codex-session-end.js'
 import { readSessionIncarnation, readSessionState, sessionHasEnded, updateSessionState } from './hook-session-state.js'
 import { processIdentityLiveness, type ProcessIdentity } from './process-identity.js'
-import { reconcileNativeTurn } from './session-attendant-state.js'
+import { observedCodexTurnActivity, reconcileNativeTurn } from './session-attendant-state.js'
 
 export type CodexInputActivity = 'working' | 'idle' | 'aborted' | 'unknown'
 
@@ -70,9 +70,14 @@ export function codexInputObserver(
     else unknownSince = undefined
     return activity
   }
+  // A missing or lagging rollout cannot override the synchronous prompt
+  // hook's running turn. Its tool hooks can drain input; native completion
+  // will release the gate if anything remains for an idle wake.
+  const unknownAllowed = (): boolean => unknownSince !== undefined && monotonic() - unknownSince >= 6_000 &&
+    observedCodexTurnActivity(sessionId, env, expectedKey) !== 'working'
   return {
     observe,
-    unknownAllowed: () => unknownSince !== undefined && monotonic() - unknownSince >= 6_000,
+    unknownAllowed,
     mayWake: () => {
       if (readSessionIncarnation(sessionId, env)?.key !== expectedKey || sessionHasEnded(sessionId, env)) return false
       const activity = observe()
@@ -81,7 +86,7 @@ export function codexInputObserver(
           owner.harness_process === undefined || !alive(owner.harness_process) || !idleWake(owner.harness_process)) return false
       // Aborting fences its turn; it does not cancel pending User input.
       return activity === 'idle' || activity === 'aborted' ||
-        (activity === 'unknown' && monotonic() - unknownSince! >= 6_000)
+        (activity === 'unknown' && unknownAllowed())
     },
   }
 }

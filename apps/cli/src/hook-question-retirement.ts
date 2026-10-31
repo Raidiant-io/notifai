@@ -7,6 +7,7 @@ import type {
   ListRepliesResponse,
 } from '@raidiant/notifai-protocol'
 import { REPLY_MAX_WINDOW_SECONDS } from '@raidiant/notifai-protocol'
+import { ApiCallError } from './client.js'
 import { existsSync, readFileSync } from 'node:fs'
 import path from 'node:path'
 import { atomicWriteFileSync } from './atomic-file.js'
@@ -114,8 +115,15 @@ async function proveRetirement(
   requestId: string,
   ended: LifecycleEndState,
 ): Promise<boolean> {
-  const response = await finalizeReplies(ctx, requestId, 'retire', closeRetirement(ended))
-  const proven = response !== null
+  let proven = false
+  try {
+    await ctx.client.closeReplies(requestId, 'retire', closeRetirement(ended))
+    proven = true
+  } catch (error) {
+    // A definite absence settles retirement debt, but never proves answer
+    // ownership in finalizeReplies. Transport and unclassified errors retry.
+    proven = error instanceof ApiCallError && error.status === 404 && error.code === 'not_found'
+  }
   ctx.log?.info('hook.retirement', {
     request_id: requestId,
     attempted: true,

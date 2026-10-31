@@ -7,6 +7,8 @@ import { fileURLToPath } from 'node:url'
 import { afterEach,describe,expect,it,vi } from 'vitest'
 import { ApiCallError,createClient,type ApiClient } from './client.js'
 import { codexAnswerPresentation } from './codex-answer-presentation.js'
+import { codexInputObserver } from './codex-input-lifecycle.js'
+import { codexWakeRoute } from './codex-wake.js'
 import { readNativeQuestionSnapshot } from './codex-native-turn.js'
 import { nativeQuestionTitle,observeCodexQuestions } from './codex-question-bindings.js'
 import { type QueueControl } from './codex-queue-control.js'
@@ -27,7 +29,7 @@ import { rootGuidanceDigest } from './session-activation.js'
 import { attendantClaimPath,currentCodexTurn,readTurnActivity,recordTurnEnd,recordTurnStart,turnActivityPath,writeAttendantStatus } from './session-attendant-state.js'
 import { readDeliveryJournal } from './session-delivery.js'
 import { readInputWakes } from './session-input-wakes.js'
-import { drainSessionInputs,hasSessionInputs,inputWakeBackoffMs,readSessionMessages,sessionInputWake,stageSessionMessages,wakeCodexSessionInputs,wakeSessionInputs } from './session-inputs.js'
+import { drainSessionInputs,hasSessionInputs,inputWakeBackoffMs,readSessionMessages,sessionInputRoute,sessionInputWake,stageSessionMessages,wakeCodexSessionInputs,wakeSessionInputs } from './session-inputs.js'
 import { handOffSessionMessages } from './session-message-handoff.js'
 
 const roots: string[] = []
@@ -37,6 +39,37 @@ afterEach(() => {
 })
 const SESSION = '019ff69d-a07f-7161-ab6e-bd06b3b93c8e'
 const note = (id: string): AttendanceMessage => ({ message_id: id, kind: 'note', body: `Read ${id}`, created_at: new Date().toISOString(), agent_acknowledgement_text_required: true })
+
+it('hands a mid-turn note in at a tool boundary without leaving an empty wake for turn end', async () => {
+  const h = setup()
+  let now = 0
+  // The prompt hook has seen the running turn, but its rollout is unavailable.
+  const observer = codexInputObserver(SESSION, h.env, h.incarnation.key, () => now,
+    undefined, () => true, () => true)
+  const queued: string[] = []
+  const schedule = async () => {
+    if (hasSessionInputs(SESSION, h.env, h.lease) && observer.mayWake()) {
+      await wakeSessionInputs(SESSION, h.env, async text => { queued.push(text); return 'written' })
+    }
+  }
+  h.stage([note('sm_busy')])
+  await schedule()
+  now = 6_001
+  await schedule()
+  expect(observer.unknownAllowed()).toBe(false)
+  await h.hook()
+  expect(h.output.join('\n')).toContain('Read sm_busy')
+  recordTurnEnd(SESSION, h.env, 'turn-1')
+  await schedule()
+  // A queued prompt here would hit CODEX_EMPTY_WAKE_REASON after the tool drain.
+  expect(queued).toEqual([])
+  expect(hasSessionInputs(SESSION, h.env, h.lease)).toBe(false)
+  // An older session whose finished turn has no readable rollout keeps its
+  // bounded fallback for genuinely new idle input.
+  h.stage([note('sm_idle')])
+  await schedule()
+  expect(queued).toHaveLength(1)
+})
 
 it('delivers queued input and its durable wake fault on the next tool callback after a restart', async () => {
   const h = setup()
@@ -51,6 +84,26 @@ it('delivers queued input and its durable wake fault on the next tool callback a
   expect(readSessionState(SESSION, h.env).input_wake_fault?.recovered_at).toBeTypeOf('number')
   await h.hook()
   expect(h.output).toHaveLength(1)
+})
+
+it('stages an answer without an attendant and queues its fallback only after the running turn ends', async () => {
+  const h = setup()
+  const { answer } = reserveBinding(h)
+  const accepted = { recorded_at: Date.now(), answers: [answer], remaining: 0 }
+  const queued: string[] = []
+  const route = sessionInputRoute(SESSION, h.env, codexWakeRoute({ threadId: SESSION, cwd: h.deps.cwd, env: h.env,
+    adapters: { queue: async (_id, _cwd, text) => { queued.push(text) } } }))
+  const stage = async () => {
+    updateSessionState(SESSION, h.env, state => ({ ...state, accepted }))
+    await route.defer!(accepted)
+  }
+  await stage()
+  expect(readSessionState(SESSION, h.env).waiting_answers).toHaveLength(1)
+  expect(queued).toEqual([])
+  recordTurnEnd(SESSION, h.env, 'turn-1')
+  await stage()
+  expect(queued).toHaveLength(1)
+  expect(queued[0]).not.toContain(answer.reply.text)
 })
 
 function installTrustedHooks(env: NodeJS.ProcessEnv): void {

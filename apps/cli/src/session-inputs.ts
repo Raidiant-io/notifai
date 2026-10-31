@@ -24,7 +24,7 @@ import { CodexControlNotSent } from './codex-native-control.js'
 import { connectCodexQueue, type QueueControl } from './codex-queue-control.js'
 import { readNativeTurnSnapshot } from './codex-native-turn.js'
 import { admitInputWake, detachInputWakes, electInputWake, observeInputWake, readInputWakes, reconcileInputWakes, recoverUncertainInputWake } from './session-input-wakes.js'
-import { readAttendantLease, nativeTurnContinues } from './session-attendant-state.js'
+import { readAttendantLease, nativeTurnContinues, observedCodexTurnActivity } from './session-attendant-state.js'
 
 export function sessionInputWake(token?: string): string {
   const notice = token === undefined ? 'Notifai — user input may be waiting for this session.' : `Notifai wake ${token}.`
@@ -291,11 +291,20 @@ export function sessionInputRoute(sessionId: string, env: NodeJS.ProcessEnv, rou
       const lease = readAttendantLease(sessionId, env)
       if (owner !== null && lease?.incarnation === owner.incarnation) return
     }
+    // The producer fallback (no resident lease yet) obeys the same running
+    // turn fence as the Codex resident. Claude's inbox can steer a busy turn.
+    const mayWake = (): boolean => {
+      const owner = readSessionIncarnation(sessionId, env)
+      return route.kind !== 'session-queue' || owner === null ||
+        observedCodexTurnActivity(sessionId, env, owner.key) !== 'working'
+    }
+    if (!mayWake()) return
     await wakeSessionInputs(sessionId, env, async (text, signal) => {
+      if (!mayWake()) return 'not-attempted'
       const result = await route.deliver({
         context: text, answers: 0, remaining: 0, request_ids: [], journal_recorded_at: accepted.recorded_at,
-        commitDelivery: () => !signal.aborted && !sessionHasEnded(sessionId, env),
-        writeGuard: { writable: () => !signal.aborted && !sessionHasEnded(sessionId, env), remainingMs: () => WAKE_SEND_TIMEOUT_MS },
+        commitDelivery: () => !signal.aborted && !sessionHasEnded(sessionId, env) && mayWake(),
+        writeGuard: { writable: () => !signal.aborted && !sessionHasEnded(sessionId, env) && mayWake(), remainingMs: () => WAKE_SEND_TIMEOUT_MS },
       })
       return result.acknowledgement === 'delivered' ? 'written' : 'not-attempted'
     }, log, wake)

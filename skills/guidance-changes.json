@@ -1,5 +1,5 @@
 {
-  "current": "048264c47b1892625f0698dd7b8af82911963bd52507bb469add0bd0387f0bb8",
+  "current": "09f74a89aa4452abe1da437c5c30e2be93408f4b3b32fec18d8452adfc563c57",
   "releases": [
     {
       "digest": "3e47b01bc6bbfb43e910c660b9964fab6459d75148c3c02dcbcd0be64cfb2963",
@@ -276,6 +276,10 @@
     {
       "digest": "048264c47b1892625f0698dd7b8af82911963bd52507bb469add0bd0387f0bb8",
       "note": "Previews on the choices of a native Claude Code question now reach the User's Companion Apps. Each preview appears under its choice in monospace, with its line breaks and spacing kept. A preview longer than 4,000 characters stays in the terminal only, and the choice still appears without it. Nothing changes in how you ask: keep using the harness's native question with previews when a choice is easier to judge by seeing it."
+    },
+    {
+      "digest": "09f74a89aa4452abe1da437c5c30e2be93408f4b3b32fec18d8452adfc563c57",
+      "note": "In Codex, a note or answer that arrives while you are mid-turn now reaches you at your next tool call or when the turn ends, and Notifai no longer queues a separate wake for it. You no longer get an empty wake that Codex shows as \"Blocked by hook\" after the input has already reached you. A question the service no longer knows is retired once instead of being retried on every turn. Nothing changes in what you do."
     }
   ]
 }

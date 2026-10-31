@@ -1313,8 +1313,32 @@ describe('hub and Codex SessionEnd', () => {
           await new Promise((resolve) => setTimeout(resolve, 50))
         }
       }
-      return { env, hub, service, queued, asked, builds, pending, deliverNote, stop }
+      return { env, hub, service, transcript, queued, asked, builds, pending, deliverNote, stop }
     }
+
+    it('keeps a note out of the queue during a hook-observed turn, then wakes remaining input after native completion', async () => {
+      let skew = 0
+      const run = await sharedServer({
+        clock: { monotonic: () => performance.now() + skew, wall: () => Date.now() },
+        state: () => ({ state: 'attached', confirmed: true, reason: 'terminal-live+joined' }),
+      })
+      try {
+        // The new prompt has started, while the rollout still ends at turn-1.
+        recordTurnStart(SESSION, run.env, readSessionIncarnation(SESSION, run.env)!.key, 'turn-2')
+        await run.deliverNote(2)
+        skew = 6_001
+        await run.deliverNote(2)
+        expect(run.pending()).toBe(true)
+        expect(run.queued).toEqual([])
+        // No tool boundary drained it: completion must release the idle wake.
+        for (const type of ['task_started', 'task_complete']) {
+          writeFileSync(run.transcript, `${JSON.stringify({ type: 'event_msg', payload: { type, turn_id: 'turn-2' } })}\n`, { flag: 'a' })
+        }
+        await run.deliverNote(2)
+        await until(() => run.queued.length > 0)
+        expect(run.queued).toEqual([SESSION])
+      } finally { await run.stop() }
+    })
 
     it.each([
       ['a terminal shows it', { state: 'attached', confirmed: true, reason: 'terminal-live+joined' } as Attach, 1, false],
