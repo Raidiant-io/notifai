@@ -37,6 +37,12 @@ export function agentAppCandidates(harness: HookInstallableHarness, env: NodeJS.
       : harness === 'cursor' ? 'Cursor.app/Contents/MacOS/Cursor'
       : harness === 'codex' ? 'Codex.app/Contents/Resources/codex' : null
     if (bundle) for (const root of ['/Applications', p.join(home, 'Applications')]) candidates.push(p.join(root, bundle))
+    if (harness === 'codex') for (const root of ['/Applications', p.join(home, 'Applications')]) {
+      candidates.push(p.join(root, 'ChatGPT.app/Contents/Resources/codex-cli/bin/codex'))
+    }
+  }
+  if (platform === 'win32' && harness === 'codex' && value('LOCALAPPDATA')) {
+    candidates.push(p.join(value('LOCALAPPDATA')!, 'Programs', 'OpenAI', 'Codex', 'bin', 'codex.exe'))
   }
   if (platform === 'win32' && harness === 'cursor') {
     const local = value('LOCALAPPDATA')

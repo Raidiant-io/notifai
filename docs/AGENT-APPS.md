@@ -78,7 +78,7 @@ performed. An unrecognized install location remains undetected.
 | Harness | Command names | Additional executable candidates |
 | --- | --- | --- |
 | Claude Code | `claude` | `${CLAUDE_CONFIG_DIR:-~/.claude}/local/node_modules/.bin/claude`; macOS `Claude.app/Contents/MacOS/Claude` |
-| Codex | `codex` | macOS `Codex.app/Contents/Resources/codex` |
+| Codex | `codex` | macOS `Codex.app/Contents/Resources/codex` and `ChatGPT.app/Contents/Resources/codex-cli/bin/codex`; Windows `%LOCALAPPDATA%/Programs/OpenAI/Codex/bin/codex.exe` |
 | Cursor | `cursor`, `cursor-agent` | macOS `Cursor.app/Contents/MacOS/Cursor`; Windows `%LOCALAPPDATA%/Programs/cursor/Cursor.exe` and `%ProgramFiles%/Cursor/Cursor.exe` (also x86) |
 | OpenCode | `opencode` | `~/.opencode/bin/opencode` |
 | OpenClaw | `openclaw` | Common command locations above |
@@ -97,6 +97,15 @@ The native CLI location for Claude Code is documented in the
 [Claude install FAQ](https://support.claude.com/en/articles/14554922-claude-code-user-faq);
 Cursor documents `cursor-agent` and `~/.local/bin` in its
 [installation guide](https://docs.cursor.com/en/cli/installation).
+
+The standalone Windows Codex command location is documented in OpenAI's
+[Windows deployment guide](https://learn.chatgpt.com/docs/enterprise/windows-deployment).
+**Known detection gap:** a Windows ChatGPT app whose bundled Codex is not
+available through one of these command locations remains undetected. Its
+[Windows app guide](https://learn.chatgpt.com/docs/app/windows) confirms a
+native Codex agent, but does not provide a stable bundled-executable path.
+Discovery does not guess versioned WindowsApps or extracted-cache locations;
+a configuration or cache directory alone cannot establish installation.
 
 ## Repeated setup and cross-version callers
 

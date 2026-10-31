@@ -49,6 +49,20 @@ it('does not search repository-relative PATH entries or treat a bundle directory
   expect(detectAgentApps({ HOME: '/u' }, 'darwin', file => file === '/Applications/Cursor.app/Contents/MacOS/Cursor')).toEqual(['cursor'])
 })
 
+it('detects bundled ChatGPT Codex in either macOS Applications directory', () => {
+  for (const root of ['/Applications', '/u/Applications']) {
+    const file = `${root}/ChatGPT.app/Contents/Resources/codex-cli/bin/codex`
+    expect(detectAgentApps({ HOME: '/u', PATH: '' }, 'darwin', candidate => candidate === file)).toEqual(['codex'])
+    expect(detectAgentApps({ HOME: '/u', PATH: '' }, 'darwin', candidate => candidate === `${root}/ChatGPT.app`)).toEqual([])
+  }
+})
+
+it('finds the documented standalone Windows Codex command with a GUI PATH', () => {
+  const env = { USERPROFILE: 'C:\\Users\\test', LOCALAPPDATA: 'C:\\Users\\test\\AppData\\Local', PATH: '' }
+  const file = path.win32.join(env.LOCALAPPDATA, 'Programs', 'OpenAI', 'Codex', 'bin', 'codex.exe')
+  expect(detectAgentApps(env, 'win32', candidate => candidate === file)).toEqual(['codex'])
+})
+
 it('requires a regular executable and follows only live executable symlinks', () => {
   const root = mkdtempSync(path.join(os.tmpdir(), 'agent-runnable-'))
   roots.push(root)

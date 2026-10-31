@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "behavior_digest": "sha256:5acb7940fe31a4e1ecc9310e7229932bcb8ba09ec4feb8dc734cf10e181a0de3",
+  "behavior_digest": "sha256:7aff92d84da43285390a926606b455f328b14ee95320dca297482dfce768ae5a",
   "outcome": "guidance-updated",
   "surfaces_reviewed": [
     "lifecycle-hooks",
@@ -9,5 +9,5 @@
     "cli-readiness",
     "domain-terms"
   ],
-  "reason": "Setup guidance now uses the apps gap and preselected ids when newly detected apps become available, retaining prior choices and declines rather than claiming setup never asks again. The public usage and agent app contract describe executable-only presence, additive per-app doctor gaps, and individually skipped unknown ids. Lifecycle activation, native trust ownership and domain vocabulary are unchanged. Focused tests cover all seven executable identities, configuration-only negatives, per-app trust/plugin/skill isolation, legacy choices, unknown ids, and unchanged repeat setup files. Rebased over the independently reviewed staged-activation readiness correction without changing its behavior. Preserved the incoming additive setup-issue snapshot protocol and its reviewed field semantics; these fields add no new CLI guidance requirements."
+  "reason": "Setup guidance now uses the apps gap and preselected ids when newly detected apps become available, retaining prior choices and declines rather than claiming setup never asks again. The public usage and agent app contract describe executable-only presence, additive per-app doctor gaps, and individually skipped unknown ids. Lifecycle activation, native trust ownership and domain vocabulary are unchanged. Focused tests cover all seven executable identities, configuration-only negatives, per-app trust/plugin/skill isolation, legacy choices, unknown ids, and unchanged repeat setup files. Codex discovery also covers the verified macOS ChatGPT bundle and the documented Windows standalone installer path; the Windows ChatGPT-only layout remains explicitly unproven. This extends executable presence only; activation, setup selection and trust wording do not change. Rebased over the independently reviewed staged-activation readiness correction without changing its behavior. Preserved the incoming additive setup-issue snapshot protocol and its reviewed field semantics; these fields add no new CLI guidance requirements."
 }
