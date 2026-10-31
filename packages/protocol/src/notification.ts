@@ -563,6 +563,7 @@ export const QuestionView = Type.Object({
   title: Type.Optional(Type.String()), detail: Type.Optional(Type.String()),
   choices: Type.Optional(Type.Array(Type.Object({
     id: Type.String(), label: Type.String(), description: Type.Optional(Type.String()),
+    preview: Type.Optional(Type.String()),
     recommended: Type.Optional(Type.Literal(true)),
   }))),
 })

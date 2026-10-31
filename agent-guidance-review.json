@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "behavior_digest": "sha256:f94381c5291b355ee416d24f10a9775822b6989b14b85f79648bc976c2b17bb8",
+  "behavior_digest": "sha256:8238a73bbaf86c6c3a41ebd456fb63a6627321b2eff91d0a33865b79279d906b",
   "outcome": "guidance-updated",
   "surfaces_reviewed": [
     "lifecycle-hooks",
@@ -9,5 +9,5 @@
     "cli-readiness",
     "domain-terms"
   ],
-  "reason": "Native Claude question option previews are preserved as multiline plain text with a 4000-code-point bound and rendered under their choices by Companion Apps. Overlong previews remain terminal-only while choices still route. Outbound submissions retain previews only when the service advertises choice_previews, and existing push content fetching restores previews omitted for payload size. Reviewed lifecycle hooks, the Notifai skill, harness setup, CLI readiness and domain terms: routing, answer custody and agent actions stay unchanged, so the existing native-question instructions remain accurate. The release-authored guidance note explains the added content preservation."
+  "reason": "Native Claude question option previews are preserved as multiline plain text with a 4000-code-point bound and rendered under their choices by Companion Apps. Overlong previews remain terminal-only while choices still route. Outbound submissions retain previews only when the service advertises choice_previews, and existing push content fetching restores previews omitted for payload size. Reviewed lifecycle hooks, the Notifai skill, harness setup, CLI readiness and domain terms: routing, answer custody and agent actions stay unchanged, so the existing native-question instructions remain accurate. The release-authored guidance note explains the added content preservation. The permissive output QuestionView also declares preview for typed consumers; older response validators already allow unknown optional choice fields."
 }
