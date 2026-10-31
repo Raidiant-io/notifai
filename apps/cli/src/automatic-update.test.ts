@@ -1,5 +1,5 @@
-import { createHash,generateKeyPairSync,sign } from 'node:crypto'
-import { mkdtempSync,rmSync } from 'node:fs'
+import { createHash,generateKeyPairSync,randomUUID,sign } from 'node:crypto'
+import { mkdtempSync,readFileSync,rmSync,writeFileSync } from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { gzipSync } from 'node:zlib'
@@ -14,10 +14,14 @@ readAutomaticUpdateRecord,
 updateAutomaticUpdateRecord,
 type AutomaticUpdateHost
 } from './automatic-update.js'
+import { cliBinReadiness } from './cli-bin.js'
+import { stateDir } from './config.js'
+import { activeBytes } from './installation.js'
+import { HISTORICAL_LOCAL_CONTINUITY, LOCAL_CONTINUITY } from './local-continuity.js'
 import type { CommandDeps } from './commands-core.js'
 import { nativeUpdateCommand } from './commands-native-installation.js'
 import { releaseChannelCommand } from './commands-release-channel.js'
-import { beginSessionIncarnation,lifecycleStamp,writeSessionState } from './hook-session-state.js'
+import { beginSessionIncarnation,lifecycleStamp,readSessionState,writeSessionState } from './hook-session-state.js'
 import { Installation } from './installation.js'
 import { nullLogger } from './logging.js'
 import { processStartTime } from './process-identity.js'
@@ -60,11 +64,13 @@ function fixture() {
     return new Response(match![2] === 'inventory.json' ? release.inventory : release.archive)
   }) as unknown as typeof fetch
   const distribution = new Distribution({ fixture: publicKey.export({ format: 'pem', type: 'spki' }).toString() }, fetcher)
-  const options = { root: path.join(root, 'managed'), target: 'bun-linux-x64' as const, distribution,
+  const env: NodeJS.ProcessEnv = { XDG_STATE_HOME: path.join(root, 'state'), XDG_CONFIG_HOME: path.join(root, 'config') }
+  const v1BootstrapInventories: string[] = []
+  const options = { root: path.join(root, '.notifai'), sessionsDirectory: path.join(stateDir(env), 'sessions'), v1BootstrapInventories, fileUse: () => ({ status: 'clear' as const }), target: 'bun-linux-x64' as const, distribution,
     access: { check() {}, directory: ensurePrivateDirectory, beforePublish() {}, protectExistingDirectory() {} }, probe: () => {} }
   const installation = new Installation(options)
 
-  async function publish(version: string): Promise<void> {
+  async function publish(version: string, contract = LOCAL_CONTINUITY): Promise<void> {
     const runtime = `runtime ${version}`, launcher = 'launcher v1'
     const writer = pack(), chunks: Buffer[] = []
     const consumed = (async () => { for await (const chunk of writer) chunks.push(chunk as Buffer) })()
@@ -72,11 +78,12 @@ function fixture() {
     writer.entry({ name: 'notifai-runtime' }, runtime)
     writer.finalize(); await consumed
     const archive = gzipSync(Buffer.concat(chunks))
-    const inventory = signed('inventory', { schema: 2, local_continuity: { contract: 'notifai-session-state-v2' }, version,
+    const inventory = signed('inventory', { schema: 2, local_continuity: { contract }, version,
       source_revision: 'a'.repeat(40), store_schema: 2, launcher_schema: 1, artifacts: [{ target: 'bun-linux-x64',
         filename: `notifai-${version}-linux-x64.tar.gz`, bytes: archive.length, sha256: digest(archive),
         runtime_sha256: digest(runtime), launcher_sha256: digest(launcher), materials: [] }] })
     releases.set(version, { inventory, archive })
+    if (contract === HISTORICAL_LOCAL_CONTINUITY) v1BootstrapInventories.push(digest(inventory))
   }
   function point(channel: 'stable' | 'beta', version: string, withdrawn: string[] = []): void {
     channels[channel] = { sequence: (channels[channel]?.sequence ?? 0) + 1, version, withdrawn }
@@ -86,8 +93,18 @@ function fixture() {
     point(channel, version)
     await installation.installRelease({ channel, source, expectedGeneration: 0 })
   }
-  const env: NodeJS.ProcessEnv = { XDG_STATE_HOME: path.join(root, 'state'), XDG_CONFIG_HOME: path.join(root, 'config') }
-  return { root, env, installation, options, publish, point, install, requests, channels, network }
+  async function historicalInstall(version: string) {
+    point('stable', version)
+    const staged = await installation.stageRelease({ channel: 'stable', expectedGeneration: 0 })
+    const active = { schema: 1 as const, active: staged.build, previous: null, generation: 1 }
+    writeFileSync(path.join(options.root, 'active.json'), activeBytes(active), { mode: 0o600 })
+    writeFileSync(path.join(options.root, 'install.json'), JSON.stringify({ schema: 1, id: randomUUID(), owner: 'notifai', source: 'shell',
+      runtime: { target: options.target, contract: HISTORICAL_LOCAL_CONTINUITY }, channel: 'stable', previousChannel: null,
+      launcherBuild: staged.build, launcherUpdatePending: false }), { mode: 0o600 })
+    ensurePrivateDirectory(path.join(options.root, 'bin'))
+    writeFileSync(path.join(options.root, 'bin', 'notifai'), 'launcher v1', { mode: 0o700 })
+  }
+  return { root, env, installation, options, publish, point, install, historicalInstall, requests, channels, network }
 }
 
 type Fixture = Awaited<ReturnType<typeof fixture>>
@@ -118,6 +135,41 @@ const install = (f: Fixture) => f.installation.inspect()
 
 
 describe('automatic updates', () => {
+  it('reports a contract-changing staged update as waiting until the pending session settles', async () => {
+    const f = fixture()
+    await f.publish('1.0.0', HISTORICAL_LOCAL_CONTINUITY); await f.historicalInstall('1.0.0')
+    await f.publish('1.1.0'); f.point('stable', '1.1.0')
+    beginSessionIncarnation('waiting-session', f.env, { stamp: lifecycleStamp(), harnessProcess: { pid: process.pid, start: processStartTime(process.pid)! } })
+    writeSessionState('waiting-session', f.env, { harness: 'claude-code', pending: [{ request_id: 'req_open', question: 'Continue?', asked_at: NOW }] })
+    const running = { build: install(f).active!.active, version: '1.0.0' }
+    const events: Record<string, unknown>[] = []
+    const logger = { ...nullLogger(), info: (_name: string, data?: Record<string, unknown>) => { events.push(data ?? {}) },
+      error: (_name: string, data?: Record<string, unknown>) => { events.push(data ?? {}) } }
+    const h = host(f, { running: () => running, logger }).host
+    const doctor = () => cliBinReadiness({ PATH: path.join(f.options.root, 'bin') }, 'linux', {
+      nativeHome: f.root, runningArtifactPath: path.join(f.options.root, 'versions', running.build, 'notifai-runtime'), currentVersion: '1.0.0' })
+    expect(await attemptAutomaticUpdate(h)).toMatchObject({ outcome: 'waiting', waiting_for: ['continuity'] })
+    expect(doctor()).toMatchObject({ status: 'ready', technical: { transaction: { install_pending: false, activation_waiting: true } } })
+    expect(doctor().remedy).toBeUndefined()
+    const question = readSessionState('waiting-session', f.env)
+    // An older updater left no waiting marker; do not misclassify its crash journal.
+    const journal = path.join(f.options.root, 'transaction.json')
+    const oldJournal = JSON.parse(readFileSync(journal, 'utf8')) as Record<string, unknown>
+    delete oldJournal['waiting_for_sessions']
+    writeFileSync(journal, JSON.stringify(oldJournal))
+    expect(doctor()).toMatchObject({ status: 'gap', technical: { transaction: { install_pending: true, activation_waiting: false } } })
+    expect(doctor().remedy?.command).toContain('update --repair --json')
+    expect(await attemptAutomaticUpdate(h)).toMatchObject({ outcome: 'waiting', waiting_for: ['continuity'] })
+    expect(events.filter(event => event['event'] === 'failed')).toEqual([])
+    expect(install(f).active!.active).toBe(running.build)
+    expect(readSessionState('waiting-session', f.env)).toEqual(question)
+    // The owner settles its isolated session before the next automatic pass.
+    rmSync(path.join(stateDir(f.env), 'sessions'), { recursive: true, force: true })
+    expect(await attemptAutomaticUpdate(h)).toMatchObject({ outcome: 'activated', from: '1.0.0', to: '1.1.0' })
+    expect(install(f).pending).toBe(false)
+    expect(doctor().technical).toMatchObject({ transaction: { install_pending: false, activation_waiting: false } })
+  })
+
   it('stages a newer release on the saved channel and activates it when nothing waits', async () => {
     const f = fixture()
     await f.publish('1.0.0'); await f.install('1.0.0', 'stable')
@@ -131,6 +183,28 @@ describe('automatic updates', () => {
     expect(calls.plan).toEqual([staged])
     expect(calls.resume).toEqual([[staged, '1.0.0']])
     expect(readAutomaticUpdateRecord(f.env)).toMatchObject({ staged: null, waiting_for: [], last_automatic: { from: '1.0.0', to: '1.1.0', at: NOW } })
+  })
+
+  it('clears a waiting marker before a resumed activation can be interrupted', async () => {
+    const f = fixture()
+    await f.publish('1.0.0'); await f.install('1.0.0', 'stable')
+    await f.publish('1.1.0'); f.point('stable', '1.1.0')
+    const running = { build: install(f).active!.active, version: '1.0.0' }
+    let waiting = true
+    const interrupted = new Installation({ ...f.options,
+      externalWriters: () => waiting ? 'Existing work must finish.' : null,
+      observe(point) { if (point === 'launcher') throw new Error('power lost') } })
+    const h = host(f, { installation: () => interrupted, running: () => running }).host
+    expect(await attemptAutomaticUpdate(h)).toMatchObject({ outcome: 'waiting' })
+    expect(install(f)).toMatchObject({ pending: true, activation_waiting: true })
+    waiting = false
+    expect(await attemptAutomaticUpdate(h)).toMatchObject({ outcome: 'failed' })
+    expect(install(f).activation_waiting).toBeUndefined()
+    const doctor = cliBinReadiness({ PATH: path.join(f.options.root, 'bin') }, 'linux', {
+      nativeHome: f.root, runningArtifactPath: path.join(f.options.root, 'versions', running.build, 'notifai-runtime') })
+    expect(doctor).toMatchObject({ status: 'gap', technical: { transaction: { install_pending: true, activation_waiting: false } } })
+    expect(doctor.remedy?.command).toContain('update --repair --json')
+    expect(await attemptAutomaticUpdate(host(f, { running: () => running }).host)).toMatchObject({ outcome: 'activated' })
   })
 
   it('keeps a beta installation on beta when it moves on to a newer stable release, and never offers beta to stable', async () => {
@@ -162,7 +236,8 @@ describe('automatic updates', () => {
     // A question waits; it does not hold the recovery back.
     const open = 'open-session'
     beginSessionIncarnation(open, f.env, { stamp: lifecycleStamp(), harnessProcess: { pid: process.pid, start: processStartTime(process.pid)! } })
-    writeSessionState(open, f.env, { harness: 'claude-code', pending: [{ request_id: 'req_open', question: 'Deploy?', asked_at: NOW }] })
+    writeSessionState(open, f.env, { harness: 'claude-code', runtime_builds: [{
+      installation_id: JSON.parse(readFileSync(path.join(f.options.root, 'install.json'), 'utf8')).id as string, build: running.build }], pending: [{ request_id: 'req_open', question: 'Deploy?', asked_at: NOW }] })
     expect(await attemptAutomaticUpdate({ ...host(f).host, running: () => running })).toEqual({ outcome: 'activated', from: '1.0.0', to: '1.1.0' })
     expect(install(f)).toMatchObject({ pending: false, channel: 'stable' })
     expect(activeVersion(f)).toBe('1.1.0')

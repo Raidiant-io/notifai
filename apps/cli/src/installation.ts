@@ -33,7 +33,7 @@ interface InstallRecord {
   launcherBuild: string
   launcherUpdatePending: boolean
 }
-interface Transaction { schema: 1; kind: 'activation' | 'launcher' | 'channel'; from: ActiveGeneration | null; to: ActiveGeneration; previous: InstallRecord | null; next: InstallRecord }
+interface Transaction { waiting_for_sessions?: true; schema: 1; kind: 'activation' | 'launcher' | 'channel'; from: ActiveGeneration | null; to: ActiveGeneration; previous: InstallRecord | null; next: InstallRecord }
 interface UninstallTransaction { schema: 1; installation_id: string; generation: number; token: string; owner: ProcessIdentity; phase: 'preparing' | 'removing'; plan?: RemovalPlan; cleanup_build?: string }
 export interface IntegrationOperation {
   token: string; scope: string; operation: 'install' | 'enable' | 'remove'; build: string
@@ -44,7 +44,7 @@ export type IntegrationOperationInput = Omit<IntegrationOperation, 'token' | 'bu
 type UninstallPreparation = { status: 'waiting_for_questions' | 'uncertain'; reason?: string } |
   { status: 'preparing' | 'removing'; token: string; owners: RuntimeOwnerInspection }
 interface VerifiedVersion { directory: string; inventory: ReleaseInventory; artifact: ReleaseArtifact }
-export interface InstallationStatus { active: ActiveGeneration | null; pending: boolean; uninstall_pending: boolean; bootstrap_pending?: true; pending_integrations?: IntegrationOperation[]; source: InstallSource | null; channel: ReleaseChannel | null; launcher_update_pending: boolean }
+export interface InstallationStatus { active: ActiveGeneration | null; pending: boolean; activation_waiting?: true; uninstall_pending: boolean; bootstrap_pending?: true; pending_integrations?: IntegrationOperation[]; source: InstallSource | null; channel: ReleaseChannel | null; launcher_update_pending: boolean }
 export interface ActivationResult { changed: boolean; active: ActiveGeneration; launcher_update_pending: boolean }
 type Phase = 'prepared' | 'launcher' | 'metadata' | 'activated' | 'uninstall-planned' | 'uninstall-file-removed' | 'bootstrap-closed' | 'bootstrap-fenced'
 const hash = (value: string | Uint8Array): string => createHash('sha256').update(value).digest('hex')
@@ -705,11 +705,22 @@ export class Installation {
     const value = this.readJson('install.json')
     return value === null ? null : this.installRecord(value)
   }
+  /** Diagnostic only: a marked plan is waiting only while its working generation
+   * and ownership metadata remain untouched. This grants no activation authority.
+   * Old journals without the marker conservatively remain recovery work. */
+  activationWaiting(): boolean {
+    const value = this.readJson('transaction.json') as Partial<Transaction> | null
+    if (value?.waiting_for_sessions !== true || value.schema !== 1 || value.kind !== 'activation' ||
+        !value.from || !value.previous || !value.to || !buildId(value.to.active) ||
+        value.to.generation !== value.from.generation + 1 || value.to.previous !== value.from.active ||
+        present(this.file('uninstall.json'))) return false
+    return isDeepStrictEqual(this.readActive(), value.from) && isDeepStrictEqual(this.readInstall(), value.previous)
+  }
   inspect(): InstallationStatus {
     const installation = this.readInstall(), active = this.readActive()
     const bootstrap = this.bootstrapTarget() !== null
     const pendingIntegrations = this.pendingIntegrationOperations()
-    return { active, pending: present(this.file('transaction.json')), uninstall_pending: present(this.file('uninstall.json')) && !bootstrap,
+    return { active, pending: present(this.file('transaction.json')), ...(this.activationWaiting() ? { activation_waiting: true as const } : {}), uninstall_pending: present(this.file('uninstall.json')) && !bootstrap,
       ...(pendingIntegrations.length > 0 ? { pending_integrations: pendingIntegrations } : {}),
       ...(bootstrap ? { bootstrap_pending: true as const } : {}), source: installation?.source ?? null, channel: installation?.channel ?? null, launcher_update_pending: installation?.launcherUpdatePending ?? false }
   }
@@ -1041,7 +1052,22 @@ export class Installation {
     return { schema: 1, kind: item.kind!, from, to, previous, next }
   }
   private finish(transaction: Transaction): void {
+    // Clear any waiting marker before resuming: a crash during publication is
+    // recovery, even when the active pointer has not yet advanced.
     transaction = this.transaction(transaction)
+    this.save('transaction.json', transaction)
+    try {
+      this.finishTransaction(transaction)
+    } catch (error) {
+      if (error instanceof ContinuityPending && transaction.kind === 'activation' && transaction.from && transaction.previous &&
+          sameGeneration(this.readActive(), transaction.from) && isDeepStrictEqual(this.readInstall(), transaction.previous) &&
+          !present(this.file('uninstall.json'))) {
+        this.save('transaction.json', { ...transaction, waiting_for_sessions: true })
+      }
+      throw error
+    }
+  }
+  private finishTransaction(transaction: Transaction): void {
     const current = this.readActive()
     if (!sameGeneration(current, transaction.from) && !sameGeneration(current, transaction.to)) throw new Error('Installation changed during transaction recovery')
     const installed = this.readInstall()

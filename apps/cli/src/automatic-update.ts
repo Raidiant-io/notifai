@@ -270,7 +270,15 @@ function hold(host: AutomaticUpdateHost, version: string | null, waiting: Waitin
  * the hub over as after any activation.
  */
 async function recoverInterrupted(host: AutomaticUpdateHost, installation: Installation): Promise<AttemptOutcome> {
-  installation.recover()
+  try {
+    installation.recover()
+  } catch (error) {
+    if (error instanceof ContinuityPending) {
+      const pending = installation.pendingRelease()
+      return hold(host, pending?.version ?? null, ['continuity'])
+    }
+    throw error
+  }
   const active = installation.activeRelease()
   const running = host.running()
   host.logger.info('update.automatic', { event: 'recovered', version: active.version })

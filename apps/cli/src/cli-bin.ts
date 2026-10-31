@@ -56,7 +56,7 @@ export interface CliInstallationInspection {
   effective: CliPathEntry | null
   entries: CliPathEntry[]
   native: ReturnType<typeof nativeInstallationIdentity> | null
-  transaction: { install_pending: boolean; uninstall_pending: boolean; bootstrap_pending?: true; recovery_command?: string }
+  transaction: { install_pending: boolean; activation_waiting?: boolean; uninstall_pending: boolean; bootstrap_pending?: true; recovery_command?: string }
   update_owner: 'native' | null
   invoking_adapter: { artifact_path: string; version: string; source_revision: string } | null
 }
@@ -277,6 +277,13 @@ export function inspectCliInstallations(
     }
   })
   const bootstrap = nativeBootstrapPending(home)
+  let activationWaiting = false
+  if (!bootstrap && native?.target && RELEASE_TARGETS.includes(native.target as ReleaseTarget)) {
+    try {
+      activationWaiting = new Installation({ root, target: native.target as ReleaseTarget,
+        distribution: distribution instanceof Distribution ? distribution : new Distribution(RELEASE_PUBLIC_KEYS) }).activationWaiting()
+    } catch { /* Unreadable or older journals remain recovery, never a waiting success. */ }
+  }
   let recovery: string | undefined
   if (bootstrap && native?.target && RELEASE_TARGETS.includes(native.target as ReleaseTarget)) {
     try {
@@ -300,7 +307,7 @@ export function inspectCliInstallations(
     ...(domain ? { execution_domain: domain } : {}),
     entries,
     native,
-    transaction: { install_pending: localPathPresent(path.join(root, 'transaction.json')), uninstall_pending: !bootstrap && localPathPresent(path.join(root, 'uninstall.json')),
+    transaction: { install_pending: !activationWaiting && localPathPresent(path.join(root, 'transaction.json')), activation_waiting: activationWaiting, uninstall_pending: !bootstrap && localPathPresent(path.join(root, 'uninstall.json')),
       ...(bootstrap ? { bootstrap_pending: true as const } : {}), ...(recovery ? { recovery_command: recovery } : {}) },
     update_owner: native === null ? null : 'native',
     invoking_adapter: invokingProof ? { artifact_path: invokingProof.proof.executable,
@@ -427,7 +434,7 @@ export function cliBinReadiness(
     id: 'cli-bin',
     title: 'notifai command',
     status: 'ready',
-    detail: 'the notifai command is ready',
+    detail: inspection.transaction.activation_waiting ? 'The notifai command is ready. An update finishes installing when your current agent sessions end.' : 'the notifai command is ready',
     technical: inspection,
   }
 }
