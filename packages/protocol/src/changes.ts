@@ -23,8 +23,9 @@ export const CompanionChangesPage = Type.Object({
   notifications: Type.Array(NotificationHistoryItem),
   session_messages: Type.Array(SessionMessageView),
   presence: Type.Union([Type.Array(SessionPresenceEntry), Type.Null()]),
-  /** Opaque Account-bound position; a missing/empty value cannot be committed. */
+  /** Full current setup-issue set when changed; null when unchanged. */
   setup_issues: Type.Optional(Type.Union([Type.Array(SetupIssue), Type.Null()])),
+  /** Opaque Account-bound position; a missing/empty value cannot be committed. */
   next_cursor: Type.String({ minLength: 1 }),
   has_more: Type.Boolean(),
 })
