@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "behavior_digest": "sha256:1536e1419ac25b3a77712c977c0e7a081e6d960fc5c699fee7f3655792687d19",
+  "behavior_digest": "sha256:f04c6a7587211cd2a6fe63c6f4d6e0faca9b8980e0c67868f9f485408226c03a",
   "outcome": "guidance-updated",
   "surfaces_reviewed": [
     "lifecycle-hooks",
@@ -9,5 +9,5 @@
     "cli-readiness",
     "domain-terms"
   ],
-  "reason": "An ordinary stable-route command now retries one marked waiting activation before admission, without waiting for the installer lock, looking up releases, repairing integrations or cleaning retained runtimes. Fresh admission reroutes the untouched invocation after success; automatic-update notices retain their normal version handoff. Diagnostics, lifecycle callbacks, pinned/forwarded commands, explicit maintenance and the automatic-update off switch keep their boundaries. Incompatible-contract bootstrap remains explicit. Reviewed lifecycle hook entrypoints and notices, skill updates/installation references, harness setup gap handling, CLI readiness and domain terms; existing instructions remain accurate and the release note explains the new retry. Evidence covers real signed journals, retained pending question owners, no network requests, lock contention, corruption, explicit recovery, Linux contract safety and process forwarding."
+  "reason": "An ordinary stable-route command retries only a marked waiting activation before admission. A bounded journal hint and per-build one-minute nonwaiting claim keep repeated commands on cheap file reads before any execution-domain, binary hash or owner inspection. Fresh admission forwards the untouched invocation after success. A durable pre-activation resume intent lets the hub finish automatic skill/hook integration; failed resume stays queued without early update notices or repeated handover. Waiting markers survive read-only assessment and clear when publication starts. Diagnostics, callbacks, explicit maintenance, pinned/forwarded commands, automatic-off changes and incompatible bootstrap keep their boundaries. Reviewed lifecycle entrypoints/notices, skill update/installation references, harness setup, CLI readiness and domain terms; existing instructions remain accurate and the approved release note explains the behavior. Signed-journal regressions cover fast repeated waits, cooldown expiry, deferred integration retry, read-only interruption, retained owners, lock contention, corruption, Linux safety and process forwarding."
 }

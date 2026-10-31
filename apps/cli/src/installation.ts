@@ -304,6 +304,7 @@ export class Installation {
         oldFiles.push(this.file(`bin/notifai${this.extension}`))
       }
       if (present(this.file('uninstall.json')) && this.bootstrapTarget() !== build) throw new Error('Existing uninstall must be recovered separately')
+      this.save('transaction.json', transaction)
       this.save('uninstall.json', { schema: 2, operation: 'continuity-bootstrap', installation_id: installed.id, build })
       this.options.observe?.('bootstrap-closed')
       const launcher = path.join(this.versionDirectory(build), `notifai${this.extension}`)
@@ -1052,10 +1053,9 @@ export class Installation {
     return { schema: 1, kind: item.kind!, from, to, previous, next }
   }
   private finish(transaction: Transaction): void {
-    // Clear any waiting marker before resuming: a crash during publication is
-    // recovery, even when the active pointer has not yet advanced.
+    // Keep an existing waiting marker throughout read-only assessment. Only
+    // publication clears it: interruption before then is still an untouched plan.
     transaction = this.transaction(transaction)
-    this.save('transaction.json', transaction)
     try {
       this.finishTransaction(transaction)
     } catch (error) {
@@ -1083,12 +1083,14 @@ export class Installation {
       if (installed && this.quietTransition(installed, transaction.next)) {
         // Bind an old-updater-created plan to its signed candidate before the
         // launch barrier or permanent contract publication can be observed.
-        this.save('transaction.json', transaction)
+        this.save('transaction.json', { ...transaction, ...(this.activationWaiting() ? { waiting_for_sessions: true } : {}) })
         this.bootstrapContinuity(transaction, installed)
       }
       this.assertContinuity(transaction.to.active, this.readInstall())
     }
     this.checkStable(transaction.previous, transaction.next)
+    // Publication starts here; a crash from this point requires recovery.
+    this.save('transaction.json', transaction)
     this.access.directory(this.file('bin'))
     const stable = this.file(path.join('bin', `notifai${this.extension}`))
     try {
@@ -1200,7 +1202,8 @@ export class Installation {
    * and incompatible-contract bootstraps keep their explicit recovery boundary.
    * Never wait behind another installer, discover a release, repair integrations,
    * remove a runtime, or relax the signed continuity checks. */
-  retryWaitingActivation(expected: { installation_id: string; build: string }): { from: string; to: string; build: string } | null {
+  retryWaitingActivation(expected: { installation_id: string; build: string },
+    beforeActivate?: (activation: { from: string; to: string; build: string }) => void): { from: string; to: string; build: string } | null {
     if (!this.activationWaiting()) return null
     try {
       return this.mutate(() => {
@@ -1210,8 +1213,10 @@ export class Installation {
         if (this.quietTransition(transaction.previous, transaction.next)) return null
         const from = this.verifyVersion(active.active).inventory.version
         const to = this.verifyVersion(transaction.to.active).inventory.version
+        const activation = { from, to, build: transaction.to.active }
+        beforeActivate?.(activation)
         this.finish(transaction)
-        return { from, to, build: transaction.to.active }
+        return activation
       }, false, 0)
     } catch (error) {
       if (error instanceof ContinuityPending) return null

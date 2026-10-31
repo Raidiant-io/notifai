@@ -59,6 +59,8 @@ export type WaitingReason =
 export interface AutomaticUpdateRecord {
   schema: 1
   checked_at?: number
+  command_activation_attempt?: { build: string; at: number }
+  resume_pending?: { build: string; from: string; to: string } | null
   staged?: { version: string; build: string; since: number } | null
   waiting_for?: WaitingReason[]
   hook_changes?: { harness: string; file: string }[]
@@ -110,13 +112,13 @@ export function readAutomaticUpdateRecord(env: NodeJS.ProcessEnv): AutomaticUpda
 }
 
 export function updateAutomaticUpdateRecord<T>(env: NodeJS.ProcessEnv,
-  change: (record: AutomaticUpdateRecord) => { record: AutomaticUpdateRecord; result: T }): T {
+  change: (record: AutomaticUpdateRecord) => { record: AutomaticUpdateRecord; result: T }, options: { waitMs?: number } = {}): T {
   const file = automaticUpdateRecordPath(env)
   return withFileLock(`${file}.lock`, () => {
     const { record, result } = change(readAutomaticUpdateRecord(env))
     atomicWriteFileSync(file, `${JSON.stringify(record)}\n`)
     return result
-  }, { waitMs: 2_000 })
+  }, { waitMs: options.waitMs ?? 2_000 })
 }
 
 function patchRecord(env: NodeJS.ProcessEnv, patch: Partial<AutomaticUpdateRecord>): void {
@@ -179,7 +181,8 @@ function recent(timestamp: number | undefined, now: number, interval: number): b
 /** One pass: look up (at most daily), stage, and activate unless a gate holds it back. */
 export async function attemptAutomaticUpdate(host: AutomaticUpdateHost): Promise<AttemptOutcome> {
   const { env, logger } = host
-  if (!automaticUpdatesSetting(env).enabled) return { outcome: 'off' }
+  const enabled = automaticUpdatesSetting(env).enabled
+  if (!enabled && !readAutomaticUpdateRecord(env).resume_pending) return { outcome: 'off' }
   let installation: Installation
   try {
     installation = host.installation()
@@ -191,8 +194,11 @@ export async function attemptAutomaticUpdate(host: AutomaticUpdateHost): Promise
   try {
     const before = installation.inspect()
     if (before.uninstall_pending || before.bootstrap_pending) return hold(host, null, ['installation-busy'])
-    if (before.pending) return await recoverInterrupted(host, installation)
+    if (before.pending) return enabled ? await recoverInterrupted(host, installation) : { outcome: 'off' }
     const active = installation.activeRelease(before.active?.generation)
+    const resume = pendingResume(host.env, active)
+    if (resume) return await finishActivation(host, installation, resume.from, resume.to, active.launcher)
+    if (!enabled) return { outcome: 'off' }
     const channel = before.channel
     if (channel === null || before.source === null) return { outcome: 'not-managed' }
 
@@ -282,11 +288,19 @@ async function recoverInterrupted(host: AutomaticUpdateHost, installation: Insta
   const active = installation.activeRelease()
   const running = host.running()
   host.logger.info('update.automatic', { event: 'recovered', version: active.version })
+  const resume = pendingResume(host.env, active)
+  if (resume) return finishActivation(host, installation, resume.from, resume.to, active.launcher)
   if (running === null || running.build === active.build) {
     patchRecord(host.env, { staged: null, waiting_for: [], hook_changes: [] })
     return { outcome: 'current' }
   }
   return finishActivation(host, installation, running.version, active.version, active.launcher)
+}
+
+function pendingResume(env: NodeJS.ProcessEnv, active: { build: string; version: string }): { from: string; to: string } | null {
+  const pending = readAutomaticUpdateRecord(env).resume_pending
+  return pending?.build === active.build && pending.to === active.version && typeof pending.from === 'string' && isSemVer(pending.from)
+    ? pending : null
 }
 
 async function finishActivation(host: AutomaticUpdateHost, installation: Installation, from: string, to: string,
@@ -299,8 +313,14 @@ async function finishActivation(host: AutomaticUpdateHost, installation: Install
     const active = installation.inspect().active
     if (active) installation.cleanup(active.generation)
   } catch { /* Housekeeping never fails an update. */ }
+  const active = installation.inspect().active
   patchRecord(host.env, { staged: null, waiting_for: [], hook_changes: [], error: null,
-    last_automatic: { from, to, at: now } })
+    ...(integration['ok'] === true ? { resume_pending: null, last_automatic: { from, to, at: now } }
+      : active ? { resume_pending: { build: active.active, from, to } } : {}) })
+  if (integration['ok'] !== true && active?.active === host.running()?.build) {
+    host.logger.info('update.automatic', { event: 'integration-pending', from, to })
+    return { outcome: 'current' }
+  }
   host.logger.info('update.automatic', { event: 'activated', from, to, integration_ok: integration['ok'] === true })
   return { outcome: 'activated', from, to }
 }

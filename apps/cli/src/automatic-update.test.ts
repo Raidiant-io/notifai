@@ -287,7 +287,7 @@ describe('staged activation at the next command', () => {
       throw new Error('Command did not exit')
     }
     return { ...f, running, installationId, question, installation, action, forward, factory, argv, invoke,
-      wait: () => { waiting = true }, noLookup: () => expect(f.requests).toHaveLength(requestsBefore) }
+      wait: () => { waiting = true }, allow: () => { waiting = false }, noLookup: () => expect(f.requests).toHaveLength(requestsBefore) }
   }
 
   it('activates before an ordinary command and forwards it once while compatible question owners retain their build', async () => {
@@ -298,8 +298,75 @@ describe('staged activation at the next command', () => {
     expect(f.action).not.toHaveBeenCalled()
     expect(activeVersion(f)).toBe('1.1.0')
     expect(readSessionState('retained-question', f.env)).toEqual(f.question)
-    expect(readAutomaticUpdateRecord(f.env)).toMatchObject({ staged: null, waiting_for: [], last_automatic: { from: '1.0.0', to: '1.1.0' } })
+    expect(readAutomaticUpdateRecord(f.env)).toMatchObject({ resume_pending: { from: '1.0.0', to: '1.1.0' } })
+    expect(readAutomaticUpdateRecord(f.env).last_automatic).toBeUndefined()
     f.noLookup()
+  })
+
+  it('does no heavy installation work on repeated commands while the update still waits', async () => {
+    const f = await staged(); f.wait()
+    expect((await f.invoke()).code).toBe(0)
+    f.factory.mockClear()
+    expect((await f.invoke()).code).toBe(0)
+    expect(f.factory).not.toHaveBeenCalled()
+    expect(f.forward).not.toHaveBeenCalled()
+    expect(f.action).toHaveBeenCalledTimes(2)
+    f.noLookup()
+  })
+
+  it('retries a waiting build after the per-command cooldown expires', async () => {
+    const f = await staged(); f.wait()
+    expect((await f.invoke()).code).toBe(0)
+    const at = Date.now()
+    vi.spyOn(Date, 'now').mockReturnValue(at + 60_001)
+    f.allow()
+    expect((await f.invoke()).code).toBe(0)
+    expect(f.factory).toHaveBeenCalledTimes(2)
+    expect(f.forward).toHaveBeenCalledOnce()
+    expect(activeVersion(f)).toBe('1.1.0')
+    f.noLookup()
+  })
+
+  it('retains failed integration handoff until a later automatic pass finishes it, without an early update notice or repeated hub handover', async () => {
+    const f = await staged()
+    expect((await f.invoke()).code).toBe(0)
+    const resume = vi.fn().mockRejectedValueOnce(new Error('resume unavailable')).mockResolvedValueOnce({ ok: true })
+    const h = host(f, { resume }).host
+    expect(await attemptAutomaticUpdate(h)).toEqual({ outcome: 'current' })
+    expect(readAutomaticUpdateRecord(f.env)).toMatchObject({ resume_pending: { from: '1.0.0', to: '1.1.0' } })
+    expect(readAutomaticUpdateRecord(f.env).last_automatic).toBeUndefined()
+    expect(await attemptAutomaticUpdate(h)).toMatchObject({ outcome: 'activated', from: '1.0.0', to: '1.1.0' })
+    expect(resume).toHaveBeenCalledTimes(2)
+    expect(readAutomaticUpdateRecord(f.env)).toMatchObject({ resume_pending: null, last_automatic: { from: '1.0.0', to: '1.1.0' } })
+  })
+
+  it('finishes already-activated integration even when automatic updates were then turned off', async () => {
+    const f = await staged()
+    expect((await f.invoke()).code).toBe(0)
+    const file = globalConfigPath(f.env)
+    ensurePrivateDirectory(path.dirname(file))
+    writeFileSync(file, '[updates]\nautomatic = false\n', { mode: 0o600 })
+    const resume = vi.fn(async () => ({ ok: true }))
+    expect(await attemptAutomaticUpdate(host(f, { resume }).host)).toMatchObject({ outcome: 'activated' })
+    expect(resume).toHaveBeenCalledOnce()
+    f.noLookup()
+  })
+
+  it('resumes integration on the next automatic pass after command-triggered activation', async () => {
+    const f = await staged()
+    expect((await f.invoke()).code).toBe(0)
+    const resume = vi.fn(async () => ({ ok: true }))
+    expect(await attemptAutomaticUpdate(host(f, { resume }).host)).toMatchObject({ outcome: 'activated', from: '1.0.0', to: '1.1.0' })
+    expect(resume).toHaveBeenCalledOnce()
+    expect(resume).toHaveBeenCalledWith(f.installation.activeRelease().launcher, '1.0.0')
+    expect(readAutomaticUpdateRecord(f.env)).toMatchObject({ resume_pending: null, last_automatic: { from: '1.0.0', to: '1.1.0' } })
+  })
+
+  it('keeps the waiting marker if interrupted during read-only continuity checks', async () => {
+    const f = await staged()
+    const interrupted = new Installation({ ...f.options, externalWriters: () => { throw new Error('killed during read-only checks') } })
+    expect(() => interrupted.recover()).toThrow('killed during read-only checks')
+    expect(install(f)).toMatchObject({ pending: true, activation_waiting: true, active: { active: f.running.build } })
   })
 
   it('continues the current command while the existing writer still needs its build', async () => {
@@ -364,6 +431,7 @@ describe('staged activation at the next command', () => {
     expect((await f.invoke()).code).toBe(0)
     expect(f.forward).not.toHaveBeenCalled()
     expect(f.action).toHaveBeenCalledOnce()
+    expect(f.factory).not.toHaveBeenCalled()
     expect(readFileSync(file, 'utf8')).toBe(bytes)
     expect(install(f).active!.active).toBe(f.running.build)
     f.noLookup()
