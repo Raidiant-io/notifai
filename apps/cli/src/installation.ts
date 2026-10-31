@@ -130,7 +130,7 @@ export class Installation {
   private save(name: string, value: unknown): void {
     this.write(this.file(name), `${JSON.stringify(value)}\n`)
   }
-  private mutate<T>(action: () => T, resumeBootstrap = false): T {
+  private mutate<T>(action: () => T, resumeBootstrap = false, waitMs = 5_000): T {
     return withFileLock(this.file('installation.lock'), () => {
       if (present(this.file('uninstall.json')) && !(resumeBootstrap && this.bootstrapTarget() !== null)) {
         throw new Error(this.bootstrapTarget() !== null
@@ -138,7 +138,7 @@ export class Installation {
           : 'Finish or explicitly cancel the pending uninstall before changing this installation')
       }
       return action()
-    }, { waitMs: 5_000, strictRelease: true })
+    }, { waitMs, strictRelease: true })
   }
 
   /** A host may finish publishing after its caller disappears. Retain the
@@ -1194,6 +1194,29 @@ export class Installation {
       }
       return { removed, retained }
     })
+  }
+  /** One opportunistic retry before an ordinary command has been admitted.
+   * Only an untouched, marked activation may finish here; interrupted installs
+   * and incompatible-contract bootstraps keep their explicit recovery boundary.
+   * Never wait behind another installer, discover a release, repair integrations,
+   * remove a runtime, or relax the signed continuity checks. */
+  retryWaitingActivation(expected: { installation_id: string; build: string }): { from: string; to: string; build: string } | null {
+    if (!this.activationWaiting()) return null
+    try {
+      return this.mutate(() => {
+        const active = this.readActive(), installed = this.readInstall()
+        if (active?.active !== expected.build || installed?.id !== expected.installation_id || !this.activationWaiting()) return null
+        const transaction = this.transaction(this.readJson('transaction.json'))
+        if (this.quietTransition(transaction.previous, transaction.next)) return null
+        const from = this.verifyVersion(active.active).inventory.version
+        const to = this.verifyVersion(transaction.to.active).inventory.version
+        this.finish(transaction)
+        return { from, to, build: transaction.to.active }
+      }, false, 0)
+    } catch (error) {
+      if (error instanceof ContinuityPending) return null
+      throw error
+    }
   }
   recover(): InstallationStatus {
     if (!present(this.file('transaction.json'))) return this.inspect()

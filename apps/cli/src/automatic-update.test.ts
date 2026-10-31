@@ -1,10 +1,10 @@
 import { createHash,generateKeyPairSync,randomUUID,sign } from 'node:crypto'
-import { mkdtempSync,readFileSync,rmSync,writeFileSync } from 'node:fs'
+import { mkdirSync,mkdtempSync,readFileSync,rmSync,writeFileSync } from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { gzipSync } from 'node:zlib'
 import { pack } from 'tar-stream'
-import { afterEach,describe,expect,it } from 'vitest'
+import { afterEach,describe,expect,it,vi } from 'vitest'
 import type { ActivationPlan } from './activation-plan.js'
 import { ensurePrivateDirectory } from './atomic-file.js'
 import {
@@ -14,8 +14,9 @@ readAutomaticUpdateRecord,
 updateAutomaticUpdateRecord,
 type AutomaticUpdateHost
 } from './automatic-update.js'
+import { buildProgram } from './program.js'
 import { cliBinReadiness } from './cli-bin.js'
-import { stateDir } from './config.js'
+import { globalConfigPath,stateDir } from './config.js'
 import { activeBytes } from './installation.js'
 import { HISTORICAL_LOCAL_CONTINUITY, LOCAL_CONTINUITY } from './local-continuity.js'
 import type { CommandDeps } from './commands-core.js'
@@ -29,7 +30,14 @@ import { Distribution,releaseSigningMessage } from './release-distribution.js'
 
 const NOW = 1_900_000_000_000
 const roots: string[] = []
-afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }) })
+const originalExecutable = process.execPath
+const originalArgv = process.argv
+afterEach(() => {
+  Object.defineProperty(process, 'execPath', { value: originalExecutable })
+  process.argv = originalArgv
+  vi.unstubAllGlobals()
+  vi.restoreAllMocks()
+  for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }) })
 
 const digest = (bytes: string | Uint8Array): string => createHash('sha256').update(bytes).digest('hex')
 
@@ -241,6 +249,152 @@ describe('automatic updates', () => {
     expect(await attemptAutomaticUpdate({ ...host(f).host, running: () => running })).toEqual({ outcome: 'activated', from: '1.0.0', to: '1.1.0' })
     expect(install(f)).toMatchObject({ pending: false, channel: 'stable' })
     expect(activeVersion(f)).toBe('1.1.0')
+  })
+})
+
+describe('staged activation at the next command', () => {
+  class CommandExit extends Error { constructor(readonly code: number) { super(`exit ${code}`) } }
+  async function staged() {
+    const f = fixture()
+    await f.publish('1.0.0'); await f.install('1.0.0', 'stable')
+    await f.publish('1.1.0'); f.point('stable', '1.1.0')
+    const running = { build: install(f).active!.active, version: '1.0.0' }
+    const installationId = (JSON.parse(readFileSync(path.join(f.options.root, 'install.json'), 'utf8')) as { id: string }).id
+    beginSessionIncarnation('retained-question', f.env, { stamp: lifecycleStamp(), harnessProcess: { pid: process.pid, start: processStartTime(process.pid)! } })
+    writeSessionState('retained-question', f.env, { harness: 'claude-code', runtime_builds: [{ installation_id: installationId, build: running.build }],
+      pending: [{ request_id: 'req_retained', question: 'Continue?', asked_at: NOW }] })
+    const question = readSessionState('retained-question', f.env)
+    let waiting = true
+    const installation = new Installation({ ...f.options, externalWriters: () => waiting ? 'An existing writer is not ready.' : null })
+    expect(await attemptAutomaticUpdate(host(f, { installation: () => installation, running: () => running }).host)).toMatchObject({ outcome: 'waiting' })
+    waiting = false
+    const requestsBefore = f.requests.length
+    vi.stubGlobal('NOTIFAI_COMPILED_BUILD', { sourceDirty: false, target: f.options.target })
+    Object.defineProperty(process, 'execPath', { value: path.join(f.options.root, 'versions', running.build, 'notifai-runtime') })
+    const action = vi.fn(async () => 0), forward = vi.fn(async () => 0), factory = vi.fn(() => installation)
+    const argv = ['config', 'set', 'log_level', 'off', '--yes']
+    async function invoke(args = argv, extraEnv: NodeJS.ProcessEnv = {}) {
+      process.argv = ['node', 'notifai', ...args]
+      const deps: CommandDeps = { cwd: f.root, env: { ...f.env, HOME: f.root, USERPROFILE: f.root,
+        NOTIFAI_NATIVE_ENTRY: 'launcher-v1', NOTIFAI_NATIVE_ROUTE: 'stable-v1', ...extraEnv },
+        io: { out() {}, err() {}, confirm: async () => false, openUrl() {} },
+        store: { load() { throw new Error('No credentials before command admission') }, save() {}, clear() {}, describe: () => 'test' } }
+      try {
+        await buildProgram(deps, { activationInstallation: factory, retryNativeSelection: forward,
+          runners: { configSet: action, doctor: action, hookRun: action, install: action },
+          exit: code => { throw new CommandExit(code) } }).parseAsync(process.argv)
+      } catch (error) { if (!(error instanceof CommandExit)) throw error; return { code: error.code, deps } }
+      throw new Error('Command did not exit')
+    }
+    return { ...f, running, installationId, question, installation, action, forward, factory, argv, invoke,
+      wait: () => { waiting = true }, noLookup: () => expect(f.requests).toHaveLength(requestsBefore) }
+  }
+
+  it('activates before an ordinary command and forwards it once while compatible question owners retain their build', async () => {
+    const f = await staged(), result = await f.invoke()
+    expect(result.code).toBe(0)
+    expect(f.forward).toHaveBeenCalledOnce()
+    expect(f.forward).toHaveBeenCalledWith(expect.objectContaining({ executable: path.join(f.options.root, 'bin', 'notifai'), attempts: 0 }), f.argv, result.deps)
+    expect(f.action).not.toHaveBeenCalled()
+    expect(activeVersion(f)).toBe('1.1.0')
+    expect(readSessionState('retained-question', f.env)).toEqual(f.question)
+    expect(readAutomaticUpdateRecord(f.env)).toMatchObject({ staged: null, waiting_for: [], last_automatic: { from: '1.0.0', to: '1.1.0' } })
+    f.noLookup()
+  })
+
+  it('continues the current command while the existing writer still needs its build', async () => {
+    const f = await staged(); f.wait()
+    expect((await f.invoke()).code).toBe(0)
+    expect(f.forward).not.toHaveBeenCalled()
+    expect(f.action).toHaveBeenCalledOnce()
+    expect(install(f)).toMatchObject({ pending: true, activation_waiting: true, active: { active: f.running.build } })
+    expect(readSessionState('retained-question', f.env)).toEqual(f.question)
+    f.noLookup()
+  })
+
+  it.each([
+    ['diagnostic', ['doctor', '--json'], {}],
+    ['lifecycle callback', ['hook', 'post-tool-use', '--owner', 'notifai', '--harness', 'claude-code'], {}],
+    ['explicit installer', ['install', '--no-init', '--no-path', '--json'], {}],
+    ['pinned owner route', undefined, { NOTIFAI_NATIVE_ROUTE: undefined }],
+    ['forwarded command', undefined, { NOTIFAI_NATIVE_RETRY: '1' }],
+    ['turning updates off', ['config', 'set', 'updates.automatic', 'false', '--yes'], {}],
+  ] as const)('leaves activation alone for a %s', async (_name, args, env) => {
+    const f = await staged()
+    expect((await f.invoke(args ? [...args] : f.argv, env)).code).toBe(0)
+    expect(f.factory).not.toHaveBeenCalled()
+    expect(f.forward).not.toHaveBeenCalled()
+    expect(f.action).toHaveBeenCalledOnce()
+    expect(install(f).active!.active).toBe(f.running.build)
+    f.noLookup()
+  })
+
+  it('honors the saved automatic-update off switch', async () => {
+    const f = await staged(), file = globalConfigPath(f.env)
+    ensurePrivateDirectory(path.dirname(file))
+    writeFileSync(file, '[updates]\nautomatic = false\n', { mode: 0o600 })
+    expect((await f.invoke()).code).toBe(0)
+    expect(f.factory).not.toHaveBeenCalled()
+    expect(f.action).toHaveBeenCalledOnce()
+    expect(install(f).active!.active).toBe(f.running.build)
+    f.noLookup()
+  })
+
+  it('does not wait behind an installer or steal its live lock', async () => {
+    const f = await staged(), lock = path.join(f.options.root, 'installation.lock')
+    mkdirSync(lock, { mode: 0o700 })
+    const ticket = path.join(lock, `ticket-1-${process.pid}-${'a'.repeat(24)}`)
+    writeFileSync(ticket, '', { mode: 0o600 })
+    const sleep = vi.spyOn(Atomics, 'wait').mockImplementation(() => { throw new Error('Startup must not wait for an installer') })
+    expect((await f.invoke()).code).toBe(0)
+    expect(sleep).not.toHaveBeenCalled()
+    expect(readFileSync(ticket, 'utf8')).toBe('')
+    expect(f.forward).not.toHaveBeenCalled()
+    expect(f.action).toHaveBeenCalledOnce()
+    expect(install(f).active!.active).toBe(f.running.build)
+    f.noLookup()
+  })
+
+  it('leaves an interrupted journal without a waiting marker for explicit recovery', async () => {
+    const f = await staged(), file = path.join(f.options.root, 'transaction.json')
+    const journal = JSON.parse(readFileSync(file, 'utf8')) as Record<string, unknown>
+    delete journal['waiting_for_sessions']
+    const bytes = JSON.stringify(journal)
+    writeFileSync(file, bytes)
+    expect((await f.invoke()).code).toBe(0)
+    expect(f.forward).not.toHaveBeenCalled()
+    expect(f.action).toHaveBeenCalledOnce()
+    expect(readFileSync(file, 'utf8')).toBe(bytes)
+    expect(install(f).active!.active).toBe(f.running.build)
+    f.noLookup()
+  })
+
+  it('never activates corrupted downloaded bytes', async () => {
+    const f = await staged(), build = readAutomaticUpdateRecord(f.env).staged!.build
+    writeFileSync(path.join(f.options.root, 'versions', build, 'notifai-runtime'), 'corrupted bytes')
+    expect((await f.invoke()).code).toBe(0)
+    expect(f.forward).not.toHaveBeenCalled()
+    expect(f.action).toHaveBeenCalledOnce()
+    expect(install(f).active!.active).toBe(f.running.build)
+    f.noLookup()
+  })
+
+  it('does not bypass the Linux credential-contract bootstrap boundary', async () => {
+    const f = fixture()
+    await f.publish('1.0.0', HISTORICAL_LOCAL_CONTINUITY); await f.historicalInstall('1.0.0')
+    await f.publish('1.1.0'); f.point('stable', '1.1.0')
+    const running = { build: install(f).active!.active, version: '1.0.0' }
+    beginSessionIncarnation('historical-question', f.env, { stamp: lifecycleStamp(), harnessProcess: { pid: process.pid, start: processStartTime(process.pid)! } })
+    writeSessionState('historical-question', f.env, { harness: 'claude-code', pending: [{ request_id: 'req_old', question: 'Continue?', asked_at: NOW }] })
+    expect(await attemptAutomaticUpdate(host(f, { running: () => running }).host)).toMatchObject({ outcome: 'waiting' })
+    rmSync(path.join(stateDir(f.env), 'sessions'), { recursive: true, force: true })
+    const previous = readFileSync(path.join(f.options.root, 'install.json'), 'utf8')
+    const fileUse = vi.fn(() => ({ status: 'clear' as const, processes: [] }))
+    const installation = new Installation({ ...f.options, fileUse })
+    expect(installation.retryWaitingActivation({ installation_id: (JSON.parse(previous) as { id: string }).id, build: running.build })).toBeNull()
+    expect(fileUse).not.toHaveBeenCalled()
+    expect(readFileSync(path.join(f.options.root, 'install.json'), 'utf8')).toBe(previous)
+    expect(install(f).active!.active).toBe(running.build)
   })
 })
 

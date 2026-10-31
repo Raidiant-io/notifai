@@ -67,6 +67,8 @@ import { nativeUninstallCommand, type NativeUninstallFlags } from './commands-na
 import { shippedSkillBundle } from './skill-integrity.js'
 import { installedChangelog } from './update-handoff.js'
 import { LOCAL_CONTINUITY, LOCAL_CONTINUITY_CAPABILITIES } from './local-continuity.js'
+import { retryWaitingNativeActivation } from './native-activation-retry.js'
+import type { managedInstallation } from './native-installation.js'
 import { NativeSelectionChanged, retryNativeSelection } from './native-launch-retry.js'
 import { PROJECT_LAYER_REMOVED, takeRepositoryConfigNotice } from './repository-config-retirement.js'
 import { readLocalText } from './local-input.js'
@@ -203,6 +205,8 @@ export interface BuildProgramOptions {
   beforeAction?: (admission: NativeAdmission) => void
   /** Process seam for the pre-action stable-launch race only. */
   retryNativeSelection?: typeof retryNativeSelection
+  /** Native installation seam for the opportunistic pre-admission retry. */
+  activationInstallation?: typeof managedInstallation
 }
 
 export function buildProgram(deps: CommandDeps, options: BuildProgramOptions = {}): Command {
@@ -233,6 +237,7 @@ export function buildProgram(deps: CommandDeps, options: BuildProgramOptions = {
     // `notifai help send` for everyone who reaches for it before `--help`.
     .helpCommand(true)
     .hook('preAction', async (_program, actionCommand) => {
+      retryWaitingNativeActivation({ path: commandPath(actionCommand), args: actionCommand.processedArgs }, deps, options.activationInstallation)
       try { admission = admitNativeCommand(actionCommand, deps.env) }
       catch (error) {
         if (error instanceof NativeSelectionChanged) {

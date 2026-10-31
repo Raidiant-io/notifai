@@ -1,5 +1,5 @@
 {
-  "current": "438cbfa05f30a48cf6b1049c4c296f7a1d4a8fa1d0d41c4bd240d33eed8b00a3",
+  "current": "859364d1a4e03712057e45322d5bd9256b3d542adf5820ecb668921745048a0e",
   "releases": [
     {
       "digest": "3e47b01bc6bbfb43e910c660b9964fab6459d75148c3c02dcbcd0be64cfb2963",
@@ -244,6 +244,10 @@
     {
       "digest": "438cbfa05f30a48cf6b1049c4c296f7a1d4a8fa1d0d41c4bd240d33eed8b00a3",
       "note": "notifai doctor reports a downloaded update that is waiting for current agent sessions to end as ready, with nothing to repair. An interrupted installation still asks for recovery. Automatic retries keep waiting until those sessions end."
+    },
+    {
+      "digest": "859364d1a4e03712057e45322d5bd9256b3d542adf5820ecb668921745048a0e",
+      "note": "A downloaded update that was waiting now finishes on the next ordinary notifai command, once current agent sessions allow it. Commands keep working while it waits. Running sessions keep their version, the automatic-update switch is respected, and updates that can't safely share local data keep their safety checks."
     }
   ]
 }
