@@ -72,8 +72,9 @@ devices, after the terminal-first delay, with its questions, option labels and
 descriptions; never also `ask` it. Its heading, or else its headers, becomes
 the title, so make them name the decision as the `titles` guidance says. Mark
 the option you recommend with Claude Code's own "(Recommended)" label suffix;
-devices show it as the recommended choice. Option previews stay in the
-terminal.
+devices show it as the recommended choice. An option's preview reaches the
+devices too, shown in monospace under its option; a preview longer than 4,000
+characters stays in the terminal, and its option still reaches the devices.
 
 The picker takes whichever answer comes first and closes:
 
