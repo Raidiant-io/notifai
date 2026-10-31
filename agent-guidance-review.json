@@ -1,7 +1,7 @@
 {
   "version": 1,
-  "behavior_digest": "sha256:f4d1d2acd211340c3559367389b9398bd3bc8aab58dbdcd8d11424ba22af444e",
-  "outcome": "guidance-updated",
+  "behavior_digest": "sha256:3d41a792b58a05df07ba0aa2c5c855a8b84817c6546069769c424796d4b5341e",
+  "outcome": "reviewed-no-impact",
   "surfaces_reviewed": [
     "lifecycle-hooks",
     "notifai-skill",
@@ -9,5 +9,5 @@
     "cli-readiness",
     "domain-terms"
   ],
-  "reason": "Readiness now distinguishes a continuity-waiting staged activation from interrupted installation: a ready current command has no repair remedy, while interrupted journals retain repair advice. The release guidance note explains this distinction. Reviewed lifecycle activation and held-update notices, the skill and its updates/installation references, harness setup gap handling, CLI readiness, and domain terms. Existing instructions follow diagnosed gaps/remedies and preserve session work; no hook, setup, skill instruction, or terminology rewrite is needed. Signed-release regression evidence covers waiting, repeated waiting, unchanged pending session state, eventual activation, and crash-after-resume recovery."
+  "reason": "Added feature-gated setup-issue snapshot and read-view schemas, plus an optional companion changes-feed field. These data contracts do not change lifecycle hooks, the shipped skill, harness setup or trust approval, CLI readiness states, or domain terms. The CLI does not report these snapshots yet and no agent action or fix command was added. Existing guidance to use init and doctor, leave hook approval to the User, and continue when approval is outstanding remains accurate."
 }
