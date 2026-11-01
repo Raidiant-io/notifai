@@ -1,7 +1,7 @@
 {
   "version": 1,
-  "behavior_digest": "sha256:ab6bb16d4b6abddc6a5dada8680edc44596b6d624c4ddf92aab27bc8f431db33",
-  "outcome": "guidance-updated",
+  "behavior_digest": "sha256:633c56e1e81915c7a31137aa7a45532f1dfad491e52eff8c92a494a87cc1cdf1",
+  "outcome": "reviewed-no-impact",
   "surfaces_reviewed": [
     "lifecycle-hooks",
     "notifai-skill",
@@ -9,5 +9,5 @@
     "cli-readiness",
     "domain-terms"
   ],
-  "reason": "The Claude Code harness reference said option previews stay in the terminal, which stopped being true when native question option previews began reaching Companion Apps. It now says a self-opened picker's option preview reaches the devices in monospace under its option, and that a preview longer than 4,000 characters stays in the terminal while its option still routes. Reviewed lifecycle hooks, the Notifai skill, harness setup, CLI readiness and domain terms: no agent action, routing, setup, trust or vocabulary changes; the release-authored note records the corrected reference."
+  "reason": "Signing in again while already signed in now revokes the machine credential it replaces, best-effort, so one computer is no longer listed once per sign-in. Reviewed lifecycle hooks, the Notifai skill, harness setup, CLI readiness and domain terms: none describes re-login keeping the old credential; logout and logout --revoke behave as documented, and no agent action, routing, setup, trust or vocabulary changes."
 }

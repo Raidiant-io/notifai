@@ -1,5 +1,5 @@
 {
-  "current": "908b704993cccd7272709333a9ab0bb501e36589bc986b545fd093c3227b629f",
+  "current": "345ed0bb28561b0b0e4027f2d3ec32ca5a91dd59cf472bdce3fa9811e2db7df9",
   "releases": [
     {
       "digest": "3e47b01bc6bbfb43e910c660b9964fab6459d75148c3c02dcbcd0be64cfb2963",
@@ -292,6 +292,10 @@
     {
       "digest": "908b704993cccd7272709333a9ab0bb501e36589bc986b545fd093c3227b629f",
       "note": "The Claude Code reference now matches what ships: an option's preview in an `AskUserQuestion` picker you open on your own reaches the User's devices in monospace under its option, and a preview longer than 4,000 characters stays in the terminal while its option still reaches the devices."
+    },
+    {
+      "digest": "345ed0bb28561b0b0e4027f2d3ec32ca5a91dd59cf472bdce3fa9811e2db7df9",
+      "note": "Signing a computer in again (notifai login while already signed in) now revokes the credential it replaces, so the computer is listed once in the User's Computers list. Agent guidance is unchanged."
     }
   ]
 }

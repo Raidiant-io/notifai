@@ -7,6 +7,7 @@ import os from 'node:os'
 import { renderPairingQr, terminalPairingQr, pairingQrPath, pairingQrTextPath } from './pairing-qr.js'
 import { ApiCallError, NetworkError, isRetryableReplyPollError } from './client.js'
 import { type FlagOverrides } from './config.js'
+import type { MachineCredential } from './credentials.js'
 import { checkApproveUrl } from './url-policy.js'
 import {
   EXIT,
@@ -580,7 +581,9 @@ export async function loginCommand(
       return reportError(deps, err)
     }
     if (poll.status === 'approved' && poll.machine_id) {
+      const replaced = storedCredential(deps)
       deps.store.save({ machineId: poll.machine_id, secret: active.secret, baseUrl, machineName: active.machine_name })
+      await retireReplacedCredential(deps, replaced, poll.machine_id, baseUrl)
       clearPendingPairing(deps.env)
       // A running hub drops the previous credential before this returns, and
       // reaches the service the way this sign-in just did.
@@ -693,6 +696,34 @@ export async function loginCommand(
   deps.io.err(`Pairing expired before it was approved. Run \`${SETUP_COMMAND}\` again.`)
   onBlocked?.(pairingOutcomeBlocker('expired', 'the approval expired before it was given'))
   return EXIT.auth
+}
+
+function storedCredential(deps: CommandDeps): MachineCredential | null {
+  try {
+    return deps.store.load()
+  } catch {
+    return null
+  }
+}
+
+/**
+ * Signing in again replaces this computer's credential, and nothing here holds
+ * the old one any more: revoke it so the computer is listed once and no
+ * forgotten credential stays valid. Best-effort: the service also lists a
+ * replaced credential under the computer that replaced it.
+ */
+async function retireReplacedCredential(
+  deps: CommandDeps,
+  replaced: MachineCredential | null,
+  machineId: string,
+  baseUrl: string,
+): Promise<void> {
+  if (!replaced || replaced.machineId === machineId || replaced.baseUrl !== baseUrl) return
+  try {
+    await makeClient(deps, replaced.baseUrl, `Bearer nfm_${replaced.machineId}.${replaced.secret}`).revokeMachine()
+  } catch {
+    // Already revoked, unknown, or unreachable: the new credential works either way.
+  }
 }
 
 /**

@@ -94,3 +94,19 @@ describe('QR-first computer approval', () => {
     expect(Math.max(...polledAt)).toBe(30 * 60_000)
   })
 })
+
+describe('signing in again', () => {
+  it('revokes the credential the new one replaces, so the computer is listed once', async () => {
+    const test = ceremony()
+    const revoked: (string | null)[] = []
+    const old = { machineId: 'mac_old', secret: 'old-secret', baseUrl: 'https://notifai.sh', machineName: 'Studio' }
+    let stored: typeof old | null = old
+    test.deps.store = { load: () => stored, save: (credential) => { stored = credential as typeof old }, clear: () => {}, describe: () => 'test store' }
+    test.deps.clientFactory = (_baseUrl, bearer) => ({ ...test.client,
+      revokeMachine: async () => { revoked.push(bearer); return { ok: true as const } } }) as unknown as ApiClient
+    test.setStatus('approved')
+    expect(await loginCommand(test.deps, { baseUrl: 'https://notifai.sh' })).toBe(EXIT.ok)
+    expect(stored?.machineId).toBe('mac_test')
+    expect(revoked).toEqual(['Bearer nfm_mac_old.old-secret'])
+  })
+})
