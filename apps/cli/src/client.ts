@@ -49,7 +49,9 @@ import type {
 import {
   CAPABILITIES_HEADER,
   CLI_VERSION_HEADER,
+  COMPUTER_HEADER,
   NOTIFICATION_CONTRACT_HEADER,
+  PLATFORM_HEADER,
   NOTIFICATION_CONTRACT_FINGERPRINT,
   PRE_CHOICE_PREVIEW_CONTRACT_FINGERPRINT,
 } from '@raidiant/notifai-protocol'
@@ -231,12 +233,28 @@ export interface ClientOptions {
   capabilities?: readonly ClientCapability[]
   /** Complete Notification Request schema this authenticated client will submit. */
   notificationContractFingerprint?: string | null
+  /** Which computer and system this CLI runs on (computer-identity.ts), read only when a request is authenticated. */
+  computer?: () => string | null
+  platform?: string | null
   /**
    * Ends every request of this client, in flight or later, once aborted: the
    * hub aborts it when the credential changes, so nothing it started with the
    * old credential is sent afterwards.
    */
   signal?: AbortSignal
+}
+
+function computerHeaders(options: ClientOptions): Record<string, string> {
+  let computer: string | null = null
+  try {
+    computer = options.computer?.() ?? null
+  } catch {
+    computer = null
+  }
+  return {
+    ...(computer ? { [COMPUTER_HEADER]: computer } : {}),
+    ...(options.platform ? { [PLATFORM_HEADER]: options.platform } : {}),
+  }
 }
 
 /** Generous enough for a slow link, short enough that nothing hangs for ever. */
@@ -260,6 +278,7 @@ export function createClient(
         ...(options.notificationContractFingerprint
           ? { [NOTIFICATION_CONTRACT_HEADER]: options.notificationContractFingerprint }
           : {}),
+        ...computerHeaders(options),
       }
     : {}
 

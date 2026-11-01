@@ -75,6 +75,16 @@ export const CLI_VERSION_HEADER = 'x-notifai-cli-version'
 export const CAPABILITIES_HEADER = 'x-notifai-capabilities'
 /** The complete Notification Request contract this client will submit. */
 export const NOTIFICATION_CONTRACT_HEADER = 'x-notifai-notification-contract'
+/**
+ * Which computer the CLI runs on, so the service lists one computer once
+ * however often it signed in: SHA-256 hex of the operating system's own
+ * computer identifier. The raw identifier never leaves the computer.
+ */
+export const COMPUTER_HEADER = 'x-notifai-computer'
+/** The CLI's operating system, as Node names it. */
+export const PLATFORM_HEADER = 'x-notifai-platform'
+export const COMPUTER_PLATFORMS = ['darwin', 'win32', 'linux'] as const
+export type ComputerPlatform = (typeof COMPUTER_PLATFORMS)[number]
 
 export const SUPPORT_STATES = ['current', 'update_available', 'must_update'] as const
 export type SupportState = (typeof SUPPORT_STATES)[number]

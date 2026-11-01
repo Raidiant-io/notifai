@@ -1,5 +1,6 @@
 import type { connectCodexAnswerControl } from './codex-answer-control.js'
 import type { connectCodexQueue } from './codex-queue-control.js'
+import { computerKey, computerPlatform } from './computer-identity.js'
 import type { ReadCodexDaemonVersion } from './codex-shared-server-health.js'
 import type { ListCodexHooks } from './codex-hooks-list.js'
 import type { codexHostKind } from './codex-session-end.js'
@@ -217,6 +218,8 @@ export function makeClient(
     cliVersion: packageVersion(),
     capabilities: SHIPPED_CLI_CAPABILITIES,
     notificationContractFingerprint: NOTIFICATION_CONTRACT_FINGERPRINT,
+    computer: () => computerKey({ env: deps.env }),
+    platform: computerPlatform(),
   })
   // Every send learns how much room its Project's name and avatar take, so
   // the next question form in that Project is sized for them.

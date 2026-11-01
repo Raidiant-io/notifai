@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "behavior_digest": "sha256:633c56e1e81915c7a31137aa7a45532f1dfad491e52eff8c92a494a87cc1cdf1",
+  "behavior_digest": "sha256:64d659b9366c0a89c9ec6277b7ed6503bd95fc847b12d951dc823df0126de72e",
   "outcome": "reviewed-no-impact",
   "surfaces_reviewed": [
     "lifecycle-hooks",
@@ -9,5 +9,5 @@
     "cli-readiness",
     "domain-terms"
   ],
-  "reason": "Signing in again while already signed in now revokes the machine credential it replaces, best-effort, so one computer is no longer listed once per sign-in. Reviewed lifecycle hooks, the Notifai skill, harness setup, CLI readiness and domain terms: none describes re-login keeping the old credential; logout and logout --revoke behave as documented, and no agent action, routing, setup, trust or vocabulary changes."
+  "reason": "The CLI now names its computer to the service on authenticated requests, as a SHA-256 of the operating system's computer identifier, plus its operating system, and signing in again while already signed in revokes the credential it replaces, so one computer is listed once. Reviewed lifecycle hooks, the Notifai skill, harness setup, CLI readiness and domain terms: none describes re-login keeping the old credential or what identifies a computer; logout and logout --revoke behave as documented, and no agent action, routing, setup, trust or vocabulary changes."
 }

@@ -348,6 +348,10 @@ export const MachineSummary = Type.Object({
   derived_status: MachineDerivedStatusSchema,
   /** Null while this Approved Machine can send. Optional updates never appear here. */
   status_message: Type.Union([Type.String(), Type.Null()]),
+  /** The computer's operating system (`darwin`, `win32`, `linux`); absent or null when its CLI never said. */
+  platform: Type.Optional(Type.Union([Type.String(), Type.Null()])),
+  /** Every sign-in listed as this computer, `machine_id` first; absent from a service that lists each sign-in. */
+  machine_ids: Type.Optional(Type.Array(Type.String())),
 })
 export type MachineSummary = Static<typeof MachineSummary>
 
