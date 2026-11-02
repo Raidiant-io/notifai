@@ -22,6 +22,7 @@
     "@raidiant/notifai-protocol": "9.2.0",
     "@zip.js/zip.js": "2.23.0",
     "commander": "^14.0.0",
+    "jpeg-js": "0.4.4",
     "jsonc-parser": "^3.3.1",
     "picocolors": "^1.1.1",
     "qrcode": "1.5.4",

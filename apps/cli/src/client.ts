@@ -17,6 +17,9 @@ import type {
   GetAgentAcknowledgementResponse,
   ListDevicesResponse,
   ListSoundsResponse,
+  ListProjectsResponse,
+  ProjectView,
+  UpdateProjectRequestT,
   ClaimDeliveryAttemptRequestT,
   ClaimDeliveryAttemptResponse,
   ClientCapability,
@@ -124,6 +127,14 @@ export interface ApiClient {
   accessRequest(): Promise<AlphaAccessRequestResponse>
   listDevices(): Promise<ListDevicesResponse>
   listSounds(): Promise<ListSoundsResponse>
+  /** This Account's Projects, as the dashboard and phones list them. */
+  listProjects(): Promise<ListProjectsResponse>
+  /** Register a Project by identifier the way a first send does; an existing one is returned unchanged. */
+  registerProject(identifier: string): Promise<ProjectView>
+  updateProject(projectId: string, body: UpdateProjectRequestT): Promise<ProjectView>
+  /** Upload a canonical avatar artifact and commit it as the Project's custom avatar. */
+  setProjectAvatar(projectId: string, artifact: { bytes: Uint8Array; media_type: string; size_bytes: number; sha256: string }): Promise<ProjectView>
+  clearProjectAvatar(projectId: string): Promise<ProjectView>
   capabilities(
     platform?: Platform,
     appVersion?: string,
@@ -282,6 +293,34 @@ export function createClient(
       }
     : {}
 
+  async function putToGrant(grant: CreateMediaUploadResponse, bytes: Uint8Array): Promise<void> {
+    let response: Response
+    try {
+      response = await fetch(grant.upload_url, {
+        method: 'PUT',
+        headers: grant.upload_headers,
+        body: bytes,
+        // Media can be large, so this gets its own allowance rather than the
+        // per-request budget — but still a finite one.
+        signal: AbortSignal.timeout(Math.max(budgetMs, 60_000)),
+        // The grant names one exact destination and carries signed headers.
+        // A redirect would replay both against an origin the server never
+        // granted, so it is refused rather than followed.
+        redirect: 'manual',
+      })
+    } catch (err) {
+      throw new NetworkError(`Upload failed: ${String(err)}`)
+  }
+  if (response.status >= 300 && response.status < 400) {
+    throw new NetworkError(
+      `Upload redirect is refused, not followed: the grant's headers are signed for one exact destination`,
+    )
+  }
+  if (!response.ok) {
+    throw new NetworkError(`Upload rejected with status ${response.status}`)
+  }
+  }
+
   async function call<T>(
     method: string,
     apiPath: string,
@@ -423,6 +462,21 @@ export function createClient(
     accessRequest: () => call('GET', '/api/v1/account/alpha-access-request'),
     listDevices: () => call('GET', '/api/v1/devices'),
     listSounds: () => call('GET', '/api/v1/sounds'),
+    listProjects: () => call('GET', '/api/v1/projects'),
+    registerProject: (identifier) => call('POST', '/api/v1/projects/register', { identifier }),
+    updateProject: (projectId, body) => call('PUT', `/api/v1/projects/${encodeURIComponent(projectId)}`, body),
+    setProjectAvatar: async (projectId, artifact) => {
+      const base = `/api/v1/projects/${encodeURIComponent(projectId)}`
+      const grant = await call<CreateMediaUploadResponse>('POST', `${base}/avatar-upload`, {
+        media_type: artifact.media_type,
+        size_bytes: artifact.size_bytes,
+        sha256: artifact.sha256,
+      })
+      await putToGrant(grant, artifact.bytes)
+      // The Project avatar commit inspects the stored object itself; there is no finalize step.
+      return call('PUT', `${base}/avatar`, { media_id: grant.media_id })
+    },
+    clearProjectAvatar: (projectId) => call('DELETE', `/api/v1/projects/${encodeURIComponent(projectId)}/avatar`),
     capabilities: (platform = 'ios', appVersion, appBuild) => {
       const query = new URLSearchParams()
       if (appVersion !== undefined) query.set('app_version', appVersion)
@@ -485,31 +539,7 @@ export function createClient(
     finalizeMediaUpload: (mediaId) =>
       call('POST', `/api/v1/media/${encodeURIComponent(mediaId)}/finalize`),
     uploadMedia: async (grant, bytes) => {
-      let response: Response
-      try {
-        response = await fetch(grant.upload_url, {
-          method: 'PUT',
-          headers: grant.upload_headers,
-          body: bytes,
-          // Media can be large, so this gets its own allowance rather than the
-          // per-request budget — but still a finite one.
-          signal: AbortSignal.timeout(Math.max(budgetMs, 60_000)),
-          // The grant names one exact destination and carries signed headers.
-          // A redirect would replay both against an origin the server never
-          // granted, so it is refused rather than followed.
-          redirect: 'manual',
-        })
-      } catch (err) {
-        throw new NetworkError(`Upload failed: ${String(err)}`)
-      }
-      if (response.status >= 300 && response.status < 400) {
-        throw new NetworkError(
-          `Upload redirect is refused, not followed: the grant's headers are signed for one exact destination`,
-        )
-      }
-      if (!response.ok) {
-        throw new NetworkError(`Upload rejected with status ${response.status}`)
-      }
+      await putToGrant(grant, bytes)
       // A successful storage PUT is not authorization to reference the media.
       // The idempotent finalize call makes the server inspect provider metadata
       // and commit authoritative quota before the command can use media_id.

@@ -1,12 +1,17 @@
-import { loadLoggedConfig, EXIT, type CommandDeps } from './commands-core.js'
-import { listProjectFolders, updateProjectFolder } from './config.js'
+import { PROJECT_IDENTIFIER_PATTERN, type ProjectView } from '@raidiant/notifai-protocol'
+import { readFileSync } from 'node:fs'
 import path from 'node:path'
+import { ApiCallError } from './client.js'
+import { authedClient, loadLoggedConfig, reportError, EXIT, type CommandDeps } from './commands-core.js'
+import { listProjectFolders, updateProjectFolder } from './config.js'
 import {
   disableProject,
   enableProject,
+  inferredProjectName,
   projectBinding,
   projectEnablementState,
 } from './project-enablement.js'
+import { normalizeProjectAvatar, ProjectAvatarError, type ProjectAvatarArtifact } from './project-avatar.js'
 
 export function projectFolderCommand(
   deps: CommandDeps,
@@ -86,4 +91,140 @@ export function projectStatusCommand(deps: CommandDeps, json = false): number {
     )
   }
   return EXIT.ok
+}
+
+const PROJECT_NAME_MAX_LENGTH = 128
+
+export interface ProjectSetFlags {
+  project?: string
+  name?: string
+  avatar?: string
+  removeAvatar?: boolean
+  replace?: boolean
+  json?: boolean
+}
+
+/** A picked icon is also the User's avatar choice; the public view omits settings, the service sends them. */
+function hasPickedIcon(view: ProjectView): boolean {
+  const settings = (view as { settings?: { icon?: unknown } }).settings
+  return typeof settings?.icon === 'string'
+}
+
+function projectSetSummary(view: ProjectView): Record<string, unknown> {
+  return {
+    project: view.identifier,
+    project_id: view.project_id,
+    display_name: view.display_name,
+    custom_avatar: view.image_media_id !== null,
+    avatar_revision: view.avatar_revision,
+  }
+}
+
+/**
+ * Set a Project's display name and custom avatar, or remove the avatar,
+ * through the routes the dashboard and phone apps use. The Project id stays
+ * the lowercase identifier; the name is only what the User reads.
+ */
+export async function projectSetCommand(deps: CommandDeps, flags: ProjectSetFlags): Promise<number> {
+  const fail = (code: string, message: string, exit: number = EXIT.usage): number => {
+    if (flags.json) deps.io.out(JSON.stringify({ ok: false, error: { code, message } }))
+    else deps.io.err(message)
+    return exit
+  }
+  const name = flags.name?.trim()
+  if (name === undefined && flags.avatar === undefined && flags.removeAvatar !== true) {
+    return fail('nothing_to_do', 'Nothing to set. Pass --name "<display name>", --avatar <image file>, or --remove-avatar.')
+  }
+  if (flags.avatar !== undefined && flags.removeAvatar === true) {
+    return fail('conflicting_options', '--avatar and --remove-avatar cannot be used together.')
+  }
+  if (name !== undefined && (name.length === 0 || name.length > PROJECT_NAME_MAX_LENGTH)) {
+    return fail('invalid_name', `The display name must be 1 to ${PROJECT_NAME_MAX_LENGTH} characters.`)
+  }
+
+  const config = loadLoggedConfig(deps, { cwd: deps.cwd, env: deps.env })
+  const identifier = flags.project ?? config.project.value ?? inferredProjectName(deps.cwd, deps.env)
+  if (identifier === null || identifier === undefined) {
+    return fail('no_project', 'No Project can be inferred here. Run inside a Project or pass --project <id>.')
+  }
+  if (!new RegExp(PROJECT_IDENTIFIER_PATTERN).test(identifier)) {
+    return fail('invalid_project', `"${identifier}" is not a Project id. A Project id is lowercase letters, digits, ".", "_" or "-"; the display name is set with --name.`)
+  }
+
+  // Everything local is checked before the first request, so a bad image never leaves a half-applied change.
+  let artifact: ProjectAvatarArtifact | null = null
+  if (flags.avatar !== undefined) {
+    const file = path.resolve(deps.cwd, flags.avatar.replace(/^~(?=$|[\\/])/, deps.env.HOME ?? deps.env.USERPROFILE ?? '~'))
+    let source: Buffer
+    try {
+      source = readFileSync(file)
+    } catch {
+      return fail('avatar_unreadable', `Cannot read the avatar file ${file}.`)
+    }
+    try {
+      artifact = normalizeProjectAvatar(source)
+    } catch (error) {
+      if (error instanceof ProjectAvatarError) return fail(error.code, error.message)
+      throw error
+    }
+  }
+
+  const authed = authedClient(deps, config)
+  if (!authed) {
+    if (flags.json) deps.io.out(JSON.stringify({ ok: false, error: { code: 'auth_required', message: 'Not signed in. Run `notifai init`.' } }))
+    return EXIT.auth
+  }
+  try {
+    const before = await authed.client.registerProject(identifier)
+    const avatarSet = before.image_media_id !== null || hasPickedIcon(before)
+    const conflicts: string[] = []
+    if (name !== undefined && before.display_name !== null && before.display_name !== name && flags.replace !== true) {
+      conflicts.push(`Project "${identifier}" already has the display name "${before.display_name}".`)
+    }
+    if ((artifact !== null || flags.removeAvatar === true) && avatarSet && flags.replace !== true) {
+      conflicts.push(`Project "${identifier}" already has an avatar the User chose.`)
+    }
+    if (conflicts.length > 0) {
+      return fail(
+        'already_set',
+        `${conflicts.join(' ')} Nothing was changed. Use --replace only when the User asked in this conversation to change it.`,
+      )
+    }
+
+    let view = before
+    const changed = { name: false, avatar: false as false | 'set' | 'removed' }
+    if (name !== undefined && before.display_name !== name) {
+      view = await authed.client.updateProject(before.project_id, { display_name: name })
+      changed.name = true
+    }
+    if (artifact !== null) {
+      view = await authed.client.setProjectAvatar(before.project_id, artifact)
+      changed.avatar = 'set'
+    } else if (flags.removeAvatar === true && avatarSet) {
+      view = await authed.client.clearProjectAvatar(before.project_id)
+      changed.avatar = 'removed'
+    }
+
+    if (flags.json) {
+      deps.io.out(JSON.stringify({ ok: true, ...projectSetSummary(view), changed }))
+      return EXIT.ok
+    }
+    const done: string[] = []
+    if (changed.name) done.push(`display name "${view.display_name}"`)
+    if (changed.avatar === 'set') done.push('custom avatar set')
+    if (changed.avatar === 'removed') done.push('custom avatar removed')
+    deps.io.out(
+      done.length === 0
+        ? `Project "${identifier}" already matches; nothing changed.`
+        : `Project "${identifier}": ${done.join(', ')}. The dashboard and the phone apps show it without signing in again.`,
+    )
+    return EXIT.ok
+  } catch (error) {
+    if (flags.json) {
+      const code = error instanceof ApiCallError ? error.code : 'request_failed'
+      deps.io.out(JSON.stringify({ ok: false, error: { code, message: error instanceof Error ? error.message : String(error) } }))
+      return error instanceof ApiCallError ? EXIT.failed : EXIT.network
+    }
+    return reportError(deps, error)
+  }
 }

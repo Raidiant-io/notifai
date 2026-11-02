@@ -114,6 +114,7 @@ notifai config unset <key>   # return a setting to its inherited/default value
 notifai project status       # show whether Notifai is on for this Project
 notifai project enable       # turn Notifai on for this Project
 notifai project disable      # turn it off: nothing from this Project reaches your devices
+notifai project set --name "The Beacon" --avatar logo.png   # display name and avatar image
 notifai guidance show        # how agents write notifications, and your overrides
 notifai devices              # list Device Installations and delivery readiness
 notifai logs                 # what this machine recorded, for this Project
@@ -126,6 +127,13 @@ Notifai's guidance; nothing from a disabled one reaches your devices. The first
 send, ask or setup in a Project with no decision enables it; only
 `notifai project enable` turns a disabled one back on. Installing hooks does
 not enable anything.
+
+`notifai project set` sets the name you read and a custom avatar (a still JPEG
+or PNG, converted on this computer to the square image the dashboard and phone
+apps use). The Project id stays the lowercase id. `--remove-avatar` goes back to
+the Project letter, `--project <id>` picks another Project and `--json` prints
+the result. If a name or avatar is already set, nothing changes unless you add
+`--replace`.
 
 Anywhere that is not a terminal (a script, a CI job, an agent) `notifai`
 prints help instead of prompting, and `--json` is available on the commands

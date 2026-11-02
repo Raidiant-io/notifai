@@ -37,6 +37,7 @@ import {
   projectDisableCommand,
   projectEnableCommand,
   projectFolderCommand,
+  projectSetCommand,
   projectStatusCommand,
   logsCommand,
   repliesCommand,
@@ -142,6 +143,7 @@ const defaultRunners = {
   projectFolder: projectFolderCommand,
   projectDisable: projectDisableCommand,
   projectStatus: projectStatusCommand,
+  projectSet: projectSetCommand,
   agentSessionRename: agentSessionRenameCommand,
   send: sendCommand,
   replies: repliesCommand,
@@ -555,6 +557,23 @@ export function buildProgram(deps: CommandDeps, options: BuildProgramOptions = {
   project.command('status').description('Show whether Notifai is on for this Project').option('--json').action((opts: { json?: boolean }) => {
     exit(runners.projectStatus(deps, opts.json === true))
   })
+
+  project.command('set')
+    .summary('Set the Project\'s display name and avatar')
+    .description(
+      'Set how the User sees this Project: a display name and a custom avatar image (still JPEG or PNG, converted locally). ' +
+        'The Project id stays the lowercase id. Changes show in the dashboard and phone apps. ' +
+        'If the Project already has a name or avatar, nothing changes unless --replace; use --replace only when the User asked in the conversation.',
+    )
+    .option('--name <name>', 'display name the User sees, for example "The Beacon"')
+    .option('--avatar <file>', 'image file for the custom avatar (JPEG or PNG)')
+    .option('--remove-avatar', 'remove the custom avatar (back to the Project letter)')
+    .option('--project <id>', 'Project id (default: this Project)')
+    .option('--replace', 'overwrite a name or avatar that is already set')
+    .option('--json', 'output {ok,project,project_id,display_name,custom_avatar,changed}; errors are {ok:false,error:{code,message}}')
+    .action(async (opts: { name?: string; avatar?: string; removeAvatar?: boolean; project?: string; replace?: boolean; json?: boolean }) => {
+      exit(await runners.projectSet(deps, opts))
+    })
 
   const folder = project.command('folder')
     .description('Manage named folder Projects on this computer; registrations stay in your Notifai config directory. Git repositories keep their own Project.')

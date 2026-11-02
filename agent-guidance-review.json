@@ -1,7 +1,7 @@
 {
   "version": 1,
-  "behavior_digest": "sha256:64d659b9366c0a89c9ec6277b7ed6503bd95fc847b12d951dc823df0126de72e",
-  "outcome": "reviewed-no-impact",
+  "behavior_digest": "sha256:1e86d5e9be2d6668354f55143d83a335a0e895750c4e849789ef6a78159c480b",
+  "outcome": "guidance-updated",
   "surfaces_reviewed": [
     "lifecycle-hooks",
     "notifai-skill",
@@ -9,5 +9,5 @@
     "cli-readiness",
     "domain-terms"
   ],
-  "reason": "The CLI now names its computer to the service on authenticated requests, as a SHA-256 of the operating system's computer identifier, plus its operating system, and signing in again while already signed in revokes the credential it replaces, so one computer is listed once. Reviewed lifecycle hooks, the Notifai skill, harness setup, CLI readiness and domain terms: none describes re-login keeping the old credential or what identifies a computer; logout and logout --revoke behave as documented, and no agent action, routing, setup, trust or vocabulary changes."
+  "reason": "Added `notifai project set` (display name, custom avatar, --remove-avatar, --replace). The Notifai skill gains a short section telling agents to run it only when the User asks and to use --replace only when the User asked in the conversation to change an existing name or avatar, with a guidance change note and a usage entry. Reviewed lifecycle hooks, harness setup, CLI readiness and domain terms: none describes Project names or avatars, and the Project id stays separate from the display name as the domain terms already say."
 }
