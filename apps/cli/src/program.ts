@@ -38,6 +38,7 @@ import {
   projectEnableCommand,
   projectFolderCommand,
   projectSetCommand,
+  projectIconsCommand,
   projectStatusCommand,
   logsCommand,
   repliesCommand,
@@ -144,6 +145,7 @@ const defaultRunners = {
   projectDisable: projectDisableCommand,
   projectStatus: projectStatusCommand,
   projectSet: projectSetCommand,
+  projectIcons: projectIconsCommand,
   agentSessionRename: agentSessionRenameCommand,
   send: sendCommand,
   replies: repliesCommand,
@@ -567,12 +569,20 @@ export function buildProgram(deps: CommandDeps, options: BuildProgramOptions = {
     )
     .option('--name <name>', 'display name the User sees, for example "The Beacon"')
     .option('--avatar <file>', 'image file for the custom avatar (JPEG or PNG)')
+    .option('--icon <id>', 'a catalog icon as the avatar, on the Project\'s default colour (see `notifai project icons`); only when one obviously fits')
     .option('--remove-avatar', 'remove the custom avatar (back to the Project letter)')
     .option('--project <id>', 'Project id (default: this Project)')
     .option('--replace', 'overwrite a name or avatar that is already set')
     .option('--json', 'output {ok,project,project_id,display_name,custom_avatar,changed}; errors are {ok:false,error:{code,message}}')
-    .action(async (opts: { name?: string; avatar?: string; removeAvatar?: boolean; project?: string; replace?: boolean; json?: boolean }) => {
+    .action(async (opts: { name?: string; avatar?: string; icon?: string; removeAvatar?: boolean; project?: string; replace?: boolean; json?: boolean }) => {
       exit(await runners.projectSet(deps, opts))
+    })
+
+  project.command('icons')
+    .description('List the icons `notifai project set --icon` accepts')
+    .option('--json', 'output {groups:[{name,icons}]}')
+    .action((opts: { json?: boolean }) => {
+      exit(runners.projectIcons(deps, opts.json === true))
     })
 
   const folder = project.command('folder')

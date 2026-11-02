@@ -60,6 +60,7 @@ export {
   projectEnableCommand,
   projectFolderCommand,
   projectSetCommand,
+  projectIconsCommand,
   projectStatusCommand,
 } from './commands-project.js'
 export { agentSessionRenameCommand } from './commands-agent-sessions.js'

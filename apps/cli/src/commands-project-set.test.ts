@@ -25,6 +25,7 @@ function harness(initial: Partial<View> = {}, signedIn = true) {
     registerProject: async (identifier: string) => { calls.push(`register:${identifier}`); return view },
     updateProject: async (_id: string, body: { display_name?: string | null }) => { calls.push('update'); view = { ...view, display_name: body.display_name ?? null }; return view },
     setProjectAvatar: async (_id: string, artifact: { size_bytes: number; media_type: string }) => { calls.push('avatar'); uploaded.push(artifact); view = { ...view, image_media_id: 'med_1' }; return view },
+    setProjectIcon: async (_id: string, icon: string) => { calls.push(`icon:${icon}`); view = { ...view, image_media_id: null, settings: { icon } }; return view },
     clearProjectAvatar: async () => { calls.push('clear'); view = { ...view, image_media_id: null, settings: {} }; return view },
   } as unknown as ApiClient
   const out: string[] = []
@@ -93,5 +94,29 @@ describe('notifai project set', () => {
   it('reports being signed out', async () => {
     const t = harness({}, false)
     expect(await projectSetCommand(t.deps, { project: 'the-beacon', name: 'X' })).toBe(EXIT.auth)
+  })
+
+  it('names the Project and picks one icon in a single command', async () => {
+    const t = harness()
+    const code = await projectSetCommand(t.deps, { project: 'the-beacon', name: 'The Beacon', icon: 'radio', json: true })
+    expect(code).toBe(EXIT.ok)
+    expect(t.calls).toEqual(['register:the-beacon', 'update', 'icon:radio'])
+    expect(JSON.parse(t.out[0]!)).toMatchObject({ ok: true, display_name: 'The Beacon', changed: { name: true, avatar: 'icon' } })
+  })
+
+  it('rejects an unknown icon, and an icon together with an avatar, before any request', async () => {
+    const t = harness()
+    expect(await projectSetCommand(t.deps, { project: 'the-beacon', icon: 'not-an-icon' })).toBe(EXIT.usage)
+    expect(await projectSetCommand(t.deps, { project: 'the-beacon', icon: 'radio', avatar: t.logo })).toBe(EXIT.usage)
+    expect(t.calls).toEqual([])
+    expect(t.err.join('\n')).toContain('notifai project icons')
+  })
+
+  it('leaves an avatar the User picked alone unless --replace', async () => {
+    const t = harness({ settings: { icon: 'rocket' } })
+    expect(await projectSetCommand(t.deps, { project: 'the-beacon', icon: 'radio', json: true })).toBe(EXIT.usage)
+    expect(t.calls).toEqual(['register:the-beacon'])
+    expect(await projectSetCommand(t.deps, { project: 'the-beacon', icon: 'radio', replace: true, json: true })).toBe(EXIT.ok)
+    expect(t.calls).toEqual(['register:the-beacon', 'register:the-beacon', 'icon:radio'])
   })
 })

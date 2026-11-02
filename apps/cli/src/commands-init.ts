@@ -63,7 +63,7 @@ import {
   type SetupProofRecord,
 } from './commands-setup-proof.js'
 import { skillInventory } from './commands-skill.js'
-import { enableProjectUnlessDisabled, projectBinding, projectEnablementState } from './project-enablement.js'
+import { enableProjectNoting, projectBinding, projectEnablementState, projectNameNudge } from './project-enablement.js'
 import { inspectCliInstallations } from './cli-bin.js'
 import { hookAdapterTargetsArtifact, inspectHookAdapter, installHookAdapter } from './hook-adapter.js'
 import {
@@ -212,7 +212,9 @@ async function closeGap(
     const config = loadLoggedConfig(deps, { cwd: deps.cwd, env: deps.env })
     const binding = projectBinding(deps.cwd, deps.env, config.project.value)
     if (binding === null) return 'failed'
-    return enableProjectUnlessDisabled(binding) === 'enabled' ? 'closed' : 'failed'
+    const enablement = enableProjectNoting(binding)
+    if (enablement.first) deps.io.out(projectNameNudge(binding.project))
+    return enablement.decision === 'enabled' ? 'closed' : 'failed'
   }
 
   if (state.id === 'hooks') {

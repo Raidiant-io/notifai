@@ -114,9 +114,22 @@ export function enableProject(binding: ProjectBinding, now: Date = new Date()): 
  * same instant; once a decision is recorded they only read it.
  */
 export function enableProjectUnlessDisabled(binding: ProjectBinding, now: Date = new Date()): 'enabled' | 'disabled' {
+  return enableProjectNoting(binding, now).decision
+}
+
+/**
+ * `enableProjectUnlessDisabled`, also saying whether this very call recorded
+ * the Project's first decision. Only then is a Project newly set up: it is the
+ * moment to ask the agent to name it (`projectNameNudge`), once.
+ */
+export function enableProjectNoting(
+  binding: ProjectBinding,
+  now: Date = new Date(),
+): { decision: 'enabled' | 'disabled'; first: boolean } {
   const state = projectEnablementState(binding)
-  if (state !== 'unset') return state
+  if (state !== 'unset') return { decision: state, first: false }
   let decided: 'enabled' | 'disabled' = 'enabled'
+  let first = false
   withEnablementLock(binding, () => {
     const current = projectEnablementState(binding)
     if (current !== 'unset') {
@@ -124,8 +137,30 @@ export function enableProjectUnlessDisabled(binding: ProjectBinding, now: Date =
       return
     }
     writeMarker(binding, true, now)
+    first = true
   })
-  return decided
+  return { decision: decided, first }
+}
+
+/** "the-beacon" becomes "The Beacon": the suggestion offered to the agent, who runs or corrects it. */
+export function suggestedProjectName(identifier: string): string {
+  const words = identifier.split(/[-_.]+/).filter((word) => word.length > 0)
+  return words.map((word) => word.charAt(0).toUpperCase() + word.slice(1)).join(' ') || identifier
+}
+
+/**
+ * The one line that asks the agent to name a newly set-up Project in one
+ * command. A good name is the product's own name, one to three words in title
+ * case, with no "Project" or "App" suffix. An icon is optional.
+ */
+export function projectNameNudge(project: string): string {
+  const quoted = suggestedProjectName(project).replaceAll("'", "'\\''")
+  return (
+    `New Project "${project}" has no display name. Name it once, now, with one command: ` +
+    `notifai project set --name '${quoted}' (the product's own name, 1-3 words in title case, no "Project" or "App" suffix; ` +
+    'fix the suggestion if it is wrong). Add --icon <id> only if an icon obviously fits (`notifai project icons` lists them); ' +
+    'never pick a colour or design an avatar. If the command reports a name already set, leave it.'
+  )
 }
 
 /** Record that the User disabled this Project; only `enableProject` lifts it. */

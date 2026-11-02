@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "behavior_digest": "sha256:1e86d5e9be2d6668354f55143d83a335a0e895750c4e849789ef6a78159c480b",
+  "behavior_digest": "sha256:6ce00948819199fbf32244b508d4f43743a0b8bf48cf1c6710f06f2bc8549a3d",
   "outcome": "guidance-updated",
   "surfaces_reviewed": [
     "lifecycle-hooks",
@@ -9,5 +9,5 @@
     "cli-readiness",
     "domain-terms"
   ],
-  "reason": "Added `notifai project set` (display name, custom avatar, --remove-avatar, --replace). The Notifai skill gains a short section telling agents to run it only when the User asks and to use --replace only when the User asked in the conversation to change an existing name or avatar, with a guidance change note and a usage entry. Reviewed lifecycle hooks, harness setup, CLI readiness and domain terms: none describes Project names or avatars, and the Project id stays separate from the display name as the domain terms already say."
+  "reason": "Agents now name a newly set-up Project in one command. `notifai project enable`, `init`, `send` and `ask` print one line, once, the first time a Project is enabled, offering `notifai project set --name '<Title Case Name>'` with the identifier in title case as the suggestion. `project set` gains `--icon <id>` (default colour chosen by the service, never by the agent) and `notifai project icons` lists the icons. The Notifai skill section is renamed and extended, with a guidance change note and a usage entry. Reviewed lifecycle hooks, harness setup, CLI readiness and domain terms: setup readiness is unchanged (the line is advice, not a gap) and no domain term changes."
 }

@@ -135,6 +135,8 @@ export interface ApiClient {
   /** Upload a canonical avatar artifact and commit it as the Project's custom avatar. */
   setProjectAvatar(projectId: string, artifact: { bytes: Uint8Array; media_type: string; size_bytes: number; sha256: string }): Promise<ProjectView>
   clearProjectAvatar(projectId: string): Promise<ProjectView>
+  /** Pick a catalog icon as the Project's avatar; the service chooses the colour. */
+  setProjectIcon(projectId: string, icon: string): Promise<ProjectView>
   capabilities(
     platform?: Platform,
     appVersion?: string,
@@ -477,6 +479,7 @@ export function createClient(
       return call('PUT', `${base}/avatar`, { media_id: grant.media_id })
     },
     clearProjectAvatar: (projectId) => call('DELETE', `/api/v1/projects/${encodeURIComponent(projectId)}/avatar`),
+    setProjectIcon: (projectId, icon) => call('PUT', `/api/v1/projects/${encodeURIComponent(projectId)}/icon`, { icon }),
     capabilities: (platform = 'ios', appVersion, appBuild) => {
       const query = new URLSearchParams()
       if (appVersion !== undefined) query.set('app_version', appVersion)

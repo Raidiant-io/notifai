@@ -112,9 +112,18 @@ Project, or on a Projectless request, pass `--projectless`; it stops cwd or
 config from supplying Project identity. A User-disabled Project refuses
 `send` and `ask`, even with `--projectless`, until the User enables it.
 
-### Give a Project its name and avatar
+### Name a new Project, and set its name or avatar
 
-Only when the User asks you to, run
+When `notifai project enable`, `init`, `send` or `ask` says a new Project has no
+display name, run the command it prints once, for example
+`notifai project set --name 'The Beacon'`. The name is the product's own name:
+1 to 3 words in title case, with no "Project" or "App" suffix. Fix the printed
+suggestion if it is wrong. Add `--icon radio` only if an icon obviously fits
+(`notifai project icons` lists them); never pick a colour or design an avatar.
+Projects without an avatar already get an acceptable default look, so this is
+one step, not a task.
+
+When the User asks you to set a name or avatar, run
 `notifai project set --name 'The Beacon' --avatar ~/Downloads/logo.png`.
 Either flag works alone; `--remove-avatar` removes a custom avatar;
 `--project <id>` picks another Project; `--json` returns the result. The
@@ -123,8 +132,8 @@ Avatars are still JPEG or PNG files, converted to the square avatar locally;
 the dashboard and phone apps show the change at once.
 
 If the Project already has a name or avatar, nothing changes and the command
-says so. Add `--replace` only when the User asked in this conversation to
-change that name or avatar.
+says so; leave it. Add `--replace` only when the User asked in this conversation
+to change that name or avatar.
 
 ### Name the Agent Session
 

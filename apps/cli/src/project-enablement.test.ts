@@ -6,7 +6,10 @@ import { describe,expect,it } from 'vitest'
 import {
 disableProject,
 enableProject,
+enableProjectNoting,
 projectBinding,
+projectNameNudge,
+suggestedProjectName,
 projectDisabled,
 projectEnabled,
 projectEnablementState
@@ -51,6 +54,24 @@ describe('Project enablement', () => {
     expect(projectEnabled(projectBinding(project, env, 'workspace'))).toBe(true)
     expect(projectEnabled(projectBinding(unrelated, env, 'workspace'))).toBe(false)
     expect(projectEnabled(projectBinding(unrelated, env))).toBe(false)
+  })
+
+  it('reports the first enablement once, never a disable, and asks the agent for one cheap naming command', () => {
+    const root = mkdtempSync(path.join(os.tmpdir(), 'notifai-enablement-first-'))
+    git(root, 'init')
+    const env = { XDG_CONFIG_HOME: path.join(root, 'config') }
+    const binding = projectBinding(root, env)!
+    expect(enableProjectNoting(binding)).toEqual({ decision: 'enabled', first: true })
+    expect(enableProjectNoting(binding)).toEqual({ decision: 'enabled', first: false })
+    disableProject(binding)
+    expect(enableProjectNoting(binding)).toEqual({ decision: 'disabled', first: false })
+
+    expect(suggestedProjectName('the-beacon')).toBe('The Beacon')
+    expect(suggestedProjectName('api_gateway.v2')).toBe('Api Gateway V2')
+    const nudge = projectNameNudge('the-beacon')
+    expect(nudge).toContain("notifai project set --name 'The Beacon'")
+    expect(nudge).toContain('never pick a colour')
+    expect(nudge).toContain('already set')
   })
 
 })

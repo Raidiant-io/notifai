@@ -1,5 +1,5 @@
 {
-  "current": "8e054c668fdb59cb524b0201d66e11ccae0c4a213304d599bbd6404e1b7be4b2",
+  "current": "95a6730cd17d6de51477489a8abb34d08c977ddb64009a50960560b7ef6230c1",
   "releases": [
     {
       "digest": "3e47b01bc6bbfb43e910c660b9964fab6459d75148c3c02dcbcd0be64cfb2963",
@@ -300,6 +300,10 @@
     {
       "digest": "8e054c668fdb59cb524b0201d66e11ccae0c4a213304d599bbd6404e1b7be4b2",
       "note": "When the User asks you to set a Project's display name or avatar, run `notifai project set --name 'The Beacon' --avatar <image file>` (or `--remove-avatar`). The Project id stays the lowercase id. If a name or avatar is already set, nothing changes; add `--replace` only when the User asked in this conversation to change it."
+    },
+    {
+      "digest": "95a6730cd17d6de51477489a8abb34d08c977ddb64009a50960560b7ef6230c1",
+      "note": "When `notifai project enable`, `init`, `send` or `ask` says a new Project has no display name, run the one command it prints once, e.g. `notifai project set --name 'The Beacon'`: the product's own name, 1-3 words in title case, no \"Project\" or \"App\" suffix. Add `--icon <id>` only if an icon obviously fits (`notifai project icons` lists them); never pick a colour or design an avatar. If a name or avatar is already set, leave it; `--replace` only when the User asked in this conversation."
     }
   ]
 }

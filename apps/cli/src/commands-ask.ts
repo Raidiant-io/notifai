@@ -42,7 +42,7 @@ import { cardHandbackInput, cardShown } from './codex-card-handback.js'
 import { CODEX_CARD_VERSION_FLOOR, codexCardHooksReady, codexCardToolOffered } from './codex-card-capability.js'
 import { activeOpenclawGeneration } from './openclaw-session-access.js'
 import { openclawGatewayReady } from './openclaw-gateway-readiness.js'
-import { enableProjectUnlessDisabled, inferredProjectName, projectBinding, projectDisabled } from './project-enablement.js'
+import { enableProjectNoting, inferredProjectName, projectBinding, projectDisabled, projectNameNudge } from './project-enablement.js'
 import { spawnQuestionSettlement } from './question-settlement-process.js'
 import { answerCannotReturnRemedy, heldAskWait, heldWaitRoute } from './commands-ask-wait.js'
 import { opencodeHandBack } from './opencode-hand-back.js'
@@ -1105,10 +1105,15 @@ export function askCommand(
   const explicitBinding = explicitProject === null ? null : projectBinding(deps.cwd, deps.env, explicitProject)
   if (explicitBinding !== null) {
     let decision: 'enabled' | 'disabled'
+    let firstEnable = false
     try {
-      decision = flags.projectless === true
-        ? (projectDisabled(explicitBinding) ? 'disabled' : 'enabled')
-        : enableProjectUnlessDisabled(explicitBinding)
+      if (flags.projectless === true) {
+        decision = projectDisabled(explicitBinding) ? 'disabled' : 'enabled'
+      } else {
+        const noted = enableProjectNoting(explicitBinding)
+        decision = noted.decision
+        firstEnable = noted.first
+      }
     } catch (err) {
       return askFailure(
         deps,
@@ -1130,6 +1135,7 @@ export function askCommand(
         'if the User asked for Notifai here, run `notifai project enable`, then ask again; otherwise ask in the conversation, as you would without Notifai',
       )
     }
+    if (firstEnable) deps.io.err(projectNameNudge(explicitBinding.project))
   }
   const credential = deps.store.load()
   if (credential === null) {

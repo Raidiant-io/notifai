@@ -10,7 +10,9 @@ import {
   inferredProjectName,
   projectBinding,
   projectEnablementState,
+  projectNameNudge,
 } from './project-enablement.js'
+import { PROJECT_ICON_GROUPS, isProjectIconId } from './project-icons.js'
 import { normalizeProjectAvatar, ProjectAvatarError, type ProjectAvatarArtifact } from './project-avatar.js'
 
 export function projectFolderCommand(
@@ -50,10 +52,11 @@ export function projectEnableCommand(deps: CommandDeps): number {
     deps.io.err('No Project can be inferred here. Run inside a Project or configure an explicit Project id.')
     return EXIT.usage
   }
+  const firstEnable = projectEnablementState(binding) === 'unset'
   enableProject(binding)
   deps.io.out(
     `Notifai is enabled for Project "${binding.project}": its notifications and questions reach the User's devices, ` +
-      'and agents here get Notifai\'s guidance.',
+      'and agents here get Notifai\'s guidance.' + (firstEnable ? `\n${projectNameNudge(binding.project)}` : ''),
   )
   return EXIT.ok
 }
@@ -99,6 +102,7 @@ export interface ProjectSetFlags {
   project?: string
   name?: string
   avatar?: string
+  icon?: string
   removeAvatar?: boolean
   replace?: boolean
   json?: boolean
@@ -132,11 +136,14 @@ export async function projectSetCommand(deps: CommandDeps, flags: ProjectSetFlag
     return exit
   }
   const name = flags.name?.trim()
-  if (name === undefined && flags.avatar === undefined && flags.removeAvatar !== true) {
-    return fail('nothing_to_do', 'Nothing to set. Pass --name "<display name>", --avatar <image file>, or --remove-avatar.')
+  if (name === undefined && flags.avatar === undefined && flags.icon === undefined && flags.removeAvatar !== true) {
+    return fail('nothing_to_do', 'Nothing to set. Pass --name "<display name>", --avatar <image file>, --icon <id>, or --remove-avatar.')
   }
-  if (flags.avatar !== undefined && flags.removeAvatar === true) {
-    return fail('conflicting_options', '--avatar and --remove-avatar cannot be used together.')
+  if ([flags.avatar !== undefined, flags.icon !== undefined, flags.removeAvatar === true].filter(Boolean).length > 1) {
+    return fail('conflicting_options', '--avatar, --icon and --remove-avatar cannot be used together.')
+  }
+  if (flags.icon !== undefined && !isProjectIconId(flags.icon)) {
+    return fail('invalid_icon', `"${flags.icon}" is not a Project icon. Run \`notifai project icons\` to list them.`)
   }
   if (name !== undefined && (name.length === 0 || name.length > PROJECT_NAME_MAX_LENGTH)) {
     return fail('invalid_name', `The display name must be 1 to ${PROJECT_NAME_MAX_LENGTH} characters.`)
@@ -181,7 +188,7 @@ export async function projectSetCommand(deps: CommandDeps, flags: ProjectSetFlag
     if (name !== undefined && before.display_name !== null && before.display_name !== name && flags.replace !== true) {
       conflicts.push(`Project "${identifier}" already has the display name "${before.display_name}".`)
     }
-    if ((artifact !== null || flags.removeAvatar === true) && avatarSet && flags.replace !== true) {
+    if ((artifact !== null || flags.icon !== undefined || flags.removeAvatar === true) && avatarSet && flags.replace !== true) {
       conflicts.push(`Project "${identifier}" already has an avatar the User chose.`)
     }
     if (conflicts.length > 0) {
@@ -192,7 +199,7 @@ export async function projectSetCommand(deps: CommandDeps, flags: ProjectSetFlag
     }
 
     let view = before
-    const changed = { name: false, avatar: false as false | 'set' | 'removed' }
+    const changed = { name: false, avatar: false as false | 'set' | 'icon' | 'removed' }
     if (name !== undefined && before.display_name !== name) {
       view = await authed.client.updateProject(before.project_id, { display_name: name })
       changed.name = true
@@ -200,6 +207,9 @@ export async function projectSetCommand(deps: CommandDeps, flags: ProjectSetFlag
     if (artifact !== null) {
       view = await authed.client.setProjectAvatar(before.project_id, artifact)
       changed.avatar = 'set'
+    } else if (flags.icon !== undefined) {
+      view = await authed.client.setProjectIcon(before.project_id, flags.icon)
+      changed.avatar = 'icon'
     } else if (flags.removeAvatar === true && avatarSet) {
       view = await authed.client.clearProjectAvatar(before.project_id)
       changed.avatar = 'removed'
@@ -212,6 +222,7 @@ export async function projectSetCommand(deps: CommandDeps, flags: ProjectSetFlag
     const done: string[] = []
     if (changed.name) done.push(`display name "${view.display_name}"`)
     if (changed.avatar === 'set') done.push('custom avatar set')
+    if (changed.avatar === 'icon') done.push(`icon "${flags.icon}"`)
     if (changed.avatar === 'removed') done.push('custom avatar removed')
     deps.io.out(
       done.length === 0
@@ -227,4 +238,14 @@ export async function projectSetCommand(deps: CommandDeps, flags: ProjectSetFlag
     }
     return reportError(deps, error)
   }
+}
+
+/** Every icon an agent can pick with `notifai project set --icon`, by group. */
+export function projectIconsCommand(deps: CommandDeps, json = false): number {
+  if (json) {
+    deps.io.out(JSON.stringify({ groups: PROJECT_ICON_GROUPS.map((group) => ({ name: group.name, icons: group.ids })) }))
+    return EXIT.ok
+  }
+  for (const group of PROJECT_ICON_GROUPS) deps.io.out(`${group.name}: ${group.ids.join(' ')}`)
+  return EXIT.ok
 }
