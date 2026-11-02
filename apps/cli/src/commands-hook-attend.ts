@@ -1,6 +1,6 @@
 import { releaseCodexCardHandbacks } from './codex-card-handback.js'
 import { nativeInstallationIdentity } from './native-installation-identity.js'
-import { WAKE_SEND_TIMEOUT_MS, hasSessionInputs, inputWakeDeferred, inputWakeOverdue, inputWakeStored, pendingInputCounts, stageSessionMessages, wakeSessionInputs } from './session-inputs.js'
+import { WAKE_SEND_TIMEOUT_MS, hasSessionInputs, inputWakeDeferred, inputWakeOverdue, inputWakeStored, stageSessionMessages, wakeSessionInputs } from './session-inputs.js'
 /**
  * `notifai hook attend`: the asynchronous handler that becomes an Agent
  * Session's Session Attendant, or exits within milliseconds when a healthy
@@ -35,7 +35,6 @@ import {
   rotateSessionIncarnation,
   sessionNotified,
   sessionHasEnded,
-  updateSessionState,
   happenedBefore,
 } from './hook-session-state.js'
 import type { HookEnvelope, HookHarness } from './hook-types.js'

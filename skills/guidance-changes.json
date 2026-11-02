@@ -1,5 +1,5 @@
 {
-  "current": "6007a987ac7ecb7817870391aca4e18f8f2b9dc6e46d28c4d3a6e45b1f00e53d",
+  "current": "4a938617bd94cdfb65290846dee18a8cc3d77893b88b1f1b01c90adfde2e44aa",
   "releases": [
     {
       "digest": "3e47b01bc6bbfb43e910c660b9964fab6459d75148c3c02dcbcd0be64cfb2963",
@@ -308,6 +308,10 @@
     {
       "digest": "6007a987ac7ecb7817870391aca4e18f8f2b9dc6e46d28c4d3a6e45b1f00e53d",
       "note": "In Codex, an answer or note that arrives mid-turn still reaches you at your next tool call or when the turn ends. If a turn runs past a minute without either, Notifai queues a wake with nothing in it, so you may see one \"Blocked by hook\" line after the input has already reached you; that line is harmless. If input stays undelivered for several minutes, on any harness, Notifai tells the User directly. Nothing changes in what you do."
+    },
+    {
+      "digest": "4a938617bd94cdfb65290846dee18a8cc3d77893b88b1f1b01c90adfde2e44aa",
+      "note": "Nothing changes in what you do. This release only tidies unused code left behind by the Codex delivery change; what agents are told and how input reaches them are the same."
     }
   ]
 }

@@ -237,11 +237,14 @@ export function recordTurnStart(sessionId: string, env: NodeJS.ProcessEnv, key: 
   updateTurns(sessionId, env, (record) => {
     const same = ownRecord(record, key)
     if (same.current === turnId && same.stopped === turnId) {
-      const { stopped: _stopped, ...reopened } = same
+      const reopened = { ...same }
+      delete reopened.stopped
       return reopened
     }
     if (same.started.includes(turnId) || same.ended.includes(turnId)) return same
-    const { stopped: _stopped, interrupted: _interrupted, ...rest } = same
+    const rest = { ...same }
+    delete rest.stopped
+    delete rest.interrupted
     return { ...rest, current: turnId, started: keep(same.started, turnId) }
   })
 }
@@ -254,7 +257,8 @@ export function recordTurnStop(sessionId: string, env: NodeJS.ProcessEnv, key: s
     if (same.current === turnId) return { ...same, stopped: turnId }
     // Turn ids sort by start time, so a late Stop of an older turn changes nothing.
     if (same.started.includes(turnId) || (same.current !== null && turnId < same.current)) return same
-    const { interrupted: _interrupted, ...rest } = same
+    const rest = { ...same }
+    delete rest.interrupted
     return { ...rest, current: turnId, started: keep(same.started, turnId), stopped: turnId }
   })
 }

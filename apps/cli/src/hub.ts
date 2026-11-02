@@ -2593,7 +2593,6 @@ export class Hub {
   /** Clean up an ended session locally, as its SessionEnd would have, unless that already ran. */
   private endLocally(session: HubSession): void {
     const ended = !endsIncarnation(readSessionEndMarker(session.id, session.env), session.record)
-    const wasStopped = session.wasStopped
     this.trackLocalEnd((async () => {
       if (ended) {
         const { handleSessionEnd } = await import('./hook-lifecycle.js')

@@ -29,7 +29,7 @@ import { rootGuidanceDigest } from './session-activation.js'
 import { attendantClaimPath,currentCodexTurn,observedCodexTurnActivity,recordTurnInterrupt,recordTurnStart,recordTurnStop,turnActivityPath,writeAttendantStatus } from './session-attendant-state.js'
 import { readDeliveryJournal } from './session-delivery.js'
 import { trackInputWaiting } from './input-overdue.js'
-import { drainSessionInputs,hasSessionInputs,inputWakeBackoffMs,inputWakeStored,readSessionMessages,sessionInputRoute,sessionInputWake,stageSessionMessages,wakeCodexSessionInputs,wakeSessionInputs } from './session-inputs.js'
+import { drainSessionInputs,hasSessionInputs,inputWakeBackoffMs,inputWakeStored,readSessionMessages,sessionInputRoute,sessionInputWake,stageSessionMessages,wakeSessionInputs } from './session-inputs.js'
 import { handOffSessionMessages } from './session-message-handoff.js'
 
 const roots: string[] = []
