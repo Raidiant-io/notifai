@@ -26,8 +26,8 @@ import { atomicWriteFileSync } from './atomic-file.js'
 import { claudeDescriptorDir, claudeMinInboxVersion, CLAUDE_PEER_PROTOCOL, parseDescriptor } from './claude-wake.js'
 import { claudePickerHolds } from './claude-question-hooks.js'
 import { createClient, type ApiClient } from './client.js'
-import { codexInputObserver, refreshCodexInputActivity } from './codex-input-lifecycle.js'
-import { connectCodexQueue } from './codex-queue-control.js'
+import { codexInputObserver, type CodexWakeHold } from './codex-input-lifecycle.js'
+import { checkInputOverdue, trackInputWaiting } from './input-overdue.js'
 import { codexAttachVerified, codexThreadAttachState, codexAttachResultFor, hostBinaryIdentity, type CodexAttachInput, type CodexAttachState } from './codex-attach-signal.js'
 import { CODEX_ATTACH_RETRY_MS, checkCodexServerBuild, codexAttachRetryMs } from './codex-attach-canary.js'
 import {
@@ -42,8 +42,7 @@ import {
   type CodexHostKind,
   type RolloutPlace,
 } from './codex-session-end.js'
-import { readNativeTurnSnapshot } from './codex-native-turn.js'
-import { inspectCodexQueue, systemCodexWakeAdapters, type CodexWakeAdapters } from './codex-wake.js'
+import { codexHome, inspectCodexQueue, systemCodexWakeAdapters, type CodexWakeAdapters } from './codex-wake.js'
 import { EXIT, log, makeClient, type CommandDeps } from './commands-core.js'
 import type { CredentialStore, MachineCredential } from './credentials.js'
 import { buildIdentity } from './distribution.js'
@@ -122,26 +121,25 @@ import { retainSessionRuntime } from './runtime-build-retention.js'
 import {
   attendantClaimPath,
   attendantStatusPath,
+  currentCodexTurn,
   observedCodexTurnActivity,
+  recordTurnInterrupt,
   readAttendantEndingLease,
-  reconcileNativeTurn,
   turnActivityPath,
   writeAttendantStatus,
 } from './session-attendant-state.js'
 import type { DeliveryLease } from './session-delivery.js'
 import { claudeSocketLine, deliverIntoCodexThread } from './session-handoff.js'
-import { detachInputWakes, readInputWakes } from './session-input-wakes.js'
 import {
   hasSessionInputs,
+  inputWakeStored,
   pendingInputRevisionIds,
   inputWakeDeferred,
   inputWakeBackoffMs,
   inputWakeRetryDeferred,
   recordInputWakeFailure,
   inputWakeOverdue,
-  reconcileSessionInputWakes,
   stageSessionMessages,
-  wakeCodexSessionInputs,
   wakeSessionInputs,
   WAKE_SEND_TIMEOUT_MS,
 } from './session-inputs.js'
@@ -508,6 +506,7 @@ class HubSession implements AttendedSession {
   private lastPhaseWritten = ''
   ending: EndReason | null = null
   codexObserver: ReturnType<typeof codexInputObserver> | null = null
+  private wakeHold: CodexWakeHold | null = null
   /**
    * Codex's shared server only (see `codex-attach-signal.ts`): until when
    * (monotonic) a confirmation that a terminal shows the thread lets a wake
@@ -563,8 +562,8 @@ class HubSession implements AttendedSession {
 
   private observeCodex(): void {
     if (this.harness !== 'codex') return
-    this.codexObserver = codexInputObserver(this.id, this.env, this.record.key, () => this.hub.clock.monotonic(),
-      this.registration.transcriptPath ?? undefined, (owner) => this.harnessAlive(owner), (owner) => this.hub.codexIdleWake(this, owner))
+    this.codexObserver = codexInputObserver(this.id, this.env, this.record.key,
+      (owner) => this.harnessAlive(owner), (owner) => this.hub.codexIdleWake(this, owner), () => this.hub.clock.wall())
   }
 
   /** The primary as a writer, while its child is connected. */
@@ -697,8 +696,8 @@ class HubSession implements AttendedSession {
       return { state: 'uncertain', reason: 'session-child-disconnected' }
     }
     if (this.harness === 'codex') {
-      const activity = observedCodexTurnActivity(this.id, this.env, this.record.key)
-      return activity === null ? { state: 'uncertain', reason: 'turn-activity-unobserved' } : { state: 'running', activity }
+      // No turn seen yet (a resumed conversation before its first prompt) is idle.
+      return { state: 'running', activity: observedCodexTurnActivity(this.id, this.env, this.record.key) ?? 'idle' }
     }
     const descriptor = this.descriptor()
     if (descriptor === 'missing') return { state: 'uncertain', reason: 'descriptor-missing' }
@@ -801,8 +800,6 @@ class HubSession implements AttendedSession {
     this.attachWatchPaused = false
     this.lastActivity = Math.max(this.lastActivity, this.hub.clock.wall())
     if (this.forkChecks > 0) this.hub.checkFork(this)
-    if (this.harness === 'codex') refreshCodexInputActivity(this.id, this.env, this.record.key,
-      this.registration.transcriptPath ?? undefined, (owner) => this.harnessAlive(owner))
     if (this.lease.phase === 'withdrawn') {
       // The old attendant's next hook re-armed it; the hub re-arms on the next boundary.
       this.lease.generation = null
@@ -820,6 +817,31 @@ class HubSession implements AttendedSession {
     return this.idleSince !== null && this.hub.clock.monotonic() - this.idleSince >= IDLE_BEFORE_WAKE_REPLACEMENT_MS
   }
 
+  /** Where this session's wakes are stored: Codex keeps a queue per home. */
+  /** Input this session has not taken for too long: say so, once. */
+  private checkOverdue(): void {
+    if (this.harness !== 'claude-code' && this.harness !== 'codex') return
+    const state = readSessionState(this.id, this.env)
+    checkInputOverdue({ sessionId: this.id, env: this.env, cwd: this.registration.cwd, harness: this.harness,
+      lease: this.lease.generation === null ? null : { incarnation: this.lease.incarnation, generation: this.lease.generation },
+      busy: this.activityValue === 'working',
+      // A picker on screen returns its answer itself, whatever hooks do meanwhile.
+      excludeAnswers: this.harness === 'claude-code' && claudePickerHolds(state),
+      reason: () => this.wakeHold ?? (state.input_wake?.queued === true ? 'wake-not-taken' : this.lease.generation === null ? 'no-lease' : 'no-wake'),
+      now: this.hub.clock.wall(), client: this.hub.client(), logger: this.hub.logger })
+  }
+
+  private wakeScope(): string | undefined {
+    return this.harness === 'codex' ? codexHome(this.env) : undefined
+  }
+
+  /** Say once, each time it starts, why waiting input is not being woken in. */
+  private noteWakeHold(hold: CodexWakeHold | null): void {
+    if (hold === this.wakeHold) return
+    this.wakeHold = hold
+    if (hold !== null) this.hub.logger.info('delivery.handoff', { route: 'input-wake', stage: 'held', reason: hold, session: this.id })
+  }
+
   /** Staged input that needs a wake: cut the held exchange and hand it in. */
   checkInput(): void {
     // A hub handing over starts no new write; the next hub hands the input in.
@@ -829,8 +851,12 @@ class HubSession implements AttendedSession {
     if (this.stopped !== null) {
       void this.hub.reopenStopped(this, 'answer')
       if (this.harness === 'codex') void this.hub.stoppedWake(this)
+      // A stopped conversation waits for its app or the User by design; the clock starts when it is back.
+      trackInputWaiting(this.id, this.env, false, this.hub.clock.wall())
       return
     }
+    // The rule that bounds a running turn's delay reads this.
+    this.checkOverdue()
     if (!this.notified || this.lease.generation === null || this.hub.clock.monotonic() < this.lease.pausedUntil) return
     const lease: DeliveryLease = { incarnation: this.lease.incarnation, generation: this.lease.generation }
     let pending = false
@@ -842,8 +868,12 @@ class HubSession implements AttendedSession {
         (!state.input_wake?.queued || (this.settledIdle() && inputWakeOverdue(state, this.hub.clock.wall()))) &&
         hasSessionInputs(this.id, this.env, lease)
     } else {
-      const waiting = !state.input_wake?.queued && hasSessionInputs(this.id, this.env, lease)
-      pending = waiting && (this.codexObserver?.mayWake() ?? false)
+      const stored = inputWakeStored(state, this.lease.incarnation, this.wakeScope())
+      const hasInput = hasSessionInputs(this.id, this.env, lease)
+      const waiting = hasInput && (!stored || (this.settledIdle() && inputWakeOverdue(state, this.hub.clock.wall())))
+      const hold = !waiting ? null : this.codexObserver === null ? 'session-gone' : this.codexObserver.hold()
+      this.noteWakeHold(hasInput ? hold : null)
+      pending = waiting && hold === null
       // On Codex's shared server a wake waits until a terminal is seen to show the thread.
       if (waiting && !pending && this.hub.codexSharedServer(this)) void this.hub.checkCodexAttach(this, 'input')
     }
@@ -922,9 +952,6 @@ class HubSession implements AttendedSession {
     stageSessionMessages(this.id, this.env, lease, messages)
     if (inputWakeRetryDeferred(readSessionState(this.id, this.env), this.hub.clock.wall())) return 'done'
     const mayWake = (): boolean => this.codexObserver?.mayWake() ?? false
-    if (await wakeCodexSessionInputs({ sessionId: this.id, env: this.env, lease, mayWrite: () => this.mayWrite(), mayWake,
-      unknownAllowed: () => this.codexObserver?.unknownAllowed() ?? false,
-      ...(this.hub.deps.codexQueueControl === undefined ? {} : { connect: this.hub.deps.codexQueueControl }) })) return 'done'
     if (!hasSessionInputs(this.id, this.env, lease) || !mayWake()) return 'done'
     // Recheck eligibility and pending input immediately before queue admission;
     // a hook may have consumed the batch since the last exchange.
@@ -936,7 +963,7 @@ class HubSession implements AttendedSession {
         signal, guard: { writable: () => !signal.aborted && this.mayWrite(), remainingMs: () => Math.max(0, deadlineAt - performance.now()) }, threadId: this.id, cwd, env: this.env, adapters: this.hub.codexAdapters(this), text,
         begin: () => this.mayWrite() && mayWake() && hasSessionInputs(this.id, this.env, lease) })
       return result.status === 'written' || result.status === 'failed' ? result.status : 'not-attempted'
-    }, this.hub.logger, { now: () => this.hub.clock.wall() })
+    }, this.hub.logger, { now: () => this.hub.clock.wall(), scope: codexHome(this.env), replaceLost: () => this.settledIdle() })
     return 'done'
   }
 
@@ -1774,6 +1801,9 @@ export class Hub {
         if (session !== undefined && frame['hook_event'] === 'SessionStart' && typeof pid === 'number') session.left.delete(pid)
         if (session?.harness === 'codex' && frame['hook_event'] === 'Interrupt' && typeof pid === 'number') {
           releaseCodexCardHandbacks(session.id, { ...session.env, NOTIFAI_HOOK_SOURCE_PID: String(pid) }, {}, 'interrupt', this.clock.wall())
+          // A launcher from before turn ids names no turn: the interrupt is of the one running.
+          const turn = typeof frame['turn_id'] === 'string' ? frame['turn_id'] : currentCodexTurn(session.id, session.env, session.record.key)
+          if (turn !== null) { try { recordTurnInterrupt(session.id, session.env, turn) } catch { /* Activity is a hint. */ } }
         }
         session?.hinted()
         reply({ type: 'ok' })
@@ -2083,7 +2113,6 @@ export class Hub {
     session.child = link
     session.claimToken = await this.takeClaim(session)
     if (session.claimToken === null) return 'claim-held'
-    if (registration.harness === 'codex' && starting) this.observeCodexStart(session)
     this.sessions.set(session.id, session)
     this.logger.info('hub.session', { event: 'registered', session: session.id, harness: session.harness,
       hook_event: registration.hookEvent, inbox: registration.inboxToken ? 'token' : registration.inboxSocket !== null ? 'socket' : 'none' })
@@ -2400,20 +2429,6 @@ export class Hub {
     session.writeStatus(true)
   }
 
-  private observeCodexStart(session: HubSession): void {
-    const native = readNativeTurnSnapshot(session.registration.transcriptPath ?? undefined, session.id, session.env)
-    const turnId = native?.latest.id
-    if (native === null || native === undefined || turnId === undefined) return
-    const owns = (): boolean => readSessionIncarnation(session.id, session.env)?.key === session.record.key && !sessionHasEnded(session.id, session.env)
-    try {
-      if (reconcileNativeTurn(session.id, session.env, session.record.key, turnId, native, owns, true)) {
-        updateSessionState(session.id, session.env, (state) => ({ ...state, codex_native_turn: {
-          key: session.record.key, turn_id: turnId, transcript_path: native.file,
-        } }))
-      }
-    } catch { /* Activity is a hint; a busy lock never costs the session its attendance. */ }
-  }
-
   // -- endings ---------------------------------------------------------------
 
   /** A child connection closed: the primary's, or a standby's. */
@@ -2580,9 +2595,6 @@ export class Hub {
     const ended = !endsIncarnation(readSessionEndMarker(session.id, session.env), session.record)
     const wasStopped = session.wasStopped
     this.trackLocalEnd((async () => {
-      // Best effort, never relied on: take back a wake Notifai queued that
-      // the closed thread has not shown. The prompt hook blocks one that stays.
-      if (session.harness === 'codex') await this.withdrawQueuedWakes(session.id, session.env, !wasStopped)
       if (ended) {
         const { handleSessionEnd } = await import('./hook-lifecycle.js')
         try {
@@ -3007,28 +3019,11 @@ export class Hub {
           adapters: this.codexAdapters(session), text, begin: open })
         this.logger.info('hub.session', { event: 'stopped-wake', session: session.id, outcome: result.status })
         return result.status === 'written' || result.status === 'failed' ? result.status : 'not-attempted'
-      }, this.logger)
+      }, this.logger, { scope: codexHome(session.env) })
     } catch (err) {
       this.logger.error('hub.session', { event: 'stopped-wake', session: session.id, message: err instanceof Error ? err.message : String(err) })
     } finally {
       this.stoppedWaking.delete(session.id)
-    }
-  }
-
-  /**
-   * Detach Notifai's own unconsumed wakes from a closing thread, and delete
-   * them from its native queue when that queue is reachable. For a stopped
-   * thread nothing connects to any Codex server: the prompt hook blocks a
-   * wake the thread shows later.
-   */
-  private async withdrawQueuedWakes(sessionId: string, env: NodeJS.ProcessEnv, connect: boolean): Promise<void> {
-    const scope = { sessionId, env }
-    try {
-      if (!readInputWakes(scope).some((attempt) => attempt.phase !== 'consumed' && attempt.phase !== 'cancelled')) return
-      detachInputWakes({ ...scope, pendingIds: () => [] })
-      if (connect) await reconcileSessionInputWakes(sessionId, env, this.deps.codexQueueControl ?? connectCodexQueue)
-    } catch {
-      // Best effort: the prompt hook still blocks a wake the thread shows later.
     }
   }
 
@@ -3635,11 +3630,6 @@ export class Hub {
       // An archived or deleted Codex conversation is closed (E5); Codex runs no SessionEnd for it.
       if (session.transcriptGone()) { this.endSession(session, 'session-archived'); continue }
       if (session.lease.phase === 'dormant' && session.notified) { session.lease.needsFresh = true; this.driver.poke() }
-      if (session.harness === 'codex' && session.lease.generation !== null) {
-        refreshCodexInputActivity(session.id, session.env, session.record.key, session.registration.transcriptPath ?? undefined,
-          (owner) => session.harnessAlive(owner))
-        void reconcileSessionInputWakes(session.id, session.env, this.deps.codexQueueControl).catch(() => undefined)
-      }
       // A thread the shared Codex server reloaded runs there only while it holds the thread.
       if (session.reloadedAt !== null && (session.child === null || session.child.closed) &&
           (session.harnessGone() || !this.codexHolds(session))) {

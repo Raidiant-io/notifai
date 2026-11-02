@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "behavior_digest": "sha256:6ce00948819199fbf32244b508d4f43743a0b8bf48cf1c6710f06f2bc8549a3d",
+  "behavior_digest": "sha256:f52259dfcf3abde7cc12c2c1a801cdb2820ee0af324d3386cc43e9467e489db0",
   "outcome": "guidance-updated",
   "surfaces_reviewed": [
     "lifecycle-hooks",
@@ -9,5 +9,5 @@
     "cli-readiness",
     "domain-terms"
   ],
-  "reason": "Agents now name a newly set-up Project in one command. `notifai project enable`, `init`, `send` and `ask` print one line, once, the first time a Project is enabled, offering `notifai project set --name '<Title Case Name>'` with the identifier in title case as the suggestion. `project set` gains `--icon <id>` (default colour chosen by the service, never by the agent) and `notifai project icons` lists the icons. The Notifai skill section is renamed and extended, with a guidance change note and a usage entry. Reviewed lifecycle hooks, harness setup, CLI readiness and domain terms: setup readiness is unchanged (the line is advice, not a gap) and no domain term changes."
+  "reason": "Codex answers and notes no longer depend on reading the rollout to decide a wake. A running turn delays a content-free wake by at most 60 seconds, so an agent may see one harmless 'Blocked by hook' line after input already reached it; the skill's wake instructions and the empty-wake block are unchanged and still correct. Input stuck for 5 minutes (30 while working) now produces one plain notification to the User from Notifai itself, kind blocked, in the session's timeline; agents do nothing for it. A route that gives up on an undeliverable answer says so to the User. Reviewed lifecycle hooks (no hook definition changed), the Notifai skill, harness setup, CLI readiness (the doctor line now reports hook-observed turns) and domain terms. A release-authored guidance note describes the change to running agents."
 }

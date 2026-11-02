@@ -34,9 +34,12 @@ type ClaudeProbeAdapters
 import {
 attendantClaimPath,
 attendantStatusPath,
+codexTurnInterrupted,
+currentCodexTurn,
 listAttendantReports,
-readTurnActivity,
-recordTurnEnd,
+observedCodexTurnActivity,
+recordTurnInterrupt,
+recordTurnStop,
 recordTurnStart,
 writeAttendantStatus
 } from './session-attendant-state.js'
@@ -405,22 +408,49 @@ describe('Codex process probe', () => {
   })
 })
 
+const readTurnActivity = (id: string, env: NodeJS.ProcessEnv, key: string) => observedCodexTurnActivity(id, env, key) ?? 'idle'
+
 describe('Codex turn activity', () => {
-  it('is working from a turn\u2019s start until that turn ends, whichever hook runs first', () => {
+  it('is working from a turn\u2019s start until its Stop or Interrupt, from hooks alone', () => {
     const { env } = isolatedEnv()
     expect(readTurnActivity('t', env, 'k1')).toBe('idle')
     recordTurnStart('t', env, 'k1', 'turn-1')
     expect(readTurnActivity('t', env, 'k1')).toBe('working')
-    recordTurnEnd('t', env, 'turn-1')
-    expect(readTurnActivity('t', env, 'k1')).toBe('idle')
-    // The async turn-end hook of turn 2 ran before its start was recorded.
-    recordTurnEnd('t', env, 'turn-2')
-    recordTurnStart('t', env, 'k1', 'turn-2')
+    recordTurnStop('t', env, 'k1', 'turn-1')
     expect(readTurnActivity('t', env, 'k1')).toBe('idle')
     // A late end of an earlier turn does not end the current one.
     recordTurnStart('t', env, 'k1', 'turn-3')
-    recordTurnEnd('t', env, 'turn-1')
+    recordTurnStop('t', env, 'k1', 'turn-1')
     expect(readTurnActivity('t', env, 'k1')).toBe('working')
+    recordTurnInterrupt('t', env, 'turn-3')
+    expect(readTurnActivity('t', env, 'k1')).toBe('idle')
+    expect(codexTurnInterrupted('t', env, 'k1')).toBe(true)
+    // An interrupt fences its turn for good; the next prompt clears the pause.
+    recordTurnStart('t', env, 'k1', 'turn-3')
+    expect(readTurnActivity('t', env, 'k1')).toBe('idle')
+    recordTurnStart('t', env, 'k1', 'turn-4')
+    expect(codexTurnInterrupted('t', env, 'k1')).toBe(false)
+  })
+
+  it('reopens a turn a Stop hook continued, at its next tool hook', () => {
+    const { env } = isolatedEnv()
+    recordTurnStart('t', env, 'k1', 'turn-1')
+    recordTurnStop('t', env, 'k1', 'turn-1')
+    expect(currentCodexTurn('t', env, 'k1')).toBe(null)
+    recordTurnStart('t', env, 'k1', 'turn-1')
+    expect(currentCodexTurn('t', env, 'k1')).toBe('turn-1')
+    expect(readTurnActivity('t', env, 'k1')).toBe('working')
+  })
+
+  it('sees a goal\u2019s automatic turn first at its Stop, and ignores a late Stop of an older turn', () => {
+    const { env } = isolatedEnv()
+    recordTurnStart('t', env, 'k1', 'turn-1')
+    recordTurnStop('t', env, 'k1', 'turn-1')
+    recordTurnStop('t', env, 'k1', 'turn-2')
+    expect(readTurnActivity('t', env, 'k1')).toBe('idle')
+    recordTurnStart('t', env, 'k1', 'turn-4')
+    recordTurnStop('t', env, 'k1', 'turn-3')
+    expect(currentCodexTurn('t', env, 'k1')).toBe('turn-4')
   })
 
   it('belongs to one incarnation: a turn left open by an earlier start never reads as working now', () => {
@@ -521,8 +551,6 @@ describe('notifai hook attend for Codex', () => {
       stdin({ session_id: THREAD, cwd: root, hook_event_name: 'Stop', turn_id: 'turn-1' }),
       'codex',
     )
-    expect(readTurnActivity(THREAD, env, readSessionIncarnation(THREAD, env)!.key)).toBe('working')
-    nativeEvent('task_complete', 'turn-1')
     await until(() => calls.at(-1)?.activity === 'idle', 'idle activity')
     // An interrupted turn fires Interrupt instead of Stop; that copy records the end and exits.
     await prompt('turn-2')
@@ -551,19 +579,15 @@ describe('notifai hook attend for Codex', () => {
       stdin({ session_id: THREAD, cwd: root, hook_event_name: 'Stop', turn_id: 'turn-3' }),
       'codex',
     )
-    expect(readTurnActivity(THREAD, env, readSessionIncarnation(THREAD, env)!.key)).toBe('working')
-    nativeEvent('task_complete', 'turn-3')
     await until(() => calls.at(-1)?.activity === 'idle', 'idle after turn 3')
     expect(deps.exits).toHaveLength(0)
 
-    // The native async copy must recover activity even when synchronous hooks
-    // stop firing in a long-lived harness. The incumbent still owns attendance.
-    nativeEvent('task_started', 'async-current')
-    await hookRunCommand(deps, 'attend', stdin({
+    // Neither a child nor a different native process may end the root turn.
+    await hookRunCommand(deps, 'user-prompt-submit', stdin({
       session_id: THREAD, cwd: root, hook_event_name: 'UserPromptSubmit',
       turn_id: 'async-current', transcript_path: transcript,
     }), 'codex')
-    await until(() => calls.at(-1)?.activity === 'working', 'async-only working activity')
+    await until(() => calls.at(-1)?.activity === 'working', 'working activity for the next turn')
     // Neither a child nor a different native process may end the root turn.
     await hookRunCommand(deps, 'attend', stdin({
       session_id: THREAD, cwd: root, hook_event_name: 'Stop', turn_id: 'async-current', agent_id: 'child',
@@ -576,8 +600,6 @@ describe('notifai hook attend for Codex', () => {
     await hookRunCommand(deps, 'attend', stdin({
       session_id: THREAD, cwd: root, hook_event_name: 'Stop', turn_id: 'async-current',
     }), 'codex')
-    expect(readTurnActivity(THREAD, env, readSessionIncarnation(THREAD, env)!.key)).toBe('working')
-    nativeEvent('task_complete', 'async-current')
     await until(() => calls.at(-1)?.activity === 'idle', 'async-only turn ended')
 
     noteOffered = true

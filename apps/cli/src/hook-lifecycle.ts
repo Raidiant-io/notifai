@@ -130,6 +130,8 @@ import {
   QUESTION_SUBMISSION_COMPLETION_HEADROOM_SECONDS,
   QUESTION_WAITER_CEILING_SECONDS,
 } from './question-timing.js'
+import { reportInputDropped } from './input-overdue.js'
+import { bootstrapLogger } from './logging.js'
 import { buildDraft, UNTITLED_FORM_TITLE } from './send.js'
 import { questionPushOverflow } from './question-push-budget.js'
 import { rememberedProjectIdentityPushBytes } from './project-push-identity.js'
@@ -1475,6 +1477,8 @@ async function deliverAcceptedAnswers(
       request_ids: requestIds,
     })
     settleAcceptedAnswers(ctx, sessionId, accepted, cwd)
+    await reportInputDropped({ sessionId, env: ctx.env, cwd: cwd ?? null, harness: ctx.harness ?? 'unknown', client: ctx.client, logger: ctx.log ?? bootstrapLogger({ env: ctx.env }),
+      requestIds })
     notes.push(
       `no route could hand the user's answer over in ${MAX_HELD_DELIVERIES} turns; not holding it any longer`,
     )

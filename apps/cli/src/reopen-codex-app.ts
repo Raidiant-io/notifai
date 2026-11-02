@@ -235,9 +235,7 @@ export function systemCodexAppHost(launcher: string | null): CodexAppHost {
     queuedWake: (sessionId, env) => {
       const state = readSessionState(sessionId, env)
       const wake = state.input_wake
-      if (wake?.queued !== true) return null
-      const attempt = state.input_wake_attempts?.find((item) => item.token === wake.token)
-      return attempt === undefined || attempt.phase === 'consumed' || attempt.phase === 'cancelled' ? null : wake.token
+      return wake?.queued === true ? wake.token : null
     },
     sendEvent: (pid, url) => new Promise((resolve) => {
       if (launcher === null) { resolve('failed'); return }

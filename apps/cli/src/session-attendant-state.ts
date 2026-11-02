@@ -4,12 +4,11 @@ import path from 'node:path'
 import { atomicWriteFileSync } from './atomic-file.js'
 import { sanitizeSessionId, stateDir } from './config.js'
 import { withFileLock } from './file-lock.js'
-import { readSessionIncarnation, readSessionState } from './hook-session-state.js'
+import { readSessionIncarnation, updateSessionState } from './hook-session-state.js'
 import { claimHolderMayRun, readClaimFile } from './hook-question-lock.js'
 import type { AttendantPhase, AttendantStatus } from './session-attendant.js'
 import type { SessionActivity } from '@raidiant/notifai-protocol'
 import type { DeliveryLease } from './session-delivery.js'
-import { readNativeTurnSnapshot, type NativeTurnSnapshot } from './codex-native-turn.js'
 
 /** One live attendant per Agent Session: PID + process start time + incarnation. */
 export function attendantClaimPath(sessionId: string, env: NodeJS.ProcessEnv): string {
@@ -160,13 +159,20 @@ export function readAttendantEndingLease(sessionId: string, env: NodeJS.ProcessE
 /**
  * A thread's own turn boundaries, for a harness that publishes no activity of
  * its own (Codex), scoped to one session incarnation (its stable start key).
+ * Every fact here comes from a hook of that session, never from Codex's private
+ * history files.
  *
  * Starts are observed by synchronous prompt and tool hooks. Automatic goal
  * continuations can omit the prompt hook; their first trusted tool callback
- * observes the turn instead. Ends come from asynchronous hooks (Stop, Interrupt) that may run late
- * or before the start they close, so they are matched by turn id. A start of a
- * turn already seen — started or ended — is stale and never replaces the
- * current turn. The thread is working while its current turn has no end.
+ * observes the turn instead, and one with no tool call appears first at its
+ * Stop. Stop and Interrupt are asynchronous and may run late, so they are
+ * matched by turn id. A start of a turn already seen is stale and never replaces
+ * the current turn, except that a tool hook after Stop reopens that same turn: a
+ * Stop hook can continue it.
+ *
+ * This is only a hint about when a wake is worth writing. A wake is safe at any
+ * moment, because Codex stores it until the turn ends, so a wrong answer here
+ * costs one blocked wake or a bounded delay and never holds input.
  */
 export function turnActivityPath(sessionId: string, env: NodeJS.ProcessEnv): string {
   return path.join(stateDir(env), 'sessions', `${sanitizeSessionId(sessionId)}.turns.json`)
@@ -178,8 +184,12 @@ interface TurnRecord {
   current: string | null
   /** Turn ids already started in this incarnation, oldest first. */
   started: string[]
+  /** Turns that can never continue: interrupted, or completed under an older build. */
   ended: string[]
-  native?: { file: string; identity: string; offset: number }
+  /** The current turn's Stop ran. A later tool hook of that turn reopens it. */
+  stopped?: string
+  /** The current turn was interrupted. Codex holds its queue until the next prompt. */
+  interrupted?: string
 }
 
 /** Turn ids kept to recognise a late hook; a late hook trails its turn by seconds. */
@@ -190,16 +200,13 @@ function readTurns(file: string): TurnRecord {
     Array.isArray(value) ? value.filter((turn): turn is string => typeof turn === 'string') : []
   try {
     const parsed = JSON.parse(readFileSync(file, 'utf8')) as Record<string, unknown>
-    const native = parsed['native'] as Partial<NonNullable<TurnRecord['native']>> | null | undefined
     return {
       key: typeof parsed['key'] === 'string' ? parsed['key'] : null,
       current: typeof parsed['current'] === 'string' ? parsed['current'] : null,
       started: ids(parsed['started']),
       ended: ids(parsed['ended']),
-      ...(native !== null && typeof native === 'object' &&
-        typeof native.file === 'string' && typeof native.identity === 'string' &&
-        typeof native.offset === 'number' && Number.isSafeInteger(native.offset) && native.offset >= 0
-        ? { native: { file: native.file, identity: native.identity, offset: native.offset } } : {}),
+      ...(typeof parsed['stopped'] === 'string' ? { stopped: parsed['stopped'] } : {}),
+      ...(typeof parsed['interrupted'] === 'string' ? { interrupted: parsed['interrupted'] } : {}),
     }
   } catch {
     return { key: null, current: null, started: [], ended: [] }
@@ -221,89 +228,81 @@ function updateTurns(sessionId: string, env: NodeJS.ProcessEnv, update: (record:
 
 const keep = (ids: string[], id: string): string[] => [...ids.filter((turn) => turn !== id), id].slice(-TURNS_KEPT)
 
-/** A turn of incarnation `key` started. Ignored when that turn was already seen. */
+function ownRecord(record: TurnRecord, key: string): TurnRecord {
+  return record.key === key ? record : { key, current: null, started: [], ended: record.ended }
+}
+
+/** A turn of incarnation `key` started or ran a tool. A turn already seen stays as it was, except a Stop it continued past. */
 export function recordTurnStart(sessionId: string, env: NodeJS.ProcessEnv, key: string, turnId: string): void {
   updateTurns(sessionId, env, (record) => {
-    const same = record.key === key ? record : { key, current: null, started: [], ended: record.ended }
-    if (same.started.includes(turnId) || same.ended.includes(turnId)) return same
-    return { ...same, current: turnId, started: keep(same.started, turnId) }
-  })
-}
-
-function nativeFollows(same: TurnRecord, snapshot: NativeTurnSnapshot): boolean {
-  const turnId = snapshot.latest.id
-  if (same.native !== undefined && (same.native.identity !== snapshot.identity ||
-    same.native.file !== snapshot.file || same.native.offset > snapshot.latest.offset)) return false
-  if (same.current !== null && same.current !== turnId && !same.ended.includes(same.current)) {
-    const currentOffset = snapshot.positions.get(same.current)
-    if (currentOffset === undefined || currentOffset > snapshot.latest.offset) return false
-  }
-  // Confirming native completion is an Idle observation, never resurrection.
-  if (same.ended.includes(turnId) && !snapshot.latest.ended) return false
-  return true
-}
-
-/** Mutation-free admission check; safe inside the session-state lock. */
-export function nativeTurnContinues(sessionId: string, env: NodeJS.ProcessEnv, key: string, snapshot: NativeTurnSnapshot): boolean {
-  const record = readTurns(turnActivityPath(sessionId, env))
-  return record.key === key && nativeFollows(record, snapshot)
-}
-
-/** An async callback may advance only with native order and the same live owner. */
-export function reconcileNativeTurn(
-  sessionId: string, env: NodeJS.ProcessEnv, key: string, turnId: string,
-  snapshot: NativeTurnSnapshot, stillOwned: () => boolean, starting = false,
-): boolean {
-  let recorded = false
-  updateTurns(sessionId, env, record => {
-    if (!stillOwned() || snapshot.latest.id !== turnId) return record
-    // A re-arm cannot establish a new incarnation from an older transcript.
-    if (record.key !== key && !starting) return record
-    const same: TurnRecord = record.key === key ? record : { key, current: null, started: [], ended: record.ended }
-    if (!nativeFollows(same, snapshot)) return record
-    recorded = true
-    return {
-      ...same, current: turnId, started: keep(same.started, turnId),
-      ended: snapshot.latest.ended ? keep(same.ended, turnId) : same.ended,
-      native: { file: snapshot.file, identity: snapshot.identity, offset: snapshot.latest.offset },
+    const same = ownRecord(record, key)
+    if (same.current === turnId && same.stopped === turnId) {
+      const { stopped: _stopped, ...reopened } = same
+      return reopened
     }
+    if (same.started.includes(turnId) || same.ended.includes(turnId)) return same
+    const { stopped: _stopped, interrupted: _interrupted, ...rest } = same
+    return { ...rest, current: turnId, started: keep(same.started, turnId) }
   })
-  return recorded
 }
 
-/** A turn ended (or was interrupted), whenever its hook got to run. */
-export function recordTurnEnd(sessionId: string, env: NodeJS.ProcessEnv, turnId: string): void {
-  updateTurns(sessionId, env, (record) => ({ ...record, ended: keep(record.ended, turnId) }))
+/** A turn's Stop ran. A goal's automatic turn with no tool call is first seen here. */
+export function recordTurnStop(sessionId: string, env: NodeJS.ProcessEnv, key: string, turnId: string): void {
+  updateTurns(sessionId, env, (record) => {
+    const same = ownRecord(record, key)
+    if (same.ended.includes(turnId)) return same
+    if (same.current === turnId) return { ...same, stopped: turnId }
+    // Turn ids sort by start time, so a late Stop of an older turn changes nothing.
+    if (same.started.includes(turnId) || (same.current !== null && turnId < same.current)) return same
+    const { interrupted: _interrupted, ...rest } = same
+    return { ...rest, current: turnId, started: keep(same.started, turnId), stopped: turnId }
+  })
 }
 
-/** Working while incarnation `key`'s current turn has no recorded end. */
-export function readTurnActivity(sessionId: string, env: NodeJS.ProcessEnv, key: string): SessionActivity {
-  const { key: recorded, current, ended } = readTurns(turnActivityPath(sessionId, env))
-  return recorded === key && current !== null && !ended.includes(current) ? 'working' : 'idle'
+/** A turn was interrupted, whenever its hook got to run. */
+export function recordTurnInterrupt(sessionId: string, env: NodeJS.ProcessEnv, turnId: string): void {
+  updateTurns(sessionId, env, (record) => ({
+    ...record, ended: keep(record.ended, turnId),
+    ...(record.current === turnId ? { interrupted: turnId } : {}),
+  }))
 }
 
-/** Last observed activity for this owner, never the missing-record idle default.
- * This is a display projection only; queue admission requires a fresh native read. */
+/** The turn this session's hooks last named, and where its history is, for the question card checks. */
+export function recordCodexNativeTurn(
+  sessionId: string, env: NodeJS.ProcessEnv, key: string, turnId: string, transcriptPath: unknown,
+): void {
+  if (typeof transcriptPath !== 'string' || transcriptPath === '') return
+  updateSessionState(sessionId, env, (state) => {
+    const proof = state.codex_native_turn
+    if (proof?.key === key && proof.turn_id === turnId && proof.transcript_path === transcriptPath) return state
+    return { ...state, codex_native_turn: { key, turn_id: turnId, transcript_path: transcriptPath, observed_at: Date.now() } }
+  })
+}
+
+/** Last observed activity for this owner, never the missing-record idle default. Drives display and a bounded wake delay. */
 export function observedCodexTurnActivity(sessionId: string, env: NodeJS.ProcessEnv, key: string): SessionActivity | null {
   const record = readTurns(turnActivityPath(sessionId, env))
   if (record.key !== key || record.current === null) return null
-  return record.ended.includes(record.current) ? 'idle' : 'working'
+  return record.ended.includes(record.current) || record.stopped === record.current ? 'idle' : 'working'
 }
 
 /** Exact active turn, used to reject a tool hook that outlived interruption. */
 export function currentCodexTurn(sessionId: string, env: NodeJS.ProcessEnv, key: string): string | null {
   const record = readTurns(turnActivityPath(sessionId, env))
-  return record.key === key && record.current !== null && !record.ended.includes(record.current)
-    ? record.current : null
+  return record.key === key && record.current !== null && !record.ended.includes(record.current) &&
+    record.stopped !== record.current ? record.current : null
 }
 
-/** Historical hook success is not proof that the current native turn was seen. */
-export function codexNativeActivityObserved(sessionId: string, env: NodeJS.ProcessEnv): boolean {
-  const proof = readSessionState(sessionId, env).codex_native_turn
-  const owner = readSessionIncarnation(sessionId, env)
-  if (proof === undefined || owner?.key !== proof.key) return false
-  const native = readNativeTurnSnapshot(proof.transcript_path, sessionId, env)
+/** The User interrupted the latest turn: Codex runs nothing it has queued until their next prompt. */
+export function codexTurnInterrupted(sessionId: string, env: NodeJS.ProcessEnv, key: string): boolean {
   const record = readTurns(turnActivityPath(sessionId, env))
-  return native !== null && record.key === owner.key && record.current === native.latest.id &&
-    proof.turn_id === native.latest.id && (native.latest.ended === record.ended.includes(native.latest.id))
+  return record.key === key && record.current !== null && record.interrupted === record.current
+}
+
+/** Whether this session's own hooks have reported a turn since it last started. */
+export function codexTurnObserved(sessionId: string, env: NodeJS.ProcessEnv): boolean {
+  const owner = readSessionIncarnation(sessionId, env)
+  if (owner === null) return false
+  const record = readTurns(turnActivityPath(sessionId, env))
+  return record.key === owner.key && record.current !== null
 }

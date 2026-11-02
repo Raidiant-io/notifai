@@ -27,7 +27,8 @@ import { recordClaudeSessionTitle } from './harness-session-title.js'
 import { resolveSessionLabel } from './session-labels.js'
 import { nullLogger,type Logger } from './logging.js'
 import { pidExists,processStartTime } from './process-identity.js'
-import { attendantClaimPath,attendantStatusPath,readAttendantEndingLease,readAttendantLease,recordTurnEnd,recordTurnStart } from './session-attendant-state.js'
+import { CODEX_WAKE_DELAY_MS } from './codex-input-lifecycle.js'
+import { attendantClaimPath,attendantStatusPath,codexTurnInterrupted,readAttendantEndingLease,readAttendantLease,recordTurnStop,recordTurnStart } from './session-attendant-state.js'
 import { hasSessionInputs,stageSessionMessages } from './session-inputs.js'
 import { runWakeCommand } from './wake-support.js'
 
@@ -439,7 +440,7 @@ function startHub(env: NodeJS.ProcessEnv, service: FakeService, peers: Map<numbe
   const deps: CommandDeps = {
     io: { out: () => undefined, err: () => undefined, confirm: async () => false, openUrl: () => undefined },
     store, env, cwd: '/tmp', logger, clientFactory: () => service.client,
-    ...(codex.wake === undefined ? {} : { codexWake: codex.wake, codexQueueControl: async () => null }),
+    ...(codex.wake === undefined ? {} : { codexWake: codex.wake }),
   }
   const hub = new Hub(deps, { deps, verifyPeer: async (socket) => {
     // The fake child's pid is whatever it said in hello; tests map it to a peer.
@@ -989,7 +990,7 @@ describe('hub and Codex SessionEnd', () => {
     // One finished turn: the thread is idle and attended.
     const key = readSessionIncarnation(SESSION, env)!.key
     recordTurnStart(SESSION, env, key, 'turn-1')
-    recordTurnEnd(SESSION, env, 'turn-1')
+    recordTurnStop(SESSION, env, key, 'turn-1')
     await requestHub(env, { type: 'hint', session_id: SESSION }, { role: 'hint' })
     await until(() => service.batches.some((batch) => batch.body.sessions.some((entry) => entry.session_id === SESSION && entry.state === 'running')))
     return child
@@ -1316,24 +1317,53 @@ describe('hub and Codex SessionEnd', () => {
       return { env, hub, service, transcript, queued, asked, builds, pending, deliverNote, stop }
     }
 
-    it('keeps a note out of the queue during a hook-observed turn, then wakes remaining input after native completion', async () => {
-      let skew = 0
+    it('keeps a note out of the queue during a hook-observed turn, then wakes remaining input at its Stop', async () => {
       const run = await sharedServer({
-        clock: { monotonic: () => performance.now() + skew, wall: () => Date.now() },
         state: () => ({ state: 'attached', confirmed: true, reason: 'terminal-live+joined' }),
       })
       try {
-        // The new prompt has started, while the rollout still ends at turn-1.
-        recordTurnStart(SESSION, run.env, readSessionIncarnation(SESSION, run.env)!.key, 'turn-2')
+        const key = readSessionIncarnation(SESSION, run.env)!.key
+        recordTurnStart(SESSION, run.env, key, 'turn-2')
         await run.deliverNote(2)
-        skew = 6_001
         await run.deliverNote(2)
         expect(run.pending()).toBe(true)
         expect(run.queued).toEqual([])
-        // No tool boundary drained it: completion must release the idle wake.
-        for (const type of ['task_started', 'task_complete']) {
-          writeFileSync(run.transcript, `${JSON.stringify({ type: 'event_msg', payload: { type, turn_id: 'turn-2' } })}\n`, { flag: 'a' })
-        }
+        // No tool boundary drained it: the turn's end releases the idle wake.
+        recordTurnStop(SESSION, run.env, key, 'turn-2')
+        await run.deliverNote(2)
+        await until(() => run.queued.length > 0)
+        expect(run.queued).toEqual([SESSION])
+      } finally { await run.stop() }
+    })
+
+    it('holds a wake after an Interrupt, when Codex would not run it, until the next prompt', async () => {
+      const run = await sharedServer({
+        state: () => ({ state: 'attached', confirmed: true, reason: 'terminal-live+joined' }),
+      })
+      try {
+        const key = readSessionIncarnation(SESSION, run.env)!.key
+        recordTurnStart(SESSION, run.env, key, 'turn-2')
+        await requestHub(run.env, { type: 'hint', session_id: SESSION, hook_event: 'Interrupt', harness_pid: process.pid, turn_id: 'turn-2' }, { role: 'hint' })
+        expect(codexTurnInterrupted(SESSION, run.env, key)).toBe(true)
+        await run.deliverNote(2)
+        await run.deliverNote(2)
+        expect(run.queued).toEqual([])
+        recordTurnStart(SESSION, run.env, key, 'turn-3')
+        expect(codexTurnInterrupted(SESSION, run.env, key)).toBe(false)
+      } finally { await run.stop() }
+    })
+
+    it('never lets a turn it saw start hold a note past the bound, whether or not that turn ever ended', async () => {
+      const run = await sharedServer({
+        state: () => ({ state: 'attached', confirmed: true, reason: 'terminal-live+joined' }),
+      })
+      try {
+        recordTurnStart(SESSION, run.env, readSessionIncarnation(SESSION, run.env)!.key, 'turn-never-ends')
+        await run.deliverNote(2)
+        await run.deliverNote(2)
+        expect(run.queued).toEqual([])
+        updateSessionState(SESSION, run.env, (state) => ({ ...state,
+          input_waiting: { since: Date.now() - CODEX_WAKE_DELAY_MS - 1, checked_at: Date.now() } }))
         await run.deliverNote(2)
         await until(() => run.queued.length > 0)
         expect(run.queued).toEqual([SESSION])
@@ -1863,7 +1893,7 @@ describe('hub: Codex conversations stopped by their app or the machine, Orca pan
     if (child.frames[0]?.['type'] === 'registered') {
       const key = readSessionIncarnation(sessionId, env)!.key
       recordTurnStart(sessionId, env, key, 'turn-1')
-      recordTurnEnd(sessionId, env, 'turn-1')
+      recordTurnStop(sessionId, env, key, 'turn-1')
     }
     return child
   }

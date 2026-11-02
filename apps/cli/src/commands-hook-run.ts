@@ -13,7 +13,7 @@ import { type MachineCredential } from './credentials.js'
 import { OWNER_STEP_BUDGETS, hookStepBudgets, hookWorkAllowanceMs } from './hook-budgets.js'
 import { claimHookMaintenance, runHookMaintenance } from './hook-maintenance.js'
 import { claimOlderHubHandover, handOverOlderHub } from './hub-handover.js'
-import { codexWakeRoute } from './codex-wake.js'
+import { codexHome, codexWakeRoute } from './codex-wake.js'
 import { deliverCodexToolMessage } from './codex-tool-messages.js'
 import {
   EXIT,
@@ -28,7 +28,7 @@ import {
 import { claudeHookSourcePid, claudeSessionPid } from './commands-harness-context.js'
 import { claudePlaceOf, claudePlaceSignals, placeReceives } from './session-place.js'
 import { codexHostKind } from './codex-session-end.js'
-import { attendHook, recordCodexTurnStart, reportCodexSessionEnded } from './commands-hook-attend.js'
+import { attendHook, recordCodexTurnEnd, recordCodexTurnStart, reportCodexSessionEnded } from './commands-hook-attend.js'
 import { hubSupported } from './hub-ipc.js'
 import { holdSessionEnd, hubAttendsSession, notifyHubSessionEnded, shutdownUnderway } from './hub-client.js'
 import { awaitEndConfirmation, confirmSessionEnds } from './session-end-confirmation.js'
@@ -986,6 +986,7 @@ export async function hookRunCommand(
     catch (err) { logger.error('hook.gate', { stage: 'grok-attendant', outcome: 'ignored', ...failureData(err) }) }
   }
   if (event === 'user-prompt-submit' && harness === 'codex') recordCodexTurnStart(envelope, deps.env)
+  if (event === 'stop' && harness === 'codex') await recordCodexTurnEnd(envelope, deps.env)
   if (event === 'user-prompt-submit' || event === 'stop') {
     observeIntegration()
     startDueHubHandover()
@@ -1440,7 +1441,7 @@ async function stopWakeRoute(
       cwd,
       env: deps.env,
       ...(deps.codexWake === undefined ? {} : { adapters: deps.codexWake }),
-    }), log(deps), 'attendant', {}, deps.onSessionInputStaged)
+    }), log(deps), 'attendant', { scope: codexHome(deps.env) }, deps.onSessionInputStaged)
   }
   return undefined
 }

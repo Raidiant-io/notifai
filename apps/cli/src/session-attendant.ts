@@ -24,6 +24,7 @@ import type {
   SessionActivity,
 } from '@raidiant/notifai-protocol'
 import { ATTENDANCE_MAX_WAIT_SECONDS } from '@raidiant/notifai-protocol'
+import { checkInputOverdue } from './input-overdue.js'
 import { ApiCallError, type ApiClient } from './client.js'
 import type { Logger } from './logging.js'
 import type { AdoptionRecord } from './hub-adoption.js'
@@ -146,6 +147,11 @@ export interface SessionAttendantOptions {
   heartbeat?: () => void
   /** Harness-owned work that needs the fresh probe while attendance continues. */
   onProbe?: (probe: HarnessProbe) => void
+  /**
+   * Says so when input stays undelivered too long. Answers on `heldAnswers` routes
+   * wait with their route; `excludeAnswers` are being returned by something else.
+   */
+  overdue?: { env: NodeJS.ProcessEnv; harness: string; cwd: string | null; heldAnswers: boolean; excludeAnswers?: () => boolean }
   /** Publish fresh writer evidence for ask admission. */
   publishProbeStatus?: boolean
   /** Resolves when a termination signal arrived. */
@@ -197,6 +203,7 @@ export async function runSessionAttendant(options: SessionAttendantOptions): Pro
 
   let incarnation = options.incarnation
   let generation: number | null = null
+  let offeredMessages = 0
   let leaseClient: ApiClient | null = null
   let cursor: string | undefined
   /** Monotonic time after which the lease may have lapsed at the service. */
@@ -364,6 +371,18 @@ export async function runSessionAttendant(options: SessionAttendantOptions): Pro
         phase, reason: 'probe-work-failed',
         message: err instanceof Error ? err.message : String(err),
       })
+    }
+    if (options.overdue !== undefined && probe.state === 'running') {
+      try {
+        const { env, harness, cwd, heldAnswers, excludeAnswers } = options.overdue
+        checkInputOverdue({ sessionId: options.sessionId, env, cwd, harness, heldAnswers, excludeAnswers: excludeAnswers?.() ?? false,
+          lease: generation === null ? null : { incarnation, generation },
+          serviceMessages: offeredMessages, busy: probe.activity === 'working',
+          reason: () => generation === null ? 'no-lease' : offeredMessages > 0 ? 'writer-not-taking-notes' : 'not-handed-in',
+          now: clock.wall(), client: options.client(), logger })
+      } catch (err) {
+        logger.error('delivery.overdue', { session: options.sessionId, stage: 'check-failed', message: err instanceof Error ? err.message : String(err) })
+      }
     }
     if (!networkStarted && options.notified()) nudge()
     if (probe.state === 'running' && exchangeHeld && exchange !== null && options.localInputPending?.()) {
@@ -562,6 +581,8 @@ export async function runSessionAttendant(options: SessionAttendantOptions): Pro
       if (acquired) writeStatus()
       setPhase('attending')
       let handedOff: 'done' | 'retry-soon' = 'done'
+      // What the service still offers: a handed-in note is gone from the next exchange.
+      offeredMessages = response.messages.length
       if (options.acceptsMessages && options.onMessages !== undefined) {
         try {
           handedOff = await options.onMessages(response.messages, handle)

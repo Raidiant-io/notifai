@@ -21,10 +21,7 @@ import { currentProcessIdentity, processIdentityLiveness } from './process-ident
 import { bootstrapLogger, type Logger } from './logging.js'
 import { answerWriterGone, beginHandOff, readDeliveryJournal, type DeliveryLease, type NativeAnswerPresentation, type SequencerDeps } from './session-delivery.js'
 import { CodexControlNotSent } from './codex-native-control.js'
-import { connectCodexQueue, type QueueControl } from './codex-queue-control.js'
-import { readNativeTurnSnapshot } from './codex-native-turn.js'
-import { admitInputWake, detachInputWakes, electInputWake, observeInputWake, readInputWakes, reconcileInputWakes, recoverUncertainInputWake } from './session-input-wakes.js'
-import { readAttendantLease, nativeTurnContinues, observedCodexTurnActivity } from './session-attendant-state.js'
+import { readAttendantLease } from './session-attendant-state.js'
 
 export function sessionInputWake(token?: string): string {
   const notice = token === undefined ? 'Notifai — user input may be waiting for this session.' : `Notifai wake ${token}.`
@@ -51,6 +48,8 @@ export interface WakeOptions {
   now?: () => number
   /** Internal transport deadline; callers never hold a delivery loop indefinitely. */
   sendTimeoutMs?: number
+  /** Where this wake is stored (a Codex home), so one left in an old place is replaced. */
+  scope?: string
 }
 
 /** An accepted wake that has waited long enough to be replaced once. */
@@ -58,6 +57,18 @@ export function inputWakeOverdue(state: SessionState, now: number): boolean {
   const wake = state.input_wake
   return wake !== undefined && wake.queued && wake.replacement !== true &&
     wake.queued_at !== undefined && now - wake.queued_at >= LOST_WAKE_MS
+}
+
+/**
+ * A wake is stored where this session can still read it. Codex keeps its queue
+ * per home and `codex queue` succeeds for any home holding the thread, so a wake
+ * left in the home a session moved away from never runs. A session in another
+ * incarnation reads nothing of the old one either.
+ */
+export function inputWakeStored(state: SessionState, incarnation: string, scope?: string): boolean {
+  const wake = state.input_wake
+  return wake?.queued === true && wake.incarnation === incarnation &&
+    (scope === undefined || wake.scope === undefined || wake.scope === scope)
 }
 
 /** The wait before the next wake after the first one shown without its input handed in. */
@@ -92,7 +103,7 @@ function clearUnansweredWakes(state: SessionState): SessionState {
 /** Failed transport attempts are paced independently of wakes the agent saw. */
 export function inputWakeRetryDeferred(state: SessionState, now: number): boolean {
   const fault = state.input_wake_fault
-  return fault !== undefined && fault.kind !== 'codex-check' && fault.recovered_at === undefined && now >= fault.last_at && now < fault.retry_at
+  return fault !== undefined && fault.kind !== 'codex-check' && fault.kind !== 'overdue' && fault.recovered_at === undefined && now >= fault.last_at && now < fault.retry_at
 }
 
 export function recordInputWakeFailure(sessionId: string, env: NodeJS.ProcessEnv,
@@ -166,7 +177,8 @@ export async function wakeSessionInputs(
         state.input_delivery_fenced.generation === lease.generation) return state
     if (inputWakeDeferred(state, now())) { unanswered = state.input_wake_unanswered; return state }
     if (inputWakeRetryDeferred(state, now())) return state
-    if (state.input_wake?.incarnation === incarnation) {
+    const moved = state.input_wake?.queued === true && !inputWakeStored(state, incarnation, options.scope)
+    if (state.input_wake?.incarnation === incarnation && !moved) {
       const lost = inputWakeOverdue(state, now()) && options.replaceLost?.() === true
       const unfinished = !state.input_wake.queued && state.input_wake.started_at !== undefined &&
         now() - state.input_wake.started_at >= LOST_WAKE_MS
@@ -175,7 +187,8 @@ export async function wakeSessionInputs(
       replacement = lost
     }
     elected = true
-    return { ...state, input_wake: { incarnation, token, queued: false, writer, started_at: now(), ...(replacement ? { replacement } : {}) } }
+    return { ...state, input_wake: { incarnation, token, queued: false, writer, started_at: now(),
+      ...(replacement ? { replacement } : {}), ...(options.scope === undefined ? {} : { scope: options.scope }) } }
   })
   if (!elected) {
     log?.debug('delivery.handoff', { route: 'input-wake', stage: unanswered === undefined ? 'coalesced' : 'backoff', session: sessionId,
@@ -228,26 +241,13 @@ export function inputWakeToken(prompt: string | undefined): string | null {
  * until a drain hands input in, which is what spaces out the next wake.
  */
 export function observeSessionInputWake(sessionId: string, env: NodeJS.ProcessEnv, prompt: string | undefined, now = Date.now()): void {
-  if (prompt !== undefined) {
-    const matched = /^Notifai wake ([0-9a-f-]{36})\. /.exec(prompt)
-    if (matched !== null) {
-      const owned = readInputWakes({ sessionId, env }).find(a => a.token === matched[1] && a.text === prompt)
-      if (owned !== undefined) observeInputWake({ sessionId, env }, owned.token)
-      // A coalesced wake is settled only by its own token: an older wake
-      // arriving late must not clear the one still outstanding.
-      else if (inputWakeToken(prompt) === null) return
-      updateSessionState(sessionId, env, (state) => {
-        const next = { ...recoverInputWakeFault(state, now), input_wake_unanswered: { count: (state.input_wake_unanswered?.count ?? 0) + 1, presented_at: now } }
-        if (state.input_wake?.token === matched[1]) delete next.input_wake
-        return next
-      })
-      return
-    }
-  }
-  if (prompt !== sessionInputWake()) return
+  if (!isSessionInputWake(prompt)) return
+  const token = inputWakeToken(prompt)
   updateSessionState(sessionId, env, (state) => {
     const next = { ...recoverInputWakeFault(state, now), input_wake_unanswered: { count: (state.input_wake_unanswered?.count ?? 0) + 1, presented_at: now } }
-    delete next.input_wake
+    // A wake with a token settles only its own record: an older one arriving
+    // late must not clear the wake still outstanding.
+    if (token === null || state.input_wake?.token === token) delete next.input_wake
     return next
   })
 }
@@ -291,20 +291,11 @@ export function sessionInputRoute(sessionId: string, env: NodeJS.ProcessEnv, rou
       const lease = readAttendantLease(sessionId, env)
       if (owner !== null && lease?.incarnation === owner.incarnation) return
     }
-    // The producer fallback (no resident lease yet) obeys the same running
-    // turn fence as the Codex resident. Claude's inbox can steer a busy turn.
-    const mayWake = (): boolean => {
-      const owner = readSessionIncarnation(sessionId, env)
-      return route.kind !== 'session-queue' || owner === null ||
-        observedCodexTurnActivity(sessionId, env, owner.key) !== 'working'
-    }
-    if (!mayWake()) return
     await wakeSessionInputs(sessionId, env, async (text, signal) => {
-      if (!mayWake()) return 'not-attempted'
       const result = await route.deliver({
         context: text, answers: 0, remaining: 0, request_ids: [], journal_recorded_at: accepted.recorded_at,
-        commitDelivery: () => !signal.aborted && !sessionHasEnded(sessionId, env) && mayWake(),
-        writeGuard: { writable: () => !signal.aborted && !sessionHasEnded(sessionId, env) && mayWake(), remainingMs: () => WAKE_SEND_TIMEOUT_MS },
+        commitDelivery: () => !signal.aborted && !sessionHasEnded(sessionId, env),
+        writeGuard: { writable: () => !signal.aborted && !sessionHasEnded(sessionId, env), remainingMs: () => WAKE_SEND_TIMEOUT_MS },
       })
       return result.acknowledgement === 'delivered' ? 'written' : 'not-attempted'
     }, log, wake)
@@ -376,6 +367,12 @@ export function hasSessionInputs(sessionId: string, env: NodeJS.ProcessEnv, leas
   return answers.length + messages.length > 0
 }
 
+/** How many answers and notes wait for this session. */
+export function pendingInputCounts(sessionId: string, env: NodeJS.ProcessEnv, lease: DeliveryLease | null): { answers: number; messages: number } {
+  const { answers, messages } = pendingSessionInputs(sessionId, env, lease)
+  return { answers: answers.length, messages: messages.length }
+}
+
 /** Read-only under the state lock. Unknown cache state is not an empty inbox. */
 export function pendingInputRevisionIds(sessionId: string, env: NodeJS.ProcessEnv, lease: DeliveryLease | null, state?: SessionState): string[] | null {
   const cached = lease === null ? [] : readSessionMessageCache(sessionId, env, lease)
@@ -385,87 +382,6 @@ export function pendingInputRevisionIds(sessionId: string, env: NodeJS.ProcessEn
     ...answers.map(a => `answer:${a.pending.request_id!}:${a.replies.map(r => r.seq).join(',')}`),
     ...messages.map(m => `message:${m.message_id}`),
   ]
-}
-
-/** Optional exact queue integration. False means capability was unavailable
- * before election, so the existing supported CLI wake remains the fallback. */
-export async function wakeCodexSessionInputs(input: {
-  sessionId: string; env: NodeJS.ProcessEnv; lease: DeliveryLease
-  mayWrite(): boolean; mayWake(): boolean; unknownAllowed?(): boolean
-  connect?: typeof connectCodexQueue
-}): Promise<boolean> {
-  const owner = readSessionIncarnation(input.sessionId, input.env)
-  if (owner === null || owner.incarnation !== input.lease.incarnation || !input.mayWrite()) return true
-  const state = readSessionState(input.sessionId, input.env)
-  const generic = state.input_wake
-  if (generic?.incarnation === owner.incarnation) {
-    if (!generic.queued && generic.started_at !== undefined && Date.now() - generic.started_at >= LOST_WAKE_MS) return false
-    if (generic.queued || processIdentityLiveness(generic.writer) !== 'gone') return true
-  }
-  // A wake shown without its input handed in holds the queue wake as well.
-  if (inputWakeDeferred(state, Date.now())) return true
-  const initial = pendingInputRevisionIds(input.sessionId, input.env, input.lease)
-  if (initial === null || (initial.length === 0 && !readInputWakes(input).some(a => !['consumed', 'cancelled'].includes(a.phase)))) return true
-  const control = await (input.connect ?? connectCodexQueue)(input.sessionId, input.env, performance.now() + 2_000)
-  if (control === null) {
-    const pending = pendingInputRevisionIds(input.sessionId, input.env, input.lease)
-    return pending === null || readInputWakes(input).some(a => a.incarnation === owner.incarnation &&
-      !['consumed', 'cancelled'].includes(a.phase) && a.inputIds.some(id => pending.includes(id)))
-  }
-  try {
-    // Mutating lifecycle/attendant observers run outside the wake-state lock.
-    const allowed = input.mayWrite() && input.mayWake()
-    const native = () => {
-      const proof = readSessionState(input.sessionId, input.env).codex_native_turn
-      return proof?.key === owner.key ? readNativeTurnSnapshot(proof.transcript_path, input.sessionId, input.env) : null
-    }
-    const gate = { ...input, owner: { key: owner.key, incarnation: owner.incarnation, generation: input.lease.generation },
-      namespace: control.namespace, control, native,
-      pendingIds: () => {
-        const lease = readAttendantLease(input.sessionId, input.env)
-        return lease?.incarnation === input.lease.incarnation && lease.generation === input.lease.generation
-          ? pendingInputRevisionIds(input.sessionId, input.env, lease) : null
-      },
-      mayWake: () => { const observed = native(); return allowed && (observed === null ? input.unknownAllowed?.() === true : observed.latest.ended && nativeTurnContinues(input.sessionId, input.env, owner.key, observed)) },
-      text: (token: string) => sessionInputWake(token) }
-    detachInputWakes(gate)
-    await reconcileInputWakes(input, control)
-    if (!allowed || !input.mayWrite()) return true
-    const elected = electInputWake(gate) ?? await recoverUncertainInputWake(gate)
-    if (elected !== null) await admitInputWake({ ...gate, token: elected.token, control: {
-      ...control, add: async (token, text) => {
-        // Recovery may have awaited a native lookup. Refresh in-process lease
-        // authority at the actual byte boundary, outside every state lock.
-        if (!input.mayWrite() || !input.mayWake()) throw new CodexControlNotSent('Wake authorization changed before send')
-        return control.add(token, text)
-      },
-    } })
-    if (elected !== null && readInputWakes(input).some(attempt => attempt.token === elected.token && attempt.phase === 'unknown')) {
-      recordInputWakeFailure(input.sessionId, input.env, 'transport')
-    }
-    return true
-  } finally { control.close() }
-}
-
-/** Hook drains and the resident observer both call this bounded cleanup path.
- * It never elects a wake, claims input, or acquires the delivery sequencer. */
-export async function reconcileSessionInputWakes(sessionId: string, env: NodeJS.ProcessEnv, connect: typeof connectCodexQueue = connectCodexQueue): Promise<void> {
-  const scope = { sessionId, env }
-  const attempts = readInputWakes(scope)
-  if (!attempts.some(a => !['consumed', 'cancelled'].includes(a.phase))) return
-  const lease = readAttendantLease(sessionId, env)
-  // Losing the lease does not prove cached Session Messages disappeared.
-  if (lease !== null || attempts.every(a => a.generation === null)) {
-    detachInputWakes({ ...scope, pendingIds: () => {
-      const current = readAttendantLease(sessionId, env)
-      if (current?.incarnation !== lease?.incarnation || current?.generation !== lease?.generation) return null
-      return pendingInputRevisionIds(sessionId, env, current)
-    } })
-  }
-  if (!readInputWakes(scope).some(a => a.detached && !['consumed', 'cancelled'].includes(a.phase) && (a.nextCheckAt ?? 0) <= Date.now())) return
-  const control: QueueControl | null = await connect(sessionId, env, performance.now() + 750)
-  if (control === null) return
-  try { await reconcileInputWakes(scope, control) } finally { control.close() }
 }
 
 export interface PreparedInputAnswer {
@@ -679,15 +595,9 @@ async function drainSessionInputsOnce(input: {
 
 
 export async function drainSessionInputs(input: Parameters<typeof drainSessionInputsOnce>[0]): Promise<boolean> {
-  try {
-    const presented = await drainSessionInputsOnce(input)
-    // Input reached the agent: what remains is woken for promptly again.
-    if (presented) updateSessionState(input.sequencer.sessionId, input.sequencer.env, state =>
-      recoverInputWakeFault(clearUnansweredWakes(state), input.sequencer.wall()))
-    return presented
-  } finally {
-    // Delivery bookkeeping has released its sequencer before native cleanup.
-    await reconcileSessionInputWakes(input.sequencer.sessionId, input.sequencer.env)
-      .catch(() => undefined)
-  }
+  const presented = await drainSessionInputsOnce(input)
+  // Input reached the agent: what remains is woken for promptly again.
+  if (presented) updateSessionState(input.sequencer.sessionId, input.sequencer.env, state =>
+    recoverInputWakeFault(clearUnansweredWakes(state), input.sequencer.wall()))
+  return presented
 }

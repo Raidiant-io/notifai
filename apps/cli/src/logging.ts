@@ -151,6 +151,7 @@ export const LOG_EVENTS = [
   'delivery.claimed',
   /** How a claimed hand-off ended, and whether its outcome reached the service. */
   'delivery.handoff',
+  'delivery.overdue',
   /** The active file was rotated. Explains a gap to anyone reading backwards. */
   'log.rotated',
 ] as const

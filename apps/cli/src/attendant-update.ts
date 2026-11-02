@@ -6,11 +6,11 @@ import { spawn } from 'node:child_process'
 import { readFileSync } from 'node:fs'
 import { EXIT, log, type CommandDeps } from './commands-core.js'
 import { attendHook, attendantGates, attendantRuntimeRevision } from './commands-hook-attend.js'
-import { findNativeTranscript, nativeTranscriptOwned, recoverNativeTurnSnapshot } from './codex-native-turn.js'
+import { findNativeTranscript, nativeTranscriptOwned } from './codex-native-turn.js'
 import { lifecycleStamp, readSessionIncarnation, readSessionState, sessionHasEnded } from './hook-session-state.js'
 import { readClaimFile } from './hook-question-lock.js'
 import { processExecutableName, processIdentityLiveness } from './process-identity.js'
-import { attendantClaimPath, attendantStatusPath, codexNativeActivityObserved, listAttendantReports } from './session-attendant-state.js'
+import { attendantClaimPath, attendantStatusPath, codexTurnObserved, listAttendantReports } from './session-attendant-state.js'
 import { packageVersion } from './release.js'
 import { codexTrustProblems, findInstallations } from './install-hooks.js'
 
@@ -33,8 +33,6 @@ export async function resumeAttendantCommand(deps: CommandDeps, sessionId: strin
   if (transcript === null || !nativeTranscriptOwned(transcript, sessionId, deps.env)) return EXIT.failed
   const installations = findInstallations(deps.env, deps.hookAdapterHome, deps.hookPlatform).filter(entry => entry.harness === 'codex')
   if (installations.length === 0 || codexTrustProblems(installations, deps.env).length > 0) return EXIT.failed
-  await recoverNativeTurnSnapshot(transcript, sessionId, deps.env,
-    () => recoveryOwner(deps, sessionId, key) !== null)
   if (recoveryOwner(deps, sessionId, key) === null) return EXIT.failed
   const logger = log(deps)
   logger.bind({ session: sessionId })
@@ -42,7 +40,7 @@ export async function resumeAttendantCommand(deps: CommandDeps, sessionId: strin
   return attendHook(deps, {
     envelope: { session_id: sessionId, cwd: owned.cwd }, harness: 'codex', cwd: owned.cwd,
     invokedAt: lifecycleStamp(), logger,
-    recovery: { key, harnessProcess: owned.owner.harness_process!, transcriptPath: transcript },
+    recovery: { key, harnessProcess: owned.owner.harness_process! },
   })
 }
 
@@ -68,7 +66,7 @@ export async function activateInstalledAttendants(deps: CommandDeps, artifact: s
   return Promise.all(reports.map(async (report, index): Promise<AttendantActivation> => {
     const sessionId = report.session_id
     const result = (state: AttendantActivation['state']): AttendantActivation => ({
-      session_id: sessionId, state, native_activity: codexNativeActivityObserved(sessionId, deps.env),
+      session_id: sessionId, state, native_activity: codexTurnObserved(sessionId, deps.env),
     })
     const current = readSessionIncarnation(sessionId, deps.env)
     if (current === null || index >= 16) return result('pending')
@@ -77,9 +75,6 @@ export async function activateInstalledAttendants(deps: CommandDeps, artifact: s
     const claimFile = attendantClaimPath(sessionId, deps.env)
     const holder = readClaimFile(claimFile)
     if (attendantClaimMatches(holder, packageVersion(), reference)) {
-      const transcript = readSessionState(sessionId, deps.env).codex_native_turn?.transcript_path
-      if (transcript !== undefined) await recoverNativeTurnSnapshot(transcript, sessionId, deps.env,
-        () => recoveryOwner(deps, sessionId, current.key) !== null)
       if (recoveryOwner(deps, sessionId, current.key) === null) return result('pending')
       return result('current')
     }

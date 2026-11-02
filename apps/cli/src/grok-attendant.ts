@@ -87,6 +87,7 @@ export async function grokAttendHook(deps: CommandDeps, envelope: HookEnvelope, 
       serverSupportsAttendance: async api => (await api.compatibility()).server_capabilities.includes('session_attendance'),
       acceptsMessages: true,
       publishProbeStatus: true,
+      overdue: { env: deps.env, harness: 'grok', cwd, heldAnswers: true },
       onMessages: async (messages, attendant) => {
         const api = connect()
         if (api === null) return 'done'

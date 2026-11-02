@@ -107,10 +107,7 @@ export function olderHubWaits(env: NodeJS.ProcessEnv, status: Record<string, unk
     attended.set(sanitizeSessionId(id), id)
     // A wake it is writing into the session right now (Claude Code's inbox, a Codex thread's queue).
     const state = readSessionState(id, env)
-    if ((state.input_wake !== undefined && !state.input_wake.queued && state.input_wake.writer.pid === pid) ||
-        (state.input_wake_attempts ?? []).some((attempt) => attempt.writer.pid === pid && (attempt.phase === 'prepared' || attempt.phase === 'sending'))) {
-      waits.add('wake-writing')
-    }
+    if (state.input_wake !== undefined && !state.input_wake.queued && state.input_wake.writer.pid === pid) waits.add('wake-writing')
   }
   // The answer owners it runs: each holds its session's question claim.
   const directory = path.join(stateDir(env), 'sessions')

@@ -125,7 +125,7 @@ import { inferredProjectName, projectBinding, projectEnablementState } from './p
 import { attendantSupport } from './session-attendant-probe.js'
 import { readHubReport } from './hub-client.js'
 import { describeHubHandover, hubHandoverReport } from './hub-handover.js'
-import { codexNativeActivityObserved, hermesQuestionRouteReady, listAttendantReports, type AttendantReport } from './session-attendant-state.js'
+import { codexTurnObserved, hermesQuestionRouteReady, listAttendantReports, type AttendantReport } from './session-attendant-state.js'
 import { CLI_UPDATE_AVAILABLE, SERVICE_UPDATE_IN_PROGRESS } from './cli-contract.js'
 import {
   claudeCommandReadiness,
@@ -1963,12 +1963,12 @@ function hookChecks(deps: CommandDeps, codexTrust: CodexTrust): HookCheck[] {
   const firedState = firedPointer === null ? null : readSessionState(firedPointer.sessionId, deps.env)
   const promptFired = firedState?.last_prompt_at !== undefined
   if (active?.harness === 'codex') {
-    const observed = active.sessionId !== undefined && codexNativeActivityObserved(active.sessionId, deps.env)
+    const observed = active.sessionId !== undefined && codexTurnObserved(active.sessionId, deps.env)
     checks.push({
       name: 'hooks (native activity)', ok: observed, reportOnly: true,
       detail: observed
-        ? 'the current Codex native lifecycle agrees with this exact session activity record'
-        : 'current Codex lifecycle activation is unverified; installed files and historical callbacks do not prove that the running session uses them',
+        ? 'this Codex session\'s own hooks have reported its turns'
+        : 'this Codex session\'s hooks have not reported a turn yet; installed files and historical callbacks do not prove that the running session uses them',
     })
   }
   const stopFired = firedState?.last_stop_at !== undefined

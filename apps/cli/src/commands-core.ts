@@ -1,5 +1,4 @@
 import type { connectCodexAnswerControl } from './codex-answer-control.js'
-import type { connectCodexQueue } from './codex-queue-control.js'
 import { computerKey, computerPlatform } from './computer-identity.js'
 import type { ReadCodexDaemonVersion } from './codex-shared-server-health.js'
 import type { ListCodexHooks } from './codex-hooks-list.js'
@@ -121,7 +120,6 @@ export interface CommandDeps {
   attendant?: AttendantSeams
   /** Test seams for the Codex thread-writer probe and queue. */
   codexWake?: CodexWakeAdapters
-  codexQueueControl?: typeof connectCodexQueue
   /** Test seam for the ask-time native answer transport preflight. */
   codexAnswerControl?: typeof connectCodexAnswerControl
   /** Test seam for doctor's shared Codex app-server report. */

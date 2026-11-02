@@ -1,6 +1,5 @@
 import type { CodexTerminalObservation, CodexTerminalConflict } from './codex-terminal-answers.js'
 import type { RuntimeBuildReference } from './launch-self.js'
-import type { InputWakeAttempt } from './session-input-wakes.js'
 import type { NativeAnswerOperation } from './native-answer-operation.js'
 import type { CodexQuestionRegistration } from './codex-question-bindings.js'
 import type { ServiceIdentity } from './credentials.js'
@@ -257,6 +256,8 @@ export interface SessionState {
     queued_at?: number
     /** This wake already replaced one the harness accepted but never presented. */
     replacement?: boolean
+    /** Where the wake is stored (a Codex home). A session that moved never reads the old place. */
+    scope?: string
   }
   /**
    * Wakes the agent was shown since input was last handed in. Each costs a
@@ -266,7 +267,7 @@ export interface SessionState {
   input_wake_unanswered?: { count: number; presented_at: number }
   /** Durable diagnostic; answer text stays in the ordinary fenced input queue. */
   input_wake_fault?: {
-    kind: 'transport' | 'codex-check' | 'codex-attach'
+    kind: 'transport' | 'codex-check' | 'codex-attach' | 'overdue'
     attempts: number
     first_at: number
     last_at: number
@@ -277,8 +278,11 @@ export interface SessionState {
   /** Refused delivery waits for fresh attendance before scheduling another wake. */
   input_delivery_fenced?: { incarnation: string; generation: number }
   /** Exact Codex wake ownership, including detached reconciliation records. */
-  input_wake_attempts?: InputWakeAttempt[]
-  input_wake_recovery?: { incarnation: string; inputIds: string[] }
+  /**
+   * How long staged input has waited for this session, and whether the User has
+   * been told. Absent while nothing waits.
+   */
+  input_waiting?: { since: number; checked_at?: number; notified_at?: number }
   /**
    * Native-queue writes that committed, retained per request until the agent
    * acknowledges them. They never occupy the in-flight delivery slot or block

@@ -7,11 +7,11 @@ import { fileURLToPath } from 'node:url'
 import { afterEach,describe,expect,it,vi } from 'vitest'
 import { ApiCallError,createClient,type ApiClient } from './client.js'
 import { codexAnswerPresentation } from './codex-answer-presentation.js'
-import { codexInputObserver } from './codex-input-lifecycle.js'
+import { CODEX_WAKE_DELAY_MS, codexInputObserver } from './codex-input-lifecycle.js'
+import { recordCodexTurnEnd } from './commands-hook-attend.js'
 import { codexWakeRoute } from './codex-wake.js'
 import { readNativeQuestionSnapshot } from './codex-native-turn.js'
 import { nativeQuestionTitle,observeCodexQuestions } from './codex-question-bindings.js'
-import { type QueueControl } from './codex-queue-control.js'
 import { codexToolHookReady } from './codex-tool-messages.js'
 import type { CommandDeps } from './commands-core.js'
 import { hookRunCommand } from './commands-hook-run.js'
@@ -26,10 +26,10 @@ import { currentProcessIdentity } from './process-identity.js'
 import { buildProgram } from './program.js'
 import { enableProject,projectBinding } from './project-enablement.js'
 import { rootGuidanceDigest } from './session-activation.js'
-import { attendantClaimPath,currentCodexTurn,readTurnActivity,recordTurnEnd,recordTurnStart,turnActivityPath,writeAttendantStatus } from './session-attendant-state.js'
+import { attendantClaimPath,currentCodexTurn,observedCodexTurnActivity,recordTurnInterrupt,recordTurnStart,recordTurnStop,turnActivityPath,writeAttendantStatus } from './session-attendant-state.js'
 import { readDeliveryJournal } from './session-delivery.js'
-import { readInputWakes } from './session-input-wakes.js'
-import { drainSessionInputs,hasSessionInputs,inputWakeBackoffMs,readSessionMessages,sessionInputRoute,sessionInputWake,stageSessionMessages,wakeCodexSessionInputs,wakeSessionInputs } from './session-inputs.js'
+import { trackInputWaiting } from './input-overdue.js'
+import { drainSessionInputs,hasSessionInputs,inputWakeBackoffMs,inputWakeStored,readSessionMessages,sessionInputRoute,sessionInputWake,stageSessionMessages,wakeCodexSessionInputs,wakeSessionInputs } from './session-inputs.js'
 import { handOffSessionMessages } from './session-message-handoff.js'
 
 const roots: string[] = []
@@ -42,33 +42,81 @@ const note = (id: string): AttendanceMessage => ({ message_id: id, kind: 'note',
 
 it('hands a mid-turn note in at a tool boundary without leaving an empty wake for turn end', async () => {
   const h = setup()
-  let now = 0
-  // The prompt hook has seen the running turn, but its rollout is unavailable.
-  const observer = codexInputObserver(SESSION, h.env, h.incarnation.key, () => now,
-    undefined, () => true, () => true)
+  let wall = 1_000
+  const observer = codexInputObserver(SESSION, h.env, h.incarnation.key, () => true, () => true, () => wall)
   const queued: string[] = []
   const schedule = async () => {
+    trackInputWaiting(SESSION, h.env, hasSessionInputs(SESSION, h.env, h.lease), wall)
     if (hasSessionInputs(SESSION, h.env, h.lease) && observer.mayWake()) {
       await wakeSessionInputs(SESSION, h.env, async text => { queued.push(text); return 'written' })
     }
   }
   h.stage([note('sm_busy')])
   await schedule()
-  now = 6_001
+  wall += 6_001
   await schedule()
-  expect(observer.unknownAllowed()).toBe(false)
+  expect(observer.hold()).toBe('turn-running')
   await h.hook()
   expect(h.output.join('\n')).toContain('Read sm_busy')
-  recordTurnEnd(SESSION, h.env, 'turn-1')
+  recordTurnStop(SESSION, h.env, h.incarnation.key, 'turn-1')
   await schedule()
   // A queued prompt here would hit CODEX_EMPTY_WAKE_REASON after the tool drain.
   expect(queued).toEqual([])
   expect(hasSessionInputs(SESSION, h.env, h.lease)).toBe(false)
-  // An older session whose finished turn has no readable rollout keeps its
-  // bounded fallback for genuinely new idle input.
+  // New input for a session seen to have finished its turn wakes at once.
   h.stage([note('sm_idle')])
   await schedule()
   expect(queued).toHaveLength(1)
+})
+
+it('never holds input past the bound, whatever the turn record says', async () => {
+  const h = setup()
+  let wall = 1_000
+  const observer = codexInputObserver(SESSION, h.env, h.incarnation.key, () => true, () => true, () => wall)
+  h.stage([note('sm_stuck')])
+  trackInputWaiting(SESSION, h.env, true, wall)
+  // The record says the turn runs, as one whose end Notifai never saw would.
+  expect(observer.hold()).toBe('turn-running')
+  wall += CODEX_WAKE_DELAY_MS - 1
+  expect(observer.hold()).toBe('turn-running')
+  wall += 1
+  expect(observer.hold()).toBeNull()
+})
+
+it('writes a new wake when a session moved to another home, whose queue never read the old one', async () => {
+  const h = setup()
+  h.stage([note('sm_moved')])
+  const queued: string[] = []
+  const wake = (scope: string) => wakeSessionInputs(SESSION, h.env, async text => { queued.push(`${scope}:${text}`); return 'written' }, undefined, { scope })
+  await wake('home-a')
+  await wake('home-a')
+  expect(queued).toHaveLength(1)
+  const incarnation = h.incarnation.incarnation
+  expect(inputWakeStored(readSessionState(SESSION, h.env), incarnation, 'home-a')).toBe(true)
+  expect(inputWakeStored(readSessionState(SESSION, h.env), incarnation, 'home-b')).toBe(false)
+  await wake('home-b')
+  expect(queued).toHaveLength(2)
+  expect(queued[1]).toMatch(/^home-b:/)
+  expect(inputWakeStored(readSessionState(SESSION, h.env), incarnation, 'home-b')).toBe(true)
+})
+
+it('ends the turn from the Stop hook, and not from a subagent\'s', async () => {
+  const h = setup()
+  expect(observedCodexTurnActivity(SESSION, h.env, h.incarnation.key)).toBe('working')
+  await recordCodexTurnEnd({ session_id: SESSION, turn_id: 'turn-1', agent_id: 'child' }, h.env)
+  expect(observedCodexTurnActivity(SESSION, h.env, h.incarnation.key)).toBe('working')
+  await recordCodexTurnEnd({ session_id: SESSION, turn_id: 'turn-1' }, h.env)
+  expect(observedCodexTurnActivity(SESSION, h.env, h.incarnation.key)).toBe('idle')
+})
+
+it('holds no wake after an interrupt, when Codex would not run it, until the next prompt', () => {
+  const h = setup()
+  const observer = codexInputObserver(SESSION, h.env, h.incarnation.key, () => true, () => true)
+  h.stage([note('sm_interrupted')])
+  recordTurnInterrupt(SESSION, h.env, 'turn-1')
+  expect(observer.hold()).toBe('paused-after-interrupt')
+  recordTurnStart(SESSION, h.env, h.incarnation.key, 'turn-2')
+  expect(observer.hold()).toBe('turn-running')
 })
 
 it('delivers queued input and its durable wake fault on the next tool callback after a restart', async () => {
@@ -86,22 +134,17 @@ it('delivers queued input and its durable wake fault on the next tool callback a
   expect(h.output).toHaveLength(1)
 })
 
-it('stages an answer without an attendant and queues its fallback only after the running turn ends', async () => {
+it('stages an answer with no attendant to wake it and queues its wake at once, even mid-turn', async () => {
   const h = setup()
   const { answer } = reserveBinding(h)
   const accepted = { recorded_at: Date.now(), answers: [answer], remaining: 0 }
   const queued: string[] = []
   const route = sessionInputRoute(SESSION, h.env, codexWakeRoute({ threadId: SESSION, cwd: h.deps.cwd, env: h.env,
     adapters: { queue: async (_id, _cwd, text) => { queued.push(text) } } }))
-  const stage = async () => {
-    updateSessionState(SESSION, h.env, state => ({ ...state, accepted }))
-    await route.defer!(accepted)
-  }
-  await stage()
+  updateSessionState(SESSION, h.env, state => ({ ...state, accepted }))
+  await route.defer!(accepted)
   expect(readSessionState(SESSION, h.env).waiting_answers).toHaveLength(1)
-  expect(queued).toEqual([])
-  recordTurnEnd(SESSION, h.env, 'turn-1')
-  await stage()
+  // Nothing else would wake it; Codex stores the wake until the turn ends.
   expect(queued).toHaveLength(1)
   expect(queued[0]).not.toContain(answer.reply.text)
 })
@@ -381,8 +424,8 @@ describe('Codex tool-boundary Session Messages', () => {
     expect(readFileSync(turnActivityPath(SESSION, h.env), 'utf8')).toBe(beforeTurns)
     expect(currentCodexTurn(SESSION, h.env, h.incarnation.key)).toBe('turn-1')
     expect(codexToolHookReady(h.deps, SESSION)).toBe(false)
-    recordTurnEnd(SESSION, h.env, 'turn-1')
-    expect(readTurnActivity(SESSION, h.env, h.incarnation.key)).toBe('idle')
+    recordTurnStop(SESSION, h.env, h.incarnation.key, 'turn-1')
+    expect(observedCodexTurnActivity(SESSION, h.env, h.incarnation.key)).toBe('idle')
     expect(readSessionMessages(SESSION, h.env, h.lease)).toHaveLength(1)
   })
 
@@ -460,7 +503,7 @@ describe('Codex tool-boundary Session Messages', () => {
   it('rejects stale turns, foreign owners, generations, and ended sessions', async () => {
     const h = setup()
     h.stage([note('sm_stale')])
-    recordTurnEnd(SESSION, h.env, 'old-turn')
+    recordTurnInterrupt(SESSION, h.env, 'old-turn')
     await h.hook('old-turn')
     h.deps.env['NOTIFAI_HOOK_SOURCE_PID'] = '1'
     await h.hook()
@@ -475,7 +518,7 @@ describe('Codex tool-boundary Session Messages', () => {
   it('releases a claim if an interruption occurs during the network claim', async () => {
     const h = setup()
     h.stage([note('sm_interrupt')])
-    h.duringClaim(() => recordTurnEnd(SESSION, h.env, 'turn-1'))
+    h.duringClaim(() => recordTurnInterrupt(SESSION, h.env, 'turn-1'))
     await h.hook()
     expect(h.output).toEqual([])
     expect(h.reports).toEqual(['released'])
@@ -501,50 +544,6 @@ describe('Codex tool-boundary Session Messages', () => {
   })
 })
 
-
-function ownedWakeHarness() {
-  const h = setup()
-  const transcript = path.join(h.env.CODEX_HOME, 'sessions', 'owned-wake.jsonl')
-  mkdirSync(path.dirname(transcript), { recursive: true })
-  const lifecycle = (ended: boolean) => {
-    writeFileSync(transcript, [
-      { type: 'session_meta', payload: { id: SESSION, source: 'cli' } },
-      { type: 'event_msg', payload: { type: 'task_started', turn_id: 'turn-1' } },
-      ...(ended ? [{ type: 'event_msg', payload: { type: 'task_complete', turn_id: 'turn-1' } }] : []),
-    ].map(row => JSON.stringify(row)).join('\n') + '\n')
-    updateSessionState(SESSION, h.env, state => ({ ...state,
-      codex_native_turn: { key: h.incarnation.key, turn_id: 'turn-1', transcript_path: transcript, observed_at: Date.now() } }))
-  }
-  lifecycle(true)
-  const queue = new Map<string, { token: string; text: string }>()
-  let adds = 0
-  const control: QueueControl = { namespace: h.env.CODEX_HOME, threadId: SESSION,
-    add: async (token, text) => { const id = 'owned-' + ++adds; queue.set(id, { token, text }); return id },
-    find: async (token, text) => {
-      const match = [...queue].find(([, v]) => v.token === token && v.text === text)
-      return match === undefined ? 'absent' : { id: match[0] }
-    },
-    remove: async id => queue.delete(id), close: () => {},
-  }
-  const schedule = (backend: QueueControl | null = control, options: { mayWrite?: () => boolean; mayWake?: () => boolean } = {}) => wakeCodexSessionInputs({ sessionId: SESSION, env: h.env,
-    lease: h.lease, mayWrite: options.mayWrite ?? (() => true), mayWake: options.mayWake ?? (() => true), connect: async () => backend })
-  return { ...h, control, queue, transcript, lifecycle, schedule, adds: () => adds,
-    wakes: () => readInputWakes({ sessionId: SESSION, env: h.env }) }
-}
-
-it('rechecks in-process authorization after an awaited recovery lookup', async () => {
-  const h = ownedWakeHarness(); h.stage([note('sm_lease')])
-  await h.schedule({ ...h.control, add: async () => { throw new Error('uncertain') } })
-  await h.schedule() // establish the native uncertainty baseline
-  appendFileSync(h.transcript, [
-    { type: 'event_msg', payload: { type: 'task_started', turn_id: 'turn-2' } },
-    { type: 'event_msg', payload: { type: 'task_complete', turn_id: 'turn-2' } },
-  ].map(row => JSON.stringify(row)).join('\n') + '\n')
-  let authorized = true
-  await h.schedule({ ...h.control, find: async () => { authorized = false; return 'absent' } }, { mayWrite: () => authorized })
-  expect(h.adds()).toBe(0)
-  expect(h.wakes().some(a => a.phase === 'cancelled')).toBe(true)
-})
 
 describe('wakes after a drain that hands nothing in', () => {
   // A service error or outage: every claim fails, so a shown wake hands nothing in.

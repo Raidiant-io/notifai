@@ -310,7 +310,7 @@ static int connect_unix(const char *path, int timeout_ms) {
 /* ---- the child's own state ------------------------------------------------ */
 
 typedef struct {
-    char session[512], harness[16], event[64], source[64], cwd[PATH_MAX], transcript[PATH_MAX];
+    char session[512], harness[16], event[64], turn[128], source[64], cwd[PATH_MAX], transcript[PATH_MAX];
     char state[PATH_MAX], run[PATH_MAX], socket_path[PATH_MAX], self[PATH_MAX];
     char harness_start[192], harness_ticks[32], boot[128];
     char inbox_socket[PATH_MAX], token[1024];
@@ -804,6 +804,7 @@ static void child_hint(child_state *child) {
     jb_field(&body, "type", "hint");
     jb_field(&body, "session_id", child->session);
     jb_field(&body, "hook_event", child->event);
+    if (child->turn[0]) jb_field(&body, "turn_id", child->turn);
     /* The process this hook ran in: a SessionStart says it (re)opened the conversation. */
     if (child->harness_pid > 1) jb_number(&body, "harness_pid", child->harness_pid);
     jb_text(&body, "}");
@@ -836,6 +837,7 @@ static int session_child_main(int argc, char **argv, const char *self, const cha
         return 0;
     }
     json_field(input, length, "hook_event_name", child.event, sizeof(child.event));
+    json_field(input, length, "turn_id", child.turn, sizeof(child.turn));
     json_field(input, length, "source", child.source, sizeof(child.source));
     json_field(input, length, "cwd", child.cwd, sizeof(child.cwd));
     json_field(input, length, "transcript_path", child.transcript, sizeof(child.transcript));

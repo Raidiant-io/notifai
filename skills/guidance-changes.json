@@ -1,5 +1,5 @@
 {
-  "current": "95a6730cd17d6de51477489a8abb34d08c977ddb64009a50960560b7ef6230c1",
+  "current": "6007a987ac7ecb7817870391aca4e18f8f2b9dc6e46d28c4d3a6e45b1f00e53d",
   "releases": [
     {
       "digest": "3e47b01bc6bbfb43e910c660b9964fab6459d75148c3c02dcbcd0be64cfb2963",
@@ -304,6 +304,10 @@
     {
       "digest": "95a6730cd17d6de51477489a8abb34d08c977ddb64009a50960560b7ef6230c1",
       "note": "When `notifai project enable`, `init`, `send` or `ask` says a new Project has no display name, run the one command it prints once, e.g. `notifai project set --name 'The Beacon'`: the product's own name, 1-3 words in title case, no \"Project\" or \"App\" suffix. Add `--icon <id>` only if an icon obviously fits (`notifai project icons` lists them); never pick a colour or design an avatar. If a name or avatar is already set, leave it; `--replace` only when the User asked in this conversation."
+    },
+    {
+      "digest": "6007a987ac7ecb7817870391aca4e18f8f2b9dc6e46d28c4d3a6e45b1f00e53d",
+      "note": "In Codex, an answer or note that arrives mid-turn still reaches you at your next tool call or when the turn ends. If a turn runs past a minute without either, Notifai queues a wake with nothing in it, so you may see one \"Blocked by hook\" line after the input has already reached you; that line is harmless. If input stays undelivered for several minutes, on any harness, Notifai tells the User directly. Nothing changes in what you do."
     }
   ]
 }

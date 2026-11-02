@@ -1,6 +1,6 @@
 import { releaseCodexCardHandbacks } from './codex-card-handback.js'
 import { nativeInstallationIdentity } from './native-installation-identity.js'
-import { WAKE_SEND_TIMEOUT_MS, hasSessionInputs, inputWakeDeferred, inputWakeOverdue, stageSessionMessages, wakeSessionInputs, wakeCodexSessionInputs, reconcileSessionInputWakes } from './session-inputs.js'
+import { WAKE_SEND_TIMEOUT_MS, hasSessionInputs, inputWakeDeferred, inputWakeOverdue, inputWakeStored, pendingInputCounts, stageSessionMessages, wakeSessionInputs } from './session-inputs.js'
 /**
  * `notifai hook attend`: the asynchronous handler that becomes an Agent
  * Session's Session Attendant, or exits within milliseconds when a healthy
@@ -66,9 +66,10 @@ import {
   attendantStatusPath,
   observedCodexTurnActivity,
   readAttendantLease,
-  recordTurnEnd,
+  recordCodexNativeTurn,
+  recordTurnInterrupt,
+  recordTurnStop,
   recordTurnStart,
-  reconcileNativeTurn,
   turnActivityPath,
   writeAttendantStatus,
 } from './session-attendant-state.js'
@@ -76,7 +77,7 @@ import { CLI_PACKAGE_NAME } from './cli-contract.js'
 import { claudeInboxAuth, inspectClaudeInbox, systemClaudeWakeAdapters, type ClaudeWakeAdapters } from './claude-wake.js'
 import { currentProcessIdentity } from './process-identity.js'
 import type { DeliveryLease, SequencerDeps } from './session-delivery.js'
-import { inspectCodexQueue, systemCodexWakeAdapters, type CodexWakeAdapters } from './codex-wake.js'
+import { codexHome, inspectCodexQueue, systemCodexWakeAdapters, type CodexWakeAdapters } from './codex-wake.js'
 import { claudeSourceDescriptor, deliverIntoClaudeSession, deliverIntoCodexThread } from './session-handoff.js'
 import { handOffSessionMessages, type MessageHandOffResult } from './session-message-handoff.js'
 import { compareVersions } from './version.js'
@@ -84,9 +85,9 @@ import { readOpenclawGeneration } from './openclaw-generation.js'
 import { awaitOpenclawGeneration, openclawGenerationMarker } from './openclaw-generation-marker.js'
 import { integrationFaultNotice } from './integration-health.js'
 import { openclawBridgeActivity, openclawMessageBridge, openclawMessageBridgeAvailable } from './openclaw-message-bridge.js'
-import { readNativeTurnSnapshot } from './codex-native-turn.js'
 import { buildIdentity } from './distribution.js'
-import { codexInputObserver, refreshCodexInputActivity } from './codex-input-lifecycle.js'
+import { codexInputObserver } from './codex-input-lifecycle.js'
+import { requestHub } from './hub-ipc.js'
 import { claudePickerHolds } from './claude-question-hooks.js'
 
 // Captured when this module loads, so an in-place build cannot make a resident
@@ -145,7 +146,7 @@ export async function attendHook(
     invokedAt: LifecycleStamp
     logger: Logger
     /** Explicit updater recovery, never a fabricated native hook invocation. */
-    recovery?: { key: string; harnessProcess: ProcessIdentity; transcriptPath: string }
+    recovery?: { key: string; harnessProcess: ProcessIdentity }
   },
 ): Promise<number> {
   const { envelope, harness, cwd, logger } = input
@@ -188,28 +189,17 @@ export async function attendHook(
       (input.recovery === undefined || current.key === input.recovery.key) &&
       !happenedBefore(input.invokedAt, current.start) && !sessionHasEnded(sessionId, deps.env)
   }
-  const observeNative = (key: string, initial = false): void => {
+  const observeNative = (key: string): void => {
     if (!ownsNative(key)) return
-    if (envelope.hook_event_name === 'Stop') {
-      refreshCodexInputActivity(sessionId, deps.env, key, envelope.transcript_path)
-      return
-    }
-    if (envelope.hook_event_name === 'Interrupt') {
-      releaseCodexCardHandbacks(sessionId, deps.env, envelope, 'interrupt')
-      recordCodexTurnEnd(envelope, sessionId, deps.env)
-      return
-    }
-    if (!initial && envelope.hook_event_name !== 'UserPromptSubmit' && input.recovery === undefined) return
-    const native = readNativeTurnSnapshot(input.recovery?.transcriptPath ?? envelope.transcript_path, sessionId, deps.env)
-    const turnId = envelope.turn_id ?? (initial || input.recovery !== undefined ? native?.latest.id : undefined)
-    if (native === null || turnId === undefined) return
+    const turnId = envelope.turn_id
+    if (typeof turnId !== 'string' || turnId === '') return
     try {
-      if (reconcileNativeTurn(sessionId, deps.env, key, turnId, native, () => ownsNative(key), initial)) {
-        updateSessionState(sessionId, deps.env, state => ({ ...state, codex_native_turn: {
-          key, turn_id: turnId, transcript_path: native.file,
-        } }))
-      }
-    } catch { /* A busy observation lock must not cost this session its attendant. */ }
+      if (envelope.hook_event_name === 'Stop') recordTurnStop(sessionId, deps.env, key, turnId)
+      else if (envelope.hook_event_name === 'Interrupt') {
+        releaseCodexCardHandbacks(sessionId, deps.env, envelope, 'interrupt')
+        recordTurnInterrupt(sessionId, deps.env, turnId)
+      } else if (envelope.hook_event_name === 'UserPromptSubmit') recordCodexNativeTurn(sessionId, deps.env, key, turnId, envelope.transcript_path)
+    } catch { /* Activity is a hint; a busy lock must not cost this session its attendant. */ }
   }
   // Claude Code runs a root hook from the session's own process. A subagent's
   // event, another process, or a hook that predates this incarnation is not
@@ -314,7 +304,7 @@ export async function attendHook(
     }),
   )
   if (record === null || (input.recovery !== undefined && !ownsNative(record.key))) return end('ignored', { reason: 'recovery-owner-changed' })
-  if (harness === 'codex' && starting) observeNative(record.key, true)
+  if (harness === 'codex' && starting) observeNative(record.key)
 
   const runtimeBuild = currentRuntimeBuild(deps.env)
   retainSessionRuntime(sessionId, deps.env, runtimeBuild)
@@ -348,7 +338,7 @@ export async function attendHook(
 
   const served = record
   const codexActivity = harness === 'codex'
-    ? codexInputObserver(sessionId, deps.env, served.key, clock.monotonic, input.recovery?.transcriptPath ?? envelope.transcript_path)
+    ? codexInputObserver(sessionId, deps.env, served.key)
     : null
   const probeAdapters = seams.probeAdapters ?? systemClaudeProbeAdapters(deps.env)
   // SessionEnd names the incarnation it ended; an end of any other one,
@@ -359,13 +349,8 @@ export async function attendHook(
       ? codexAttendanceProbe({
           harness: harnessProcess,
           endedByHook,
-          activity: () => {
-            // Presence remains live through a read gap. The binary service
-            // activity is last-observed; scheduling reads afresh.
-            const activity = codexActivity!.observe()
-            if (activity === 'unknown') logger.debug('attendant.state', { activity: 'cached', reason: 'native-activity-unreadable' })
-            return observedCodexTurnActivity(sessionId, deps.env, served.key)
-          },
+          // No turn seen yet (a resumed conversation before its first prompt) is idle.
+          activity: () => observedCodexTurnActivity(sessionId, deps.env, served.key) ?? 'idle',
           adapters: probeAdapters,
         })
       : harness === 'openclaw'
@@ -408,10 +393,8 @@ export async function attendHook(
     logger,
     mayWake: codexWakeNeeded ?? (() => true),
     settledIdle,
-    unknownAllowed: codexActivity?.unknownAllowed ?? (() => false),
     inboxSettleMs: seams.inboxSettleMs ?? CLAUDE_INBOX_SETTLE_MS,
   })
-  let wakeCleanup: Promise<void> | null = null
   const signals = seams.signalled === undefined ? terminationSignal() : null
   const handover = harness === 'openclaw' && seams.handedOver === undefined ? openclawHandoverSignal() : null
   const handedOver = harness !== 'openclaw' ? undefined : seams.handedOver ?? handover!.promise
@@ -444,6 +427,8 @@ export async function attendHook(
       // The service accepts notes for this session only while an attendant
       // that can hand them in place says so.
       acceptsMessages: messages !== null,
+      overdue: { env: deps.env, harness: harness!, cwd: envelope.cwd ?? cwd, heldAnswers: harness === 'openclaw',
+        ...(harness === 'claude-code' ? { excludeAnswers: () => claudePickerHolds(readSessionState(sessionId, deps.env)) } : {}) },
       ...(harness === 'claude-code' && messages !== null ? {
         localInputPending: () => {
           const state = readSessionState(sessionId, deps.env)
@@ -456,7 +441,9 @@ export async function attendHook(
       ...(codexWakeNeeded === null ? {} : {
         localInputPending: () => {
           const state = readSessionState(sessionId, deps.env)
-          return !state.input_wake?.queued && !inputWakeDeferred(state, clock.wall()) &&
+          const stored = inputWakeStored(state, readSessionIncarnation(sessionId, deps.env)?.incarnation ?? '', codexHome(deps.env))
+          return (!stored || (settledIdle() && inputWakeOverdue(state, clock.wall()))) &&
+            !inputWakeDeferred(state, clock.wall()) &&
             hasSessionInputs(sessionId, deps.env, readAttendantLease(sessionId, deps.env)) && codexWakeNeeded()
         },
       }),
@@ -474,10 +461,6 @@ export async function attendHook(
       onProbe: (observed) => {
         if (observed.state === 'running' && observed.activity === 'idle') idleSince ??= clock.monotonic()
         else idleSince = null
-        if (harness === 'codex' && wakeCleanup === null) {
-          wakeCleanup = reconcileSessionInputWakes(sessionId, deps.env, deps.codexQueueControl)
-            .catch(() => undefined).finally(() => { wakeCleanup = null })
-        }
         // Observe locally without consuming the agent's next context notice.
         // This catches removal of the very hook that would report the fault.
         const notice = integrationFaultNotice({ ...deps, cwd: envelope.cwd ?? cwd, now: () => clock.wall() }, harness, false)
@@ -543,7 +526,6 @@ async function sessionMessageWriter(input: {
   mayWake: () => boolean
   /** Whether the session has been idle long enough to have shown an accepted wake. */
   settledIdle: () => boolean
-  unknownAllowed: () => boolean
   inboxSettleMs: number
 }): Promise<SessionMessageWriter | null> {
   const { deps, sessionId, harnessPid, writer, clock, logger } = input
@@ -558,7 +540,7 @@ async function sessionMessageWriter(input: {
     writer,
     log: logger,
   })
-  if (input.harness === 'codex') return codexMessageWriter({ deps, sessionId, cwd: input.cwd, logger, mayWake: input.mayWake, unknownAllowed: input.unknownAllowed })
+  if (input.harness === 'codex') return codexMessageWriter({ deps, sessionId, cwd: input.cwd, logger, mayWake: input.mayWake, settledIdle: input.settledIdle })
   if (input.harness === 'openclaw') {
     if (!openclawMessageBridgeAvailable(deps.env)) return null
     const generation = readOpenclawGeneration(sessionId, deps.env)
@@ -623,7 +605,7 @@ function codexMessageWriter(input: {
   cwd: string
   logger: Logger
   mayWake: () => boolean
-  unknownAllowed: () => boolean
+  settledIdle: () => boolean
 }): SessionMessageWriter | null {
   const { deps, sessionId, cwd, logger, mayWake } = input
   const queue = inspectCodexQueue(sessionId, deps.env)
@@ -642,12 +624,6 @@ function codexMessageWriter(input: {
     const generation = attendant.generation()
     if (incarnation === null || generation === null || !attendant.mayWrite()) return 'retry-soon'
     stageSessionMessages(sessionId, deps.env, { incarnation: attendant.incarnation(), generation }, batch)
-    if (await wakeCodexSessionInputs({ sessionId, env: deps.env,
-      lease: { incarnation: attendant.incarnation(), generation },
-      mayWrite: () => attendant.mayWrite(), mayWake,
-      unknownAllowed: input.unknownAllowed,
-      ...(deps.codexQueueControl === undefined ? {} : { connect: deps.codexQueueControl }),
-    })) return 'done'
     if (!hasSessionInputs(sessionId, deps.env, { incarnation: attendant.incarnation(), generation })) return 'done'
     if (!mayWake()) return 'done'
     // The resident observes completion even when no further tool runs. Recheck
@@ -664,20 +640,8 @@ function codexMessageWriter(input: {
           hasSessionInputs(sessionId, deps.env, { incarnation: attendant.incarnation(), generation }),
       })
       return result.status === 'written' || result.status === 'failed' ? result.status : 'not-attempted'
-    }, logger)
+    }, logger, { scope: codexHome(deps.env), replaceLost: input.settledIdle })
     return 'done'
-  }
-}
-
-/** Record the Codex turn this turn end or interrupt closes. */
-function recordCodexTurnEnd(envelope: HookEnvelope, sessionId: string, env: NodeJS.ProcessEnv): void {
-  const turnId = envelope.turn_id
-  const event = envelope.hook_event_name
-  if (typeof turnId !== 'string' || turnId === '' || (event !== 'Stop' && event !== 'Interrupt')) return
-  try {
-    recordTurnEnd(sessionId, env, turnId)
-  } catch {
-    // Activity is a hint; a busy lock never costs the session its attendant.
   }
 }
 
@@ -692,9 +656,34 @@ export function recordCodexTurnStart(envelope: HookEnvelope, env: NodeJS.Process
   if (sessionId === undefined || typeof turnId !== 'string' || turnId === '') return
   try {
     const current = readSessionIncarnation(sessionId, env)
-    if (current !== null) recordTurnStart(sessionId, env, current.key, turnId)
+    if (current === null) return
+    recordTurnStart(sessionId, env, current.key, turnId)
+    recordCodexNativeTurn(sessionId, env, current.key, turnId, envelope.transcript_path)
   } catch {
     // Activity is a hint; it never delays or fails the User's prompt.
+  }
+}
+
+/**
+ * Record the Codex turn this Stop ends. The hub's session child does not start
+ * the runtime, so this hook is what tells it. Input may be waiting for exactly
+ * this, so it says so at once instead of leaving it to the next periodic check.
+ * Never throws.
+ */
+export async function recordCodexTurnEnd(envelope: HookEnvelope, env: NodeJS.ProcessEnv): Promise<void> {
+  const sessionId = envelope.session_id
+  const turnId = envelope.turn_id
+  if (sessionId === undefined || typeof turnId !== 'string' || turnId === '' ||
+      envelope.agent_id !== undefined || envelope.agent_type !== undefined) return
+  try {
+    const current = readSessionIncarnation(sessionId, env)
+    if (current === null) return
+    recordTurnStop(sessionId, env, current.key, turnId)
+    if (readSessionState(sessionId, env).input_waiting !== undefined) {
+      await requestHub(env, { type: 'hint', session_id: sessionId }, { role: 'hint', timeoutMs: 300 })
+    }
+  } catch {
+    // Activity is a hint; the periodic check still finds the turn over or the bound passed.
   }
 }
 

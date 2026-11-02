@@ -1,5 +1,9 @@
 import type { AttendanceRequestT,AttendanceResponse } from '@raidiant/notifai-protocol'
-import { describe,expect,it } from 'vitest'
+import { mkdtempSync,rmSync } from 'node:fs'
+import os from 'node:os'
+import path from 'node:path'
+import { describe,expect,it,vi } from 'vitest'
+import { INPUT_OVERDUE_MS } from './input-overdue.js'
 import { ApiCallError,type ApiClient } from './client.js'
 import { nullLogger } from './logging.js'
 import {
@@ -148,7 +152,7 @@ interface Harness {
 
 function startAttendant(overrides: Partial<SessionAttendantOptions> = {}, initial: Partial<Harness> = {}): Harness {
   const clock = new VirtualClock()
-  const service = new FakeService()
+  const service = initial.service ?? new FakeService()
   let signal!: () => void
   const signalled = new Promise<void>((resolve) => {
     signal = resolve
@@ -200,6 +204,27 @@ function startAttendant(overrides: Partial<SessionAttendantOptions> = {}, initia
 }
 
 describe('Session Attendant', () => {
+  it('tells the User once when a writer keeps not taking a note the service offers', async () => {
+    const root = mkdtempSync(path.join(os.tmpdir(), 'notifai-attendant-overdue-'))
+    const env = { HOME: path.join(root, 'home'), XDG_CONFIG_HOME: path.join(root, 'config'), XDG_STATE_HOME: path.join(root, 'state') }
+    const submit = vi.fn(async () => ({ request_id: 'req_x' }))
+    const service = new FakeService()
+    const client = { ...service.client(), submit } as unknown as ApiClient
+    try {
+      const h = startAttendant({ acceptsMessages: true, onMessages: async () => 'done', client: () => client,
+        overdue: { env, harness: 'grok', cwd: root, heldAnswers: true } }, { service })
+      await h.clock.advance(1)
+      h.service.last().respond({ ...h.service.attending(1, 3_600_000), messages: [
+        { message_id: 'sm_1', created_at: 'x', agent_acknowledgement_text_required: true, kind: 'note', body: 'hi' }] })
+      await h.clock.advance(INPUT_OVERDUE_MS + 60_000)
+      expect(submit).toHaveBeenCalledTimes(1)
+      await h.clock.advance(INPUT_OVERDUE_MS)
+      expect(submit).toHaveBeenCalledTimes(1)
+      h.signal()
+      await h.result
+    } finally { rmSync(root, { recursive: true, force: true }) }
+  })
+
   it('stays dormant with no network call until the session notifies', async () => {
     const h = startAttendant({}, { notified: false })
     await h.clock.advance(60_000)

@@ -4,7 +4,7 @@ import type { QuestionT, ReplyAnswerT } from '@raidiant/notifai-protocol'
 import type { ServiceIdentity } from './credentials.js'
 import type { PendingQuestion, SessionState } from './hook-types.js'
 import type { NativeTurnSnapshot } from './codex-native-turn.js'
-import { readNativeTurnSnapshot } from './codex-native-turn.js'
+import { readNativeTurnTail } from './codex-native-turn.js'
 import { readSessionIncarnation, sessionHasEnded } from './hook-session-state.js'
 import { currentCodexTurn } from './session-attendant-state.js'
 import { processIdentityLiveness } from './process-identity.js'
@@ -83,7 +83,7 @@ export function currentCodexQuestionContext(state: SessionState, sessionId: stri
       owner.harness_process === undefined || processIdentityLiveness(owner.harness_process) !== 'alive' ||
       state.codex_tool_hook?.incarnation !== owner.incarnation || state.codex_tool_hook.root_observed?.turn_id !== proof.turn_id ||
       currentCodexTurn(sessionId, env, owner.key) !== proof.turn_id) return null
-  const snapshot = readNativeTurnSnapshot(proof.transcript_path, sessionId, env)
+  const snapshot = readNativeTurnTail(proof.transcript_path, sessionId, env)
   if (snapshot === null || snapshot.latest.id !== proof.turn_id || snapshot.latest.ended) return null
   return { owner_key: owner.key, snapshot }
 }

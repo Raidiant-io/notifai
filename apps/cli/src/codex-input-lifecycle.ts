@@ -1,37 +1,24 @@
-/** Exact native activity used by the existing input scheduler. */
-import { readNativeTurnSnapshot } from './codex-native-turn.js'
+/** When a staged answer or note may be woken into a Codex session. */
 import { codexHostKind, type CodexHostKind } from './codex-session-end.js'
-import { readSessionIncarnation, readSessionState, sessionHasEnded, updateSessionState } from './hook-session-state.js'
+import { readSessionIncarnation, readSessionState, sessionHasEnded } from './hook-session-state.js'
 import { processIdentityLiveness, type ProcessIdentity } from './process-identity.js'
-import { observedCodexTurnActivity, reconcileNativeTurn } from './session-attendant-state.js'
+import { codexTurnInterrupted, observedCodexTurnActivity } from './session-attendant-state.js'
 
-export type CodexInputActivity = 'working' | 'idle' | 'aborted' | 'unknown'
+/**
+ * The longest a running turn delays a wake. Hooks hand input in during a turn,
+ * and a wake written meanwhile would only be blocked later, so waiting avoids
+ * that noise. It is never more than a delay: `codex queue` is safe at any moment
+ * (Codex stores the wake until the turn ends), and the running turn may be a
+ * hook Notifai never saw end.
+ */
+export const CODEX_WAKE_DELAY_MS = 60_000
 
-/** Never infers idle from missing callbacks or a Stop hook. */
-export function refreshCodexInputActivity(
-  sessionId: string, env: NodeJS.ProcessEnv, expectedKey: string, transcriptPath?: string,
-  /** Kernel evidence the harness still runs; the hub's session child supplies it without spawning `ps`. */
-  alive: (owner: ProcessIdentity) => boolean = (owner) => processIdentityLiveness(owner) === 'alive',
-): CodexInputActivity {
-  const owner = readSessionIncarnation(sessionId, env)
-  const owns = (): boolean => owner !== null && owner.key === expectedKey && !sessionHasEnded(sessionId, env) &&
-    readSessionIncarnation(sessionId, env)?.key === expectedKey &&
-    readSessionIncarnation(sessionId, env)?.incarnation === owner.incarnation &&
-    owner.harness_process !== undefined && alive(owner.harness_process)
-  if (!owns() || owner === null) return 'unknown'
-  const proof = readSessionState(sessionId, env).codex_native_turn
-  const file = transcriptPath ?? (proof?.key === owner.key ? proof.transcript_path : undefined)
-  const native = readNativeTurnSnapshot(file, sessionId, env)
-  if (native === null) return 'unknown'
-  try {
-    if (!reconcileNativeTurn(sessionId, env, owner.key, native.latest.id, native, owns)) return 'unknown'
-    updateSessionState(sessionId, env, state => !owns() ? state : ({ ...state, codex_native_turn: {
-      key: owner.key, turn_id: native.latest.id, transcript_path: native.file, observed_at: Date.now(),
-    } }))
-  } catch { return 'unknown' }
-  if (!owns()) return 'unknown'
-  return native.latest.ended ? native.latest.outcome === 'aborted' ? 'aborted' : 'idle' : 'working'
-}
+/** Why a wake is not being written right now. Each is logged when it starts. */
+export type CodexWakeHold =
+  | 'session-gone'
+  | 'host-not-showing'
+  | 'turn-running'
+  | 'paused-after-interrupt'
 
 /**
  * The idle-wake rule without a way to tell whether a terminal shows the
@@ -54,39 +41,27 @@ export function hostKindIdleWake(hostKind: (pid: number) => CodexHostKind = code
   }
 }
 
-/** One observer owns the grace interval across probes and final wake checks.
- * Only a continuous read failure permits the bounded queue fallback.
- * `idleWake` decides whether an idle thread on its current host may be woken. */
+/** One session's wake rule. `idleWake` decides whether its current host may be woken. */
 export function codexInputObserver(
-  sessionId: string, env: NodeJS.ProcessEnv, expectedKey: string, monotonic: () => number,
-  transcriptPath?: string,
+  sessionId: string, env: NodeJS.ProcessEnv, expectedKey: string,
   alive: (owner: ProcessIdentity) => boolean = (owner) => processIdentityLiveness(owner) === 'alive',
   idleWake: (owner: ProcessIdentity) => boolean = hostKindIdleWake(),
-): { observe: () => CodexInputActivity; mayWake: () => boolean; unknownAllowed: () => boolean } {
-  let unknownSince: number | undefined
-  const observe = (): CodexInputActivity => {
-    const activity = refreshCodexInputActivity(sessionId, env, expectedKey, transcriptPath, alive)
-    if (activity === 'unknown') unknownSince ??= monotonic()
-    else unknownSince = undefined
-    return activity
+  wall: () => number = Date.now,
+): { hold: () => CodexWakeHold | null; mayWake: () => boolean } {
+  const hold = (): CodexWakeHold | null => {
+    const owner = readSessionIncarnation(sessionId, env)
+    if (owner?.key !== expectedKey || sessionHasEnded(sessionId, env) ||
+        owner.harness_process === undefined || !alive(owner.harness_process)) return 'session-gone'
+    if (!idleWake(owner.harness_process)) return 'host-not-showing'
+    // Codex holds its queue after an interrupt until the next prompt, and that
+    // prompt's own hook hands the input in, so a wake here could only go stale.
+    if (codexTurnInterrupted(sessionId, env, expectedKey)) return 'paused-after-interrupt'
+    if (observedCodexTurnActivity(sessionId, env, expectedKey) === 'working') {
+      const since = readSessionState(sessionId, env).input_waiting?.since
+      const elapsed = since === undefined ? 0 : wall() - since
+      if (elapsed < CODEX_WAKE_DELAY_MS) return 'turn-running'
+    }
+    return null
   }
-  // A missing or lagging rollout cannot override the synchronous prompt
-  // hook's running turn. Its tool hooks can drain input; native completion
-  // will release the gate if anything remains for an idle wake.
-  const unknownAllowed = (): boolean => unknownSince !== undefined && monotonic() - unknownSince >= 6_000 &&
-    observedCodexTurnActivity(sessionId, env, expectedKey) !== 'working'
-  return {
-    observe,
-    unknownAllowed,
-    mayWake: () => {
-      if (readSessionIncarnation(sessionId, env)?.key !== expectedKey || sessionHasEnded(sessionId, env)) return false
-      const activity = observe()
-      const owner = readSessionIncarnation(sessionId, env)
-      if (owner?.key !== expectedKey || sessionHasEnded(sessionId, env) ||
-          owner.harness_process === undefined || !alive(owner.harness_process) || !idleWake(owner.harness_process)) return false
-      // Aborting fences its turn; it does not cancel pending User input.
-      return activity === 'idle' || activity === 'aborted' ||
-        (activity === 'unknown' && unknownAllowed())
-    },
-  }
+  return { hold, mayWake: () => hold() === null }
 }

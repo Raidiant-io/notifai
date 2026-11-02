@@ -396,14 +396,6 @@ export class RuntimeRetention {
             // answer/acknowledgement debt above remain independent barriers.
             if (state['input_wake'] !== undefined && !(purpose === 'activation' &&
                 abandonedWake(state['input_wake']))) sessionPending = true
-            const wakes = state['input_wake_attempts']
-            if (wakes !== undefined && !Array.isArray(wakes)) throw new Error('Uncertain input wakes')
-            if (Array.isArray(wakes)) for (const wake of wakes) {
-              if (!wake || !['prepared', 'sending', 'accepted', 'unknown', 'consumed', 'cancelled'].includes(wake.phase)) {
-                throw new Error('Uncertain input wake')
-              }
-              if (!['consumed', 'cancelled'].includes(wake.phase)) sessionPending = true
-            }
             sessions.push({ file, sessionId, digest: createHash('sha256').update(readFileSync(file)).digest('hex'),
               builds: references.filter(item => item.installation_id === this.installationId).map(item => item.build),
               references, pending: sessionPending })

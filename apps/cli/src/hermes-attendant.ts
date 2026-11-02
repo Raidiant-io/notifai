@@ -249,8 +249,10 @@ export async function hermesAttendCommand(deps: CommandDeps, input: Readable, ou
   }
   let observer: Promise<void> | null = null
   const observeQuestions = (): void => {
+    // A long or endless turn must not hold an answer: Hermes queues an injection
+    // made mid-turn exactly as it does a Session Note's.
     const probe = bridge.probe(sessionId)
-    if (observer !== null || probe.state !== 'running' || probe.activity !== 'idle') return
+    if (observer !== null || probe.state !== 'running') return
     const state = readSessionState(sessionId, deps.env)
     if (state.harness !== 'hermes' ||
         ((state.pending?.length ?? 0) === 0 && state.accepted === undefined)) return
@@ -301,7 +303,8 @@ export async function hermesAttendCommand(deps: CommandDeps, input: Readable, ou
         (await api.compatibility()).server_capabilities.includes('session_attendance'),
       acceptsMessages: true,
       publishProbeStatus: true,
-      onProbe: probe => { if (probe.state === 'running' && probe.activity === 'idle') observeQuestions() },
+      overdue: { env: deps.env, harness: 'hermes', cwd, heldAnswers: true },
+      onProbe: probe => { if (probe.state === 'running') observeQuestions() },
       onMessages: (messages: AttendanceMessage[], attendant: AttendantHandle) => {
         const api = connect()
         if (api === null) return Promise.resolve('done')

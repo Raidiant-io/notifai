@@ -7,8 +7,7 @@ import type { HookEnvelope } from './hook-types.js'
 import type { Logger } from './logging.js'
 import { codexHookIdentityHash, codexTrustKey, codexTrustProblems, findInstallations, handlerEvent } from './install-hooks.js'
 import { currentProcessIdentity, processIdentityLiveness } from './process-identity.js'
-import { currentCodexTurn, readAttendantLease, recordTurnStart } from './session-attendant-state.js'
-import { refreshCodexInputActivity } from './codex-input-lifecycle.js'
+import { currentCodexTurn, readAttendantLease, recordCodexNativeTurn, recordTurnStart } from './session-attendant-state.js'
 import { readNativeQuestionSnapshot } from './codex-native-turn.js'
 import { observeCodexQuestions } from './codex-question-bindings.js'
 import { codexAnswerPresentation } from './codex-answer-presentation.js'
@@ -66,15 +65,16 @@ export async function deliverCodexToolMessage(
   if (fingerprint === null || !ownsRoot()) return
   // Automatic continuations need not emit UserPromptSubmit. A trusted,
   // synchronous tool callback from this exact owner is also a turn observation.
-  // recordTurnStart ignores previously seen/ended turns, so a late callback
-  // cannot resurrect an interrupted turn or replace a newer observed turn.
+  // recordTurnStart ignores turns already seen, so a late callback cannot
+  // resurrect an interrupted turn or replace a newer one; a tool run after this
+  // turn's own Stop reopens it, because a Stop hook continued it.
   if (currentCodexTurn(sessionId, deps.env, incarnation.key) !== envelope.turn_id) {
     recordTurnStart(sessionId, deps.env, incarnation.key, envelope.turn_id)
   }
   const mayObserve = (): boolean => ownsRoot() &&
     currentCodexTurn(sessionId, deps.env, incarnation.key) === envelope.turn_id
   if (!mayObserve()) return
-  refreshCodexInputActivity(sessionId, deps.env, incarnation.key, envelope.transcript_path)
+  recordCodexNativeTurn(sessionId, deps.env, incarnation.key, envelope.turn_id, envelope.transcript_path)
   if (!mayObserve()) return
   if (readSessionState(sessionId, deps.env).codex_question_bindings?.length) {
     const snapshot = readNativeQuestionSnapshot(envelope.transcript_path, sessionId, deps.env)
