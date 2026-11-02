@@ -8,6 +8,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 This project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 and [Conventional Commits](https://www.conventionalcommits.org/en/v1.0.0/).
 
+## [14.5.0-beta.5](https://github.com/Raidiant-io/notifai/compare/v14.4.2...v14.5.0-beta.5) (2026-11-02)
+
+### Features
+
+* Setup now looks for the agent apps that are really installed on your computer. A leftover settings folder from an app you removed no longer counts, and Codex inside the ChatGPT app on Mac, and the Codex command on Windows, are recognised. A later `notifai init` offers an app you installed since, keeps your earlier choices (including "none") and skips an app name it doesn't know instead of failing.
+* `notifai doctor` now reports each agent app on its own: whether it is installed and connected, and what is still missing for it (hooks, approval, plugin or guidance), so a problem with one app no longer looks like a problem with all of them. `notifai doctor --json` carries the same report as `agent_apps`.
+* Notifai for Mac and Windows can now show what is left to set up on this computer: a one-line offer on Home to connect the agent apps it found, and an Agent apps page in Settings. Your Companion Apps also warn you when Codex is still waiting for you to approve Notifai's hooks, and the warning goes away once you approve them.
+* The option previews a Claude Code picker shows next to its choices now reach your phone and desktop with the question, so you can see what each choice means before you answer.
+* Each computer now appears once in your Companion Apps' Computers list, however often it signs in. The CLI tells Notifai which computer it runs on, as a hash of your operating system's computer ID (the ID itself never leaves your computer), and which system it runs.
+* New `notifai project set` gives a Project a display name and an avatar (a JPEG or PNG, resized on your computer) or a catalog icon with `--icon`; `notifai project icons` lists the choices. It won't overwrite a name or avatar you already set unless you pass `--replace`.
+* The first time Notifai is enabled for a Project, your agent is asked to give the Project a proper name, with the folder name in title case as the suggestion.
+
+### Bug Fixes
+
+* An answer or note could wait forever for a Codex session, for example after you switched accounts and Codex's session files moved to another place. Codex no longer decides whether your input is delivered: answers and notes now reach a waiting Codex session even after an account switch.
+* If an answer or note still hasn't reached its session after 5 minutes (30 minutes while the session is working), Notifai now sends you one plain notification saying so, and a question that gives up on its answer says so too, instead of waiting silently. Hermes no longer waits for an idle session before it starts listening for your answer.
+* An update that was downloaded but is waiting for your running agent sessions to end now finishes by itself on the next `notifai` command once they have ended, checking at most once a minute so commands stay quick. Running sessions keep the version they started with, the automatic-update switch is respected, and an update that can't safely share your local data still waits for it to be safe.
+* `notifai doctor` no longer calls a downloaded update that is only waiting for sessions to end a problem to repair. It reports it as ready. An interrupted installation still asks for recovery.
+* If Notifai is interrupted just as a waiting update finishes, it still brings your installed skill and hooks up to date afterwards instead of forgetting that step.
+* Codex no longer shows a "Blocked by hook" line when a note or answer arrives while it is working on a turn.
+* Running `notifai login` on a computer that is already signed in now signs out the sign-in it replaces, so the old one no longer stays in your Computers list.
+
 ## [14.4.2](https://github.com/Raidiant-io/notifai/compare/v14.4.1...v14.4.2) (2026-10-30)
 
 ### Features
