@@ -9,7 +9,9 @@ Keep any returned title marker intact. Current installs return `open_form`
 where a form can link, and an ordinary question elsewhere.
 
 A terminal answer needs nothing from you: Notifai records it. A device answer
-carries its own acknowledgement command; run it before dependent work. For an
-answer in the conversation instead of a linked form, run the printed
-`notifai close` command. Follow a card denial's registered plain question
-without registering it again.
+carries its own acknowledgement command; run it before dependent work. If the
+User answers another way (in the conversation, elsewhere, or by doing it) or
+the question stops being relevant (its work is done, superseded or cancelled,
+or a newer question replaces it), close it with the printed `notifai close`
+command. Follow a card denial's registered plain question without registering
+it again.

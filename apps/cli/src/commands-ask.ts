@@ -601,6 +601,18 @@ const KEEP_SESSION_OPEN = 'Your assignment is incomplete while your question wai
 
 const ROUTE_NEUTRAL = 'Never say where the answer must arrive; it returns by whatever route the harness supports.'
 
+/**
+ * When the agent closes a question itself: the User answered it some other way,
+ * or it stopped mattering. Covering only "answered in the conversation" left
+ * questions open on the devices for hours after the work they unblocked was done.
+ */
+const ANSWERED_ANOTHER_WAY = 'another way (in the conversation, elsewhere, or by doing it)'
+const STOPS_BEING_RELEVANT = 'the question stops being relevant (its work is done, superseded or cancelled, or a newer question replaces it)'
+
+function closeIt(questionId: string): string {
+  return `If they answer ${ANSWERED_ANOTHER_WAY} or ${STOPS_BEING_RELEVANT}, close it with \`notifai close ${questionId}\`.`
+}
+
 const ON_ANSWER = 'The answer comes back to this Agent Session, so you act on it: acknowledge it, then do the unblocked work yourself before reporting; reporting the answer is not that work. Do not ask the user to confirm again.'
 
 /**
@@ -624,7 +636,7 @@ const WORKER_KEEP_ROOT_OPEN = 'The root Agent Session must stay open while the q
 const WORKER_ON_ANSWER = 'The root Agent Session receives the answer with your question and identity, acknowledges it, and passes it back to you if you can still take messages, so you finish the work; otherwise it does that work itself.'
 
 function workerAnsweredOutside(questionId: string): string {
-  return `If the User answers in the conversation instead, the root retires the question with \`notifai close ${questionId}\`; include that in your report.`
+  return `If the User answers ${ANSWERED_ANOTHER_WAY} or ${STOPS_BEING_RELEVANT}, the root closes it with \`notifai close ${questionId}\`; include that in your report.`
 }
 
 /** The `next` block a subagent asking on its root's behalf gets, whatever else happened. */
@@ -731,7 +743,7 @@ function reportAlreadyOpen(
     : wait
       ? END_TURN
       : 'Ask the question in the conversation and explain what each answer will change, then continue independent work; dependent work waits for the answer.'
-  const answeredOutside = `If they answer in the conversation instead, run \`notifai close ${questionId}\` to retire this question.`
+  const answeredOutside = closeIt(questionId)
   if (json) {
     deps.io.out(JSON.stringify({
       registered: false,
@@ -923,8 +935,8 @@ function persistRegisteredQuestion(
             keep_session_open: KEEP_SESSION_OPEN,
             on_answer: ON_ANSWER,
             ...(handBack !== null ? {} : { answered_outside_notifai: native === undefined
-              ? `If they answer in the conversation instead, run \`notifai close ${questionId}\` to retire this question.`
-              : `If the User answers in the card, Notifai records it mechanically. If the card drops and they answer in the conversation, run \`notifai close ${questionId}\` to retire this question.` }),
+              ? closeIt(questionId)
+              : `If the User answers in the card, Notifai records it mechanically. ${closeIt(questionId)}` }),
           },
         },
         null,
@@ -991,7 +1003,7 @@ function persistRegisteredQuestion(
     return EXIT.ok
   }
   if (wait) {
-    deps.io.out(`If they answer in this conversation instead, retire it with \`notifai close ${questionId}\`.`)
+    deps.io.out(closeIt(questionId))
     deps.io.out(END_TURN_HUMAN)
     return EXIT.ok
   }
@@ -1001,7 +1013,7 @@ function persistRegisteredQuestion(
     deps.io.out(JSON.stringify(openForm!.input))
   } else {
     if (nativeUnavailable !== undefined) deps.io.out(nativeUnavailableDetail(nativeUnavailable))
-    deps.io.out(`If they answer in this conversation instead, retire it with \`notifai close ${questionId}\`.`)
+    deps.io.out(closeIt(questionId))
   }
   return EXIT.ok
 }

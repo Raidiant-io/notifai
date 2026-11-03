@@ -1,5 +1,5 @@
 {
-  "current": "755b92f10cbb25e441f9362e597d7a3059fd2a87d98574818c1b4fe52ff95d3f",
+  "current": "433f8b5d9c40c08874f15a92dee40c0dc055f160832df6c8ec3a77da250f284a",
   "releases": [
     {
       "digest": "3e47b01bc6bbfb43e910c660b9964fab6459d75148c3c02dcbcd0be64cfb2963",
@@ -320,6 +320,10 @@
     {
       "digest": "755b92f10cbb25e441f9362e597d7a3059fd2a87d98574818c1b4fe52ff95d3f",
       "note": "Reply delivery now recovers from failed local storage writes and lock releases. notifai doctor tests whether delivery state can be saved; if storage is full, free space without deleting Notifai state and rerun doctor. No new command approvals are needed."
+    },
+    {
+      "digest": "433f8b5d9c40c08874f15a92dee40c0dc055f160832df6c8ec3a77da250f284a",
+      "note": "Close a question yourself with `notifai close <question_id>` when the User answers another way (in the conversation, elsewhere, or by doing it) or when it stops being relevant (its work is done, superseded or cancelled, or a newer question replaces it), not only when they answer in the conversation. Never leave a question open on the User's devices after the work it unblocks is finished."
     }
   ]
 }

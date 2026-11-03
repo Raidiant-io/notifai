@@ -1783,6 +1783,12 @@ describe('asking before the hooks have ever run', () => {
       status: `notifai status ${registered.question_id as string}`,
       close: `notifai close ${registered.question_id as string}`,
     })
+    // Closing is owed when the User answers some other way and when the
+    // question stops being relevant, not only for an answer in the conversation.
+    const closeWhen = (registered.next as Record<string, string>).answered_outside_notifai
+    expect(closeWhen).toContain('another way')
+    expect(closeWhen).toContain('stops being relevant')
+    expect(closeWhen).toContain(`notifai close ${registered.question_id as string}`)
     expect(inspectQuestionState(registered.question_id as string, env)).toMatchObject({
       found: true,
       question: {

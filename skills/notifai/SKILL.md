@@ -219,10 +219,11 @@ notifai status <question_id> --json
 
 Once submitted, status adds a `request_id`; keep both IDs. Inspect
 `notifai status <question_id|request_id> --json` and
-`notifai replies <request_id> --json` instead of asking again. Retire a
-question that no longer needs an answer, or one answered in the conversation,
-with `notifai close <question_id>`; `notifai close --pending` retires all of
-this Agent Session's open questions.
+`notifai replies <request_id> --json` instead of asking again. If the User
+answers another way (in the conversation, elsewhere, or by doing it) or the
+question stops being relevant (its work is done, superseded or cancelled, or a
+newer question replaces it), close it with `notifai close <question_id>`;
+`notifai close --pending` retires all of this Agent Session's open questions.
 
 If `ask` reports a User-owned trust or permission gap, relay its exact
 `remedy`, say the hooks need the User's trust or approval, and wait; do not
