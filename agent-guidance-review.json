@@ -1,7 +1,7 @@
 {
   "version": 1,
-  "behavior_digest": "sha256:2b1cb999154038d970bc12869bb694f63f53c445d63db51b4599f77c355e1ddf",
-  "outcome": "guidance-updated",
+  "behavior_digest": "sha256:007da35ae76e156b20a79ec117781efff6a51f3c7898df27e12e80648bf8a155",
+  "outcome": "reviewed-no-impact",
   "surfaces_reviewed": [
     "lifecycle-hooks",
     "notifai-skill",
@@ -9,5 +9,5 @@
     "cli-readiness",
     "domain-terms"
   ],
-  "reason": "When an agent closes a question itself now covers more than an answer in the conversation: close it when the User answers another way (in the conversation, elsewhere, or by doing it) or when it stops being relevant (its work is done, superseded or cancelled, or a newer question replaces it). Updated the ask output (human and JSON; the answered_outside_notifai field keeps its name), the subagent variant, the Codex card-denial hook, the skill's close rule, native-questions.md and the Grok harness reference. Reviewed the rest: Claude Code and OpenCode hand-backs and the pending-question Stop notice already say to close a question that is no longer needed; the Codex and OpenCode harness references defer to those printed instructions. CLI readiness, harness setup and domain terms are unaffected; no new command, approval or setting."
+  "reason": "Delivery-only change: a Claude Code session resting at its prompt beside a background shell (status shell) now takes answers and notes, and the User's \"not delivered yet\" notice waits for the session to be free for five minutes, is never sent at a hook boundary, and is retired silently once nothing waits. Reviewed lifecycle hooks, the Notifai skill, harness setup, CLI readiness and domain terms: no agent-facing text, command, approval or setting changes; the notice and its retirement reach only the User's devices. The release note in skills/guidance-changes.json says nothing changes in what agents do."
 }

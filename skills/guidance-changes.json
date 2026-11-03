@@ -1,5 +1,5 @@
 {
-  "current": "433f8b5d9c40c08874f15a92dee40c0dc055f160832df6c8ec3a77da250f284a",
+  "current": "6904b64b34e9cb0214402a6fc923c422f31cb535044c2fac7d90845cdb697bd2",
   "releases": [
     {
       "digest": "3e47b01bc6bbfb43e910c660b9964fab6459d75148c3c02dcbcd0be64cfb2963",
@@ -324,6 +324,10 @@
     {
       "digest": "433f8b5d9c40c08874f15a92dee40c0dc055f160832df6c8ec3a77da250f284a",
       "note": "Close a question yourself with `notifai close <question_id>` when the User answers another way (in the conversation, elsewhere, or by doing it) or when it stops being relevant (its work is done, superseded or cancelled, or a newer question replaces it), not only when they answer in the conversation. Never leave a question open on the User's devices after the work it unblocks is finished."
+    },
+    {
+      "digest": "6904b64b34e9cb0214402a6fc923c422f31cb535044c2fac7d90845cdb697bd2",
+      "note": "In Claude Code, an answer or note now reaches you while you rest at the prompt with a background shell still running, instead of waiting for that shell to end. Notifai tells the User input is stuck only after the session has been free to take it for several minutes, and takes that notice down once the input reaches you. Nothing changes in what you do."
     }
   ]
 }

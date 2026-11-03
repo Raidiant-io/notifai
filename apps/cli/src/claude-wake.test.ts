@@ -2,6 +2,8 @@ import { describe,expect,it } from 'vitest'
 import {
 CLAUDE_PEER_PROTOCOL,
 CLAUDE_POST_SEND_LIVENESS_MS,
+claudeStatusActivity,
+claudeStatusWakeable,
 claudeWakeRoute,
 inspectClaudeInbox,
 observeClaudeSession,
@@ -89,6 +91,21 @@ describe('Claude session observation', () => {
       state: 'live-idle',
       descriptor: { sessionId: SESSION_ID, peerProtocol: CLAUDE_PEER_PROTOCOL },
     })
+  })
+
+  // Claude Code reports `shell` at its prompt while a background shell runs.
+  // The agent is free; holding input until the shell ends kept answers waiting
+  // for as long as a dev server or a long build ran.
+  it('treats an owner at rest beside a background shell as idle and wakeable', async () => {
+    const current = descriptor({ status: 'shell' })
+    const observation = await observeClaudeSession(SESSION_ID, adapters({
+      descriptor: current,
+      agents: [{ pid: current.pid, sessionId: current.sessionId, startedAt: current.startedAt, status: 'shell' }],
+    }))
+    expect(observation).toMatchObject({ state: 'live-idle' })
+    expect(claudeStatusActivity('shell')).toBe('idle')
+    expect(claudeStatusActivity('busy')).toBe('working')
+    expect(claudeStatusWakeable('waiting')).toBe(false)
   })
 })
 

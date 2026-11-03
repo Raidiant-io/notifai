@@ -7,7 +7,7 @@
  */
 import { readFileSync } from 'node:fs'
 import path from 'node:path'
-import { claudeDescriptorDir, parseDescriptor } from './claude-wake.js'
+import { claudeDescriptorDir, claudeStatusActivity, parseDescriptor } from './claude-wake.js'
 import type { HookHarness } from './hook-types.js'
 import {
   descriptorStartMatches,
@@ -208,7 +208,7 @@ export function claudeAttendanceProbe(options: {
       return { state: 'ended', reason: 'session-replaced' }
     }
     if (alive === 'unknown') return { state: 'uncertain', reason: 'process-start-unreadable' }
-    return { state: 'running', activity: descriptor.status === 'idle' ? 'idle' : 'working' }
+    return { state: 'running', activity: claudeStatusActivity(descriptor.status) }
   }
 }
 

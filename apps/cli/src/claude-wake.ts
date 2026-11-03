@@ -101,7 +101,24 @@ export type ClaudeWakeObservation =
   | { state: 'stopped' }
   | { state: 'unknown'; reason: string }
 
-const LIVE_STATUSES: ReadonlySet<string> = new Set(['idle', 'busy'])
+/**
+ * Claude Code's published session status. `shell` is its prompt at rest while a
+ * background shell the agent started still runs: the agent is free, and its
+ * inbox takes a message as it does when `idle`. `waiting` (a dialog for the
+ * User) and anything unknown take none.
+ */
+const LIVE_STATUSES: ReadonlySet<string> = new Set(['idle', 'shell', 'busy'])
+const RESTING_STATUSES: ReadonlySet<string> = new Set(['idle', 'shell'])
+
+/** Whether Claude Code's inbox takes a message in this status. */
+export function claudeStatusWakeable(status: string): boolean {
+  return LIVE_STATUSES.has(status)
+}
+
+/** What a Claude Code status says the agent is doing: at its prompt, or working. */
+export function claudeStatusActivity(status: string): 'idle' | 'working' {
+  return RESTING_STATUSES.has(status) ? 'idle' : 'working'
+}
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
@@ -240,11 +257,11 @@ export async function observeClaudeSession(
       reason: `unsupported Claude peer protocol ${descriptor.peerProtocol}`,
     }
   }
-  if (!LIVE_STATUSES.has(agent.status)) {
+  if (!claudeStatusWakeable(agent.status)) {
     return { state: 'unknown', reason: `Claude session status ${agent.status} is not wakeable` }
   }
   return {
-    state: agent.status === 'idle' ? 'live-idle' : 'live-busy',
+    state: claudeStatusActivity(agent.status) === 'idle' ? 'live-idle' : 'live-busy',
     descriptor,
   }
 }

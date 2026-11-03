@@ -23,7 +23,7 @@ import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import type { AttendanceMessage, SessionActivity } from '@raidiant/notifai-protocol'
 import { atomicWriteFileSync } from './atomic-file.js'
-import { claudeDescriptorDir, claudeMinInboxVersion, CLAUDE_PEER_PROTOCOL, parseDescriptor } from './claude-wake.js'
+import { claudeDescriptorDir, claudeMinInboxVersion, CLAUDE_PEER_PROTOCOL, claudeStatusActivity, claudeStatusWakeable, parseDescriptor } from './claude-wake.js'
 import { claudePickerHolds } from './claude-question-hooks.js'
 import { createClient, type ApiClient } from './client.js'
 import { codexInputObserver, type CodexWakeHold } from './codex-input-lifecycle.js'
@@ -706,7 +706,7 @@ class HubSession implements AttendedSession {
       return { state: 'uncertain', reason: 'process-start-mismatch' }
     }
     if (descriptor.sessionId !== this.id) return { state: 'ended', reason: 'session-replaced' }
-    return { state: 'running', activity: descriptor.status === 'idle' ? 'idle' : 'working' }
+    return { state: 'running', activity: claudeStatusActivity(descriptor.status) }
   }
 
   descriptor(): ReturnType<typeof parseDescriptor> | 'missing' {
@@ -809,7 +809,7 @@ class HubSession implements AttendedSession {
     const probe = this.probe()
     if (probe.state === 'ended') { this.hub.closing(this, probe.reason); return }
     if (probe.state === 'running') this.observeActivity(probe.activity)
-    this.checkInput()
+    this.checkInput(true)
     this.hub.driver.poke()
   }
 
@@ -819,10 +819,10 @@ class HubSession implements AttendedSession {
 
   /** Where this session's wakes are stored: Codex keeps a queue per home. */
   /** Input this session has not taken for too long: say so, once. */
-  private checkOverdue(): void {
+  private checkOverdue(boundary: boolean): void {
     if (this.harness !== 'claude-code' && this.harness !== 'codex') return
     const state = readSessionState(this.id, this.env)
-    checkInputOverdue({ sessionId: this.id, env: this.env, cwd: this.registration.cwd, harness: this.harness,
+    checkInputOverdue({ sessionId: this.id, env: this.env, cwd: this.registration.cwd, harness: this.harness, boundary,
       lease: this.lease.generation === null ? null : { incarnation: this.lease.incarnation, generation: this.lease.generation },
       busy: this.activityValue === 'working',
       // A picker on screen returns its answer itself, whatever hooks do meanwhile.
@@ -842,8 +842,11 @@ class HubSession implements AttendedSession {
     if (hold !== null) this.hub.logger.info('delivery.handoff', { route: 'input-wake', stage: 'held', reason: hold, session: this.id })
   }
 
-  /** Staged input that needs a wake: cut the held exchange and hand it in. */
-  checkInput(): void {
+  /**
+   * Staged input that needs a wake: cut the held exchange and hand it in.
+   * `boundary`: a hook boundary passed, which hands input in itself.
+   */
+  checkInput(boundary = false): void {
     // A hub handing over starts no new write; the next hub hands the input in.
     if (this.hub.handingOver) return
     // Stopped: a Codex thread gets one wake in its own queue, run when it loads again,
@@ -856,7 +859,7 @@ class HubSession implements AttendedSession {
       return
     }
     // The rule that bounds a running turn's delay reads this.
-    this.checkOverdue()
+    this.checkOverdue(boundary)
     if (!this.notified || this.lease.generation === null || this.hub.clock.monotonic() < this.lease.pausedUntil) return
     const lease: DeliveryLease = { incarnation: this.lease.incarnation, generation: this.lease.generation }
     let pending = false
@@ -933,7 +936,7 @@ class HubSession implements AttendedSession {
     const descriptor = this.descriptor()
     if (descriptor === 'missing' || descriptor === null || descriptor.sessionId !== this.id ||
         !descriptorStartMatches(descriptor.procStart, this.harnessProcess, this.registration.harnessTicks) ||
-        descriptor.peerProtocol !== CLAUDE_PEER_PROTOCOL || !['idle', 'busy'].includes(descriptor.status)) return 'unavailable'
+        descriptor.peerProtocol !== CLAUDE_PEER_PROTOCOL || !claudeStatusWakeable(descriptor.status)) return 'unavailable'
     if (this.child === null || !this.mayWrite()) return 'cancelled'
     const reply = await this.child.write(claudeSocketLine(text), descriptor.messagingSocketPath, CHILD_WRITE_DEADLINE_MS)
     if (reply.result === 'ok') {

@@ -280,9 +280,12 @@ export interface SessionState {
   /** Exact Codex wake ownership, including detached reconciliation records. */
   /**
    * How long staged input has waited for this session, and whether the User has
-   * been told. Absent while nothing waits.
+   * been told. `free_since` is when the session was last seen free to take it
+   * (absent while it works). Absent while nothing waits.
    */
-  input_waiting?: { since: number; checked_at?: number; notified_at?: number }
+  input_waiting?: { since: number; checked_at?: number; notified_at?: number; free_since?: number }
+  /** The "not delivered yet" notice the User was sent, retired once nothing waits. */
+  input_overdue_notice?: { request_id: string; collapse_key: string; told_at: number }
   /**
    * Native-queue writes that committed, retained per request until the agent
    * acknowledges them. They never occupy the in-flight delivery slot or block
