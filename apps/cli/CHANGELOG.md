@@ -8,6 +8,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 This project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 and [Conventional Commits](https://www.conventionalcommits.org/en/v1.0.0/).
 
+## [14.5.1-beta.1](https://github.com/Raidiant-io/notifai/compare/v14.5.0...v14.5.1-beta.1) (2026-11-03)
+
+### Bug Fixes
+
+* An answer or note now reaches a Claude Code session that is resting at its prompt while a background shell it started is still running. Before, it waited until that shell ended, which could take as long as a dev server or a long build ran.
+* The "Not delivered yet" notification no longer arrives in the same moment your answer reaches the agent. The 5-minute bound now counts only the time the session was free to take your input, so a session that just finished working is never called stuck; the 30-minute bound still covers the whole wait. Once your input reaches the agent, a notification that said it hadn't is taken down from your devices.
+
 ## [14.5.0](https://github.com/Raidiant-io/notifai/compare/v14.4.2...v14.5.0) (2026-11-03)
 
 ### Features
