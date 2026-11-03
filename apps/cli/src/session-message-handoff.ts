@@ -123,8 +123,11 @@ export async function handOffSessionMessages(
       }, (pgid) => handOff.recordGroup(pgid), message)
     } catch (err) {
       // Thrown before the write (state I/O): nothing reached the harness.
-      if (owed) clearAcknowledgementObligation(sequencer.sessionId, sequencer.env, message.message_id)
-      await handOff.finish('not-written')
+      try {
+        if (owed) clearAcknowledgementObligation(sequencer.sessionId, sequencer.env, message.message_id)
+      } finally {
+        await handOff.finish('not-written')
+      }
       throw err
     }
     log?.info('delivery.handoff', {
@@ -146,8 +149,8 @@ export async function handOffSessionMessages(
         return 'retry-soon'
       case 'aborted':
         // Stopped at the socket before any byte left: nothing arrived, nothing is owed.
-        clearAcknowledgementObligation(sequencer.sessionId, sequencer.env, message.message_id)
-        await handOff.finish('aborted')
+        try { clearAcknowledgementObligation(sequencer.sessionId, sequencer.env, message.message_id) }
+        finally { await handOff.finish('aborted') }
         return 'retry-soon'
       case 'unavailable':
       case 'stopped':

@@ -466,131 +466,150 @@ async function drainSessionInputsOnce(input: {
     },
   })
   if (handOff === null) return false
-  if (lease !== null && handOff.refused.some(entry => entry.reason === 'generation_fenced')) {
-    updateSessionState(deps.sessionId, deps.env, state => ({ ...state, input_delivery_fenced: lease }))
-  }
-  const terminal = new Set(handOff.refused.filter((entry) => entry.reason === 'not_claimable' || entry.reason === 'not_found')
-    .flatMap((entry) => entry.subject.type === 'answer' ? [entry.subject.request_id] : []))
-  if (terminal.size > 0) updateSessionState(deps.sessionId, deps.env, (latest) => ({
-    ...latest, waiting_answers: (latest.waiting_answers ?? []).filter((answer) => !terminal.has(answer.pending.request_id!)),
-  }))
-  const ids = new Set(handOff.claimed.map((claim) => claim.subject.type === 'answer' ? claim.subject.request_id : claim.subject.message_id))
-  // A concurrent consumer may have drained an unclaimed answer while this
-  // reader waited for the delivery lock. Re-read while holding that lock.
-  const current = readSessionState(deps.sessionId, deps.env)
-  if (answers.some(answer => current.waiting_answers?.some(entry =>
-    entry.pending.request_id === answer.pending.request_id && !isDeepStrictEqual(entry, answer)))) {
-    await handOff.finish('not-written')
-    return false
-  }
-  const readyAnswers = answers.filter((answer) =>
-    samePendingAnswer(current, answer) &&
-    (answer.delivery_claim !== true || ids.has(answer.pending.request_id!)))
-  if (nativeGroup !== null && readyAnswers.length !== answers.length) {
-    await handOff.finish('not-written')
-    return false
-  }
-  const readyMessages = messages.filter((message) => ids.has(message.message_id))
-  if (readyAnswers.length + readyMessages.length === 0 || !input.mayWrite() || !handOff.writable()) {
-    await handOff.finish('not-written')
-    return false
-  }
-  const text = [
-    ...(readyAnswers.length === 0 ? [] : [answersContext(readyAnswers, current.pending?.length ?? 0)]),
-    ...readyMessages.map(sessionMessageContext),
-  ].join('\n\n')
-  let began = false
-  let outputAttempted = false
-  let consumedState = false
-  let prepared: PreparedInputAnswer | null = null
-  const restoreUnwritten = (): void => {
-    updateSessionState(deps.sessionId, deps.env, (latest) => ({
-      ...latest, waiting_answers: [
-        ...readyAnswers.filter((answer) => latest.acknowledgement_due?.some((owed) => owed.request_id === answer.pending.request_id) &&
-          !latest.waiting_answers?.some((entry) => entry.pending.request_id === answer.pending.request_id)),
-        ...(latest.waiting_answers ?? []),
-      ],
-    }))
-    for (const message of readyMessages) {
-      if (!current.message_acknowledgement_due?.some((entry) => entry.message_id === message.message_id)) {
-        clearAcknowledgementObligation(deps.sessionId, deps.env, message.message_id)
-      }
-    }
-  }
   try {
-    if (nativeGroup !== null && input.nativeAnswers?.prepareGroup !== undefined) {
-      prepared = await input.nativeAnswers.prepareGroup(readyAnswers, current, deps.monotonic() + handOff.remainingMs())
-    } else if (nativeAt === 0 && readyAnswers.length === 1 && input.nativeAnswers !== undefined) {
-      prepared = await input.nativeAnswers.prepare(readyAnswers[0]!, current, deps.monotonic() + handOff.remainingMs())
+    if (lease !== null && handOff.refused.some(entry => entry.reason === 'generation_fenced')) {
+      updateSessionState(deps.sessionId, deps.env, state => ({ ...state, input_delivery_fenced: lease }))
     }
-    if (input.nativeOnly === true && prepared === null) {
+    const terminal = new Set(handOff.refused.filter((entry) => entry.reason === 'not_claimable' || entry.reason === 'not_found')
+      .flatMap((entry) => entry.subject.type === 'answer' ? [entry.subject.request_id] : []))
+    if (terminal.size > 0) updateSessionState(deps.sessionId, deps.env, (latest) => ({
+      ...latest, waiting_answers: (latest.waiting_answers ?? []).filter((answer) => !terminal.has(answer.pending.request_id!)),
+    }))
+    const ids = new Set(handOff.claimed.map((claim) => claim.subject.type === 'answer' ? claim.subject.request_id : claim.subject.message_id))
+    // A concurrent consumer may have drained an unclaimed answer while this
+    // reader waited for the delivery lock. Re-read while holding that lock.
+    const current = readSessionState(deps.sessionId, deps.env)
+    if (answers.some(answer => current.waiting_answers?.some(entry =>
+      entry.pending.request_id === answer.pending.request_id && !isDeepStrictEqual(entry, answer)))) {
       await handOff.finish('not-written')
       return false
     }
-    if (!handOff.begin(() => !sessionHasEnded(deps.sessionId, deps.env),
-      prepared === null ? {} : { presentation: prepared.presentation })) {
+    const readyAnswers = answers.filter((answer) =>
+      samePendingAnswer(current, answer) &&
+      (answer.delivery_claim !== true || ids.has(answer.pending.request_id!)))
+    if (nativeGroup !== null && readyAnswers.length !== answers.length) {
       await handOff.finish('not-written')
       return false
     }
-    began = true
-    // Persist the selected revision and consumption before bytes. A changed
-    // revision remains pending for a fresh handoff, never this prepared write.
-    const consumed = new Set(readyAnswers.map((answer) => answer.pending.request_id))
-    updateSessionState(deps.sessionId, deps.env, (latest) => {
-      if (prepared !== null) {
-        const checked = prepared.validate(latest)
-        latest = checked.state
-        if (!checked.valid) return latest
-      }
-      if (!input.mayWrite() || !handOff.writable() || !readyAnswers.every(answer => samePendingAnswer(latest, answer))) return latest
-      if (prepared === null) latest = markCodexOrdinaryPresentation(latest, new Set(readyAnswers.flatMap(answer =>
-        answer.pending.question_id === undefined ? [] : [answer.pending.question_id])))
-      const retiring = [...(latest.retiring ?? [])]
-      for (const answer of readyAnswers) {
-        const entry = retiringQuestion(answer.pending, 'answered')
-        if (entry !== null && !retiring.some((item) => item.request_id === entry.request_id)) retiring.push(entry)
-      }
-      consumedState = true
-      return { ...latest, waiting_answers: (latest.waiting_answers ?? []).filter((answer) => !consumed.has(answer.pending.request_id)), retiring }
-    })
-    if (!consumedState) {
-      await handOff.finish('aborted')
+    const readyMessages = messages.filter((message) => ids.has(message.message_id))
+    if (readyAnswers.length + readyMessages.length === 0 || !input.mayWrite() || !handOff.writable()) {
+      await handOff.finish('not-written')
       return false
     }
-    for (const message of readyMessages) recordMessageAcknowledgementDue(deps.sessionId, deps.env, {
-      message_id: message.message_id, recorded_at: deps.wall(), text_required: message.agent_acknowledgement_text_required,
-    })
-    if (!input.mayWrite() || !handOff.writable()) {
-      restoreUnwritten()
-      await handOff.finish('aborted')
-      return false
+    const text = [
+      ...(readyAnswers.length === 0 ? [] : [answersContext(readyAnswers, current.pending?.length ?? 0)]),
+      ...readyMessages.map(sessionMessageContext),
+    ].join('\n\n')
+    let began = false
+    let outputAttempted = false
+    let preparedState = false
+    let prepared: PreparedInputAnswer | null = null
+    const consumePresentedAnswers = (): void => {
+      updateSessionState(deps.sessionId, deps.env, latest => {
+        const retiring = [...(latest.retiring ?? [])]
+        for (const answer of readyAnswers) {
+          const entry = retiringQuestion(answer.pending, 'answered')
+          if (entry !== null && !retiring.some(item => item.request_id === entry.request_id)) retiring.push(entry)
+        }
+        return { ...latest, waiting_answers: (latest.waiting_answers ?? []).filter(answer => !readyAnswers.some(presented => isDeepStrictEqual(presented, answer))), retiring }
+      })
     }
-    outputAttempted = true
-    const fault = inputWakeFaultContext(current, true)
-    if (prepared === null) {
-      input.write(fault === null ? text : `${fault}\n\n${text}`)
-      if (fault !== null) markInputWakeFaultReported(deps.sessionId, deps.env, current.input_wake_fault!.last_at, deps.wall())
+    const clearUnwrittenDebt = (): void => {
+      // Legacy answers have no server claim to fence a repeat. Their final
+      // local consumption barrier remains before bytes, and only proven-unsent
+      // output may put them back.
+      const unclaimed = readyAnswers.filter(answer => answer.delivery_claim !== true)
+      if (unclaimed.length > 0) updateSessionState(deps.sessionId, deps.env, latest => ({ ...latest,
+        waiting_answers: [...unclaimed.filter(answer =>
+          latest.acknowledgement_due?.some(owed => owed.request_id === answer.pending.request_id) &&
+          !latest.waiting_answers?.some(entry => entry.pending.request_id === answer.pending.request_id)),
+          ...(latest.waiting_answers ?? [])],
+      }))
+      for (const message of readyMessages) {
+        if (!current.message_acknowledgement_due?.some((entry) => entry.message_id === message.message_id)) {
+          clearAcknowledgementObligation(deps.sessionId, deps.env, message.message_id)
+        }
+      }
     }
-    else {
-      await prepared.write(() => input.mayWrite() && handOff.writable())
-      if (fault !== null) markInputWakeFaultReported(deps.sessionId, deps.env, current.input_wake_fault!.last_at, deps.wall())
-    }
-    await handOff.finish('written')
-    deps.log?.info('delivery.handoff', {
-      route: prepared === null ? 'input-drain' : 'native-answer', stage: 'presented', answers: readyAnswers.length, messages: readyMessages.length,
-      request_ids: readyAnswers.map((answer) => answer.pending.request_id), message_ids: readyMessages.map((message) => message.message_id),
-      oldest_message_age_ms: Math.max(0, ...readyMessages.map((message) => deps.wall() - Date.parse(message.created_at))),
-    })
-    return true
-  } catch (error) {
-    // Only the native transport can positively prove that no bytes left. Do
-    // not echo now: a new handoff must reacquire claims and recheck revisions.
-    if (prepared !== null && error instanceof CodexControlNotSent) outputAttempted = false
-    if (consumedState && !outputAttempted) restoreUnwritten()
-    await handOff.finish(outputAttempted ? 'failed' : began ? 'aborted' : 'not-written')
-    if (prepared !== null && error instanceof CodexControlNotSent) return false
-    throw error
-  } finally { prepared?.close() }
+    try {
+      if (nativeGroup !== null && input.nativeAnswers?.prepareGroup !== undefined) {
+        prepared = await input.nativeAnswers.prepareGroup(readyAnswers, current, deps.monotonic() + handOff.remainingMs())
+      } else if (nativeAt === 0 && readyAnswers.length === 1 && input.nativeAnswers !== undefined) {
+        prepared = await input.nativeAnswers.prepare(readyAnswers[0]!, current, deps.monotonic() + handOff.remainingMs())
+      }
+      if (input.nativeOnly === true && prepared === null) {
+        await handOff.finish('not-written')
+        return false
+      }
+      // Prepare durable obligations before declaring that bytes may have left.
+      // Keep answers pending until presentation: rollback itself needs space.
+      updateSessionState(deps.sessionId, deps.env, (latest) => {
+        if (prepared !== null) {
+          const checked = prepared.validate(latest)
+          latest = checked.state
+          if (!checked.valid) return latest
+        }
+        if (!input.mayWrite() || !handOff.writable() || !readyAnswers.every(answer => samePendingAnswer(latest, answer))) return latest
+        if (prepared === null) latest = markCodexOrdinaryPresentation(latest, new Set(readyAnswers.flatMap(answer =>
+          answer.pending.question_id === undefined ? [] : [answer.pending.question_id])))
+        preparedState = true
+        return latest
+      })
+      if (!preparedState) {
+        await handOff.finish('not-written')
+        return false
+      }
+      for (const message of readyMessages) recordMessageAcknowledgementDue(deps.sessionId, deps.env, {
+        message_id: message.message_id, recorded_at: deps.wall(), text_required: message.agent_acknowledgement_text_required,
+      })
+      if (!input.mayWrite() || !handOff.writable()) {
+        clearUnwrittenDebt()
+        await handOff.finish('aborted')
+        return false
+      }
+      if (!handOff.begin(() => !sessionHasEnded(deps.sessionId, deps.env),
+        prepared === null ? {} : { presentation: prepared.presentation })) {
+        clearUnwrittenDebt()
+        await handOff.finish('not-written')
+        return false
+      }
+      began = true
+      const unclaimed = readyAnswers.filter(answer => answer.delivery_claim !== true)
+      if (unclaimed.length > 0) updateSessionState(deps.sessionId, deps.env, latest => ({ ...latest,
+        waiting_answers: (latest.waiting_answers ?? []).filter(answer => !unclaimed.some(entry => isDeepStrictEqual(entry, answer))),
+      }))
+      outputAttempted = true
+      const fault = inputWakeFaultContext(current, true)
+      if (prepared === null) {
+        input.write(fault === null ? text : `${fault}\n\n${text}`)
+        if (fault !== null) markInputWakeFaultReported(deps.sessionId, deps.env, current.input_wake_fault!.last_at, deps.wall())
+      }
+      else {
+        await prepared.write(() => input.mayWrite() && handOff.writable())
+        if (fault !== null) markInputWakeFaultReported(deps.sessionId, deps.env, current.input_wake_fault!.last_at, deps.wall())
+      }
+      await handOff.finish('written')
+      consumePresentedAnswers()
+      deps.log?.info('delivery.handoff', {
+        route: prepared === null ? 'input-drain' : 'native-answer', stage: 'presented', answers: readyAnswers.length, messages: readyMessages.length,
+        request_ids: readyAnswers.map((answer) => answer.pending.request_id), message_ids: readyMessages.map((message) => message.message_id),
+        oldest_message_age_ms: Math.max(0, ...readyMessages.map((message) => deps.wall() - Date.parse(message.created_at))),
+      })
+      return true
+    } catch (error) {
+      // Only the native transport can positively prove that no bytes left. Do
+      // not echo now: a new handoff must reacquire claims and recheck revisions.
+      if (prepared !== null && error instanceof CodexControlNotSent) outputAttempted = false
+      try {
+        if (outputAttempted) consumePresentedAnswers()
+        else if (preparedState) clearUnwrittenDebt()
+      } finally {
+        await handOff.finish(outputAttempted ? 'failed' : began ? 'aborted' : 'not-written')
+      }
+      if (prepared !== null && error instanceof CodexControlNotSent) return false
+      throw error
+    } finally { prepared?.close() }
+  } finally { await handOff.finish('not-written') }
 }
 
 

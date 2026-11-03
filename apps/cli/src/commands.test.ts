@@ -2092,10 +2092,10 @@ describe('compatibility-first update guidance', () => {
     const states = [{ id: 'skill', title: 'Agent guidance skill', status: 'gap' as const,
       detail: 'Grok loads outdated guidance', harnesses: ['grok'] }]
     expect(await doctorCommand(deps, {}, { readiness: { states, harness: 'claude-code' } })).toBe(EXIT.ok)
-    expect(io.outLines).toEqual(['  --  Agent guidance skill (Grok, not this harness): Grok loads outdated guidance', ...doctorReopenLines(deps)])
+    expect(io.outLines).toEqual(['ok    Local storage: Notifai can save delivery state on this computer', '  --  Agent guidance skill (Grok, not this harness): Grok loads outdated guidance', ...doctorReopenLines(deps)])
     io.outLines = []
     expect(await doctorCommand(deps, {}, { readiness: { states, harness: 'grok' } })).toBe(EXIT.failed)
-    expect(io.outLines).toEqual(['FAIL  Agent guidance skill: Grok loads outdated guidance', ...doctorReopenLines(deps)])
+    expect(io.outLines).toEqual(['ok    Local storage: Notifai can save delivery state on this computer', 'FAIL  Agent guidance skill: Grok loads outdated guidance', ...doctorReopenLines(deps)])
   })
 
   it.each(cases)(
@@ -2151,9 +2151,9 @@ describe('compatibility-first update guidance', () => {
       expect(payload).toMatchObject({
         ok: exit === EXIT.ok,
         exit_code: exit,
-        states: [{ status, detail }],
+        states: [{ id: 'local-storage', status: 'ready' }, { status, detail }],
       })
-      expect(payload.states[0]?.remedy?.command ?? null).toBe(
+      expect(payload.states[1]?.remedy?.command ?? null).toBe(
         status === 'ready' ? null : updateCliCommand(deps),
       )
       expect(jsonIo.errLines).toEqual([])
@@ -2247,7 +2247,7 @@ describe('compatibility-first update guidance', () => {
     expect(
       await doctorCommand(deps, {}, { readiness: { states: [contract!] } }),
     ).toBe(EXIT.ok)
-    expect(io.outLines).toEqual(['The service is being updated; try again later.', ...doctorReopenLines(deps)])
+    expect(io.outLines).toEqual(['ok    Local storage: Notifai can save delivery state on this computer', 'The service is being updated; try again later.', ...doctorReopenLines(deps)])
     expect(io.outLines.join('\n')).not.toContain('notifai update')
 
     const sendIo = new CapturedIo()

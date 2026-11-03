@@ -1,5 +1,5 @@
 {
-  "current": "22e5732dde26ad954c34caf3c713279aa6e4366957293ecf46f87eac98860519",
+  "current": "755b92f10cbb25e441f9362e597d7a3059fd2a87d98574818c1b4fe52ff95d3f",
   "releases": [
     {
       "digest": "3e47b01bc6bbfb43e910c660b9964fab6459d75148c3c02dcbcd0be64cfb2963",
@@ -316,6 +316,10 @@
     {
       "digest": "22e5732dde26ad954c34caf3c713279aa6e4366957293ecf46f87eac98860519",
       "note": "A User can now turn notifications off per device. When every device is off, that is their choice and not a setup gap: never retry or rerun setup for it. A one-way send succeeds with a warning that no device was alerted and stays in their history. A question is refused with `receiving_off`, so ask it in the conversation instead. `notifai devices` and `doctor` report those devices as turned off."
+    },
+    {
+      "digest": "755b92f10cbb25e441f9362e597d7a3059fd2a87d98574818c1b4fe52ff95d3f",
+      "note": "Reply delivery now recovers from failed local storage writes and lock releases. notifai doctor tests whether delivery state can be saved; if storage is full, free space without deleting Notifai state and rerun doctor. No new command approvals are needed."
     }
   ]
 }

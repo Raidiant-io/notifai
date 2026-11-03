@@ -1,4 +1,5 @@
 import { agentAppsReport } from './agent-apps.js'
+import { localStorageReadiness } from './storage-readiness.js'
 import { visibleInputWakeFault } from './session-inputs.js'
 import { automaticUpdateReport, automaticUpdatesRunHere } from './automatic-update.js'
 import { processArguments, reopenLine, reopenReport, reopenStalledLine } from './session-reopen.js'
@@ -1034,8 +1035,9 @@ export async function doctorCommand(
   options: { readiness?: Readiness; /** Test seam; production asks whether this machine has an updater. */ updatesRunHere?: boolean } = {},
 ): Promise<number> {
   const updatesRunHere = options.updatesRunHere ?? automaticUpdatesRunHere(deps.hookPlatform ?? process.platform)
-  const readiness =
+  const assessed =
     options.readiness ?? (await assessReadiness(deps, { readOnly: true, ...(flags.json === true ? { json: true } : {}) }))
+  const readiness = { ...assessed, states: [localStorageReadiness(deps.env), ...assessed.states] }
   await applyRegistryRecommendation(deps, readiness.states)
   const blocker = firstBlocker(readiness)
   const ok = blocker === null

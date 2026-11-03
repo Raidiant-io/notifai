@@ -524,7 +524,7 @@ async function reportAttempt(
   const at = deps.wall()
   updateDeliveryJournal(deps.sessionId, deps.env, (entries) =>
     entries.map((entry) =>
-      entry.attempt_id === attemptId ? { ...entry, reported: stored, reported_at: at } : entry,
+      entry.attempt_id === attemptId ? { ...entry, ...(stored === 'released' ? { stage: 'released' as const } : {}), reported: stored, reported_at: at } : entry,
     ),
   )
   deps.log?.info('delivery.handoff', {
@@ -778,22 +778,29 @@ async function settle(
   stage: DeliveryJournalStage,
   lock: { release(): void },
 ): Promise<void> {
+  let failure: unknown
   try {
-    if (claimed.length > 0) setStage(deps, new Set(claimed.map((attempt) => attempt.attemptId)), stage)
-  } finally {
-    lock.release()
-  }
-  const outcome = recoveredOutcome(stage)
-  for (const attempt of claimed) {
-    let reported = false
-    for (let round = 0; round < 3 && !reported; round += 1) {
-      if (round > 0) await deps.sleep(1_000 * round)
-      reported = await reportAttempt(deps, attempt.attemptId, outcome, 'writer')
+    try {
+      if (claimed.length > 0) setStage(deps, new Set(claimed.map(attempt => attempt.attemptId)), stage)
+    } catch (error) { failure = error }
+    finally { lock.release() }
+    // A full local disk must not prevent releasing an unwritten server claim
+    // or recording a completed presentation. The service replays that outcome
+    // if its local receipt cannot be saved yet.
+    const outcome = recoveredOutcome(stage)
+    for (const attempt of claimed) {
+      try {
+        let reported = false
+        for (let round = 0; round < 3 && !reported; round += 1) {
+          if (round > 0) await deps.sleep(1_000 * round)
+          reported = await reportAttempt(deps, attempt.attemptId, outcome, 'writer')
+        }
+      } catch (error) { failure ??= error }
     }
-    // Unreported stays in the journal; this process or the next lock holder
-    // reports it, and until then the service treats the outcome as pending.
-    inFlight.delete(attempt.attemptId)
+  } finally {
+    for (const attempt of claimed) inFlight.delete(attempt.attemptId)
   }
+  if (failure !== undefined) throw failure
 }
 
 function subjectFields(subject: HandOffSubject): Record<string, string> {

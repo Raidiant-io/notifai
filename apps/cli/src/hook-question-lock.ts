@@ -61,6 +61,54 @@ const CLAIM_TTL_MS = LEGACY_QUESTION_CLAIM_TTL_SECONDS * 1000
 export const CLAIM_GUARD_TTL_MS = 30_000
 
 const heldClaims = new Map<string, string>()
+/** Failed release I/O must not leave a live process owning work it finished.
+ * Retry without a new hook or prompt; process exit uses dead-owner recovery. */
+const pendingReleases = new Map<string, Set<string>>()
+let releaseRetry: ReturnType<typeof setTimeout> | undefined
+let releaseRetryMs = 1_000
+
+function scheduleReleaseRetry(): void {
+  if (releaseRetry !== undefined || pendingReleases.size === 0) return
+  releaseRetry = setTimeout(() => {
+    releaseRetry = undefined
+    for (const file of pendingReleases.keys()) {
+      const guard = `${file}.guard`
+      try {
+        if (!existsSync(file)) { releasePendingUnlocked(file); continue }
+        if (!acquireClaimGuard(guard)) continue
+        try { releasePendingUnlocked(file) } finally { rmSync(guard, { force: true }) }
+      } catch { /* Keep the token until storage and its guard are available. */ }
+    }
+    if (pendingReleases.size === 0) return
+    releaseRetryMs = Math.min(releaseRetryMs * 2, 30_000)
+    scheduleReleaseRetry()
+  }, releaseRetryMs)
+  // A short-lived hook can exit: only a resident process needs this retry.
+  releaseRetry.unref()
+}
+
+function releasePendingUnlocked(file: string): void {
+  const tokens = pendingReleases.get(file)
+  if (tokens === undefined) return
+  const holder = readClaimFile(file)
+  if (tokens.has(String(holder?.['token'])) ||
+      (holder?.['handoff'] === true && holder['pid'] === process.pid && tokens.has(String(holder['handoff_from'])))) {
+    rmSync(file, { force: true })
+  }
+  pendingReleases.delete(file)
+  if (pendingReleases.size === 0) {
+    if (releaseRetry !== undefined) clearTimeout(releaseRetry)
+    releaseRetry = undefined
+    releaseRetryMs = 1_000
+  }
+}
+
+function rememberRelease(file: string, token: string): void {
+  const tokens = pendingReleases.get(file) ?? new Set<string>()
+  tokens.add(token)
+  pendingReleases.set(file, tokens)
+  scheduleReleaseRetry()
+}
 
 /**
  * Who owns a session's questions: a Stop hook (which may be holding the
@@ -273,6 +321,7 @@ export function acquireClaimFile(
   mkdirSync(path.dirname(file), { recursive: true })
   if (!acquireClaimGuard(guard)) return null
   try {
+    releasePendingUnlocked(file)
     try {
       writeFileSync(file, body, { mode: 0o600, flag: 'wx' })
       return token
@@ -329,10 +378,11 @@ export function claimHolderMayRun(
 
 /** Remove a claim file only while it still carries this holder's token. */
 export function releaseClaimFile(file: string, token: string): void {
+  rememberRelease(file, token)
   const guard = `${file}.guard`
   if (!acquireClaimGuard(guard, FILE_LOCK_WAIT_MS)) return
   try {
-    if (readClaimFile(file)?.['token'] === token) rmSync(file, { force: true })
+    releasePendingUnlocked(file)
   } finally {
     rmSync(guard, { force: true })
   }
@@ -395,17 +445,7 @@ export function releaseQuestionPush(sessionId: string, env: NodeJS.ProcessEnv): 
   const token = heldClaims.get(file)
   if (token === undefined) return
   heldClaims.delete(file)
-  // Missing or replaced claims are not ours to release; a claim a successor
-  // asked this owner to hand over is, so the successor can take it now.
-  const guard = `${file}.guard`
-  if (!acquireClaimGuard(guard, FILE_LOCK_WAIT_MS)) return
-  try {
-    const holder = readClaimFile(file)
-    if (holder?.['token'] === token || (holder?.['handoff'] === true && holder['handoff_from'] === token &&
-        holder['pid'] === process.pid)) rmSync(file, { force: true })
-  } finally {
-    rmSync(guard, { force: true })
-  }
+  releaseClaimFile(file, token)
 }
 
 const CLAIM_GUARD_POLL_MS = 5

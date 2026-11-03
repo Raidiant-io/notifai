@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "behavior_digest": "sha256:e785ba3f2a00806900ff67372b663155b933cf4bd4bdad0b61e788cdfc15412d",
+  "behavior_digest": "sha256:9ea1825926bb3b233c86a88b87ff60ce0254d8af5f4df6461edc81c4e0ae5783",
   "outcome": "guidance-updated",
   "surfaces_reviewed": [
     "lifecycle-hooks",
@@ -9,5 +9,5 @@
     "cli-readiness",
     "domain-terms"
   ],
-  "reason": "A User can turn notifications off per device. Reviewed lifecycle hooks, the Notifai skill, harness setup, CLI readiness and domain terms. Updated the skill: a device turned off is the User's choice and never a setup gap, a one-way send with every device off stays in history with a warning that no device was alerted, and a question is refused with receiving_off so the agent asks in the conversation. CLI readiness (init, doctor, devices) reports those devices as set up and off, and asks no one to install or open anything. Lifecycle hooks need no change: they already leave a question to the terminal when no device can answer. Harness setup is unaffected. Domain term added: Receiving."
+  "reason": "A User can turn notifications off per device. Reviewed lifecycle hooks, the Notifai skill, harness setup, CLI readiness and domain terms. Updated the skill: a device turned off is the User's choice and never a setup gap, a one-way send with every device off stays in history with a warning that no device was alerted, and a question is refused with receiving_off so the agent asks in the conversation. CLI readiness (init, doctor, devices) reports those devices as set up and off, and asks no one to install or open anything. Lifecycle hooks need no change: they already leave a question to the terminal when no device can answer. Harness setup is unaffected. Domain term added: Receiving. Doctor now tests create/write/flush/rename of disposable local delivery state and names storage exhaustion or write failure, preserving all user state. The release guidance note gives the recovery action. Reviewed lifecycle hooks and delivery/acknowledgement injection, shipped skill and diagnostics/update references, harness setup, CLI readiness and domain vocabulary. Existing receive and acknowledge instructions remain correct; no trust, approval, setting or session restart is added. Delivery now retries abandoned lock releases, keeps claimed answers pending until presentation, and releases claims even when cleanup writes fail. Uncertain native writes and the legacy no-claim consumption boundary still prohibit blind replay."
 }
