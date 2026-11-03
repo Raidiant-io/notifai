@@ -25,6 +25,8 @@ export const CompanionChangesPage = Type.Object({
   presence: Type.Union([Type.Array(SessionPresenceEntry), Type.Null()]),
   /** Full current setup-issue set when changed; null when unchanged. */
   setup_issues: Type.Optional(Type.Union([Type.Array(SetupIssue), Type.Null()])),
+  /** Whether this Device Installation has receiving on; absent from a service that predates it. */
+  receiving: Type.Optional(Type.Boolean()),
   /** Opaque Account-bound position; a missing/empty value cannot be committed. */
   next_cursor: Type.String({ minLength: 1 }),
   has_more: Type.Boolean(),

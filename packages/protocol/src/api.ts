@@ -482,8 +482,23 @@ export const RoutableDevice = Type.Object({
   /** Exactly one dashboard status; null means working. */
   status_message: Type.Union([Type.String(), Type.Null()]),
   last_seen_at: Type.Union([Type.String(), Type.Null()]),
+  /** The User's switch for this device; off means no Deliveries. Absent from a service that predates it. */
+  receiving: Type.Optional(Type.Boolean()),
 })
 export type RoutableDevice = Static<typeof RoutableDevice>
+
+/** `PATCH /api/v1/devices/:id` (user auth only, never a machine credential). */
+export const UpdateDeviceRequest = Type.Object(
+  { receiving: Type.Boolean() },
+  { additionalProperties: false },
+)
+export type UpdateDeviceRequestT = Static<typeof UpdateDeviceRequest>
+export const UpdateDeviceResponse = Type.Object({ device_id: Type.String(), receiving: Type.Boolean() })
+export type UpdateDeviceResponse = Static<typeof UpdateDeviceResponse>
+
+export function isUpdateDeviceResponse(value: unknown): value is UpdateDeviceResponse {
+  return Value.Check(UpdateDeviceResponse, value)
+}
 
 export const ListDevicesResponse = Type.Object({ devices: Type.Array(RoutableDevice) })
 export type ListDevicesResponse = Static<typeof ListDevicesResponse>

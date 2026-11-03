@@ -75,6 +75,8 @@ export const ERROR_CODES = [
   'no_active_plan',
   'machine_revoked',
   'no_active_devices',
+  /** Every device the request could reach has receiving off, so a question has nobody to alert. */
+  'receiving_off',
   /** Active targets exist, but none can perform the requested job. */
   'feature_unavailable',
   'unknown_device',

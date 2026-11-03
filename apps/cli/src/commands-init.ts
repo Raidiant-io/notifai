@@ -42,7 +42,7 @@ import {
   updateCliCommand,
   type CommandDeps,
 } from './commands-core.js'
-import { readyCompanionDevices } from './commands-devices.js'
+import { allTurnedOff, deviceTurnedOff, readyCompanionDevices } from './commands-devices.js'
 import { terminalQr } from './pairing-qr.js'
 import {
   COMPANION_INSTALL_URLS,
@@ -522,6 +522,10 @@ async function waitForReadyDevice(
         spinner?.stop(`${ready.display_name} is ready to receive`)
         return 'closed'
       }
+      if (allTurnedOff(response.devices)) {
+        spinner?.stop(`${response.devices.find(deviceTurnedOff)!.display_name} is set up, with notifications turned off`)
+        return 'closed'
+      }
       // Without a plan a Companion App (the desktop app above all) cannot
       // finish connecting; allowed notifications are all this step can
       // prove, and the plan step that follows does the rest.
@@ -707,6 +711,11 @@ async function runSetupProof(
     return 'pending'
   }
   const candidates = readyCompanionDevices(devices)
+  // The User's choice: no test notification to send, and nothing left for setup to do.
+  if (allTurnedOff(devices)) {
+    onState({ id: 'proof', title: 'Test notification', status: 'unknown', detail: 'not sent — the User turned notifications off on their devices' })
+    return 'closed'
+  }
   const now = deps.now ?? Date.now
   // Sent once already, to a device still here: never again, except the one
   // retry of a refused send once that device has been seen since.

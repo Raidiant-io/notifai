@@ -311,6 +311,11 @@ On `no_active_devices`, run setup until its gap is closed, then repeat
 the exact original send with `--retry`. A verification Notification does not
 deliver the original Agent Event.
 
+When the User turned notifications off on every device, that is their choice, not
+a setup gap: never retry or rerun setup for it. A one-way send succeeds with a
+warning that no device was alerted, and stays in their history. A question is
+refused with `receiving_off`, so ask it in the conversation instead.
+
 ## Check what happened
 
 Ordinary sends are silent on success; `--json` gives a receipt.

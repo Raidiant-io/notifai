@@ -36,7 +36,7 @@ import { PROGRAM_RECEIPT } from './commands-ask-wait.js'
 import type { AskFlags } from './commands-ask.js'
 import { MISSING_TITLE_NOTE } from './commands-ask.js'
 import { defaultMachineName } from './commands-auth.js'
-import { deviceInstallRemedy,deviceRelayMessage } from './commands-devices.js'
+import { allTurnedOff,deviceInstallRemedy,deviceRelayMessage } from './commands-devices.js'
 import { guidanceCheckCommand,guidanceShowCommand as readCurrentGuidance } from './commands-guidance.js'
 import {
 EXIT,
@@ -73,7 +73,7 @@ import { terminalQr } from './pairing-qr.js'
 import { readinessJson } from './readiness.js'
 import { relayMessage } from './relay-message.js'
 import { COMPANION_INSTALL_URLS } from './setup-destinations.js'
-import type { SendFlags } from './send.js'
+import { formatReceipt, type SendFlags } from './send.js'
 import { reopenLine,reopenReport } from './session-reopen.js'
 
 
@@ -996,6 +996,28 @@ it('resumes the same init after a required CLI update becomes current', async ()
     expect(defaultMachineName('Rafaels-MacBook-Pro.local')).toBe('Rafaels-MacBook-Pro')
     expect(defaultMachineName('build-box')).toBe('build-box')
     expect(defaultMachineName('.local')).toBe('.local')
+  })
+
+  it('treats devices the User turned off as their choice, never as setup left to finish', () => {
+    const off = [{ ...readyIphone, receiving: false, registration_healthy: false, permission_status: 'authorized' } as never]
+    expect(deviceInstallRemedy({ email: null, devices: off })).toContain('nothing to fix')
+    const relay = deviceRelayMessage({ email: null, devices: off })
+    expect(relay).toContain('turned off')
+    expect(relay).not.toContain('Open Notifai')
+    // One off beside one that can receive: nothing to say about it.
+    const both = [...off, { ...readyIphone, device_id: 'dev_other' } as never]
+    expect(allTurnedOff(both)).toBe(false)
+    expect(allTurnedOff(off)).toBe(true)
+    // A device off beside one with a real fault still names the fault to fix.
+    expect(allTurnedOff([{ ...readyIphone, registration_healthy: false } as never])).toBe(false)
+  })
+
+  it('says a send kept with nobody alerted plainly, not as still in flight', () => {
+    const line = formatReceipt({ request_id: 'req_1', overall: 'pending', replayed: false, deliveries: [],
+      warnings: [{ path: 'targets', code: 'targets_omitted', message: 'No device was alerted because the User turned receiving off.' }] } as never)
+    expect(line).toContain('kept in history; no device alerted')
+    expect(line).toContain('No device was alerted')
+    expect(line).not.toContain('still in flight')
   })
 
   it('tells the User the one thing a registered device is missing', () => {

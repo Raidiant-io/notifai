@@ -146,6 +146,7 @@ export function deviceInstallRemedy(options: {
   platform?: CompanionPlatform
 }): string {
   const sameEmail = sameAccountSignInLine(options.email)
+  if (allTurnedOff(options.devices)) return 'nothing to fix: the User turned notifications off on their devices'
   if (options.devices.length === 0) {
     const from = options.platform === undefined
       ? `get Notifai on your phone (${installLinks()})`
@@ -178,6 +179,10 @@ function installLinks(): string {
 export function deviceRelayMessage(options: { email: string | null; devices: readonly RoutableDevice[] }): string {
   const { devices } = options
   if (devices.length === 0) return noPhoneMessage(options.email)
+  if (allTurnedOff(devices)) {
+    return `**Notifications are turned off** on your ${deviceNoun(devices.find(deviceTurnedOff)!.platform)}.\n\n` +
+      'Turn on "Receive notifications on this device" in Notifai Settings if you want them.'
+  }
   const device = (pick: (d: RoutableDevice) => boolean) => devices.find(pick)
   const updating = device((d) => d.support?.state === 'must_update' && d.support.affected_operation === 'receive_notifications')
   if (updating) return `**Update the Notifai app** on your ${deviceNoun(updating.platform)}.`
@@ -191,6 +196,16 @@ export function deviceRelayMessage(options: { email: string | null; devices: rea
     return `Open Notifai on your ${deviceNoun(undecided.platform)} and **allow notifications**.`
   }
   return `**Open Notifai** on your ${deviceNoun(devices[0]!.platform)} so it can finish connecting.`
+}
+
+/** The User's own switch, not a fault: nothing here is for setup or an agent to fix. */
+export function deviceTurnedOff(device: RoutableDevice): boolean {
+  return device.receiving === false
+}
+
+/** Nothing can receive, and that is because the User turned it off rather than because setup is unfinished. */
+export function allTurnedOff(devices: readonly RoutableDevice[]): boolean {
+  return devices.some(deviceTurnedOff) && !devices.some(deviceCanReceive)
 }
 
 export function deviceCanReceive(device: RoutableDevice): boolean {

@@ -429,6 +429,12 @@ function resolvePlatform(value: string | undefined): Platform | null {
 /** Human one-screen receipt summary; agents use --json instead. */
 export function formatReceipt(receipt: SubmissionReceipt): string {
   const lines: string[] = []
+  // Nothing went out because the User turned their devices off; the warning says what to do.
+  if (receipt.deliveries.length === 0 && receipt.warnings.some((w) => w.code === 'targets_omitted')) {
+    lines.push(`request ${receipt.request_id}${receipt.replayed ? ' (replayed)' : ''}: kept in history; no device alerted`)
+    for (const w of receipt.warnings) lines.push(`  warning ${w.path}: ${w.message}`)
+    return lines.join('\n')
+  }
   const overall =
     receipt.overall === 'provider_accepted_all'
       ? 'accepted by the push provider for every device'

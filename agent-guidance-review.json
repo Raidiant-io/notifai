@@ -1,7 +1,7 @@
 {
   "version": 1,
-  "behavior_digest": "sha256:67c273ea84faea81b3b64fbc8a332f0ef458f101dda4fb21f57d5dfa2bf1a2e1",
-  "outcome": "reviewed-no-impact",
+  "behavior_digest": "sha256:e785ba3f2a00806900ff67372b663155b933cf4bd4bdad0b61e788cdfc15412d",
+  "outcome": "guidance-updated",
   "surfaces_reviewed": [
     "lifecycle-hooks",
     "notifai-skill",
@@ -9,5 +9,5 @@
     "cli-readiness",
     "domain-terms"
   ],
-  "reason": "Removed unused imports, a local variable and unused destructured fields left behind by the Codex delivery change, with no change in behavior. Reviewed lifecycle hooks, the Notifai skill, harness setup, CLI readiness and domain terms: none changes, since nothing agents see or do differs. A release-authored note says so."
+  "reason": "A User can turn notifications off per device. Reviewed lifecycle hooks, the Notifai skill, harness setup, CLI readiness and domain terms. Updated the skill: a device turned off is the User's choice and never a setup gap, a one-way send with every device off stays in history with a warning that no device was alerted, and a question is refused with receiving_off so the agent asks in the conversation. CLI readiness (init, doctor, devices) reports those devices as set up and off, and asks no one to install or open anything. Lifecycle hooks need no change: they already leave a question to the terminal when no device can answer. Harness setup is unaffected. Domain term added: Receiving."
 }

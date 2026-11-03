@@ -1,5 +1,5 @@
 {
-  "current": "4a938617bd94cdfb65290846dee18a8cc3d77893b88b1f1b01c90adfde2e44aa",
+  "current": "22e5732dde26ad954c34caf3c713279aa6e4366957293ecf46f87eac98860519",
   "releases": [
     {
       "digest": "3e47b01bc6bbfb43e910c660b9964fab6459d75148c3c02dcbcd0be64cfb2963",
@@ -312,6 +312,10 @@
     {
       "digest": "4a938617bd94cdfb65290846dee18a8cc3d77893b88b1f1b01c90adfde2e44aa",
       "note": "Nothing changes in what you do. This release only tidies unused code left behind by the Codex delivery change; what agents are told and how input reaches them are the same."
+    },
+    {
+      "digest": "22e5732dde26ad954c34caf3c713279aa6e4366957293ecf46f87eac98860519",
+      "note": "A User can now turn notifications off per device. When every device is off, that is their choice and not a setup gap: never retry or rerun setup for it. A one-way send succeeds with a warning that no device was alerted and stays in their history. A question is refused with `receiving_off`, so ask it in the conversation instead. `notifai devices` and `doctor` report those devices as turned off."
     }
   ]
 }

@@ -85,7 +85,7 @@ import {
   updateCliCommand,
   type CommandDeps,
 } from './commands-core.js'
-import { deviceInstallRemedy, deviceRelayMessage, readyCompanionDevices } from './commands-devices.js'
+import { allTurnedOff, deviceInstallRemedy, deviceRelayMessage, deviceTurnedOff, readyCompanionDevices } from './commands-devices.js'
 import { COMPANION_INSTALL_URLS, NO_ACTIVE_PLAN_LINE, plansUrl, setupCompanionUrl } from './setup-destinations.js'
 import { readPendingPairing } from './pending-pairing.js'
 import { pendingApprovalBlocker } from './commands-auth.js'
@@ -746,6 +746,13 @@ export async function assessReadiness(
               ? `${ready.map((d) => `${d.display_name} (${d.platform})`).join(', ')} set up; receives once a plan is active`
               : `${ready.map((d) => `${d.display_name} (${d.platform})`).join(', ')} ready to receive`,
           }
+        : allTurnedOff(devices)
+        ? {
+            id: 'devices',
+            title: 'Your devices',
+            status: 'ready',
+            detail: `${devices.filter(deviceTurnedOff).map((d) => d.display_name).join(', ')} set up, with notifications turned off by the User; leave that as it is`,
+          }
         : {
             id: 'devices',
             title: 'Your devices',
@@ -872,7 +879,7 @@ async function setupProofState(
       id: 'proof',
       title: 'Test notification',
       status: 'unknown',
-      detail: 'not checked — no Companion App is ready',
+      detail: allTurnedOff(devices) ? 'not checked — the User turned notifications off on their devices' : 'not checked — no Companion App is ready',
     }
   }
 

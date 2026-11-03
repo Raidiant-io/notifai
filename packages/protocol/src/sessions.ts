@@ -47,6 +47,7 @@ export const SERVER_FEATURES = [
   'read_sync',
   'setup_issues',
   'choice_previews',
+  'device_receiving',
 ] as const
 export type ServerFeature = (typeof SERVER_FEATURES)[number]
 
