@@ -8,6 +8,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 This project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 and [Conventional Commits](https://www.conventionalcommits.org/en/v1.0.0/).
 
+## [14.5.2](https://github.com/Raidiant-io/notifai/compare/v14.5.1...v14.5.2) (2026-11-04)
+
+### Bug Fixes
+
+* Temporary storage read errors no longer stop Notifai from retrying cleanup. Once storage is readable again, cleanup resumes automatically instead of leaving delivery stuck until the process restarts.
+* A process that cannot read an existing delivery lock now leaves it alone, so another running process keeps ownership. Readable abandoned or malformed locks still recover normally.
+
 ## [14.5.1](https://github.com/Raidiant-io/notifai/compare/v14.5.0...v14.5.1) (2026-11-03)
 
 ### Bug Fixes
