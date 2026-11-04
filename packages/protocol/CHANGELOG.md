@@ -8,42 +8,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 This project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 and [Conventional Commits](https://www.conventionalcommits.org/en/v1.0.0/).
 
-## [9.3.0](https://github.com/Raidiant-io/notifai/compare/protocol-v9.2.0...protocol-v9.3.0) (2026-11-04)
-
-
-### Features
-
-* **cli:** name the computer so the service lists it once ([c086ff6](https://github.com/Raidiant-io/notifai/commit/c086ff6440972c629d94cbeed38ee7e4f9336bdb))
-* **cli:** turn notifications off per device ([d72e0d4](https://github.com/Raidiant-io/notifai/commit/d72e0d4da948cd2d59d7fb305debb8252429df13))
-* **protocol:** add a silent request_reads push and read_sync capability ([04fe92b](https://github.com/Raidiant-io/notifai/commit/04fe92b5f9f05cc0055a579aa1242ddfb96addcf))
-* **protocol:** add machine setup issue snapshots and companion views ([4e378bd](https://github.com/Raidiant-io/notifai/commit/4e378bda8f638ee5874a614e22f08e3f8e2be272))
-* **protocol:** answer versions say when the agent's computer has a reply ([a2d8a1d](https://github.com/Raidiant-io/notifai/commit/a2d8a1da7df4121252ad77b8e18b6dda43b48b0f))
-* **protocol:** describe Android notification choice buttons by app build ([124fd62](https://github.com/Raidiant-io/notifai/commit/124fd624f8d80147620daad0debe197452368052))
-* **protocol:** optional title and detail on each reply question ([9fe33d2](https://github.com/Raidiant-io/notifai/commit/9fe33d293ca4c7ef4972f43bf9f368bdc6edf6d5))
-* **questions:** preserve option previews on companion choices ([f64dce4](https://github.com/Raidiant-io/notifai/commit/f64dce477861e9e5ff158d7efde140e6754b3748))
-* size a question form's push by the Project's real name and avatar ([d013781](https://github.com/Raidiant-io/notifai/commit/d013781a23d7e226d2c618e06c7d0dfcec4b1069))
-
-
-### Bug Fixes
-
-* **cli:** say how a retired question ended, and stop calling the conversation a terminal ([6b17d5c](https://github.com/Raidiant-io/notifai/commit/6b17d5cdcbff8ef1824414261510368ff515b835))
-* **protocol:** flag question details only when a push leaves them out ([ab98bd5](https://github.com/Raidiant-io/notifai/commit/ab98bd532db2d80450e176e24a7f38793a6d489f))
-* **protocol:** include option previews in question output types ([174a036](https://github.com/Raidiant-io/notifai/commit/174a0360cc5675c67c4dbe97f86db784c085b8cc))
-* **protocol:** preserve compatibility across optional previews ([c72c55c](https://github.com/Raidiant-io/notifai/commit/c72c55c6ae078c623666496f379404eb2fba1dc4))
-* **protocol:** reconcile response validation with current main ([001c04b](https://github.com/Raidiant-io/notifai/commit/001c04bd396484421001273994ef68f03a1a1e3e))
-* **protocol:** validate access and changes response boundaries ([a4def7d](https://github.com/Raidiant-io/notifai/commit/a4def7d574601c5bf7a172f84ec9dfcf97d9817f))
-* **protocol:** validate Account preference responses ([3ac8102](https://github.com/Raidiant-io/notifai/commit/3ac810279c52ec33d70243aefee79956f203b414))
-* **protocol:** validate companion send confirmations ([f9159b3](https://github.com/Raidiant-io/notifai/commit/f9159b30891dd82d3bcac6a37d270ebefddd3469))
-* **protocol:** validate feature discovery responses ([faaafd3](https://github.com/Raidiant-io/notifai/commit/faaafd301a56ecef9ffde47f96986e0b6625effb))
-* **protocol:** validate machine and device resource responses ([064ce15](https://github.com/Raidiant-io/notifai/commit/064ce1595d35156860a6d2690c9a5ed0e9a08ab8))
-* **protocol:** validate Project resource responses ([25dadaf](https://github.com/Raidiant-io/notifai/commit/25dadafeda653bfc2de08b24b06c8a159fbad146))
-* **protocol:** validate registration and media upload responses ([c3b13db](https://github.com/Raidiant-io/notifai/commit/c3b13db9d02b95b9ff336ec03887442798cfc93b))
-* **protocol:** validate registration and media upload responses ([64cb0c6](https://github.com/Raidiant-io/notifai/commit/64cb0c6c716146dade087d2f1f92fff0c90ffc92))
-* **protocol:** validate registration version responses ([b720347](https://github.com/Raidiant-io/notifai/commit/b720347b16cee63838fc4ff4994e6b0bfd41bd19))
-* **protocol:** validate retained content responses ([26e832b](https://github.com/Raidiant-io/notifai/commit/26e832b16f70051c99003e363a8636950954f90f))
-* **protocol:** validate retained feed content deeply ([48641a3](https://github.com/Raidiant-io/notifai/commit/48641a3d8d6962fe85b5914423391c7df6633619))
-* **protocol:** validate sound resource responses ([5f9e9af](https://github.com/Raidiant-io/notifai/commit/5f9e9af18bf338d1c7227cba7221b72e1ac4996b))
-
 ## [9.2.0](https://github.com/Raidiant-io/notifai/compare/protocol-v9.1.2...protocol-v9.2.0) (2026-10-26)
 
 ### Features
