@@ -77,7 +77,20 @@ export type HandOffSubject = ClaimDeliveryAttemptRequestT['subject']
 export type DeliveryJournalStage = 'claimed' | 'writing' | 'written' | 'failed' | 'released'
 
 /** Immutable evidence of a native presentation, never a replayable outbox. */
-export type NativeAnswerPresentation = CodexAnswerPresentation | ClaudeQuestionPresentation
+export type NativeAnswerPresentation = CodexAnswerPresentation | ClaudeQuestionPresentation | OrcaChatAnswersPresentation
+
+/** Device answers to an Orca chat's Codex cards, sent as the User's own answer message through Orca. */
+export interface OrcaChatAnswersPresentation {
+  kind: 'orca-chat-answers'
+  answers: Array<{ request_id: string; question_id: string; replies: Array<{ reply_id: string; seq: number }> }>
+  owner_key: string
+  incarnation: string
+  generation: number
+  service_identity: { base_url: string; machine_id: string }
+  orca_session_id: string
+  client_operation_id: string
+  text_sha256: string
+}
 
 /** An app answer returned as the result of the Claude Code picker that asked it. */
 export interface ClaudeQuestionPresentation {

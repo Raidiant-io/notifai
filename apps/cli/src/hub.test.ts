@@ -13,6 +13,7 @@ import path from 'node:path'
 import { afterEach,beforeEach,describe,expect,it,vi } from 'vitest'
 import { claudeDescriptorDir } from './claude-wake.js'
 import { ApiCallError,type ApiClient } from './client.js'
+import type { OrcaRuntime } from './orca-runtime.js'
 import type { CodexWakeAdapters } from './codex-wake.js'
 import type { CommandDeps } from './commands-core.js'
 import { hookRunCommand } from './commands-hook-run.js'
@@ -121,6 +122,7 @@ function fakeService(options: {
   stall?: () => boolean
 } = {}): FakeService {
   const batches: FakeService['batches'] = []
+  const claimed = new Set<string>()
   const single: FakeService['single'] = []
   const held = new Set<() => void>()
   const hold = (waitSeconds: number, signal?: AbortSignal): Promise<void> => waitSeconds === 0 && !service.hold ? Promise.resolve() : new Promise((resolve, reject) => {
@@ -145,6 +147,14 @@ function fakeService(options: {
         return { ok: true }
       }
       if (property === 'upgradeAgentSessionLabel' && options.upgrade !== undefined) return options.upgrade
+      // Each subject can be claimed for hand-off once, as on the service.
+      if (property === 'claimDeliveryAttempt') return async (_session: string, body: { subject: { type: string; request_id?: string; message_id?: string } }) => {
+        const id = body.subject.request_id ?? body.subject.message_id ?? ''
+        if (claimed.has(id)) throw new ApiCallError(409, 'claim_refused', 'settled', null, { reason: 'not_claimable' })
+        claimed.add(id)
+        return { attempt_id: `att_${id}`, claim_remaining_ms: 30_000 }
+      }
+      if (property === 'reportDeliveryAttempt') return async (id: string, body: { outcome: string }) => ({ attempt_id: id, ...body, replayed: false })
       if (property === 'compatibility') {
         return async (): Promise<CompatibilityResponse> => ({ cli: {} as CompatibilityResponse['cli'], platforms: [],
           server_capabilities: (options.capabilities ?? ['session_attendance', 'session_attendance_batch']) as CompatibilityResponse['server_capabilities'] })
@@ -1261,6 +1271,7 @@ describe('hub and Codex SessionEnd', () => {
       wake?: CodexWakeAdapters
       hostKind?: HubOptions['codexHostKind']
       pausedWake?: HubOptions['pausedWake']
+      orcaRuntime?: HubOptions['orcaRuntime']
     }) {
       const env = hubEnv()
       recordSessionNotified(SESSION, env, Date.now())
@@ -1287,6 +1298,7 @@ describe('hub and Codex SessionEnd', () => {
         },
         // Hermetic by default: no Codex server owns the thread.
         pausedWake: options.pausedWake ?? { owned: async () => false, start: async () => 'unreachable', remove: async () => 'failed' },
+        ...(options.orcaRuntime === undefined ? {} : { orcaRuntime: options.orcaRuntime }),
         ...(options.clock === undefined ? {} : { clock: options.clock }),
       })
       await hubListening(env)
@@ -1510,6 +1522,50 @@ describe('hub and Codex SessionEnd', () => {
           expect(r.calls.owned).toBe(1)
         } finally { await run.stop() }
       })
+    })
+
+    it('in an Orca chat, sends a turn\'s card answers once through Orca instead of a queued wake', async () => {
+      const queued: string[] = []
+      const sends: Array<Record<string, unknown>> = []
+      const runtime: OrcaRuntime = { call: async (method, params) => {
+        if (method === 'status.get') return { ok: true, result: { capabilities: ['agent-session.structured.v1', 'agent-session.accepted-send.v1'] } }
+        if (method === 'agentSession.history') return { ok: true, result: { page: { fence: 7, submissions: [], items: [{ body: { kind: 'message', role: 'assistant',
+          blocks: [{ type: 'tool-call', name: 'request_user_input_async', callId: 'call_a' }] } }] } } }
+        if (method === 'agentSession.send') { sends.push(params as Record<string, unknown>); return { ok: true, result: { ok: true } } }
+        return { ok: false, code: 'method_not_found' }
+      } }
+      const run = await sharedServer({ state: () => ({ state: 'attached', confirmed: true, reason: 'terminal-live+joined' }), hostKind: () => 'app-server',
+        wake: { available: () => true, queue: async (threadId) => { queued.push(threadId); return 'qs_1' } }, orcaRuntime: runtime })
+      try {
+        const key = readSessionIncarnation(SESSION, run.env)!.key
+        const service = { base_url: 'https://example.invalid', machine_id: 'mch_test' }
+        const reply = { reply_id: 'rpl_1', seq: 1, delivery_id: null, device_id: 'dev', device_name: 'iPhone', text: '',
+          answers: [{ question_id: 'qa-q', choice_ids: ['blue'], text: null }], source: null, created_at: '2026-11-04T00:00:00Z' }
+        const pending = { question_id: 'qa', request_id: 'req_qa', collapse_key: 'ck_qa', device_ids: ['dev'], question: '', summary: '', service_identity: service }
+        updateSessionState(SESSION, run.env, (state) => ({ ...state, orca_chat: { key, session_id: 'codex_orca_chat' }, pending: [pending],
+          codex_question_bindings: [{ question_id: 'qa', owner_key: key, registration_turn_id: 'turn-1', transcript: { file: '', identity: 'codex-card-hook', registered_offset: 0 },
+            service_identity: service, card_call_id: 'call_a', card_allowed: true, confirmed_request_id: 'req_qa',
+            questions: [{ question: { id: 'qa-q', text: 'Card A: which color?', choices: [{ id: 'red', label: 'Red' }, { id: 'blue', label: 'Blue' }] },
+              card: { title: 'Card A: which color?', labels: { red: 'Red', blue: 'Blue' } }, native: { turn_id: 'turn-1', call_id: 'call_a', index: 0 }, verified: true }] }],
+          waiting_answers: [{ pending, reply, replies: [reply], delivery_claim: true }],
+          acknowledgement_due: [{ request_id: 'req_qa', recorded_at: 1, text_required: true }] }))
+        for (let round = 0; round < 4 && sends.length === 0; round += 1) {
+          run.service.release()
+          run.hub.inputStaged(SESSION)
+          await new Promise((resolve) => setTimeout(resolve, 150))
+        }
+        await until(() => sends.length > 0)
+        for (let round = 0; round < 4; round += 1) {
+          run.service.release()
+          run.hub.inputStaged(SESSION)
+          await new Promise((resolve) => setTimeout(resolve, 150))
+        }
+        expect(sends).toHaveLength(1)
+        expect((sends[0]!['body'] as { blocks: Array<{ text: string }> }).blocks[0]!.text).toBe('> Card A: which color?\n\nBlue')
+        expect((sends[0]!['envelope'] as { sessionId: string; expectedRuntimeFence: number })).toMatchObject({ sessionId: 'codex_orca_chat', expectedRuntimeFence: 7 })
+        expect(readSessionState(SESSION, run.env).waiting_answers ?? []).toEqual([])
+        expect(queued).toEqual([])
+      } finally { await run.stop() }
     })
 
     it('never lets a turn it saw start hold a note past the bound, whether or not that turn ever ended', async () => {

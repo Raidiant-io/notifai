@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "behavior_digest": "sha256:bcb03384cb3e9899e101bfb3ace3b79e85a8486ef2ab30b6589aaef3c58d32c4",
+  "behavior_digest": "sha256:a398713ca4cca135f38cce1b2c9540e5fd65f6fe5b3cded0e2a34bb6271be6e9",
   "outcome": "guidance-updated",
   "surfaces_reviewed": [
     "lifecycle-hooks",
@@ -9,5 +9,5 @@
     "cli-readiness",
     "domain-terms"
   ],
-  "reason": "Reviewed lifecycle hooks, the Notifai skill, harness setup, CLI readiness and domain terms. The hub now starts a Codex wake that waits behind an interrupted turn on the shared server (thread/queue/start by its recorded queued id) and removes one that could only run as an extra turn after the User's next prompt (thread/queue/delete through the shared server, or a private stdio app-server that never loads the thread). No agent-facing instruction changes: the wake text and the prompt hook's handling are unchanged. A guidance change note tells running sessions. No command, approval or setting is added."
+  "reason": "Reviewed lifecycle hooks, the Notifai skill, harness setup, CLI readiness and domain terms. The hub now starts a Codex wake that waits behind an interrupted turn on the shared server (thread/queue/start by its recorded queued id) and removes one that could only run as an extra turn after the User's next prompt (thread/queue/delete through the shared server, or a private stdio app-server that never loads the thread). No agent-facing instruction changes: the wake text and the prompt hook's handling are unchanged. A guidance change note tells running sessions. No command, approval or setting is added. In an Orca chat on this machine the hub also sends a turn's card answers, once every card is answered, as one message in Orca's own answer format through Orca's runtime (agentSession.send, capability-gated); the prompt hook that sees it adds only the acknowledgement commands. The Codex reference says such an answer can arrive as that message with its acknowledgement command beside it."
 }

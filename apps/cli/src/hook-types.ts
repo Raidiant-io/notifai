@@ -247,6 +247,13 @@ export interface SessionState {
    * exactly it is refused (`claude-picker-handback.ts`).
    */
   claude_handbacks?: Array<{ question_id: string; at: number }>
+  /** Codex in an Orca chat on this machine: Orca's own session id for the owner (`orca-chat-answers.ts`). */
+  orca_chat?: { key: string; session_id: string; user_data?: string }
+  /**
+   * Card answers sent through Orca as the User's own answer message, matched
+   * by the prompt's digest when that message reaches Codex. Never answer text.
+   */
+  orca_chat_sent?: Array<{ digest: string; operation_id: string; context: string; at: number; shown?: true }>
   /** A content-free native wake is outstanding for this incarnation. */
   input_wake?: {
     incarnation: string; token: string; queued: boolean; writer: ProcessIdentity

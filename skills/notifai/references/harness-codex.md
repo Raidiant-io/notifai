@@ -92,7 +92,9 @@ The first answer settles the question:
   that runs this session, it arrives in the card and closes it. Elsewhere it
   arrives at your next tool call, or as the next turn when you are idle, and
   the card can stay on screen after it: the answer is final, so do not wait
-  on the card.
+  on the card. In an app whose cards are answered by a message, the device
+  answer can arrive as that message, with its acknowledgement command beside
+  it.
 - **A terminal answer** needs nothing from you, including one typed in the
   chat of an app around Codex. Notifai records it, so the devices stop
   asking.

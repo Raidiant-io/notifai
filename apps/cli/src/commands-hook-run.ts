@@ -2,6 +2,7 @@ import { attendCursorStop } from './cursor-attendant.js'
 import { recordOpenclawNativeSession } from './openclaw-native-session.js'
 import { stopAnswerOutput } from './hook-acknowledgements.js'
 import { observeCodexTerminalAnswers, reportCodexTerminalAnswers, takeCodexTerminalConflictContext } from './codex-terminal-answers.js'
+import { isOrcaChatSentPrompt, recordOrcaChatSession, takeOrcaChatSentContext } from './orca-chat-answers.js'
 import { observeLoadedIntegration } from './integration-revision.js'
 /** Fail-open CLI adapter from harness input to hook lifecycle handlers. */
 import { pendingAgentUpdateNotice } from './agent-update-notice.js'
@@ -1244,13 +1245,26 @@ export async function hookRunCommand(
       // another process hosts is not where the User is: nothing held for it is handed in here.
       const elsewhere = envelope.session_id !== undefined && scriptedRunElsewhere(deps, harness, envelope.session_id)
       runElsewhere = elsewhere
-      if (harness === 'codex' && !elsewhere) observeCodexTerminalAnswers(deps, envelope, logger)
+      // A card answer Notifai sent through Orca's chat is the agent's input
+      // already: it gets that answer's acknowledgement, never a second record.
+      let orcaSent: string | null = null
+      if (harness === 'codex' && !elsewhere && envelope.session_id !== undefined && envelope.agent_id === undefined) {
+        const owner = readSessionIncarnation(envelope.session_id, deps.env)
+        if (owner?.harness_process?.pid === Number(deps.env['NOTIFAI_HOOK_SOURCE_PID'])) {
+          try { recordOrcaChatSession(envelope.session_id, deps.env, owner.key) } catch { /* A busy lock: the next hook records it. */ }
+        }
+        orcaSent = takeOrcaChatSentContext(envelope.session_id, deps.env, envelope.prompt)
+      }
+      if (harness === 'codex' && !elsewhere && orcaSent === null && !isOrcaChatSentPrompt(envelope.session_id ?? '', deps.env, envelope.prompt)) {
+        observeCodexTerminalAnswers(deps, envelope, logger)
+      }
       // Claude wakes carry a token; Codex prompts with one keep their own path.
       outcome = elsewhere ? { notes: [], log: { stage: 'scripted-run-receives-nothing' } }
         : envelope.session_id !== undefined && (envelope.prompt === sessionInputWake() ||
           (harness === 'claude-code' && inputWakeToken(envelope.prompt) !== null))
           ? { notes: [], log: { stage: 'input-wake-observed' } }
           : await handleUserPromptSubmit(ctx, envelope)
+      if (orcaSent !== null) outcome.stdout = appendIntegrationContext(outcome.stdout, orcaSent, harness!, 'UserPromptSubmit')
       if (harness === 'codex' && !elsewhere) {
         const conflict = takeCodexTerminalConflictContext(deps, envelope)
         if (conflict !== null) outcome.stdout = appendIntegrationContext(outcome.stdout, conflict, harness, 'UserPromptSubmit')

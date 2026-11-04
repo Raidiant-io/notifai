@@ -115,7 +115,7 @@ import { currentRuntimeBuild } from './launch-self.js'
 import { bootstrapLogger, type Logger } from './logging.js'
 import { nativeUninstallPending } from './native-uninstall-barrier.js'
 import { accountHome } from './platform.js'
-import { descriptorStartMatches, linuxStartTicks, normalizeProcessStart, pidExists, processIdentityLiveness, processStartTime, type ProcessIdentity } from './process-identity.js'
+import { currentProcessIdentity, descriptorStartMatches, linuxStartTicks, normalizeProcessStart, pidExists, processIdentityLiveness, processStartTime, type ProcessIdentity } from './process-identity.js'
 import { packageVersion } from './release.js'
 import { retainSessionRuntime } from './runtime-build-retention.js'
 import {
@@ -133,6 +133,7 @@ import type { DeliveryLease } from './session-delivery.js'
 import { claudeSocketLine, deliverIntoCodexThread } from './session-handoff.js'
 import {
   claimQueuedInputWake,
+  drainSessionInputs,
   forgetRemovedInputWake,
   hasSessionInputs,
   inputWakeStored,
@@ -149,6 +150,9 @@ import {
 } from './session-inputs.js'
 import { compareVersions } from './version.js'
 import { codexThreadOnSharedServer, removeQueuedCodexWake, startPausedCodexWake } from './codex-paused-wake.js'
+import { orcaCardGroup, orcaChatPresentation } from './orca-chat-answers.js'
+import type { OrcaRuntime } from './orca-runtime.js'
+import type { SessionState } from './hook-types.js'
 import { QUESTION_WAITER_CEILING_SECONDS } from './question-timing.js'
 import { claudeHostName, claudePlaceOf, codexPlaceOf, orcaTerminalHostOf, parentProcessOf, placeReceives, type SessionPlace } from './session-place.js'
 import { readReopenLaunch } from './reopen-terminal.js'
@@ -185,6 +189,10 @@ export const HUB_CRASH_LIMIT = 3
 export const HUB_CRASH_WINDOW_MS = 10 * 60_000
 /** A Claude wake accepted but still not shown after this long idle is treated as lost. */
 const IDLE_BEFORE_WAKE_REPLACEMENT_MS = 30_000
+/** One Orca chat send, claims to receipt. */
+const ORCA_CHAT_DEADLINE_MS = 15_000
+/** After the Orca chat route could not send, the ordinary route has this long before it is offered again. */
+const ORCA_CHAT_RETRY_MS = 60_000
 /** One bounded request to a Codex server about a paused wake; the hub never waits on it. */
 const PAUSED_WAKE_DEADLINE_MS = 8_000
 /** Safety re-read of activity and pending input; events do the ordinary work. */
@@ -294,6 +302,8 @@ export interface HubOptions {
   runHook?: (event: string, envelope: Record<string, unknown> | null, harness: HookInstallableHarness, env: NodeJS.ProcessEnv) => Promise<number>
   /** Test seam: what kind of process hosts a Codex session; production asks `ps`. */
   codexHostKind?: typeof codexHostKind
+  /** Test seam: the Orca runtime an Orca chat route talks to (see `orca-chat-answers.ts`). */
+  orcaRuntime?: OrcaRuntime | null
   /** Test seams for a Codex wake behind an interrupted turn (see `codex-paused-wake.ts`). */
   pausedWake?: {
     owned?: typeof codexThreadOnSharedServer
@@ -535,6 +545,8 @@ class HubSession implements AttendedSession {
    * can start (`thread/queue/start`), as found once for that turn.
    */
   interruptStart: { turn: string; owned: boolean } | null = null
+  /** Monotonic time before which the Orca chat route is not tried again after it could not send. */
+  orcaChatRetryAt = -Infinity
   attachWatchPaused = false
   attachOwnReload: { pid: number; at: number } | null = null
   /** An end signal waiting for the end confirmation (see `END_CONFIRM_MS`). */
@@ -899,6 +911,12 @@ class HubSession implements AttendedSession {
       const hold = !waiting ? null : this.codexObserver === null ? 'session-gone' : this.codexObserver.hold()
       this.noteWakeHold(hasInput ? hold : null)
       pending = waiting && hold === null
+      // In an Orca chat, card answers go as the User's own answer message once
+      // every card of their turn is answered; that message is also the wake.
+      if (hasInput && this.hub.orcaChatReady(this, state)) {
+        void this.hub.orcaChatAnswers(this)
+        pending = false
+      }
       // Past an interrupt Codex runs nothing queued on its own: start the wake
       // where the owning server can. Where nothing can, the wake would only
       // run as an extra turn after the User's next one, whose own prompt hands
@@ -985,7 +1003,10 @@ class HubSession implements AttendedSession {
     stageSessionMessages(this.id, this.env, lease, messages)
     if (inputWakeRetryDeferred(readSessionState(this.id, this.env), this.hub.clock.wall())) return 'done'
     const mayWake = (): boolean => this.codexObserver?.mayWake() ?? false
-    if (!hasSessionInputs(this.id, this.env, lease) || !mayWake()) return 'done'
+    if (!hasSessionInputs(this.id, this.env, lease)) return 'done'
+    // An Orca chat's card answers go through Orca, and that message is the wake.
+    if (this.hub.orcaChatReady(this, readSessionState(this.id, this.env))) { void this.hub.orcaChatAnswers(this); return 'done' }
+    if (!mayWake()) return 'done'
     // Recheck eligibility and pending input immediately before queue admission;
     // a hook may have consumed the batch since the last exchange.
     const cwd = this.registration.cwd ?? process.cwd()
@@ -3634,6 +3655,62 @@ export class Hub {
           !this.codexSharedServer(session)) continue
       void this.checkCodexAttach(session, 'watch')
     }
+  }
+
+  // -- Codex in an Orca chat: card answers through Orca -----------------------------
+
+  private readonly orcaSending = new Set<string>()
+
+  /** Whether waiting input includes a complete set of card answers for this session's Orca chat. */
+  orcaChatReady(session: HubSession, state: SessionState): boolean {
+    if (session.harness !== 'codex' || state.orca_chat?.key !== session.record.key ||
+        this.clock.monotonic() < session.orcaChatRetryAt) return false
+    if (this.client() === null) return false
+    const credential = this.credential
+    if (credential === undefined || credential === null) return false
+    const service = { base_url: credential.baseUrl, machine_id: credential.machineId }
+    return (state.waiting_answers ?? []).some((answer) => orcaCardGroup(state, session.record.key, service, answer) !== null)
+  }
+
+  /**
+   * Send a turn's card answers through Orca, as the User's own answer
+   * message (`orca-chat-answers.ts`). Claimed and journaled like any other
+   * presentation; anything that keeps it from being sent leaves the answers
+   * to the ordinary route, which is not offered this one again for a minute.
+   */
+  async orcaChatAnswers(session: HubSession): Promise<void> {
+    if (!this.pausedWakeSettable(session) || this.orcaSending.has(session.id)) return
+    const lease = session.lease.generation === null ? null : { incarnation: session.lease.incarnation, generation: session.lease.generation }
+    const client = this.client()
+    const credential = this.credential
+    const writer = currentProcessIdentity()
+    if (lease === null || client === null || credential === undefined || credential === null || writer === null) return
+    this.orcaSending.add(session.id)
+    let presented = false
+    try {
+      const deadline = this.clock.monotonic() + ORCA_CHAT_DEADLINE_MS
+      const mayWrite = (): boolean => this.clock.monotonic() < deadline && session.mayWrite()
+      presented = await drainSessionInputs({
+        lease, mayWrite, nativeOnly: true,
+        nativeAnswers: orcaChatPresentation({ sessionId: session.id, env: session.env, lease, ownerKey: session.record.key,
+          service: { base_url: credential.baseUrl, machine_id: credential.machineId },
+          serviceCurrent: () => this.credential === credential, wall: () => this.clock.wall(),
+          ...(this.options.orcaRuntime === undefined ? {} : { runtime: this.options.orcaRuntime }) }),
+        sequencer: { sessionId: session.id, env: session.env, client, writer, log: this.logger,
+          monotonic: () => this.clock.monotonic(), wall: () => this.clock.wall(), recoveryDeadline: this.clock.monotonic() + 500,
+          sleep: async (ms) => { await new Promise((resolve) => setTimeout(resolve, Math.max(0, Math.min(ms, deadline - this.clock.monotonic())))) } },
+        // A native-only drain writes through Orca or not at all.
+        write: () => undefined,
+      })
+    } catch (err) {
+      this.logger.error('delivery.handoff', { route: 'orca-chat', stage: 'failed', session: session.id,
+        message: err instanceof Error ? err.message : String(err) })
+    } finally {
+      this.orcaSending.delete(session.id)
+    }
+    this.logger.info('delivery.handoff', { route: 'orca-chat', stage: presented ? 'sent' : 'not-sent', session: session.id })
+    if (!presented) session.orcaChatRetryAt = this.clock.monotonic() + ORCA_CHAT_RETRY_MS
+    if (this.pausedWakeSettable(session)) session.checkInput()
   }
 
   // -- Codex: a wake behind an interrupted turn -----------------------------------
