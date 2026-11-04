@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "behavior_digest": "sha256:007da35ae76e156b20a79ec117781efff6a51f3c7898df27e12e80648bf8a155",
+  "behavior_digest": "sha256:c47988f4d1f7e58c6b6a8aa5ff459f3b81fbd5e2d1942c819eeebc0e23b80452",
   "outcome": "reviewed-no-impact",
   "surfaces_reviewed": [
     "lifecycle-hooks",
@@ -9,5 +9,5 @@
     "cli-readiness",
     "domain-terms"
   ],
-  "reason": "Delivery-only change: a Claude Code session resting at its prompt beside a background shell (status shell) now takes answers and notes, and the User's \"not delivered yet\" notice waits for the session to be free for five minutes, is never sent at a hook boundary, and is retired silently once nothing waits. Reviewed lifecycle hooks, the Notifai skill, harness setup, CLI readiness and domain terms: no agent-facing text, command, approval or setting changes; the notice and its retirement reach only the User's devices. The release note in skills/guidance-changes.json says nothing changes in what agents do."
+  "reason": "Reviewed lifecycle hooks, the Notifai skill, harness setup, CLI readiness and domain terms. Failed claim releases now retain their retry obligation when the holder cannot be read or parsed, and only prove completion from absence, a replacement token, or successful removal under the guard. The absent-file timer path never removes a reappearing file outside the guard. No command, approval, setting, session restart or delivery replay is added. Existing guidance remains correct; the release note explains the recovery change."
 }

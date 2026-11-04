@@ -74,7 +74,12 @@ function scheduleReleaseRetry(): void {
     for (const file of pendingReleases.keys()) {
       const guard = `${file}.guard`
       try {
-        if (!existsSync(file)) { releasePendingUnlocked(file); continue }
+        // A removed directory cannot host a guard. Forget only proven absence;
+        // never release a file here, outside the guard, even if it reappears.
+        try { statSync(file) } catch (error) {
+          if ((error as NodeJS.ErrnoException).code === 'ENOENT') forgetRelease(file)
+          continue
+        }
         if (!acquireClaimGuard(guard)) continue
         try { releasePendingUnlocked(file) } finally { rmSync(guard, { force: true }) }
       } catch { /* Keep the token until storage and its guard are available. */ }
@@ -90,11 +95,23 @@ function scheduleReleaseRetry(): void {
 function releasePendingUnlocked(file: string): void {
   const tokens = pendingReleases.get(file)
   if (tokens === undefined) return
-  const holder = readClaimFile(file)
-  if (tokens.has(String(holder?.['token'])) ||
-      (holder?.['handoff'] === true && holder['pid'] === process.pid && tokens.has(String(holder['handoff_from'])))) {
+  // The ordinary claim reader treats missing, corrupt and unreadable alike.
+  // A release may stop retrying only on evidence, not an inconclusive read.
+  let holder: unknown
+  try { holder = JSON.parse(readFileSync(file, 'utf8')) } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') forgetRelease(file)
+    return
+  }
+  if (typeof holder !== 'object' || holder === null || !('token' in holder) || typeof holder.token !== 'string') return
+  const claim = holder as Record<string, unknown>
+  if (tokens.has(holder.token) ||
+      (claim['handoff'] === true && claim['pid'] === process.pid && tokens.has(String(claim['handoff_from'])))) {
     rmSync(file, { force: true })
   }
+  forgetRelease(file)
+}
+
+function forgetRelease(file: string): void {
   pendingReleases.delete(file)
   if (pendingReleases.size === 0) {
     if (releaseRetry !== undefined) clearTimeout(releaseRetry)
@@ -459,9 +476,8 @@ const guardSleep = new Int32Array(new SharedArrayBuffer(4))
  * `CLAIM_GUARD_TTL_MS`.
  *
  * A contender that finds the guard busy retries on its own schedule. A release
- * has no later retry: giving up would leave a live process holding the claim
- * it meant to let go, and every contender polling for it would wait out its
- * deadline. Releases therefore wait out a live holder's few file operations.
+ * briefly waits out a live holder's few file operations; if it cannot finish,
+ * its pending token is retried by the background timer.
  */
 function acquireClaimGuard(file: string, waitMs = 0): boolean {
   const deadline = Date.now() + waitMs

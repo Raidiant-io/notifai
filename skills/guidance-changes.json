@@ -1,5 +1,5 @@
 {
-  "current": "6904b64b34e9cb0214402a6fc923c422f31cb535044c2fac7d90845cdb697bd2",
+  "current": "3e0f7b7d80a0f4c745117cfa8366bfef3c91f35f435218c0153fbea5572a9e87",
   "releases": [
     {
       "digest": "3e47b01bc6bbfb43e910c660b9964fab6459d75148c3c02dcbcd0be64cfb2963",
@@ -328,6 +328,10 @@
     {
       "digest": "6904b64b34e9cb0214402a6fc923c422f31cb535044c2fac7d90845cdb697bd2",
       "note": "In Claude Code, an answer or note now reaches you while you rest at the prompt with a background shell still running, instead of waiting for that shell to end. Notifai tells the User input is stuck only after the session has been free to take it for several minutes, and takes that notice down once the input reaches you. Nothing changes in what you do."
+    },
+    {
+      "digest": "3e0f7b7d80a0f4c745117cfa8366bfef3c91f35f435218c0153fbea5572a9e87",
+      "note": "Lock cleanup keeps retrying when a temporary storage read error or an unreadable owner record prevents it from proving the outcome. It still backs off, leaves replacement owners alone, and needs no new command, approval or session restart. Nothing changes in what agents do."
     }
   ]
 }
