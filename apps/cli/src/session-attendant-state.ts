@@ -297,6 +297,12 @@ export function currentCodexTurn(sessionId: string, env: NodeJS.ProcessEnv, key:
     record.stopped !== record.current ? record.current : null
 }
 
+/** The latest turn, when the User interrupted it; null otherwise. */
+export function codexInterruptedTurn(sessionId: string, env: NodeJS.ProcessEnv, key: string): string | null {
+  const record = readTurns(turnActivityPath(sessionId, env))
+  return record.key === key && record.current !== null && record.interrupted === record.current ? record.current : null
+}
+
 /** The User interrupted the latest turn: Codex runs nothing it has queued until their next prompt. */
 export function codexTurnInterrupted(sessionId: string, env: NodeJS.ProcessEnv, key: string): boolean {
   const record = readTurns(turnActivityPath(sessionId, env))

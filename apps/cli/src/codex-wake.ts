@@ -26,7 +26,8 @@ export interface CodexWakeAdapters {
    * Write one message into the thread's durable inbox via `codex queue`.
    * `onSpawn` receives the child's own process group as soon as it exists.
    * When `signal` aborts, the whole group is killed and the call rejects:
-   * a claimed write never outlives its claim.
+   * a claimed write never outlives its claim. Resolves with the queued
+   * item's id when Codex printed one.
    */
   queue(
     threadId: string,
@@ -34,7 +35,7 @@ export interface CodexWakeAdapters {
     context: string,
     onSpawn?: (pgid: number) => void,
     signal?: AbortSignal,
-  ): Promise<void>
+  ): Promise<string | void>
   /**
    * Whether the `codex` executable `queue` runs can be found at all. A
    * resident writer asks once, before it offers to take Session Messages.
@@ -154,14 +155,21 @@ export function systemCodexWakeAdapters(
     available: () => executableOnPath('codex', env),
     async queue(threadId, cwd, context, onSpawn, signal) {
       if (!existsSync(cwd)) throw new Error(`Codex thread cwd no longer exists: ${cwd}`)
-      await runCodex(['queue', '--thread', threadId, '--message', context], {
+      const printed = await runCodex(['queue', '--thread', threadId, '--message', context], {
         cwd,
         env,
         ...(onSpawn === undefined ? {} : { onSpawn }),
         ...(signal === undefined ? {} : { signal }),
       })
+      return queuedMessageId(printed, threadId)
     },
   }
+}
+
+/** `codex queue` prints `Queued message <id> for thread <thread>.`; anything else names no id. */
+export function queuedMessageId(printed: string, threadId: string): string | undefined {
+  const match = /^Queued message (\S+) for thread (\S+?)\.?\s*$/mu.exec(printed)
+  return match !== null && match[2] === threadId ? match[1] : undefined
 }
 
 /** Whether `name` resolves to an executable file on this environment's PATH (POSIX). */

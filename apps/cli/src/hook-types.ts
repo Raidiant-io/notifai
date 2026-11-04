@@ -258,6 +258,14 @@ export interface SessionState {
     replacement?: boolean
     /** Where the wake is stored (a Codex home). A session that moved never reads the old place. */
     scope?: string
+    /** Codex: the queued item's own id, as `codex queue` printed it. */
+    queued_id?: string
+    /** Codex: the wake sits behind an interrupted turn, where Codex runs nothing queued on its own. */
+    paused?: true
+    /** Codex: the queued id Notifai asked Codex to start; asked once, never again. */
+    start_claimed?: string
+    /** Codex: the queued id Notifai removed once its input was handed in another way; tried once. */
+    removal_claimed?: string
   }
   /**
    * Wakes the agent was shown since input was last handed in. Each costs a

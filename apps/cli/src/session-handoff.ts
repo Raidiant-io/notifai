@@ -28,6 +28,8 @@ export type SessionWriteResult =
       route: 'inbox-socket' | 'session-queue' | 'tool-hook'
       /** Claude only: whether the session was idle or busy when the message was posted. */
       sessionState?: 'live-idle' | 'live-busy'
+      /** Codex only: the queued item's id, when `codex queue` printed it. */
+      queuedId?: string
     }
   /** Nothing was written: the exact session could not be proven reachable in place. */
   | { status: 'unavailable'; reason: string }
@@ -163,8 +165,9 @@ export async function deliverIntoCodexThread(options: {
   options.signal?.addEventListener('abort', abort, { once: true })
   if (options.signal?.aborted) deadline.abort()
   const timer = Number.isFinite(budget) ? setTimeout(() => deadline.abort(), Math.max(0, budget)) : undefined
+  let queuedId: string | void
   try {
-    await options.adapters.queue(readiness.threadId, options.cwd, options.text, options.onSpawn, deadline.signal)
+    queuedId = await options.adapters.queue(readiness.threadId, options.cwd, options.text, options.onSpawn, deadline.signal)
   } catch (err) {
     return { status: 'failed', reason: err instanceof Error ? err.message : String(err), error: err }
   } finally {
@@ -176,7 +179,7 @@ export async function deliverIntoCodexThread(options: {
     const error = new WriteDeadlineError('the queue writer finished after its claim deadline')
     return { status: 'failed', reason: error.message, error }
   }
-  return { status: 'written', route: 'session-queue' }
+  return { status: 'written', route: 'session-queue', ...(typeof queuedId === 'string' ? { queuedId } : {}) }
 }
 
 /**

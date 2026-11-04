@@ -121,6 +121,7 @@ import { retainSessionRuntime } from './runtime-build-retention.js'
 import {
   attendantClaimPath,
   attendantStatusPath,
+  codexInterruptedTurn,
   currentCodexTurn,
   observedCodexTurnActivity,
   recordTurnInterrupt,
@@ -131,8 +132,11 @@ import {
 import type { DeliveryLease } from './session-delivery.js'
 import { claudeSocketLine, deliverIntoCodexThread } from './session-handoff.js'
 import {
+  claimQueuedInputWake,
+  forgetRemovedInputWake,
   hasSessionInputs,
   inputWakeStored,
+  markInputWakePaused,
   pendingInputRevisionIds,
   inputWakeDeferred,
   inputWakeBackoffMs,
@@ -144,6 +148,7 @@ import {
   WAKE_SEND_TIMEOUT_MS,
 } from './session-inputs.js'
 import { compareVersions } from './version.js'
+import { codexThreadOnSharedServer, removeQueuedCodexWake, startPausedCodexWake } from './codex-paused-wake.js'
 import { QUESTION_WAITER_CEILING_SECONDS } from './question-timing.js'
 import { claudeHostName, claudePlaceOf, codexPlaceOf, orcaTerminalHostOf, parentProcessOf, placeReceives, type SessionPlace } from './session-place.js'
 import { readReopenLaunch } from './reopen-terminal.js'
@@ -180,6 +185,8 @@ export const HUB_CRASH_LIMIT = 3
 export const HUB_CRASH_WINDOW_MS = 10 * 60_000
 /** A Claude wake accepted but still not shown after this long idle is treated as lost. */
 const IDLE_BEFORE_WAKE_REPLACEMENT_MS = 30_000
+/** One bounded request to a Codex server about a paused wake; the hub never waits on it. */
+const PAUSED_WAKE_DEADLINE_MS = 8_000
 /** Safety re-read of activity and pending input; events do the ordinary work. */
 const SAFETY_TICK_MS = 15_000
 const WATCHDOG_TICK_MS = 5_000
@@ -287,6 +294,12 @@ export interface HubOptions {
   runHook?: (event: string, envelope: Record<string, unknown> | null, harness: HookInstallableHarness, env: NodeJS.ProcessEnv) => Promise<number>
   /** Test seam: what kind of process hosts a Codex session; production asks `ps`. */
   codexHostKind?: typeof codexHostKind
+  /** Test seams for a Codex wake behind an interrupted turn (see `codex-paused-wake.ts`). */
+  pausedWake?: {
+    owned?: typeof codexThreadOnSharedServer
+    start?: typeof startPausedCodexWake
+    remove?: typeof removeQueuedCodexWake
+  }
   /** Test seams for Codex's shared server (see `codex-attach-signal.ts`). */
   codexAttach?: {
     /** Whether Codex's behaviour was checked for the binary this host runs. */
@@ -517,6 +530,11 @@ class HubSession implements AttendedSession {
    */
   attachWakeUntil = 0
   attachAskedAt = -Infinity
+  /**
+   * The interrupted turn whose wake the shared server that owns the thread
+   * can start (`thread/queue/start`), as found once for that turn.
+   */
+  interruptStart: { turn: string; owned: boolean } | null = null
   attachWatchPaused = false
   attachOwnReload: { pid: number; at: number } | null = null
   /** An end signal waiting for the end confirmation (see `END_CONFIRM_MS`). */
@@ -563,7 +581,11 @@ class HubSession implements AttendedSession {
   private observeCodex(): void {
     if (this.harness !== 'codex') return
     this.codexObserver = codexInputObserver(this.id, this.env, this.record.key,
-      (owner) => this.harnessAlive(owner), (owner) => this.hub.codexIdleWake(this, owner), () => this.hub.clock.wall())
+      (owner) => this.harnessAlive(owner), (owner) => this.hub.codexIdleWake(this, owner), () => this.hub.clock.wall(),
+      () => {
+        const turn = codexInterruptedTurn(this.id, this.env, this.record.key)
+        return turn !== null && this.interruptStart?.turn === turn && this.interruptStart.owned
+      })
   }
 
   /** The primary as a writer, while its child is connected. */
@@ -877,6 +899,14 @@ class HubSession implements AttendedSession {
       const hold = !waiting ? null : this.codexObserver === null ? 'session-gone' : this.codexObserver.hold()
       this.noteWakeHold(hasInput ? hold : null)
       pending = waiting && hold === null
+      // Past an interrupt Codex runs nothing queued on its own: start the wake
+      // where the owning server can. Where nothing can, the wake would only
+      // run as an extra turn after the User's next one, whose own prompt hands
+      // the input in: remove it. Remove it too once the input went in another way.
+      const interrupted = codexInterruptedTurn(this.id, this.env, this.record.key) !== null
+      if (hasInput && interrupted) void this.hub.wakeAfterInterrupt(this)
+      if (state.input_wake?.queued === true && state.input_wake.paused === true &&
+          (!hasInput || (interrupted && !this.hub.pausedWakeStartable(this)))) void this.hub.removePausedWake(this)
       // On Codex's shared server a wake waits until a terminal is seen to show the thread.
       if (waiting && !pending && this.hub.codexSharedServer(this)) void this.hub.checkCodexAttach(this, 'input')
     }
@@ -959,14 +989,21 @@ class HubSession implements AttendedSession {
     // Recheck eligibility and pending input immediately before queue admission;
     // a hook may have consumed the batch since the last exchange.
     const cwd = this.registration.cwd ?? process.cwd()
+    let queuedId: string | undefined
+    let paused = false
     await wakeSessionInputs(this.id, this.env, async (text, signal) => {
       if (!this.mayWrite() || !mayWake() || !hasSessionInputs(this.id, this.env, lease)) return 'not-attempted'
       const deadlineAt = performance.now() + WAKE_SEND_TIMEOUT_MS
+      paused = codexInterruptedTurn(this.id, this.env, this.record.key) !== null
       const result = await deliverIntoCodexThread({
         signal, guard: { writable: () => !signal.aborted && this.mayWrite(), remainingMs: () => Math.max(0, deadlineAt - performance.now()) }, threadId: this.id, cwd, env: this.env, adapters: this.hub.codexAdapters(this), text,
         begin: () => this.mayWrite() && mayWake() && hasSessionInputs(this.id, this.env, lease) })
+      if (result.status === 'written') queuedId = result.queuedId
       return result.status === 'written' || result.status === 'failed' ? result.status : 'not-attempted'
-    }, this.hub.logger, { now: () => this.hub.clock.wall(), scope: codexHome(this.env), replaceLost: () => this.settledIdle() })
+    }, this.hub.logger, { now: () => this.hub.clock.wall(), scope: codexHome(this.env), replaceLost: () => this.settledIdle(),
+      stored: () => ({ ...(queuedId === undefined ? {} : { queued_id: queuedId }), paused }) })
+    // A wake written past an interrupt runs only when started.
+    if (paused) void this.hub.wakeAfterInterrupt(this)
     return 'done'
   }
 
@@ -1807,6 +1844,8 @@ export class Hub {
           // A launcher from before turn ids names no turn: the interrupt is of the one running.
           const turn = typeof frame['turn_id'] === 'string' ? frame['turn_id'] : currentCodexTurn(session.id, session.env, session.record.key)
           if (turn !== null) { try { recordTurnInterrupt(session.id, session.env, turn) } catch { /* Activity is a hint. */ } }
+          // A wake already queued now waits behind the interrupt.
+          try { markInputWakePaused(session.id, session.env) } catch { /* A busy lock: the wake runs after the next prompt's turn, as before. */ }
         }
         session?.hinted()
         reply({ type: 'ok' })
@@ -3594,6 +3633,105 @@ export class Hub {
           session.endCandidate !== null || session.child === null || session.child.closed || !session.notified ||
           !this.codexSharedServer(session)) continue
       void this.checkCodexAttach(session, 'watch')
+    }
+  }
+
+  // -- Codex: a wake behind an interrupted turn -----------------------------------
+
+  private readonly interruptWaking = new Set<string>()
+
+  private pausedWakeSettable(session: HubSession): boolean {
+    return session.harness === 'codex' && session.ending === null && session.stopped === null && session.endCandidate === null &&
+      !this.handingOver && !this.exiting && this.sessions.get(session.id) === session
+  }
+
+  /**
+   * Input waits for an interrupted Codex turn, where Codex runs nothing
+   * queued on its own. Only the shared server that has the thread loaded can
+   * start a queued item (`thread/queue/start`), and only while a terminal is
+   * seen to show the thread, as for any wake there. Found once per
+   * interrupted turn; a wake is then written as usual and started once by
+   * its exact id. Anywhere else the input waits for the User's next prompt,
+   * whose own hook hands it in.
+   */
+  async wakeAfterInterrupt(session: HubSession): Promise<void> {
+    if (!this.pausedWakeSettable(session) || this.interruptWaking.has(session.id)) return
+    const turn = codexInterruptedTurn(session.id, session.env, session.record.key)
+    if (turn === null || !this.codexSharedServer(session)) return
+    // As for any wake there: only while a terminal is seen to show the thread,
+    // or right after that was found for this very turn.
+    const shown = this.codexIdleWake(session, session.harnessProcess) ||
+      (session.interruptStart?.turn === turn && session.interruptStart.owned)
+    if (!shown) { void this.checkCodexAttach(session, 'input'); return }
+    const lease = session.lease.generation === null ? null : { incarnation: session.lease.incarnation, generation: session.lease.generation }
+    if (lease === null || !hasSessionInputs(session.id, session.env, lease)) return
+    this.interruptWaking.add(session.id)
+    try {
+      const state = readSessionState(session.id, session.env)
+      const wake = state.input_wake
+      if (wake?.queued === true && inputWakeStored(state, session.lease.incarnation, codexHome(session.env))) {
+        // A wake without an id (an older build wrote it) cannot be named, so it waits.
+        if (wake.queued_id === undefined || !claimQueuedInputWake(session.id, session.env, wake.token, wake.queued_id, 'start')) return
+        const outcome = await (this.options.pausedWake?.start ?? startPausedCodexWake)(session.id, session.env, wake.queued_id,
+          performance.now() + PAUSED_WAKE_DEADLINE_MS)
+        this.logger.info('delivery.handoff', { route: 'input-wake', stage: `paused-${outcome}`, session: session.id })
+        // No server could start it: it now only waits to run as an extra turn.
+        if (outcome === 'unreachable') {
+          session.interruptStart = { turn, owned: false }
+          queueMicrotask(() => session.checkInput())
+        }
+        return
+      }
+      if (wake !== undefined || session.interruptStart?.turn === turn) return
+      const owned = await (this.options.pausedWake?.owned ?? codexThreadOnSharedServer)(session.id, session.env,
+        performance.now() + PAUSED_WAKE_DEADLINE_MS)
+      session.interruptStart = { turn, owned }
+      this.logger.info('delivery.handoff', { route: 'input-wake', stage: owned ? 'paused-startable' : 'paused-waits-for-prompt', session: session.id })
+      if (owned && this.pausedWakeSettable(session)) session.checkInput()
+    } catch (err) {
+      this.logger.error('delivery.handoff', { route: 'input-wake', stage: 'paused-failed', session: session.id,
+        message: err instanceof Error ? err.message : String(err) })
+    } finally {
+      this.interruptWaking.delete(session.id)
+    }
+  }
+
+  /**
+   * Whether a wake behind this session's interrupted turn can still be
+   * started: its thread is on the shared server, and that server was not
+   * already found unable to start it for this turn.
+   */
+  pausedWakeStartable(session: HubSession): boolean {
+    const turn = codexInterruptedTurn(session.id, session.env, session.record.key)
+    return this.codexSharedServer(session) && !(turn !== null && session.interruptStart?.turn === turn && !session.interruptStart.owned)
+  }
+
+  /**
+   * Remove a paused wake that can no longer do anything but run as an extra
+   * turn: nothing here can start it past the interrupt, so it would run only
+   * after the User's next turn, whose own prompt hands the input in; or that
+   * input already went in another way. Tried once per item.
+   */
+  async removePausedWake(session: HubSession): Promise<void> {
+    if (!this.pausedWakeSettable(session) || this.interruptWaking.has(session.id)) return
+    const lease = session.lease.generation === null ? null : { incarnation: session.lease.incarnation, generation: session.lease.generation }
+    if (lease === null) return
+    const interrupted = codexInterruptedTurn(session.id, session.env, session.record.key) !== null
+    if (hasSessionInputs(session.id, session.env, lease) && !(interrupted && !this.pausedWakeStartable(session))) return
+    const wake = readSessionState(session.id, session.env).input_wake
+    if (wake?.queued !== true || wake.paused !== true || wake.queued_id === undefined ||
+        !claimQueuedInputWake(session.id, session.env, wake.token, wake.queued_id, 'removal')) return
+    this.interruptWaking.add(session.id)
+    try {
+      const outcome = await (this.options.pausedWake?.remove ?? removeQueuedCodexWake)(session.id, session.env,
+        session.registration.cwd ?? process.cwd(), wake.queued_id, performance.now() + PAUSED_WAKE_DEADLINE_MS)
+      if (outcome !== 'failed') forgetRemovedInputWake(session.id, session.env, wake.token)
+      this.logger.info('delivery.handoff', { route: 'input-wake', stage: `paused-removal-${outcome}`, session: session.id })
+    } catch (err) {
+      this.logger.error('delivery.handoff', { route: 'input-wake', stage: 'paused-removal-failed', session: session.id,
+        message: err instanceof Error ? err.message : String(err) })
+    } finally {
+      this.interruptWaking.delete(session.id)
     }
   }
 

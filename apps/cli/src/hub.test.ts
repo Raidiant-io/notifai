@@ -1260,6 +1260,7 @@ describe('hub and Codex SessionEnd', () => {
       watchMs?: number
       wake?: CodexWakeAdapters
       hostKind?: HubOptions['codexHostKind']
+      pausedWake?: HubOptions['pausedWake']
     }) {
       const env = hubEnv()
       recordSessionNotified(SESSION, env, Date.now())
@@ -1284,6 +1285,8 @@ describe('hub and Codex SessionEnd', () => {
           checkBuild: async (host) => { builds.push(host.pid); return await options.checkBuild?.(host) ?? null },
           watchMs: options.watchMs ?? 60_000,
         },
+        // Hermetic by default: no Codex server owns the thread.
+        pausedWake: options.pausedWake ?? { owned: async () => false, start: async () => 'unreachable', remove: async () => 'failed' },
         ...(options.clock === undefined ? {} : { clock: options.clock }),
       })
       await hubListening(env)
@@ -1314,7 +1317,16 @@ describe('hub and Codex SessionEnd', () => {
           await new Promise((resolve) => setTimeout(resolve, 50))
         }
       }
-      return { env, hub, service, transcript, queued, asked, builds, pending, deliverNote, stop }
+      /** The note was handed in elsewhere (the User's next prompt): the service no longer lists it. */
+      const consumeNote = async (rounds = 6): Promise<void> => {
+        note = false
+        for (let i = 0; i < rounds; i += 1) {
+          service.release()
+          hub.inputStaged(SESSION)
+          await new Promise((resolve) => setTimeout(resolve, 100))
+        }
+      }
+      return { env, hub, service, transcript, queued, asked, builds, pending, deliverNote, consumeNote, stop }
     }
 
     it('keeps a note out of the queue during a hook-observed turn, then wakes remaining input at its Stop', async () => {
@@ -1351,6 +1363,153 @@ describe('hub and Codex SessionEnd', () => {
         recordTurnStart(SESSION, run.env, key, 'turn-3')
         expect(codexTurnInterrupted(SESSION, run.env, key)).toBe(false)
       } finally { await run.stop() }
+    })
+
+    describe('a wake behind an interrupted turn', () => {
+      const attached = () => ({ state: 'attached', confirmed: true, reason: 'terminal-live+joined' }) as Attach
+      function rig() {
+        const queued: string[] = []
+        const started: string[] = []
+        const removed: string[] = []
+        const calls = { owned: 0 }
+        const wake: CodexWakeAdapters = { available: () => true, queue: async (threadId) => { queued.push(threadId); return `qs_${queued.length}` } }
+        return { queued, started, removed, calls, wake }
+      }
+      const interrupt = async (env: NodeJS.ProcessEnv, turn: string) =>
+        requestHub(env, { type: 'hint', session_id: SESSION, hook_event: 'Interrupt', harness_pid: process.pid, turn_id: turn }, { role: 'hint' })
+
+      it('is started once, by its own queued id, where the shared server owns the thread', async () => {
+        const r = rig()
+        const run = await sharedServer({ state: attached, wake: r.wake, pausedWake: {
+          owned: async () => { r.calls.owned += 1; return true },
+          start: async (_thread, _env, id) => { r.started.push(id); return 'started' },
+          remove: async (_thread, _env, _cwd, id) => { r.removed.push(id); return 'deleted' },
+        } })
+        try {
+          const key = readSessionIncarnation(SESSION, run.env)!.key
+          recordTurnStart(SESSION, run.env, key, 'turn-2')
+          await interrupt(run.env, 'turn-2')
+          for (let round = 0; round < 4; round += 1) await run.deliverNote(2)
+          await until(() => r.started.length > 0)
+          for (let round = 0; round < 3; round += 1) await run.deliverNote(2)
+          expect(r.queued).toEqual([SESSION])
+          expect(r.started).toEqual(['qs_1'])
+          expect(r.calls.owned).toBe(1)
+          expect(r.removed).toEqual([])
+          expect(readSessionState(SESSION, run.env).input_wake).toMatchObject({ queued: true, queued_id: 'qs_1', paused: true, start_claimed: 'qs_1' })
+        } finally { await run.stop() }
+      })
+
+      it('starts a wake queued before the interrupt by its id, once', async () => {
+        const r = rig()
+        const run = await sharedServer({ state: attached, wake: r.wake, pausedWake: {
+          owned: async () => true,
+          start: async (_thread, _env, id) => { r.started.push(id); return 'gone' },
+          remove: async (_thread, _env, _cwd, id) => { r.removed.push(id); return 'deleted' },
+        } })
+        try {
+          await run.deliverNote(2)
+          await until(() => r.queued.length > 0)
+          const key = readSessionIncarnation(SESSION, run.env)!.key
+          recordTurnStart(SESSION, run.env, key, 'turn-2')
+          await interrupt(run.env, 'turn-2')
+          expect(readSessionState(SESSION, run.env).input_wake).toMatchObject({ queued_id: 'qs_1', paused: true })
+          for (let round = 0; round < 4; round += 1) await run.deliverNote(2)
+          await until(() => r.started.length > 0)
+          await run.deliverNote(4)
+          expect(r.started).toEqual(['qs_1'])
+          expect(r.queued).toEqual([SESSION])
+        } finally { await run.stop() }
+      })
+
+      it('where the shared server cannot start it, removes the paused wake at once, and only once', async () => {
+        const r = rig()
+        const run = await sharedServer({ state: attached, wake: r.wake, pausedWake: {
+          owned: async () => false,
+          start: async (_thread, _env, id) => { r.started.push(id); return 'unreachable' },
+          remove: async (_thread, _env, _cwd, id) => { r.removed.push(id); return 'deleted' },
+        } })
+        try {
+          await run.deliverNote(2)
+          await until(() => r.queued.length > 0)
+          const key = readSessionIncarnation(SESSION, run.env)!.key
+          recordTurnStart(SESSION, run.env, key, 'turn-2')
+          await interrupt(run.env, 'turn-2')
+          await run.deliverNote(3)
+          await until(() => r.removed.length > 0)
+          await run.deliverNote(3)
+          expect(r.started).toEqual(['qs_1'])
+          expect(r.removed).toEqual(['qs_1'])
+          expect(readSessionState(SESSION, run.env).input_wake).toBeUndefined()
+          // The input still waits, for the User's next prompt: no new wake behind the interrupt.
+          expect(r.queued).toEqual([SESSION])
+          expect(run.pending()).toBe(true)
+        } finally { await run.stop() }
+      })
+
+      it('in a terminal hosting its own thread, removes the paused wake at the interrupt without trying to start it', async () => {
+        const r = rig()
+        const run = await sharedServer({ state: attached, wake: r.wake, hostKind: () => 'other', pausedWake: {
+          owned: async () => { r.calls.owned += 1; return true },
+          start: async (_thread, _env, id) => { r.started.push(id); return 'started' },
+          remove: async (_thread, _env, _cwd, id) => { r.removed.push(id); return 'deleted' },
+        } })
+        try {
+          await run.deliverNote(2)
+          await until(() => r.queued.length > 0)
+          const key = readSessionIncarnation(SESSION, run.env)!.key
+          recordTurnStart(SESSION, run.env, key, 'turn-2')
+          await interrupt(run.env, 'turn-2')
+          await run.deliverNote(3)
+          await until(() => r.removed.length > 0)
+          expect(r.removed).toEqual(['qs_1'])
+          expect(r.started).toEqual([])
+          expect(r.calls.owned).toBe(0)
+        } finally { await run.stop() }
+      })
+
+      it('removes a paused wake whose input went in another way, once that happens', async () => {
+        const r = rig()
+        const run = await sharedServer({ state: attached, wake: r.wake, pausedWake: {
+          owned: async () => true,
+          start: async (_thread, _env, id) => { r.started.push(id); return 'refused' },
+          remove: async (_thread, _env, _cwd, id) => { r.removed.push(id); return 'deleted' },
+        } })
+        try {
+          await run.deliverNote(2)
+          await until(() => r.queued.length > 0)
+          const key = readSessionIncarnation(SESSION, run.env)!.key
+          recordTurnStart(SESSION, run.env, key, 'turn-2')
+          await interrupt(run.env, 'turn-2')
+          await run.deliverNote(3)
+          await until(() => r.started.length > 0)
+          expect(r.removed).toEqual([])
+          // The User's next prompt handed the note in.
+          recordTurnStart(SESSION, run.env, key, 'turn-3')
+          await run.consumeNote()
+          await until(() => r.removed.length > 0)
+          expect(r.removed).toEqual(['qs_1'])
+          expect(r.started).toEqual(['qs_1'])
+        } finally { await run.stop() }
+      })
+
+      it('writes no wake past an interrupt where no server owns the thread, and asks only once per turn', async () => {
+        const r = rig()
+        const run = await sharedServer({ state: attached, wake: r.wake, pausedWake: {
+          owned: async () => { r.calls.owned += 1; return false },
+          start: async (_thread, _env, id) => { r.started.push(id); return 'started' },
+          remove: async (_thread, _env, _cwd, id) => { r.removed.push(id); return 'deleted' },
+        } })
+        try {
+          const key = readSessionIncarnation(SESSION, run.env)!.key
+          recordTurnStart(SESSION, run.env, key, 'turn-2')
+          await interrupt(run.env, 'turn-2')
+          for (let round = 0; round < 4; round += 1) await run.deliverNote(2)
+          expect(r.queued).toEqual([])
+          expect(r.started).toEqual([])
+          expect(r.calls.owned).toBe(1)
+        } finally { await run.stop() }
+      })
     })
 
     it('never lets a turn it saw start hold a note past the bound, whether or not that turn ever ended', async () => {

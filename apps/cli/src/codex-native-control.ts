@@ -7,7 +7,7 @@ import { canonicalSocketPath } from './local-path.js'
 import { connectUnixWebSocket, type UnixWebSocket } from './unix-websocket.js'
 
 const execute = promisify(execFile)
-export type CodexControlMethod = 'thread/queue/list' | 'thread/queue/add' | 'thread/queue/delete' | 'thread/turns/list' | 'turn/steer' |
+export type CodexControlMethod = 'thread/queue/list' | 'thread/queue/add' | 'thread/queue/delete' | 'thread/queue/start' | 'thread/turns/list' | 'turn/steer' |
   // Whether a terminal still shows a thread (`codex-attach-signal.ts`).
   'thread/loaded/list' | 'thread/read' | 'mcpServerStatus/list' | 'thread/resume' | 'thread/unsubscribe'
 export interface CodexControl {
@@ -129,12 +129,16 @@ export async function connectCodexControl(
 }
 
 /**
- * One request to a private, short-lived `codex app-server` over stdio, for
- * questions about configuration rather than a thread (`hooks/list`). It
- * starts no thread, and initializes with the same non-originating identity as
- * every other Notifai connection. Null when Codex cannot be asked in time.
+ * One request to a private, short-lived `codex app-server` over stdio: a
+ * question about configuration (`hooks/list`), or removing one item from a
+ * thread's durable queue (`thread/queue/delete`, which `codex queue` itself
+ * writes through the same kind of embedded server when no shared one runs).
+ * It sends exactly one request after `initialize`, so it never starts,
+ * resumes or loads a thread, and it initializes with the same
+ * non-originating identity as every other Notifai connection. Null when
+ * Codex cannot be asked in time or refuses.
  */
-export function codexStdioRequest(env: NodeJS.ProcessEnv, cwd: string, method: 'hooks/list', params: unknown,
+export function codexStdioRequest(env: NodeJS.ProcessEnv, cwd: string, method: 'hooks/list' | 'thread/queue/delete', params: unknown,
   timeoutMs = 5_000): Promise<unknown> {
   return new Promise((resolve) => {
     let settled = false
@@ -177,6 +181,8 @@ export function codexStdioRequest(env: NodeJS.ProcessEnv, cwd: string, method: '
         }
       }
     })
-    send({ id: 1, method: 'initialize', params: { clientInfo: CODEX_CONTROL_CLIENT_INFO } })
+    // The queue is an experimental API, as on every other Notifai connection.
+    send({ id: 1, method: 'initialize', params: { clientInfo: CODEX_CONTROL_CLIENT_INFO,
+      ...(method === 'hooks/list' ? {} : { capabilities: { experimentalApi: true } }) } })
   })
 }

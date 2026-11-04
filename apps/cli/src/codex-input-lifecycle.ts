@@ -47,6 +47,8 @@ export function codexInputObserver(
   alive: (owner: ProcessIdentity) => boolean = (owner) => processIdentityLiveness(owner) === 'alive',
   idleWake: (owner: ProcessIdentity) => boolean = hostKindIdleWake(),
   wall: () => number = Date.now,
+  /** Whether a wake written now can be started past the interrupt (the hub found the thread on the shared server). */
+  startsAfterInterrupt: () => boolean = () => false,
 ): { hold: () => CodexWakeHold | null; mayWake: () => boolean } {
   const hold = (): CodexWakeHold | null => {
     const owner = readSessionIncarnation(sessionId, env)
@@ -54,8 +56,9 @@ export function codexInputObserver(
         owner.harness_process === undefined || !alive(owner.harness_process)) return 'session-gone'
     if (!idleWake(owner.harness_process)) return 'host-not-showing'
     // Codex holds its queue after an interrupt until the next prompt, and that
-    // prompt's own hook hands the input in, so a wake here could only go stale.
-    if (codexTurnInterrupted(sessionId, env, expectedKey)) return 'paused-after-interrupt'
+    // prompt's own hook hands the input in, so a wake here could only go stale,
+    // unless the server that owns the thread is asked to start it.
+    if (codexTurnInterrupted(sessionId, env, expectedKey) && !startsAfterInterrupt()) return 'paused-after-interrupt'
     if (observedCodexTurnActivity(sessionId, env, expectedKey) === 'working') {
       const since = readSessionState(sessionId, env).input_waiting?.since
       const elapsed = since === undefined ? 0 : wall() - since

@@ -50,6 +50,8 @@ export interface WakeOptions {
   sendTimeoutMs?: number
   /** Where this wake is stored (a Codex home), so one left in an old place is replaced. */
   scope?: string
+  /** Codex: what the queue said about an accepted wake (its id, and whether it is paused behind an interrupt). */
+  stored?: () => { queued_id?: string; paused?: boolean }
 }
 
 /** An accepted wake that has waited long enough to be replaced once. */
@@ -206,8 +208,13 @@ export async function wakeSessionInputs(
     ])
     log?.info('delivery.handoff', { route: 'input-wake', stage: sent === 'written' ? 'queued' : 'deferred', session: sessionId,
       ...(replacement ? { replacement } : {}) })
-    if (sent === 'written') updateSessionState(sessionId, env, (state) => state.input_wake?.token === token
-      ? { ...state, input_wake: { ...state.input_wake, queued: true, queued_at: now() } } : state)
+    if (sent === 'written') {
+      const stored = options.stored?.() ?? {}
+      updateSessionState(sessionId, env, (state) => state.input_wake?.token === token
+        ? { ...state, input_wake: { ...state.input_wake, queued: true, queued_at: now(),
+          ...(stored.queued_id === undefined ? {} : { queued_id: stored.queued_id }),
+          ...(stored.paused === true ? { paused: true as const } : {}) } } : state)
+    }
   } catch {
     // Only the content-free wake failed. Preserve User input for retry and
     // the next foreground callback; never report it delivered here.
@@ -222,6 +229,45 @@ export async function wakeSessionInputs(
       return next
     })
   }
+}
+
+/**
+ * The User interrupted the turn: a Codex wake already queued now waits behind
+ * the interrupt, where Codex runs nothing on its own until their next prompt.
+ */
+export function markInputWakePaused(sessionId: string, env: NodeJS.ProcessEnv): void {
+  updateSessionState(sessionId, env, (state) => state.input_wake?.queued !== true || state.input_wake.paused === true
+    ? state : { ...state, input_wake: { ...state.input_wake, paused: true } })
+}
+
+/**
+ * Claim the one attempt to start or remove a queued wake, under the session
+ * lock, before any request is sent: a wake is never started twice, never
+ * started once its removal began, and a removal is never retried against an
+ * item that may have moved on. A removal may follow a start that could not
+ * run it: removing an item Codex already ran finds it gone.
+ */
+export function claimQueuedInputWake(sessionId: string, env: NodeJS.ProcessEnv, token: string, queuedId: string,
+  action: 'start' | 'removal'): boolean {
+  let claimed = false
+  updateSessionState(sessionId, env, (state) => {
+    const wake = state.input_wake
+    if (wake?.token !== token || wake.queued !== true || wake.queued_id !== queuedId || wake.removal_claimed === queuedId ||
+        (action === 'start' && wake.start_claimed === queuedId)) return state
+    claimed = true
+    return { ...state, input_wake: { ...wake, ...(action === 'start' ? { start_claimed: queuedId } : { removal_claimed: queuedId }) } }
+  })
+  return claimed
+}
+
+/** The queued wake is gone from Codex's queue: forget it, so new input gets a wake of its own. */
+export function forgetRemovedInputWake(sessionId: string, env: NodeJS.ProcessEnv, token: string): void {
+  updateSessionState(sessionId, env, (state) => {
+    if (state.input_wake?.token !== token) return state
+    const next = { ...state }
+    delete next.input_wake
+    return next
+  })
 }
 
 /** Whether a prompt is exactly a Notifai wake, with or without its own token. */
