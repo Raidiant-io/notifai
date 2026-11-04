@@ -90,6 +90,15 @@ describe('a dismissed Codex card', () => {
     expect(ended.settled()).toEqual([false])
   })
 
+  it('looks for the owning server once per card, not at every later tool call of its turn', async () => {
+    const unreachable = rig([registration()], null)
+    expect(await unreachable.run()).toBe(0)
+    expect(await unreachable.run()).toBe(0)
+    expect(await unreachable.run()).toBe(0)
+    expect(unreachable.connects()).toBe(1)
+    expect(unreachable.settled()).toEqual([false])
+  })
+
   it('a lost receipt is not sent again', async () => {
     const r = rig([registration()], { steer: async () => { throw new Error('receipt unknown') } })
     expect(await r.run()).toBe(0)

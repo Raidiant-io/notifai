@@ -55,6 +55,8 @@ export interface CodexQuestionRegistration {
   terminal_answered?: true
   /** The User dismissed the question on a device: no answer will come, so a form still showing it closes. */
   dismissed?: true
+  /** Its dismissal found no owning server to close the card through; never probed again for this card. */
+  card_dismissal_unreachable?: true
 }
 
 /** The text the native form must show for this question. */

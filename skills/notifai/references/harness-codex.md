@@ -91,13 +91,16 @@ The first answer settles the question:
   command; run it before dependent work. Where Notifai can reach the server
   that runs this session, it arrives in the card and closes it. Elsewhere it
   arrives at your next tool call, or as the next turn when you are idle, and
-  the card stays on screen until your turn ends: the answer is final, so do
-  not wait on the card.
+  the card can stay on screen after it: the answer is final, so do not wait
+  on the card.
 - **A terminal answer** needs nothing from you, including one typed in the
-  chat of an app around Codex (Orca, T3 Code). Notifai records it, so the
-  devices stop asking.
+  chat of an app around Codex. Notifai records it, so the devices stop
+  asking.
 - **A question that expired on the devices** closes the card unanswered
-  where Notifai can reach it: carry on without it.
+  where Notifai can reach it: carry on without it. Where it cannot, nothing
+  tells you: the card stays, and `notifai status <question_id>` shows the
+  question ended. Anything the User then types in the card reaches you as
+  their message.
 - **A card repeating a question that is already answered or expired** is
   refused with what happened; do not ask it again.
 

@@ -22,7 +22,8 @@
  * Codex app card (Notifai has no connection to the app's own server, so app
  * cards are never linked), and any card of a host without exact control.
  * Each card gets one attempt: it is marked settled before the write, so a
- * lost receipt never sends it twice.
+ * lost receipt never sends it twice. A card whose server cannot be reached is
+ * marked too, so the rest of its turn does not look for that server again.
  */
 import { CLAUDE_PICKER_DISMISSED } from './claude-question-hooks.js'
 import { connectCodexAnswerControl } from './codex-answer-control.js'
@@ -40,6 +41,7 @@ export const CODEX_CARD_DISMISSED_ANSWER = 'No answer: this question has expired
 export function dismissedCards(state: SessionState, ownerKey: string, turnId: string): CodexQuestionRegistration[] {
   return (state.codex_question_bindings ?? []).filter((registration) =>
     registration.dismissed === true && registration.terminated !== true && registration.ordinary_only !== true &&
+    registration.card_dismissal_unreachable !== true &&
     registration.owner_key === ownerKey && registration.registration_turn_id === turnId &&
     registration.card_call_id !== undefined && registration.card_allowed === true &&
     registration.questions.length > 0 &&
@@ -66,6 +68,13 @@ export async function closeDismissedCodexCards(input: {
   if (dismissedCards(readSessionState(input.sessionId, input.env), input.ownerKey, input.turnId).length === 0 || !input.mayWrite()) return 0
   const control = await (input.connect ?? connectCodexAnswerControl)(input.sessionId, input.turnId, input.env, input.deadline)
   if (control === null) {
+    // Reaching the owning server is fixed for the life of the card's turn:
+    // remember it, so later tool calls in that turn do not probe again.
+    updateSessionState(input.sessionId, input.env, (state) => {
+      const left = new Set(dismissedCards(state, input.ownerKey, input.turnId).map((item) => item.question_id))
+      return left.size === 0 ? state : { ...state, codex_question_bindings: state.codex_question_bindings!.map((item) =>
+        left.has(item.question_id) ? { ...item, card_dismissal_unreachable: true as const } : item) }
+    })
     input.logger.info('hook.answer', { stage: 'card-dismissal-left', reason: 'no-owning-server', session: input.sessionId })
     return 0
   }

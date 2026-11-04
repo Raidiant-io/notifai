@@ -16,6 +16,7 @@ import {
   resolveNativeAnswerOperation,
 } from './native-answer-operation.js'
 import { processIdentityLiveness } from './process-identity.js'
+import { codexHost, type CodexHost } from './codex-surface.js'
 import { spawnQuestionSettlement } from './question-settlement-process.js'
 import type { Logger } from './logging.js'
 
@@ -71,8 +72,8 @@ export function parseCodexTerminalReplies(prompt: unknown): CodexTerminalReply[]
   } catch { return [] }
 }
 
-/** One open card question an app's plain-text answer may name. */
-export interface CodexOpenCardQuestion { callId: string; index: number; title: string }
+/** One open card question an app's plain-text answer may name, with its card's own choice labels. */
+export interface CodexOpenCardQuestion { callId: string; index: number; title: string; labels: readonly string[] }
 
 /**
  * Apps around Codex's app-server answer a card with plain text, not the reply
@@ -82,21 +83,34 @@ export interface CodexOpenCardQuestion { callId: string; index: number; title: s
  * open card question of this session and carrying a nonempty answer, is a
  * card answer; anything else is an ordinary prompt. Line endings are
  * normalized first, so a pasted `\r\n` answer reads the same.
+ *
+ * A typed answer counts only in the app whose shape it is (`host`, from the
+ * environment Codex gives its hooks). Anywhere else, or where the app is not
+ * known, a block counts only when its answer is exactly one of the card's
+ * choices, so a prompt that merely starts with a question's wording never
+ * becomes its answer.
  */
-export function parseCodexTextReplies(prompt: unknown, open: readonly CodexOpenCardQuestion[]): CodexTerminalReply[] {
+export function parseCodexTextReplies(prompt: unknown, open: readonly CodexOpenCardQuestion[], host: CodexHost | null = null): CodexTerminalReply[] {
   if (typeof prompt !== 'string' || open.length === 0) return []
   const text = prompt.replace(/\r\n?/gu, '\n').trim()
-  const formats: Array<{ heads: (title: string) => string[]; quote?: RegExp }> = [
+  // Each app may send a question with or without the whitespace around it,
+  // and the prompt's own leading whitespace is gone from its first block.
+  const spellings = (title: string) => [...new Set([title, title.trim(), title.trimStart(), title.trimEnd()])]
+    .filter(line => line.trim() !== '')
+  const formats: Array<{ app: CodexHost; heads: (title: string) => string[]; quote?: RegExp }> = [
     // Orca quotes each question on one line (`askAnswerQuote`), including
     // questions of cards Notifai does not carry: such a quote makes the whole
     // prompt unreadable rather than part of the answer before it.
-    { heads: title => [...new Set([title, title.trim()])].map(line => `> ${line.replace(/[\r\n]+/gu, ' ')}\n\n`), quote: /\n\n(> [^\n]*\n\n)/gu },
-    // T3 Code puts the trimmed question on its own line, one message per card.
-    { heads: title => [`${title.replace(/\r\n?/gu, '\n').trim()}\n`] },
+    { app: 'orca', heads: title => spellings(title).map(line => `> ${line.replace(/[\r\n]+/gu, ' ')}\n\n`), quote: /\n\n(> [^\n]*\n\n)/gu },
+    // T3 Code puts the question on its own line, one message per card.
+    { app: 't3', heads: title => spellings(title.replace(/\r\n?/gu, '\n')).map(line => `${line}\n`) },
   ]
-  for (const { heads, quote } of formats) {
+  for (const { app, heads, quote } of formats) {
     const replies = parseBlocks(text, open.map(question => ({ question, heads: heads(question.title) })), quote)
-    if (replies.length > 0) return replies
+    if (replies.length === 0) continue
+    if (host !== app && !replies.every(reply => open.some(question => question.callId === reply.callId &&
+        question.index === reply.index && question.labels.includes(reply.answer)))) return []
+    return replies
   }
   return []
 }
@@ -130,13 +144,25 @@ function parseBlocks(text: string, questions: Array<{ question: CodexOpenCardQue
   return replies
 }
 
-/** This owner's card questions still open for an answer typed in an app's chat. */
+/**
+ * This owner's card questions still waiting for an answer: registered and
+ * pending, with no answer from a device (waiting, accepted or delivered) and
+ * none recorded from the terminal for that item. A settled question is never
+ * a target, so a later prompt that repeats its wording stays ordinary.
+ */
 function openCardQuestions(state: SessionState, ownerKey: string): CodexOpenCardQuestion[] {
+  const pending = new Set(pendingList(state).map(question => question.question_id))
+  const answered = new Set([...(state.waiting_answers ?? []), ...(state.accepted?.answers ?? []), ...(state.delivered_answers ?? [])]
+    .map(answer => answer.pending.question_id))
   return (state.codex_question_bindings ?? []).flatMap(registration =>
     registration.owner_key !== ownerKey || registration.terminated === true || registration.terminal_answered === true ||
-      registration.dismissed === true ? [] : registration.questions.flatMap(binding =>
-      binding.card !== undefined && binding.card.title.trim() !== '' && binding.verified === true && binding.ambiguous !== true &&
-        binding.native !== undefined ? [{ callId: binding.native.call_id, index: binding.native.index, title: nativeQuestionTitle(binding) }] : []))
+      registration.dismissed === true || !pending.has(registration.question_id) || answered.has(registration.question_id)
+      ? [] : registration.questions.flatMap(binding =>
+        binding.card !== undefined && binding.card.title.trim() !== '' && binding.verified === true && binding.ambiguous !== true &&
+        binding.native !== undefined && !(state.native_answer_operations ?? []).some(op => op.question_id === registration.question_id &&
+          op.answers.some(answer => answer.question_id === binding.question.id))
+          ? [{ callId: binding.native.call_id, index: binding.native.index, title: nativeQuestionTitle(binding),
+            labels: Object.values(binding.card.labels) }] : []))
 }
 
 /** Only the live root hook may observe input for this Agent Session. */
@@ -157,7 +183,7 @@ export function observeCodexTerminalAnswers(deps: CommandDeps, envelope: HookEnv
   const owner = hookOwner(deps, envelope)
   if (owner === null) return
   const replies = enveloped.length > 0 ? enveloped
-    : parseCodexTextReplies(envelope.prompt, openCardQuestions(readSessionState(sessionId, deps.env), owner.key))
+    : parseCodexTextReplies(envelope.prompt, openCardQuestions(readSessionState(sessionId, deps.env), owner.key), codexHost(deps.env))
   if (replies.length === 0) return
   const snapshot = readNativeInputSnapshot(envelope.transcript_path, sessionId, deps.env)
   if (snapshot === null) return

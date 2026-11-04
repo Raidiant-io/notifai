@@ -101,28 +101,42 @@ describe('Codex terminal reply envelopes', () => {
 })
 
 describe('plain-text card answers from apps around Codex', () => {
-  const open = [{ callId: 'card_a', index: 0, title: 'Where?' }, { callId: 'card_a', index: 1, title: 'Any notes?' },
-    { callId: 'card_b', index: 0, title: 'Which size?' }]
+  const open = [{ callId: 'card_a', index: 0, title: 'Where?', labels: ['Staging', 'Production'] },
+    { callId: 'card_a', index: 1, title: 'Any notes?', labels: [] }, { callId: 'card_b', index: 0, title: 'Which size?', labels: ['Small', 'Large'] }]
   const one = (answer: string, question = 'Where?', callId = 'card_a', index = 0) => ({ callId, index, question, answer })
 
   it('reads Orca chat quotes, one or several, across cards', () => {
-    expect(parseCodexTextReplies('> Where?\n\nStaging', open)).toEqual([one('Staging')])
-    expect(parseCodexTextReplies('> Which size?\n\nLarge\n\n> Where?\n\nKeep it on staging, please.\nThen tell me.', open))
+    expect(parseCodexTextReplies('> Where?\n\nStaging', open, 'orca')).toEqual([one('Staging')])
+    expect(parseCodexTextReplies('> Which size?\n\nLarge\n\n> Where?\n\nKeep it on staging, please.\nThen tell me.', open, 'orca'))
       .toEqual([one('Large', 'Which size?', 'card_b'), one('Keep it on staging, please.\nThen tell me.')])
     // Orca puts a multi-line question on one line.
-    expect(parseCodexTextReplies('> Pick one: A or B\n\nA', [{ callId: 'c', index: 0, title: 'Pick one:\nA or B' }]))
+    expect(parseCodexTextReplies('> Pick one: A or B\n\nA', [{ callId: 'c', index: 0, title: 'Pick one:\nA or B', labels: ['A', 'B'] }], 'orca'))
       .toEqual([{ callId: 'c', index: 0, question: 'Pick one:\nA or B', answer: 'A' }])
   })
 
-  it('reads T3 Code answers, one per question of a card', () => {
-    expect(parseCodexTextReplies('Where?\nStaging', open)).toEqual([one('Staging')])
-    expect(parseCodexTextReplies('Where?\nProduction\n\nAny notes?\nNone', open))
+  it('reads T3 Code answers, one per question of a card, with or without whitespace around a question', () => {
+    expect(parseCodexTextReplies('Where?\nStaging', open, 't3')).toEqual([one('Staging')])
+    expect(parseCodexTextReplies('Where?\nProduction\n\nAny notes?\nNone', open, 't3'))
       .toEqual([one('Production'), one('None', 'Any notes?', 'card_a', 1)])
+    const padded = [{ callId: 'p', index: 0, title: ' First? ', labels: ['Yes', 'No'] }, { callId: 'p', index: 1, title: ' Second? ', labels: [] }]
+    expect(parseCodexTextReplies(' First? \nYes\n\n Second? \nLater', padded, 't3'))
+      .toEqual([{ callId: 'p', index: 0, question: ' First? ', answer: 'Yes' }, { callId: 'p', index: 1, question: ' Second? ', answer: 'Later' }])
+    expect(parseCodexTextReplies('First?\nYes\n\nSecond?\nLater', padded, 't3')).toHaveLength(2)
   })
 
   it('reads Windows line endings the same', () => {
-    expect(parseCodexTextReplies('> Where?\r\n\r\nStaging\r\n', open)).toEqual([one('Staging')])
-    expect(parseCodexTextReplies('Where?\r\nStaging', open)).toEqual([one('Staging')])
+    expect(parseCodexTextReplies('> Where?\r\n\r\nStaging\r\n', open, 'orca')).toEqual([one('Staging')])
+    expect(parseCodexTextReplies('Where?\r\nStaging', open, 't3')).toEqual([one('Staging')])
+  })
+
+  it('outside the app whose shape it is, counts only an answer that is one of the card\'s choices', () => {
+    expect(parseCodexTextReplies('Where?\nI am not sure what you mean, explain first', open)).toEqual([])
+    expect(parseCodexTextReplies('Where?\nI am not sure what you mean, explain first', open, 'orca')).toEqual([])
+    expect(parseCodexTextReplies('> Where?\n\nwhatever you think', open, 't3')).toEqual([])
+    expect(parseCodexTextReplies('Where?\nStaging', open)).toEqual([one('Staging')])
+    expect(parseCodexTextReplies('> Where?\n\nProduction', open)).toEqual([one('Production')])
+    // A free-text question has no choices, so nothing outside its app answers it.
+    expect(parseCodexTextReplies('Any notes?\nNone', open)).toEqual([])
   })
 
   it.each([
@@ -133,11 +147,11 @@ describe('plain-text card answers from apps around Codex', () => {
     ['text before the quote', 'Answer:\n> Where?\n\nStaging'],
     ['a known answer beside a card Notifai does not carry', '> Where?\n\nStaging\n\n> Unknown?\n\nYes'],
   ])('leaves %s alone', (_name, prompt) => {
-    expect(parseCodexTextReplies(prompt, open)).toEqual([])
+    expect(parseCodexTextReplies(prompt, open, 'orca')).toEqual([])
   })
 
   it('does not guess between two open questions with the same wording', () => {
-    expect(parseCodexTextReplies('> Where?\n\nStaging', [...open, { callId: 'card_c', index: 0, title: 'Where?' }])).toEqual([])
+    expect(parseCodexTextReplies('> Where?\n\nStaging', [...open, { callId: 'card_c', index: 0, title: 'Where?', labels: ['Staging'] }], 'orca')).toEqual([])
   })
 })
 
@@ -218,16 +232,64 @@ describe('an older skill reporting a terminal answer itself', () => {
 })
 
 it.each([
-  ['Orca chat', '> Where?\n\nStaging'],
-  ['T3 Code', 'Where?\nStaging'],
-])('records a card answer typed in %s like a terminal answer', async (_app, prompt) => {
+  ['Orca chat', '> Where?\n\nStaging', { ORCA_STRUCTURED_SESSION: '1' }],
+  ['T3 Code', 'Where?\nStaging', { CODEX_INTERNAL_ORIGINATOR_OVERRIDE: 'T3' }],
+  ['an app Notifai cannot name, with one of the card\'s choices', 'Where?\nStaging', {}],
+])('records a card answer typed in %s like a terminal answer', async (_app, prompt, env: Record<string, string>) => {
   const h = fixture()
+  Object.assign(h.env, env)
   h.observe(prompt)
   h.commit(prompt)
   await h.report()
   expect(h.client.recordHarnessAnswer).toHaveBeenCalledWith('req_original', { session_id: SESSION, submission_id: expect.any(String),
     answers: [{ question_id: 'q1', choice_ids: ['staging'] }] })
   expect(h.client.putAgentAcknowledgement).toHaveBeenCalledWith('req_original', { session_id: SESSION, reply_seq: 1, text: CODEX_TERMINAL_RECEIPT })
+})
+
+it('records a typed free-text answer only in the app whose shape it is', async () => {
+  const typed = 'Where?\nKeep it where it is for now'
+  const elsewhere = fixture()
+  elsewhere.observe(typed); elsewhere.commit(typed); await elsewhere.report()
+  expect(elsewhere.client.recordHarnessAnswer).not.toHaveBeenCalled()
+  const t3 = fixture()
+  t3.env['CODEX_INTERNAL_ORIGINATOR_OVERRIDE'] = 'T3'
+  t3.observe(typed); t3.commit(typed); await t3.report()
+  expect(t3.client.recordHarnessAnswer).toHaveBeenCalledWith('req_original', { session_id: SESSION, submission_id: expect.any(String),
+    answers: [{ question_id: 'q1', text: 'Keep it where it is for now' }] })
+})
+
+it('never takes a prompt for the answer to a question already answered from a device', async () => {
+  const h = fixture()
+  h.env['CODEX_INTERNAL_ORIGINATOR_OVERRIDE'] = 'T3'
+  const state = h.state()
+  // The device answer was delivered the ordinary way: the question left pending.
+  writeSessionState(SESSION, h.env, { ...state, pending: [],
+    codex_question_bindings: state.codex_question_bindings!.map(item => ({ ...item, ordinary_only: true as const })) })
+  const typed = 'Where?\nI am not sure what you mean, explain first'
+  h.observe(typed); h.commit(typed); await h.report()
+  expect(h.client.recordHarnessAnswer).not.toHaveBeenCalled()
+  expect(h.conflict()).toBeNull()
+})
+
+it('records the answer to a re-asked card although an earlier card asked the same, once that one is answered', async () => {
+  const h = fixture()
+  // The first card's question was answered from a device and delivered.
+  const first = h.state()
+  writeSessionState(SESSION, h.env, { ...first, pending: [] })
+  const service = h.service
+  const { question_id: again } = registerQuestion(SESSION, h.env, { question: 'Where?', summary: 'Where?', service_identity: service,
+    questions: [{ id: 'q1', text: 'Where?', choices: [{ id: 'staging', label: 'Staging' }, { id: 'production', label: 'Production' }] },
+      { id: 'q2', text: 'Any notes?' }],
+  }, Date.now(), { owner_key: h.owner.key, turn_id: 'turn-1', service,
+    card: { call_id: 'card_again', allow: true, accepted: true,
+      shown: [{ title: 'Where?', labels: { staging: 'Staging', production: 'Production' } }, { title: 'Any notes?', labels: {} }] } })
+  recordConfirmedNativeAnswerTarget(SESSION, h.env, { question_id: again, request_id: 'req_again',
+    question: 'Where?', summary: 'Where?', service_identity: service })
+  const typed = '> Where?\n\nProduction'
+  h.observe(typed); h.commit(typed); await h.report()
+  expect(h.client.recordHarnessAnswer).toHaveBeenCalledOnce()
+  expect(h.client.recordHarnessAnswer).toHaveBeenCalledWith('req_again', { session_id: SESSION, submission_id: expect.any(String),
+    answers: [{ question_id: 'q1', choice_ids: ['production'] }] })
 })
 
 it('records nothing for an ordinary prompt while a card is open', async () => {

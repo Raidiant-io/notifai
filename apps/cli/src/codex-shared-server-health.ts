@@ -2,7 +2,7 @@
  *
  * A device answer can close a Codex question card only through the server that
  * owns the session's thread; elsewhere the card still reaches the devices, and
- * the answer reaches the agent while the card waits for the turn to end.
+ * the answer reaches the agent while the card can stay open.
  * Whether one session joined such a server is fixed when that session
  * launches, so nothing here can say it for a session. This
  * reports what is true of the effective CODEX_HOME, and never starts, stops or
@@ -79,8 +79,8 @@ export async function codexSharedServerState(
       title: TITLE,
       status: 'ready',
       detail: 'questions work. ' + (disabled
-        ? 'This Codex home turns off Codex\'s shared server (`daemon_auto_start = false` in its config.toml), so answering a question card on your phone does not close it in Codex: the answer still reaches the agent, and Codex clears the card when the agent\'s turn ends. Nothing to fix'
-        : 'No shared Codex server is running for this Codex home, so answering a question card on your phone does not close it in Codex: the answer still reaches the agent, and Codex clears the card when the agent\'s turn ends. Nothing to fix. A Codex session started without `--no-daemon` while a shared server runs closes its cards from your phone'),
+        ? 'This Codex home turns off Codex\'s shared server (`daemon_auto_start = false` in its config.toml), so answering a question card on your phone does not close it in Codex: the answer still reaches the agent, and the card can stay open until the agent\'s turn ends or you answer or close it there. Nothing to fix'
+        : 'No shared Codex server is running for this Codex home, so answering a question card on your phone does not close it in Codex: the answer still reaches the agent, and the card can stay open until the agent\'s turn ends or you answer or close it there. Nothing to fix. A Codex session started without `--no-daemon` while a shared server runs closes its cards from your phone'),
       technical: { shared_server_running: false, daemon_auto_start_disabled: disabled },
     }
   }

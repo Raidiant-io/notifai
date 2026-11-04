@@ -1,5 +1,5 @@
 {
-  "current": "1f96f2c4e25695616ad530fa770d064c5fd1b5cf4a34e4b14e6604ea07c7b845",
+  "current": "bf7cb125f3d4201f95599404e2c13281a81b70541d78066a6207c4e10532ea41",
   "releases": [
     {
       "digest": "3e47b01bc6bbfb43e910c660b9964fab6459d75148c3c02dcbcd0be64cfb2963",
@@ -338,8 +338,8 @@
       "note": "Temporary storage read failures no longer let a second local writer replace a claim that may still belong to a running process. Cleanup retains uncertain outcomes and retries with the existing backoff; readable abandoned or malformed claims still recover. No command, approval or setting changes are needed."
     },
     {
-      "digest": "1f96f2c4e25695616ad530fa770d064c5fd1b5cf4a34e4b14e6604ea07c7b845",
-      "note": "Codex question cards now always reach the User's devices, and a card that asks exactly what an open `notifai ask` question asks joins it instead of becoming a second question. A card is no longer refused for differing from a hand-back; only a card repeating a question already answered or expired is. When Notifai cannot close a card from a device, the device answer still arrives at your next tool call or as the next turn, with its acknowledgement command, and the card stays on screen until your turn ends: the answer is final. Answers typed in the chat of an app around Codex (Orca, T3 Code) are recorded like terminal answers. No command, approval or setting changes are needed."
+      "digest": "bf7cb125f3d4201f95599404e2c13281a81b70541d78066a6207c4e10532ea41",
+      "note": "Codex question cards now always reach the User's devices, and a card that asks exactly what an open `notifai ask` question asks joins it instead of becoming a second question. A card is no longer refused for differing from a hand-back; only a card repeating a question already answered or expired is. When Notifai cannot close a card from a device, the device answer still arrives at your next tool call or as the next turn, with its acknowledgement command, and the card can stay on screen after it: the answer is final, so do not wait on the card. Where Notifai cannot close a card whose question expired on the devices, nothing tells you; `notifai status` shows the question ended. An answer typed in the chat of an app around Codex is recorded like a terminal answer. No command, approval or setting changes are needed."
     }
   ]
 }
