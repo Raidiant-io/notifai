@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "behavior_digest": "sha256:c47988f4d1f7e58c6b6a8aa5ff459f3b81fbd5e2d1942c819eeebc0e23b80452",
+  "behavior_digest": "sha256:58d9f3513c95f15ea3abb5f5012f57e874df6a94e51840448cacecdb29b617ca",
   "outcome": "reviewed-no-impact",
   "surfaces_reviewed": [
     "lifecycle-hooks",
@@ -9,5 +9,5 @@
     "cli-readiness",
     "domain-terms"
   ],
-  "reason": "Reviewed lifecycle hooks, the Notifai skill, harness setup, CLI readiness and domain terms. Failed claim releases now retain their retry obligation when the holder cannot be read or parsed, and only prove completion from absence, a replacement token, or successful removal under the guard. The absent-file timer path never removes a reappearing file outside the guard. No command, approval, setting, session restart or delivery replay is added. Existing guidance remains correct; the release note explains the recovery change."
+  "reason": "Reviewed lifecycle hooks, the Notifai skill, harness setup, CLI readiness and domain terms. Ownership-changing claim readers now preserve filesystem read errors: acquisition refuses an unknown holder while cleanup retains its retry, and both share the same parser. Readable corrupt or abandoned claims retain their existing recovery. Observational readers preserve their existing best-effort contract. No agent-facing command, approval, setting, session restart or delivery replay is added. Existing guidance remains correct; the release note describes the safety improvement."
 }

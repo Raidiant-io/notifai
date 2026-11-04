@@ -1,5 +1,6 @@
 import type * as Fs from 'node:fs'
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { spawnSync } from 'node:child_process'
+import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { afterEach, expect, it, vi } from 'vitest'
@@ -87,4 +88,47 @@ it('stops retrying when the claim and its directory have been removed', async ()
   rmSync(path.dirname(file), { recursive: true })
   await vi.advanceTimersByTimeAsync(1_000)
   expect(vi.getTimerCount()).toBe(0)
+})
+
+it.each(['EIO', 'EACCES'])('refuses to replace a live owner when acquisition cannot read its claim (%s)', code => {
+  const { file, token } = claim()
+  expect(acquireClaimFile(file, {})).toBeNull()
+  fault.code = code
+  expect(acquireClaimFile(file, {})).toBeNull()
+  fault.code = ''
+  expect(JSON.parse(readFileSync(file, 'utf8')).token).toBe(token)
+  expect(acquireClaimFile(file, {})).toBeNull()
+  releaseClaimFile(file, token)
+  const next = acquireClaimFile(file, {})
+  expect(next).not.toBeNull()
+  expect(next).not.toBe(token)
+})
+
+it.each(['{', 'null', '[]'])('still recovers a readable malformed claim (%s)', contents => {
+  const { file, token } = claim()
+  writeFileSync(file, contents)
+  const next = acquireClaimFile(file, {})
+  expect(next).not.toBeNull()
+  expect(next).not.toBe(token)
+  expect(JSON.parse(readFileSync(file, 'utf8')).token).toBe(next)
+})
+
+it('still recovers a readable claim whose owner exited', () => {
+  const { file, token, saved } = claim()
+  const owner = spawnSync(process.execPath, ['-e', ''])
+  expect(owner.status).toBe(0)
+  writeFileSync(file, JSON.stringify({ ...JSON.parse(saved), pid: owner.pid, start: undefined }))
+  const next = acquireClaimFile(file, {})
+  expect(next).not.toBeNull()
+  expect(next).not.toBe(token)
+})
+
+it.skipIf(process.platform === 'win32' || process.getuid?.() === 0)('preserves ownership when real file permissions deny reading', () => {
+  const { file, token } = claim()
+  chmodSync(file, 0o200)
+  try {
+    expect(() => readFileSync(file, 'utf8')).toThrow(expect.objectContaining({ code: 'EACCES' }))
+    expect(acquireClaimFile(file, {})).toBeNull()
+  } finally { chmodSync(file, 0o600) }
+  expect(JSON.parse(readFileSync(file, 'utf8')).token).toBe(token)
 })

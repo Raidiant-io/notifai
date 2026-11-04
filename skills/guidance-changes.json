@@ -1,5 +1,5 @@
 {
-  "current": "3e0f7b7d80a0f4c745117cfa8366bfef3c91f35f435218c0153fbea5572a9e87",
+  "current": "30a28ec2833502daa6824eebe2b3c21ea8d34187fa2200b56250513fe554a7e7",
   "releases": [
     {
       "digest": "3e47b01bc6bbfb43e910c660b9964fab6459d75148c3c02dcbcd0be64cfb2963",
@@ -332,6 +332,10 @@
     {
       "digest": "3e0f7b7d80a0f4c745117cfa8366bfef3c91f35f435218c0153fbea5572a9e87",
       "note": "Lock cleanup keeps retrying when a temporary storage read error or an unreadable owner record prevents it from proving the outcome. It still backs off, leaves replacement owners alone, and needs no new command, approval or session restart. Nothing changes in what agents do."
+    },
+    {
+      "digest": "30a28ec2833502daa6824eebe2b3c21ea8d34187fa2200b56250513fe554a7e7",
+      "note": "Temporary storage read failures no longer let a second local writer replace a claim that may still belong to a running process. Cleanup retains uncertain outcomes and retries with the existing backoff; readable abandoned or malformed claims still recover. No command, approval or setting changes are needed."
     }
   ]
 }

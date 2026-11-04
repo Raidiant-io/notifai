@@ -97,15 +97,14 @@ function releasePendingUnlocked(file: string): void {
   if (tokens === undefined) return
   // The ordinary claim reader treats missing, corrupt and unreadable alike.
   // A release may stop retrying only on evidence, not an inconclusive read.
-  let holder: unknown
-  try { holder = JSON.parse(readFileSync(file, 'utf8')) } catch (error) {
+  let holder: Record<string, unknown> | null
+  try { holder = readClaimFileOrThrow(file) } catch (error) {
     if ((error as NodeJS.ErrnoException).code === 'ENOENT') forgetRelease(file)
     return
   }
-  if (typeof holder !== 'object' || holder === null || !('token' in holder) || typeof holder.token !== 'string') return
-  const claim = holder as Record<string, unknown>
+  if (holder === null || typeof holder['token'] !== 'string') return
   if (tokens.has(holder.token) ||
-      (claim['handoff'] === true && claim['pid'] === process.pid && tokens.has(String(claim['handoff_from'])))) {
+      (holder['handoff'] === true && holder['pid'] === process.pid && tokens.has(String(holder['handoff_from'])))) {
     rmSync(file, { force: true })
   }
   forgetRelease(file)
@@ -344,7 +343,12 @@ export function acquireClaimFile(
       return token
     } catch {
       // Held. Break it only if whoever holds it cannot still be running.
-      if (claimHolderMayRun(readClaimFile(file), now)) return null
+      let holder: Record<string, unknown> | null
+      try { holder = readClaimFileOrThrow(file) } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== 'ENOENT') return null
+        holder = null
+      }
+      if (claimHolderMayRun(holder, now)) return null
       beforeStaleReplace?.()
       rmSync(file, { force: true })
       try {
@@ -359,16 +363,22 @@ export function acquireClaimFile(
   }
 }
 
-/** The parsed holder of a claim file, or null when it is missing or corrupt. */
-export function readClaimFile(file: string): Record<string, unknown> | null {
+/** Parse readable claims; preserve I/O errors for ownership-changing callers. */
+function readClaimFileOrThrow(file: string): Record<string, unknown> | null {
+  const contents = readFileSync(file, 'utf8')
   try {
-    const parsed: unknown = JSON.parse(readFileSync(file, 'utf8'))
+    const parsed: unknown = JSON.parse(contents)
     return typeof parsed === 'object' && parsed !== null && !Array.isArray(parsed)
       ? (parsed as Record<string, unknown>)
       : null
   } catch {
     return null
   }
+}
+
+/** Best-effort observation; absence, corruption and read failure all return null. */
+export function readClaimFile(file: string): Record<string, unknown> | null {
+  try { return readClaimFileOrThrow(file) } catch { return null }
 }
 
 /**
