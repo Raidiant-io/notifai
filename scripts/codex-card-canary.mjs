@@ -39,7 +39,7 @@
  * capability or a release raises the floor.
  */
 import { execFile } from 'node:child_process'
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
 import { createServer } from 'node:http'
 import os from 'node:os'
 import path from 'node:path'
@@ -373,18 +373,44 @@ async function waitForDaemon(env, timeoutMs) {
   throw new Error(`the daemon did not report running within ${timeoutMs} ms: ${JSON.stringify(last)}`)
 }
 
+/**
+ * Where the throwaway CODEX_HOME lives. `short` keeps the control socket under
+ * the platform's Unix socket path limit. `orca-account` copies the shape of
+ * an Orca account home (a space in the path, a depth that puts
+ * `app-server-control/app-server-control.sock` past that limit, and Orca's
+ * `daemon_auto_start = false` guard), where Codex keeps the socket in its own
+ * short directory and leaves a symlink at the long path. Device answers there
+ * close cards only if discovery follows that symlink.
+ */
+export const HOME_SHAPES = Object.freeze(['short', 'orca-account'])
+
+/** The Unix socket path limit Codex's own guard measures against (sun_path minus its terminator). */
+export function socketPathLimit(platform = process.platform) {
+  return platform === 'darwin' ? 103 : 107
+}
+
+export function canaryHome(scratch, shape) {
+  if (shape === 'short') return path.join(scratch, 'codex-home')
+  if (shape === 'orca-account') {
+    return path.join(scratch, 'Library', 'Application Support', 'orca', 'codex-accounts', '00000000-0000-4000-8000-00000000ca7a', 'home')
+  }
+  throw new Error(`unknown home shape ${shape}`)
+}
+
 /** Each step records one finding; the first failing step ends the round trip. */
-export async function runRoundTrip({ env: baseEnv = process.env, keep = false, log = () => {} } = {}) {
+export async function runRoundTrip({ env: baseEnv = process.env, keep = false, log = () => {}, homeShape = 'short' } = {}) {
   const findings = []
-  const step = async (check, guards, work) => {
+  const label = homeShape === 'short' ? '' : `[${homeShape} home] `
+  const step = async (name, guards, work) => {
+    const check = `${label}${name}`
     try {
       const detail = await work()
-      findings.push({ phase: 'round-trip', check, guards, ok: true, ...(detail === undefined ? {} : { detail }) })
+      findings.push({ phase: 'round-trip', home: homeShape, check, guards, ok: true, ...(detail === undefined ? {} : { detail }) })
       log(`ok   ${check}${detail === undefined ? '' : ` (${detail})`}`)
       return true
     } catch (error) {
       const detail = error instanceof Error ? error.message : String(error)
-      findings.push({ phase: 'round-trip', check, guards, ok: false, detail })
+      findings.push({ phase: 'round-trip', home: homeShape, check, guards, ok: false, detail })
       log(`FAIL ${check}: ${detail}`)
       return false
     }
@@ -396,13 +422,15 @@ export async function runRoundTrip({ env: baseEnv = process.env, keep = false, l
     ...(await distModule('codex-card-capability.js')),
     ...(await distModule('codex-native-turn.js')),
     ...(await distModule('install-hooks.js')),
+    ...(await distModule('local-path.js')),
   }
   // A Unix socket path is limited to about 104 bytes on macOS, and the daemon
-  // puts its socket under CODEX_HOME, so the scratch root must stay short.
+  // puts its socket under CODEX_HOME, so the scratch root stays short; the
+  // Orca-shaped home then exceeds the limit on purpose.
   const scratch = mkdtempSync(path.join(process.platform === 'darwin' ? '/tmp' : os.tmpdir(), 'nfcc-'))
-  const home = path.join(scratch, 'codex-home')
+  const home = canaryHome(scratch, homeShape)
   const project = path.join(scratch, 'project')
-  mkdirSync(home); mkdirSync(project)
+  mkdirSync(home, { recursive: true }); mkdirSync(project)
   const env = { ...baseEnv, CODEX_HOME: home, HOME: path.join(scratch, 'home'), XDG_STATE_HOME: path.join(scratch, 'state'), XDG_CONFIG_HOME: path.join(scratch, 'config') }
   for (const key of Object.keys(env)) if (key === 'CODEX_THREAD_ID' || key === 'OPENAI_API_KEY' || key.startsWith('NOTIFAI_ACTIVE_')) delete env[key]
   mkdirSync(env.HOME)
@@ -425,7 +453,17 @@ export async function runRoundTrip({ env: baseEnv = process.env, keep = false, l
       'stream_max_retries = 0',
       '',
       hooks.trust,
+      // Orca writes this into account homes whose socket path is too long.
+      ...(homeShape === 'orca-account' ? ['', '[features]', 'daemon_auto_start = false # orca: control socket path too long'] : []),
     ].join('\n'))
+
+    if (homeShape === 'orca-account' && !await step('the Orca-shaped home puts the control socket path past the Unix limit', 'canary precondition', async () => {
+      const long = path.join(home, 'app-server-control', 'app-server-control.sock')
+      const bytes = Buffer.byteLength(long, 'utf8')
+      if (bytes <= socketPathLimit()) throw new Error(`${bytes} bytes is within the ${socketPathLimit()}-byte limit`)
+      if (!home.includes(' ')) throw new Error('the home has no space in its path')
+      return `${bytes} bytes`
+    })) return findings
 
     let version
     if (!await step('the daemon starts in an isolated CODEX_HOME and reports its version', 'codex-native-control.ts discovery', async () => {
@@ -435,6 +473,13 @@ export async function runRoundTrip({ env: baseEnv = process.env, keep = false, l
       const reported = version.appServerVersion ?? version.managedCodexVersion
       if (typeof reported !== 'string') throw new Error(`no appServerVersion or managedCodexVersion in ${JSON.stringify(version)}`)
       return `appServerVersion ${reported}`
+    })) return findings
+
+    if (homeShape === 'orca-account' && !await step('discovery resolves the long control socket path to a connectable socket', 'local-path.ts canonicalSocketPath', async () => {
+      const resolved = helpers.canonicalSocketPath(version.socketPath)
+      if (Buffer.byteLength(resolved, 'utf8') > socketPathLimit()) throw new Error(`resolved path ${resolved} is still past the limit`)
+      if (!lstatSync(resolved).isSocket()) throw new Error(`${resolved} is not a socket`)
+      return `${version.socketPath === resolved ? 'reported as' : 'resolved to'} ${resolved}`
     })) return findings
 
     await step('the newest app-server version satisfies the shipped card floor', 'codex-card-capability.ts codexCardVersionVerdict', async () => {
@@ -454,7 +499,7 @@ export async function runRoundTrip({ env: baseEnv = process.env, keep = false, l
     let threadId
     let turnId
     if (!await step('initialize names this CODEX_HOME and a turn starts with the card available', 'codex-native-control.ts initialize/namespace', async () => {
-      client = await RpcClient.connect(version.socketPath, helpers.connectUnixWebSocket, 120_000)
+      client = await RpcClient.connect(helpers.canonicalSocketPath(version.socketPath), helpers.connectUnixWebSocket, 120_000)
       const initialized = await client.call('initialize', { clientInfo: { name: 'notifai_canary', version: '1' }, capabilities: { experimentalApi: true } })
       if (typeof initialized?.codexHome !== 'string' || realpathSync(initialized.codexHome) !== realpathSync(home)) throw new Error(`initialize reported codexHome ${JSON.stringify(initialized?.codexHome)}`)
       await client.notify('initialized', {})
@@ -582,7 +627,7 @@ export async function runRoundTrip({ env: baseEnv = process.env, keep = false, l
 // Entrypoint
 // ---------------------------------------------------------------------------
 
-export async function runCanary({ skipLive = false, keep = false, log = () => {} } = {}) {
+export async function runCanary({ skipLive = false, keep = false, log = () => {}, homeShapes = HOME_SHAPES } = {}) {
   const started = new Date().toISOString()
   const { stdout } = await execute('codex', ['--version'], { timeout: 30_000 })
   const codexVersion = parseCodexVersion(stdout)
@@ -594,8 +639,9 @@ export async function runCanary({ skipLive = false, keep = false, log = () => {}
     findings = checkSchemaBundle(readSchemaBundle(schemaDir))
   } finally { rmSync(schemaDir, { recursive: true, force: true }) }
   for (const finding of findings) log(`${finding.ok ? 'ok  ' : 'FAIL'} ${finding.check}${finding.detail === undefined ? '' : `: ${finding.detail}`}`)
-  if (!skipLive && findings.every(finding => finding.ok)) findings.push(...await runRoundTrip({ keep, log }))
-  else if (!skipLive) log('schema drift: the round trip did not run')
+  if (!skipLive && findings.every(finding => finding.ok)) {
+    for (const homeShape of homeShapes) findings.push(...await runRoundTrip({ keep, log, homeShape }))
+  } else if (!skipLive) log('schema drift: the round trip did not run')
   return { started, codexVersion, ok: findings.every(finding => finding.ok), findings }
 }
 
@@ -608,13 +654,18 @@ export function renderSummary(result) {
 }
 
 function parseArguments(argv) {
-  const options = { skipLive: false, keep: false, summary: null, out: null }
+  const options = { skipLive: false, keep: false, summary: null, out: null, homeShapes: undefined }
   for (let index = 0; index < argv.length; index += 1) {
     const argument = argv[index]
     if (argument === '--schema-only') options.skipLive = true
     else if (argument === '--keep') options.keep = true
     else if (argument === '--summary') options.summary = argv[++index]
     else if (argument === '--out') options.out = argv[++index]
+    else if (argument === '--home') {
+      const shape = argv[++index]
+      if (!HOME_SHAPES.includes(shape)) throw new Error(`--home takes one of ${HOME_SHAPES.join(', ')}`)
+      options.homeShapes = [...(options.homeShapes ?? []), shape]
+    }
     else throw new Error(`unknown argument ${argument}`)
   }
   return options
@@ -622,7 +673,8 @@ function parseArguments(argv) {
 
 if (process.argv[1] !== undefined && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   const options = parseArguments(process.argv.slice(2))
-  const result = await runCanary({ skipLive: options.skipLive, keep: options.keep, log: line => console.error(line) })
+  const result = await runCanary({ skipLive: options.skipLive, keep: options.keep, log: line => console.error(line),
+    ...(options.homeShapes === undefined ? {} : { homeShapes: options.homeShapes }) })
   if (options.out !== null) writeFileSync(options.out, JSON.stringify(result, null, 2) + '\n')
   if (options.summary !== null) writeFileSync(options.summary, renderSummary(result), { flag: 'a' })
   console.log(JSON.stringify(result, null, 2))

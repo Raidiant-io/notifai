@@ -1,7 +1,9 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
+import path from 'node:path'
 import {
-  CANARY_CARD, CANARY_STEER_TEXT, SCHEMA_CHECKS, checkSchemaBundle, classifyProviderRequest, parseCodexVersion, renderSummary, startMockProvider,
+  CANARY_CARD, CANARY_STEER_TEXT, HOME_SHAPES, SCHEMA_CHECKS, canaryHome, checkSchemaBundle, classifyProviderRequest, parseCodexVersion, renderSummary,
+  socketPathLimit, startMockProvider,
 } from './codex-card-canary.mjs'
 
 /** The smallest bundle shaped like Codex 0.163.0's generated schema. */
@@ -104,4 +106,15 @@ test('the step summary names the Codex version and every failing guard', () => {
   ] })
   assert.match(summary, /RED on Codex 0\.170\.0/)
   assert.match(summary, /\| FAIL \| drifted \| `b\.ts` \| turnId \\\| gone \|/)
+})
+
+test('the round trip runs in a short home and in an Orca-shaped account home past the socket path limit', () => {
+  assert.deepEqual(HOME_SHAPES, ['short', 'orca-account'])
+  for (const [platform, scratch] of [['darwin', '/tmp/nfcc-AbC123'], ['linux', '/tmp/nfcc-AbC123']]) {
+    const socket = shape => path.posix.join(canaryHome(scratch, shape), 'app-server-control', 'app-server-control.sock')
+    assert.ok(Buffer.byteLength(socket('short')) <= socketPathLimit(platform), `${platform} short home fits`)
+    assert.ok(Buffer.byteLength(socket('orca-account')) > socketPathLimit(platform), `${platform} Orca home exceeds the limit`)
+    assert.match(canaryHome(scratch, 'orca-account'), / /u)
+  }
+  assert.throws(() => canaryHome('/tmp/x', 'other'), /unknown home shape/u)
 })

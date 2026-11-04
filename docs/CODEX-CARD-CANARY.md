@@ -15,25 +15,35 @@ and runs on macOS or Linux). It uses no account, no model and no secret.
 
 ## Two gates in the shipped CLI
 
+A card always reaches the User's devices as the question it asks, whether or
+not a device answer can close it. These gates decide only whether a device
+answer closes the card itself (by `turn/steer`) or reaches the agent at its
+next tool call while Codex clears the card at turn end.
+
 - **The version floor.** `CODEX_CARD_VERSION_FLOOR` in
   `apps/cli/src/codex-card-capability.ts` is the oldest app-server version a
-  card is linked on. The answer transport reads the running daemon's version
-  (`codex app-server daemon version`) and withholds linking below the floor
-  or when no version is reported. `notifai ask` then reports
-  `native_question_unavailable` with reason `codex_version_unsupported`, the
-  version it saw and the floor, and the agent asks in plain text. Nothing else
-  changes on an older Codex: ordinary questions, answers and the content-free
-  wake keep working. The floor is raised only together with a reproduced card
+  device answer is steered into. The answer transport reads the running
+  daemon's version (`codex app-server daemon version`) and withholds the steer
+  below the floor or when no version is reported. The answer then takes the
+  ordinary route. The floor is raised only together with a reproduced card
   round trip on the new version.
-- **The preflight.** Before any card is linked, `ask` and the card hook check
-  that the service advertises `harness_answers` and that the owning app-server
-  is reachable and shows the turn in progress. Either failing means an
-  ordinary question. Withdrawing `harness_answers` from the service is the
-  switch that stops every shipped CLI from linking cards, without a release.
+- **The route.** A device answer is steered only when the owning app-server
+  is reachable and shows the card's turn in progress. Notifai attaches to a
+  shared server Codex already runs for the session's `CODEX_HOME`, including
+  a deep one whose control socket Codex keeps behind a symlink; it never
+  starts one. Without it, the answer takes the ordinary route. Withdrawing
+  `harness_answers` from the service stops every shipped CLI from linking
+  cards, without a release.
 
 ## What a green run proves
 
-Against the `codex` on `PATH`, in a throwaway `CODEX_HOME`:
+Against the `codex` on `PATH`, in a throwaway `CODEX_HOME`. The round trip
+runs twice: in a short home, and in one shaped like an Orca account home (a
+space in the path, Orca's `daemon_auto_start = false` guard, and a control
+socket path longer than a Unix socket allows). In the second, Codex keeps the
+socket in its own short directory with a symlink at the long path, and the
+canary also checks that discovery resolves that symlink to a connectable
+socket before the rest of the round trip runs through it:
 
 1. `codex app-server generate-json-schema --experimental` still describes
    every method Notifai calls (`initialize`, `thread/loaded/list`,
@@ -82,7 +92,9 @@ Against the `codex` on `PATH`, in a throwaway `CODEX_HOME`:
   still parses Notifai's reply envelope. No TUI runs here. Those are checked
   live by hand when the floor is raised.
 - Anything about the Notifai service, devices, or Companion Apps.
-- Windows: the control socket is Unix-only, and so is the canary.
+- Windows: the control socket is Unix-only, and so is the canary. Notifai's
+  connection to a Windows socket fails today (Node reaches AF_UNIX paths as
+  named pipes), so there a device answer always takes the ordinary route.
 
 ## When it is red
 
