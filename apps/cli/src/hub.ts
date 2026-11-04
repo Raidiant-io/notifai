@@ -3665,7 +3665,8 @@ export class Hub {
   orcaChatReady(session: HubSession, state: SessionState): boolean {
     if (session.harness !== 'codex' || state.orca_chat?.key !== session.record.key ||
         this.clock.monotonic() < session.orcaChatRetryAt) return false
-    if (this.client() === null) return false
+    // Every precondition the send itself has: a ready route never suppresses the ordinary wake for nothing.
+    if (session.lease.generation === null || this.client() === null || currentProcessIdentity() === null || !this.pausedWakeSettable(session)) return false
     const credential = this.credential
     if (credential === undefined || credential === null) return false
     const service = { base_url: credential.baseUrl, machine_id: credential.machineId }
@@ -3684,7 +3685,10 @@ export class Hub {
     const client = this.client()
     const credential = this.credential
     const writer = currentProcessIdentity()
-    if (lease === null || client === null || credential === undefined || credential === null || writer === null) return
+    if (lease === null || client === null || credential === undefined || credential === null || writer === null) {
+      session.orcaChatRetryAt = this.clock.monotonic() + ORCA_CHAT_RETRY_MS
+      return
+    }
     this.orcaSending.add(session.id)
     let presented = false
     try {
@@ -3695,6 +3699,8 @@ export class Hub {
         nativeAnswers: orcaChatPresentation({ sessionId: session.id, env: session.env, lease, ownerKey: session.record.key,
           service: { base_url: credential.baseUrl, machine_id: credential.machineId },
           serviceCurrent: () => this.credential === credential, wall: () => this.clock.wall(),
+          // The claims and their reports take part of the deadline too.
+          remainingMs: () => deadline - this.clock.monotonic() - 1_500,
           ...(this.options.orcaRuntime === undefined ? {} : { runtime: this.options.orcaRuntime }) }),
         sequencer: { sessionId: session.id, env: session.env, client, writer, log: this.logger,
           monotonic: () => this.clock.monotonic(), wall: () => this.clock.wall(), recoveryDeadline: this.clock.monotonic() + 500,

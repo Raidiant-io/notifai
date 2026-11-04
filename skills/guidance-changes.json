@@ -1,5 +1,5 @@
 {
-  "current": "41de206162cfdbf8b866697ab3c31b3c35e4269f41df85d4389ba11293d06839",
+  "current": "407a596d007525629f4fa5f809a190135333c7259702a83c8c8e8722dcf2f830",
   "releases": [
     {
       "digest": "3e47b01bc6bbfb43e910c660b9964fab6459d75148c3c02dcbcd0be64cfb2963",
@@ -342,7 +342,7 @@
       "note": "Codex question cards now always reach the User's devices, and a card that asks exactly what an open `notifai ask` question asks joins it instead of becoming a second question. A card is no longer refused for differing from a hand-back; only a card repeating a question already answered or expired is. When Notifai cannot close a card from a device, the device answer still arrives at your next tool call or as the next turn, with its acknowledgement command, and the card can stay on screen after it: the answer is final, so do not wait on the card. Where Notifai cannot close a card whose question expired on the devices, nothing tells you; `notifai status` shows the question ended. An answer typed in the chat of an app around Codex is recorded like a terminal answer. No command, approval or setting changes are needed."
     },
     {
-      "digest": "41de206162cfdbf8b866697ab3c31b3c35e4269f41df85d4389ba11293d06839",
+      "digest": "407a596d007525629f4fa5f809a190135333c7259702a83c8c8e8722dcf2f830",
       "note": "After the User interrupts a Codex turn, an answer or note from their devices now wakes the session where Codex's shared server can start the waiting wake; elsewhere it still arrives with the User's next prompt, and no extra wake turn runs after that prompt. In an app whose question cards are answered by a message, a device answer to a card can now arrive as that message, with its acknowledgement command beside it; acknowledge it as usual."
     }
   ]

@@ -15,7 +15,7 @@ import type { CodexQuestionRegistration } from './codex-question-bindings.js'
 import { readSessionState, writeSessionState } from './hook-session-state.js'
 import type { AnsweredPending, SessionState } from './hook-types.js'
 import {
-  isOrcaChatSentPrompt, orcaAnswerText, orcaCardGroup, orcaChatPresentation, orcaChatSessionOf, takeOrcaChatSentContext,
+  isOrcaChatSentPrompt, orcaAnswerText, orcaCardGroup, orcaChatPresentation, orcaChatSessionOf, orcaChatShowsCards, takeOrcaChatSentContext,
 } from './orca-chat-answers.js'
 import { orcaPayloadFingerprint, orcaRuntime, orcaUserDataPath, type OrcaRpcResult, type OrcaRuntime } from './orca-runtime.js'
 
@@ -108,11 +108,11 @@ describe('a turn\'s card answers', () => {
 
 /** A fake Orca runtime: capabilities, a history whose fence moves, and a send that answers as told. */
 function fakeOrca(options: { capabilities?: string[]; cards?: string[]; send?: OrcaRpcResult; submissions?: string[] } = {}) {
-  const calls: Array<{ method: string; params: Record<string, unknown> }> = []
+  const calls: Array<{ method: string; params: Record<string, unknown>; timeoutMs?: number }> = []
   let fence = 4
   const runtime: OrcaRuntime = {
-    call: async (method, params) => {
-      calls.push({ method, params: params as Record<string, unknown> })
+    call: async (method, params, timeoutMs) => {
+      calls.push({ method, params: params as Record<string, unknown>, ...(timeoutMs === undefined ? {} : { timeoutMs }) })
       if (method === 'status.get') return { ok: true, result: { capabilities: options.capabilities ?? ['agent-session.structured.v1', 'agent-session.accepted-send.v1'] } }
       if (method === 'agentSession.history') {
         return { ok: true, result: { page: { fence, submissions: (options.submissions ?? []).map((id) => ({ clientMessageId: id })),
@@ -127,9 +127,9 @@ function fakeOrca(options: { capabilities?: string[]; cards?: string[]; send?: O
   return { runtime, calls }
 }
 
-function presentation(env: NodeJS.ProcessEnv, runtime: OrcaRuntime) {
+function presentation(env: NodeJS.ProcessEnv, runtime: OrcaRuntime, remainingMs?: () => number) {
   return orcaChatPresentation({ sessionId: SESSION, env, lease: LEASE, ownerKey: OWNER, service: SERVICE,
-    serviceCurrent: () => true, wall: () => 1_793_832_381_560, runtime })
+    serviceCurrent: () => true, wall: () => 1_793_832_381_560, runtime, ...(remainingMs === undefined ? {} : { remainingMs }) })
 }
 
 function home() {
@@ -190,7 +190,7 @@ describe('sending the answers through Orca', () => {
       orca.runtime.call = async (method, params) => {
         if (method === 'agentSession.send') sentId = (params as { envelope: { clientOperationId: string } }).envelope.clientOperationId
         if (method === 'agentSession.history' && sentId !== null) {
-          return afterSend === 'recorded' ? { ok: true, result: { page: { fence: 5, items: [], submissions: [{ clientMessageId: sentId }] } } }
+          return afterSend === 'recorded' ? { ok: true, result: { page: { fence: 5, items: [], submissions: [{ clientMessageId: sentId, dispatchState: 'accepted' }] } } }
             : { ok: false, code: 'timeout' }
         }
         return original(method, params)
@@ -207,6 +207,89 @@ describe('sending the answers through Orca', () => {
     const outcome = await unknown.write(() => true).then(() => 'resolved', (error: unknown) => error)
     expect(outcome).toBeInstanceOf(Error)
     expect(outcome).not.toBeInstanceOf(CodexControlNotSent)
+  })
+})
+
+describe('what Orca\'s chat shows', () => {
+  const user = (text: string, extra: Record<string, unknown> = {}) => ({ body: { kind: 'message', role: 'user', blocks: [{ type: 'text', text }], ...extra } })
+  const cardItem = (callId: string) => ({ body: { kind: 'message', role: 'assistant', blocks: [{ type: 'tool-call', name: 'request_user_input_async', callId }] } })
+  const group = [{ callId: 'call_a', titles: ['Card A: which color?'] }, { callId: 'call_b', titles: ['Card B: which size?'] }]
+  const page = (items: unknown[], queued: unknown[] = []) => ({ fence: 1, items, queuedMessages: queued })
+
+  it('is exactly the group\'s cards, since the last message the User sent', () => {
+    expect(orcaChatShowsCards(page([user('Ask me'), cardItem('call_a'), cardItem('call_b')]), group, new Set())).toBe(true)
+    // An older card, already cleared by a later message, does not count.
+    expect(orcaChatShowsCards(page([cardItem('call_x'), user('Ask me'), cardItem('call_a'), cardItem('call_b')]), group, new Set())).toBe(true)
+  })
+
+  it('refuses a span with a card Notifai has no answer for, unless that card is already handed in', () => {
+    const items = [user('Ask me'), cardItem('call_a'), cardItem('call_c'), cardItem('call_b')]
+    expect(orcaChatShowsCards(page(items), group, new Set())).toBe(false)
+    expect(orcaChatShowsCards(page(items), group, new Set(['call_c']))).toBe(true)
+  })
+
+  it('refuses when a card of the group is gone, as after the User wrote something else', () => {
+    expect(orcaChatShowsCards(page([user('Ask me'), cardItem('call_a'), cardItem('call_b'), user('never mind')]), group, new Set())).toBe(false)
+  })
+
+  it('refuses when the User already answered in Orca, sent or waiting in Orca\'s queue', () => {
+    const items = [user('Ask me'), cardItem('call_a'), cardItem('call_b')]
+    expect(orcaChatShowsCards(page(items, [{ messageId: 'm', body: { kind: 'message', role: 'user', blocks: [{ type: 'text', text: '> Card B: which size?\n\nSmall' }] } }]),
+      group, new Set())).toBe(false)
+    expect(orcaChatShowsCards(page(items, [{ messageId: 'm', body: { kind: 'message', role: 'user', blocks: [{ type: 'text', text: 'Unrelated draft' }] } }]),
+      group, new Set())).toBe(true)
+    // An agent's notice is not the User answering.
+    expect(orcaChatShowsCards(page([...items, user('> Card A: which color?\n\nRed', { from: { kind: 'agent' } })]), group, new Set())).toBe(true)
+    expect(orcaChatShowsCards(page([...items, user('> Card A: which color?\n\nRed')]), group, new Set())).toBe(false)
+  })
+})
+
+describe('Orca\'s record of a lost reply', () => {
+  const lostReply = (dispatchState: string) => {
+    const orca = fakeOrca({ send: { ok: false, code: 'timeout' } })
+    const original = orca.runtime.call
+    let sentId: string | null = null
+    orca.runtime.call = async (method, params, timeoutMs) => {
+      if (method === 'agentSession.send') sentId = (params as { envelope: { clientOperationId: string } }).envelope.clientOperationId
+      if (method === 'agentSession.history' && sentId !== null) return { ok: true, result: { page: { fence: 5, items: [], submissions: [{ clientMessageId: sentId, dispatchState }] } } }
+      return original(method, params, timeoutMs)
+    }
+    return orca.runtime
+  }
+  it.each([['accepted', 'sent'], ['rejected', 'not sent'], ['pending', 'unknown']])('reads a submission %s as %s', async (state, outcome) => {
+    const h = home()
+    const prepared = (await presentation(h.env, lostReply(state)).prepareGroup!(h.answers, readSessionState(SESSION, h.env), 0))!
+    const result = await prepared.write(() => true).then(() => 'sent', (error: unknown) => error instanceof CodexControlNotSent ? 'not sent' : 'unknown')
+    expect(result).toBe(outcome)
+  })
+})
+
+describe('the deadline', () => {
+  it('bounds every Orca call by what is left, and sends nothing without time for a lost reply', async () => {
+    const h = home()
+    const orca = fakeOrca()
+    let left = 9_000
+    const prepared = (await presentation(h.env, orca.runtime, () => left).prepareGroup!(h.answers, readSessionState(SESSION, h.env), 0))!
+    await prepared.write(() => true)
+    expect(orca.calls.every((call) => (call.timeoutMs ?? Infinity) <= 9_000)).toBe(true)
+    const late = home()
+    const slow = fakeOrca()
+    left = 2_000
+    const short = (await presentation(late.env, slow.runtime, () => left).prepareGroup!(late.answers, readSessionState(SESSION, late.env), 0))!
+    await expect(short.write(() => true)).rejects.toBeInstanceOf(CodexControlNotSent)
+    expect(slow.calls.some((call) => call.method === 'agentSession.send')).toBe(false)
+  })
+})
+
+describe('a sent message once shown', () => {
+  it('is the User\'s own words again: a later card asking the same question can be answered with them', async () => {
+    const h = home()
+    const prepared = (await presentation(h.env, fakeOrca().runtime).prepareGroup!(h.answers, readSessionState(SESSION, h.env), 0))!
+    await prepared.write(() => true)
+    const prompt = '> Card A: which color?\n\nBlue\n\n> Card B: which size?\n\nLarge'
+    expect(isOrcaChatSentPrompt(SESSION, h.env, prompt)).toBe(true)
+    expect(takeOrcaChatSentContext(SESSION, h.env, prompt)).not.toBeNull()
+    expect(isOrcaChatSentPrompt(SESSION, h.env, prompt)).toBe(false)
   })
 })
 

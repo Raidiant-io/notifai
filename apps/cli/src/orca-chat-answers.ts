@@ -127,44 +127,85 @@ const sha256 = (text: string): string => createHash('sha256').update(text).diges
 /** The prompt Codex hands its hook for a sent message, compared by content. */
 const promptDigest = (text: string): string => sha256(text.replace(/\r\n?/gu, '\n').trimEnd())
 
-interface ToolCall { kind?: unknown; type?: unknown; name?: unknown; callId?: unknown }
+interface HistoryBlock { kind?: unknown; type?: unknown; name?: unknown; callId?: unknown; text?: unknown }
+interface HistoryBody extends HistoryBlock { role?: unknown; blocks?: unknown; from?: { kind?: unknown }; queued?: unknown; unsent?: unknown }
 
-/**
- * A card in the Orca session's recent history, by its Codex call id: a
- * `tool-call` item, or a `tool-call` block of an assistant message (how
- * Orca 1.4.248 records Codex's cards).
- */
-function historyShowsCards(page: { items?: unknown }, callIds: readonly string[]): boolean {
-  const seen = new Set<string>()
-  const note = (call: ToolCall | undefined) => {
-    if ((call?.kind === 'tool-call' || call?.type === 'tool-call') && call.name === 'request_user_input_async' &&
-        typeof call.callId === 'string') seen.add(call.callId)
-  }
-  for (const item of Array.isArray(page.items) ? page.items as Array<{ body?: ToolCall & { blocks?: unknown } }> : []) {
-    note(item?.body)
-    if (Array.isArray(item?.body?.blocks)) for (const block of item.body.blocks as ToolCall[]) note(block)
-  }
-  return callIds.every((id) => seen.has(id))
+const blocksOf = (body: HistoryBody | undefined): HistoryBlock[] => Array.isArray(body?.blocks) ? body.blocks as HistoryBlock[] : []
+const textOf = (body: HistoryBody | undefined): string =>
+  blocksOf(body).filter((block) => block?.type === 'text' && typeof block.text === 'string').map((block) => block.text as string).join('')
+const cardCall = (block: HistoryBlock | undefined): string | null =>
+  (block?.kind === 'tool-call' || block?.type === 'tool-call') && block.name === 'request_user_input_async' && typeof block.callId === 'string'
+    ? block.callId : null
+/** A message the User sent and Orca delivered, as Orca's card scanner counts one. */
+const deliveredUserMessage = (body: HistoryBody | undefined): boolean =>
+  body?.kind === 'message' && body.role === 'user' && body.from?.kind !== 'agent' && body.queued !== true && body.unsent !== true
+/** Orca's own `quotedByQueuedAnswer` rule: a message that opens with, or holds, this question's quote. */
+const quotes = (text: string, title: string): boolean => {
+  const quote = `> ${title.replace(/[\r\n]+/gu, ' ')}\n\n`
+  return text.startsWith(quote) || text.includes(`\n\n${quote}`)
 }
 
-async function history(runtime: OrcaRuntime, sessionId: string): Promise<{ fence: number; page: Record<string, unknown> } | null> {
-  const reply = await runtime.call('agentSession.history', { sessionId, direction: 'tail', limit: 100 })
+/**
+ * Whether Orca's chat still shows exactly these cards unanswered, from one
+ * history page. Orca shows every card since the last delivered user message
+ * as one card and clears them all at the next one, so the send is refused
+ * when that span holds a card Notifai has no answer for (`settled` are the
+ * call ids of cards whose questions are already handed in), when a card of
+ * the group is missing, or when the User already answered one in Orca: a
+ * delivered or queued message quoting its question. Orca 1.4.248 records a
+ * card as a `tool-call` block of an assistant message; a `tool-call` item
+ * counts too.
+ */
+export function orcaChatShowsCards(page: Record<string, unknown>, group: ReadonlyArray<{ callId: string; titles: readonly string[] }>,
+  settled: ReadonlySet<string>): boolean {
+  const items = Array.isArray(page['items']) ? page['items'] as Array<{ body?: HistoryBody }> : []
+  const lastUser = items.reduce((at, item, index) => deliveredUserMessage(item?.body) ? index : at, -1)
+  const shown = new Set<string>()
+  for (const [index, item] of items.entries()) {
+    for (const block of [item?.body, ...blocksOf(item?.body)]) {
+      const id = cardCall(block)
+      if (id !== null && index > lastUser) shown.add(id)
+    }
+  }
+  const wanted = new Set(group.map((card) => card.callId))
+  if ([...wanted].some((id) => !shown.has(id)) || [...shown].some((id) => !wanted.has(id) && !settled.has(id))) return false
+  const titles = group.flatMap((card) => card.titles)
+  const answered = (text: string) => titles.some((title) => quotes(text, title))
+  // Answered in Orca after the cards appeared, or waiting in Orca's queue (after a stop, or while a turn runs).
+  if (items.some((item, index) => index > lastUser && deliveredUserMessage(item?.body) && answered(textOf(item.body)))) return false
+  const queued = Array.isArray(page['queuedMessages']) ? page['queuedMessages'] as Array<{ body?: HistoryBody }> : []
+  return !queued.some((entry) => answered(textOf(entry?.body)))
+}
+
+async function history(runtime: OrcaRuntime, sessionId: string, timeoutMs: number): Promise<{ fence: number; page: Record<string, unknown> } | null> {
+  const reply = await runtime.call('agentSession.history', { sessionId, direction: 'tail', limit: 100 }, timeoutMs)
   const page = reply.ok ? ((reply.result as { page?: unknown } | null)?.page as Record<string, unknown> | undefined) : undefined
   return page !== undefined && page !== null && typeof page['fence'] === 'number' ? { fence: page['fence'], page } : null
 }
 
-/** Whether Orca recorded the submission with this operation id; null when it cannot be read. */
-async function submitted(runtime: OrcaRuntime, sessionId: string, operationId: string): Promise<boolean | null> {
-  const read = await history(runtime, sessionId)
+/**
+ * What Orca recorded for the submission with this operation id: `accepted`
+ * when it was dispatched, `absent` when Orca has none or refused it, and
+ * null when that cannot be told (not readable, or still pending).
+ */
+async function submitted(runtime: OrcaRuntime, sessionId: string, operationId: string, timeoutMs: number): Promise<'accepted' | 'absent' | null> {
+  const read = await history(runtime, sessionId, timeoutMs)
   if (read === null || !Array.isArray(read.page['submissions'])) return null
-  return (read.page['submissions'] as Array<{ clientMessageId?: unknown }>).some((entry) => entry?.clientMessageId === operationId)
+  const entry = (read.page['submissions'] as Array<{ clientMessageId?: unknown; dispatchState?: unknown }>)
+    .find((candidate) => candidate?.clientMessageId === operationId)
+  if (entry === undefined) return 'absent'
+  if (entry.dispatchState === 'accepted') return 'accepted'
+  return ['rejected', 'refused', 'failed', 'cancelled'].includes(String(entry.dispatchState)) ? 'absent' : null
 }
 
 export function orcaChatPresentation(input: {
   sessionId: string; env: NodeJS.ProcessEnv; lease: DeliveryLease; ownerKey: string
   service: ServiceIdentity; serviceCurrent(): boolean; wall(): number
+  /** What is left of the caller's whole deadline, in milliseconds; every Orca call fits inside it. */
+  remainingMs?: () => number
   runtime?: OrcaRuntime | null
 }): NativeInputAnswers {
+  const budget = (ms: number): number => Math.max(1, Math.min(ms, input.remainingMs?.() ?? ms))
   const chat = (state: SessionState) => state.orca_chat?.key === input.ownerKey ? state.orca_chat : undefined
   const group = (answer: AnsweredPending, state: SessionState) =>
     chat(state) === undefined ? null : orcaCardGroup(state, input.ownerKey, input.service, answer)
@@ -182,7 +223,7 @@ export function orcaChatPresentation(input: {
       const runtime = input.runtime !== undefined ? input.runtime
         : orcaRuntime({ ...input.env, ...(session.user_data === undefined ? {} : { ORCA_USER_DATA_PATH: session.user_data }) })
       if (runtime === null) return null
-      const capabilities = await orcaCapabilities(runtime)
+      const capabilities = await orcaCapabilities(runtime, budget(2_000))
       if (capabilities === null || !ORCA_CHAT_CAPABILITIES.every((capability) => capabilities.has(capability))) return null
       const operationId = orcaOperationId(input.wall())
       const body = { kind: 'message', role: 'user', blocks: [{ type: 'text', text }] }
@@ -208,11 +249,20 @@ export function orcaChatPresentation(input: {
         validate,
         write: async (mayWrite) => {
           if (!input.serviceCurrent()) throw new CodexControlNotSent('The Approved Machine changed before the Orca answer was sent')
-          // Read the fence and confirm the cards are this chat's, just before the send.
-          const read = await history(runtime, session.session_id)
-          if (read === null || !historyShowsCards(read.page, members.map((entry) => entry.registration.card_call_id!))) {
-            throw new CodexControlNotSent('The Orca chat does not show these cards')
+          // Read the fence and confirm the chat shows exactly these cards, unanswered, just before the send.
+          const read = await history(runtime, session.session_id, budget(3_000))
+          const latest = readSessionState(input.sessionId, input.env)
+          const open = new Set(pendingList(latest).map((question) => question.question_id))
+          const settled = new Set((latest.codex_question_bindings ?? []).flatMap((item) =>
+            item.owner_key === input.ownerKey && item.card_call_id !== undefined && !open.has(item.question_id) &&
+              !members.some((member) => member.registration.question_id === item.question_id) ? [item.card_call_id] : []))
+          const cards = members.map(({ registration }) => ({ callId: registration.card_call_id!,
+            titles: registration.questions.map((binding) => binding.card!.title) }))
+          if (read === null || !orcaChatShowsCards(read.page, cards, settled)) {
+            throw new CodexControlNotSent('The Orca chat does not show exactly these cards unanswered')
           }
+          // The send and the record of a lost reply must both fit the caller's deadline.
+          if ((input.remainingMs?.() ?? Number.POSITIVE_INFINITY) < 2_500) throw new CodexControlNotSent('No time left to send through Orca')
           let valid = false
           // Recorded before the send: the prompt hook may run before Orca replies.
           updateSessionState(input.sessionId, input.env, (latest) => {
@@ -225,14 +275,14 @@ export function orcaChatPresentation(input: {
             envelope: { sessionId: session.session_id, clientOperationId: operationId, expectedRuntimeFence: read.fence,
               payloadFingerprint: orcaPayloadFingerprint('agentSession.send', session.session_id, { body }) },
             body,
-          }, 8_000)
+          }, budget(5_000))
           const accepted = reply.ok && (reply.result as { ok?: unknown } | null)?.ok !== false
           if (accepted) return
           // A refusal sent nothing. A lost reply is settled by Orca's own record of the operation.
-          const known = reply.ok || !['timeout', 'connection_closed'].includes(reply.code) ? false
-            : await submitted(runtime, session.session_id, operationId)
-          if (known === true) return
-          if (known === false) { forget(); throw new CodexControlNotSent('Orca did not accept the answer message') }
+          const known = reply.ok || !['timeout', 'connection_closed'].includes(reply.code) ? 'absent'
+            : await submitted(runtime, session.session_id, operationId, budget(2_000))
+          if (known === 'accepted') return
+          if (known === 'absent') { forget(); throw new CodexControlNotSent('Orca did not accept the answer message') }
           throw new Error('The Orca answer message may have been sent; it is not sent again')
         },
         close: () => undefined,
@@ -259,7 +309,12 @@ export function takeOrcaChatSentContext(sessionId: string, env: NodeJS.ProcessEn
   return context
 }
 
-/** Whether a prompt is a message this route sent (shown or not): never read as a terminal answer. */
+/**
+ * Whether a prompt is a message this route sent and Codex has not yet shown
+ * the agent: never read as a terminal answer. Once shown, the same words are
+ * the User's own again (another card asking the same question, answered in Orca).
+ */
 export function isOrcaChatSentPrompt(sessionId: string, env: NodeJS.ProcessEnv, prompt: unknown): boolean {
-  return typeof prompt === 'string' && readSessionState(sessionId, env).orca_chat_sent?.some((entry) => entry.digest === promptDigest(prompt)) === true
+  return typeof prompt === 'string' && readSessionState(sessionId, env).orca_chat_sent?.some((entry) =>
+    entry.digest === promptDigest(prompt) && entry.shown !== true) === true
 }

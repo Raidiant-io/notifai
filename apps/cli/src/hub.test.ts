@@ -1524,11 +1524,13 @@ describe('hub and Codex SessionEnd', () => {
       })
     })
 
-    it('in an Orca chat, sends a turn\'s card answers once through Orca instead of a queued wake', async () => {
+    async function orcaChat(capabilities = ['agent-session.structured.v1', 'agent-session.accepted-send.v1']) {
       const queued: string[] = []
       const sends: Array<Record<string, unknown>> = []
+      const asked: string[] = []
       const runtime: OrcaRuntime = { call: async (method, params) => {
-        if (method === 'status.get') return { ok: true, result: { capabilities: ['agent-session.structured.v1', 'agent-session.accepted-send.v1'] } }
+        asked.push(method)
+        if (method === 'status.get') return { ok: true, result: { capabilities } }
         if (method === 'agentSession.history') return { ok: true, result: { page: { fence: 7, submissions: [], items: [{ body: { kind: 'message', role: 'assistant',
           blocks: [{ type: 'tool-call', name: 'request_user_input_async', callId: 'call_a' }] } }] } } }
         if (method === 'agentSession.send') { sends.push(params as Record<string, unknown>); return { ok: true, result: { ok: true } } }
@@ -1536,7 +1538,7 @@ describe('hub and Codex SessionEnd', () => {
       } }
       const run = await sharedServer({ state: () => ({ state: 'attached', confirmed: true, reason: 'terminal-live+joined' }), hostKind: () => 'app-server',
         wake: { available: () => true, queue: async (threadId) => { queued.push(threadId); return 'qs_1' } }, orcaRuntime: runtime })
-      try {
+      {
         const key = readSessionIncarnation(SESSION, run.env)!.key
         const service = { base_url: 'https://example.invalid', machine_id: 'mch_test' }
         const reply = { reply_id: 'rpl_1', seq: 1, delivery_id: null, device_id: 'dev', device_name: 'iPhone', text: '',
@@ -1549,22 +1551,41 @@ describe('hub and Codex SessionEnd', () => {
               card: { title: 'Card A: which color?', labels: { red: 'Red', blue: 'Blue' } }, native: { turn_id: 'turn-1', call_id: 'call_a', index: 0 }, verified: true }] }],
           waiting_answers: [{ pending, reply, replies: [reply], delivery_claim: true }],
           acknowledgement_due: [{ request_id: 'req_qa', recorded_at: 1, text_required: true }] }))
-        for (let round = 0; round < 4 && sends.length === 0; round += 1) {
+      }
+      const tick = async (rounds = 4) => {
+        for (let round = 0; round < rounds; round += 1) {
           run.service.release()
           run.hub.inputStaged(SESSION)
           await new Promise((resolve) => setTimeout(resolve, 150))
         }
+      }
+      return { run, queued, sends, asked, tick }
+    }
+
+    it('in an Orca chat, sends a turn\'s card answers once through Orca instead of a queued wake', async () => {
+      const { run, queued, sends, tick } = await orcaChat()
+      try {
+        await tick()
         await until(() => sends.length > 0)
-        for (let round = 0; round < 4; round += 1) {
-          run.service.release()
-          run.hub.inputStaged(SESSION)
-          await new Promise((resolve) => setTimeout(resolve, 150))
-        }
+        await tick()
         expect(sends).toHaveLength(1)
         expect((sends[0]!['body'] as { blocks: Array<{ text: string }> }).blocks[0]!.text).toBe('> Card A: which color?\n\nBlue')
         expect((sends[0]!['envelope'] as { sessionId: string; expectedRuntimeFence: number })).toMatchObject({ sessionId: 'codex_orca_chat', expectedRuntimeFence: 7 })
         expect(readSessionState(SESSION, run.env).waiting_answers ?? []).toEqual([])
         expect(queued).toEqual([])
+      } finally { await run.stop() }
+    })
+
+    it('in an Orca chat that cannot take the route, wakes as before instead of holding the answer', async () => {
+      const { run, queued, sends, asked, tick } = await orcaChat(['agent-session.structured.v1'])
+      try {
+        await tick()
+        await until(() => queued.length > 0)
+        expect(sends).toEqual([])
+        // Tried once, then left alone for its backoff.
+        await tick()
+        expect(asked.filter((method) => method === 'status.get')).toHaveLength(1)
+        expect(queued).toEqual([SESSION])
       } finally { await run.stop() }
     })
 
