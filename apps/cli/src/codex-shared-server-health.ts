@@ -1,8 +1,10 @@
 /** Home-level facts about Codex's shared app-server for `doctor`.
  *
- * A device answer can close a Codex question form only through the server that
- * owns the session's thread. Whether one session joined such a server is fixed
- * when that session launches, so only its card hook or `ask` can say it for a session. This
+ * A device answer can close a Codex question card only through the server that
+ * owns the session's thread; elsewhere the card still reaches the devices, and
+ * the answer reaches the agent while the card waits for the turn to end.
+ * Whether one session joined such a server is fixed when that session
+ * launches, so nothing here can say it for a session. This
  * reports what is true of the effective CODEX_HOME, and never starts, stops or
  * updates a server: those choices, and their costs, belong to the User.
  */
@@ -77,8 +79,8 @@ export async function codexSharedServerState(
       title: TITLE,
       status: 'ready',
       detail: 'questions work. ' + (disabled
-        ? 'This Codex home turns off Codex\'s shared server (`daemon_auto_start = false` in its config.toml), so a question that goes to your phone is asked as a plain question instead of a card your phone can close. Nothing to fix. For cards, remove that line and start a new Codex session with a model that offers them'
-        : 'No shared Codex server is running for this Codex home, so a question that goes to your phone is asked as a plain question instead of a card your phone can close. Nothing to fix. For cards, start a new Codex session without `--no-daemon`, with a model that offers them'),
+        ? 'This Codex home turns off Codex\'s shared server (`daemon_auto_start = false` in its config.toml), so answering a question card on your phone does not close it in Codex: the answer still reaches the agent, and Codex clears the card when the agent\'s turn ends. Nothing to fix'
+        : 'No shared Codex server is running for this Codex home, so answering a question card on your phone does not close it in Codex: the answer still reaches the agent, and Codex clears the card when the agent\'s turn ends. Nothing to fix. A Codex session started without `--no-daemon` while a shared server runs closes its cards from your phone'),
       technical: { shared_server_running: false, daemon_auto_start_disabled: disabled },
     }
   }
@@ -105,6 +107,6 @@ export async function codexSharedServerState(
     id: CODEX_SHARED_SERVER_STATE_ID,
     title: TITLE,
     status: 'ready',
-    detail: `a shared Codex server (${server ?? 'version unknown'}) is running for this Codex home, so sessions that joined it show question cards your phone can close when their model offers cards`,
+    detail: `a shared Codex server (${server ?? 'version unknown'}) is running for this Codex home, so answering a question card on your phone closes it in the sessions that joined that server`,
   }
 }

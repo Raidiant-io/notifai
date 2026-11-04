@@ -4,7 +4,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { afterEach,describe,expect,it,vi } from 'vitest'
 import { type ApiClient } from './client.js'
-import { CODEX_TERMINAL_RECEIPT,observeCodexTerminalAnswers,parseCodexTerminalReplies,reportCodexTerminalAnswers,takeCodexTerminalConflictContext } from './codex-terminal-answers.js'
+import { CODEX_TERMINAL_RECEIPT,observeCodexTerminalAnswers,parseCodexTerminalReplies,parseCodexTextReplies,reportCodexTerminalAnswers,takeCodexTerminalConflictContext } from './codex-terminal-answers.js'
 import { acknowledgeCommand } from './commands-acknowledge.js'
 import type { CommandDeps } from './commands-core.js'
 import { NATIVE_ANSWERS_DEPRECATION } from './commands-native-acknowledge.js'
@@ -100,6 +100,47 @@ describe('Codex terminal reply envelopes', () => {
   })
 })
 
+describe('plain-text card answers from apps around Codex', () => {
+  const open = [{ callId: 'card_a', index: 0, title: 'Where?' }, { callId: 'card_a', index: 1, title: 'Any notes?' },
+    { callId: 'card_b', index: 0, title: 'Which size?' }]
+  const one = (answer: string, question = 'Where?', callId = 'card_a', index = 0) => ({ callId, index, question, answer })
+
+  it('reads Orca chat quotes, one or several, across cards', () => {
+    expect(parseCodexTextReplies('> Where?\n\nStaging', open)).toEqual([one('Staging')])
+    expect(parseCodexTextReplies('> Which size?\n\nLarge\n\n> Where?\n\nKeep it on staging, please.\nThen tell me.', open))
+      .toEqual([one('Large', 'Which size?', 'card_b'), one('Keep it on staging, please.\nThen tell me.')])
+    // Orca puts a multi-line question on one line.
+    expect(parseCodexTextReplies('> Pick one: A or B\n\nA', [{ callId: 'c', index: 0, title: 'Pick one:\nA or B' }]))
+      .toEqual([{ callId: 'c', index: 0, question: 'Pick one:\nA or B', answer: 'A' }])
+  })
+
+  it('reads T3 Code answers, one per question of a card', () => {
+    expect(parseCodexTextReplies('Where?\nStaging', open)).toEqual([one('Staging')])
+    expect(parseCodexTextReplies('Where?\nProduction\n\nAny notes?\nNone', open))
+      .toEqual([one('Production'), one('None', 'Any notes?', 'card_a', 1)])
+  })
+
+  it('reads Windows line endings the same', () => {
+    expect(parseCodexTextReplies('> Where?\r\n\r\nStaging\r\n', open)).toEqual([one('Staging')])
+    expect(parseCodexTextReplies('Where?\r\nStaging', open)).toEqual([one('Staging')])
+  })
+
+  it.each([
+    ['an ordinary prompt', 'Please deploy to staging'],
+    ['a prompt that only mentions the question', 'About "Where?": staging'],
+    ['a quote with no answer', '> Where?\n\n'],
+    ['a quote of a question no open card asks', '> Where to?\n\nStaging'],
+    ['text before the quote', 'Answer:\n> Where?\n\nStaging'],
+    ['a known answer beside a card Notifai does not carry', '> Where?\n\nStaging\n\n> Unknown?\n\nYes'],
+  ])('leaves %s alone', (_name, prompt) => {
+    expect(parseCodexTextReplies(prompt, open)).toEqual([])
+  })
+
+  it('does not guess between two open questions with the same wording', () => {
+    expect(parseCodexTextReplies('> Where?\n\nStaging', [...open, { callId: 'card_c', index: 0, title: 'Where?' }])).toEqual([])
+  })
+})
+
 it('records only after rollout commit, one item at a time, with a fixed receipt and idempotent replay', async () => {
   const h = fixture()
   h.observe()
@@ -174,4 +215,25 @@ describe('an older skill reporting a terminal answer itself', () => {
     expect(h.client.recordHarnessAnswer).toHaveBeenCalledOnce()
     expect(h.state().native_answer_operations?.map(op => op.operation_id)).toEqual(['terminal:0'])
   })
+})
+
+it.each([
+  ['Orca chat', '> Where?\n\nStaging'],
+  ['T3 Code', 'Where?\nStaging'],
+])('records a card answer typed in %s like a terminal answer', async (_app, prompt) => {
+  const h = fixture()
+  h.observe(prompt)
+  h.commit(prompt)
+  await h.report()
+  expect(h.client.recordHarnessAnswer).toHaveBeenCalledWith('req_original', { session_id: SESSION, submission_id: expect.any(String),
+    answers: [{ question_id: 'q1', choice_ids: ['staging'] }] })
+  expect(h.client.putAgentAcknowledgement).toHaveBeenCalledWith('req_original', { session_id: SESSION, reply_seq: 1, text: CODEX_TERMINAL_RECEIPT })
+})
+
+it('records nothing for an ordinary prompt while a card is open', async () => {
+  const h = fixture()
+  for (const prompt of ['Deploy to staging', 'Where?', '> Where?']) { h.observe(prompt); h.commit(prompt) }
+  await h.report()
+  expect(h.client.recordHarnessAnswer).not.toHaveBeenCalled()
+  expect(h.state().codex_terminal_observations ?? []).toEqual([])
 })

@@ -13,5 +13,5 @@ carries its own acknowledgement command; run it before dependent work. If the
 User answers another way (in the conversation, elsewhere, or by doing it) or
 the question stops being relevant (its work is done, superseded or cancelled,
 or a newer question replaces it), close it with the printed `notifai close`
-command. Follow a card denial's registered plain question without registering
-it again.
+command. A card refused because its question was already answered or expired
+needs no new question.

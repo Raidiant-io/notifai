@@ -53,42 +53,63 @@ export function releaseCodexCardHandbacks(sessionId: string, env: NodeJS.Process
   }) }))
 }
 
-/** Decide and bind under the same lock that publishes an ordinary answer. */
+/**
+ * Decide and bind under the same lock that publishes an ordinary answer.
+ *
+ * Only a card whose input is exactly a hand-back of this turn is that
+ * question. A card that differs is never refused: it is reported as
+ * `mismatch` and registers as a card of its own (the duplicate guard still
+ * links it to an equal open question). A settled hand-back refuses only its
+ * own exact card, which would ask the User again what is already answered or
+ * expired. A hand-back released to ordinary delivery while its question is
+ * still unanswered links again when its exact card opens later in the turn.
+ */
 export function matchCodexCardHandback(sessionId: string, env: NodeJS.ProcessEnv, envelope: HookEnvelope,
   ownerKey: string, service: { machine_id: string; base_url: string }, accepted: boolean, now = Date.now()):
-  { registration: CodexQuestionRegistration; reason?: 'mismatch' | 'answered' | 'delivered' | 'expired' | 'released' } | null {
+  { registration: CodexQuestionRegistration; reason?: 'mismatch' | 'answered' | 'delivered' | 'expired' } | null {
   let result: ReturnType<typeof matchCodexCardHandback> = null
   updateSessionState(sessionId, env, state => {
     if (readSessionIncarnation(sessionId, env)?.key !== ownerKey || sessionHasEnded(sessionId, env) ||
         currentCodexTurn(sessionId, env, ownerKey) !== envelope.turn_id) return state
     const candidates = (state.codex_question_bindings ?? []).filter(item => item.card_handback === true &&
       item.owner_key === ownerKey && item.registration_turn_id === envelope.turn_id && isDeepStrictEqual(item.service_identity, service))
-    const exact = candidates.find(item => isDeepStrictEqual(cardHandbackInput(item), envelope.tool_input))
-    const item = exact ?? candidates.find(item => item.ordinary_only !== true && item.card_call_id === undefined)
-    if (item === undefined) return state
+    const exact = candidates.find(item => isDeepStrictEqual(cardHandbackInput(item), envelope.tool_input) &&
+      (item.card_call_id === undefined || item.card_call_id === envelope.tool_use_id || item.ordinary_only === true))
+    if (exact === undefined) {
+      const open = candidates.find(item => item.ordinary_only !== true && item.card_call_id === undefined)
+      if (open !== undefined) result = { registration: open, reason: 'mismatch' }
+      return state
+    }
+    const item = exact
     const answered = [...(state.waiting_answers ?? []), ...(state.accepted?.answers ?? [])]
       .some(answer => answer.pending.question_id === item.question_id)
     const pending = state.pending?.some(question => question.question_id === item.question_id)
+    const released = item.ordinary_only === true || (item.card_accept_until !== undefined && item.card_accept_until <= now)
     let reason: NonNullable<ReturnType<typeof matchCodexCardHandback>>['reason']
     if (item.terminal_answered) reason = 'delivered'
     else if (item.dismissed || item.terminated) reason = 'expired'
     else if (!pending && !answered) reason = 'delivered'
-    else if (item.ordinary_only || (item.card_accept_until !== undefined && item.card_accept_until <= now)) reason = answered ? 'answered' : 'released'
-    else if (!exact) reason = 'mismatch'
-    else if (!accepted && answered) reason = 'answered'
-    else if (accepted && (item.card_call_id !== envelope.tool_use_id || item.card_accept_until === undefined)) {
+    else if (answered && (released || !accepted)) reason = 'answered'
+    else if (accepted && !released && (item.card_call_id !== envelope.tool_use_id || item.card_accept_until === undefined)) {
       // A repeated accepted callback is harmless; an unallowed call cannot adopt the question.
       if (item.card_call_id === envelope.tool_use_id && item.questions.every(binding => binding.verified)) {
         result = { registration: item }
       }
       return state
     }
-    const next = reason !== undefined ? ordinary(item) : { ...item, card_call_id: envelope.tool_use_id!, card_allowed: true as const,
-      ...(accepted ? {} : { card_accept_until: item.card_accept_until ?? now + CARD_ACCEPTANCE_MS }),
+    if (reason !== undefined) {
+      const next = ordinary(item)
+      result = { registration: next, reason }
+      return { ...state, codex_question_bindings: state.codex_question_bindings!.map(entry => entry === item ? next : entry) }
+    }
+    // Open and unanswered: link this exact card, including one released earlier in the turn.
+    const next: CodexQuestionRegistration = { ...item, card_call_id: envelope.tool_use_id!, card_allowed: true as const,
+      ...(accepted ? {} : { card_accept_until: released ? now + CARD_ACCEPTANCE_MS : item.card_accept_until ?? now + CARD_ACCEPTANCE_MS }),
       questions: item.questions.map((binding, index) => accepted ? { ...binding, verified: true as const,
         native: { turn_id: envelope.turn_id!, call_id: envelope.tool_use_id!, index } } : binding) }
+    delete next.ordinary_only
     if (accepted) delete next.card_accept_until
-    result = { registration: next, ...(reason === undefined ? {} : { reason }) }
+    result = { registration: next }
     return { ...state, codex_question_bindings: state.codex_question_bindings!.map(entry => entry === item ? next : entry) }
   })
   return result

@@ -54,10 +54,10 @@ include `request_user_input_async` and Notifai can link it, `ask` hands back
 the exact card to open: the question is already registered locally with your title,
 Body, images and choice descriptions, and Notifai matches the card by its exact
 text. Local registration does not confirm submission to devices; follow the
-status the tool reports. Open it unchanged. A card whose text no longer matches is refused, and
-its tool context gives the registered question to ask in plain conversation
-instead. Codex offers the card only with some models, in the terminal and the
-apps alike.
+status the tool reports. Open it unchanged. A card that differs is never
+refused: it becomes a question of its own, and its tool context names the
+handed-back question that stays open. Codex offers the card only with some
+models, in the terminal and the apps alike.
 
 `request_user_input` (no `_async`) is not linked to Notifai: where Codex
 accepts it, it waits in Codex, where an away User never sees it. Use
@@ -73,28 +73,33 @@ open cards when your turn ends: end your turn, and the answer arrives as your
 next message.
 
 A card you open on your own is queued for device registration after Codex
-accepts it, when Notifai can carry its shape and reach its answer control.
+accepts it, when Notifai can carry its shape. A card that asks exactly what
+an open `ask` question asks joins that question instead of asking twice.
 Queued means delivery is not confirmed yet; keep using the card and never
 also `ask` the same question. Long wording is shortened for devices with the
 full wording in the Body. Choices stay distinct, including localized labels.
 
-With question notifications off, a disabled Project, a signed-out machine,
-an unsupported shape or an unavailable device route, the card stays native
-and still works there. A failed capability or control probe does not replace
-it with another question. If you need to switch to `notifai ask`, close the
-unanswered native card first so the User cannot answer two copies.
+With question notifications off, a disabled Project, a signed-out machine
+or an unsupported shape, the card stays native and still works there. A
+failed capability probe does not replace it with another question. If you
+need to switch to `notifai ask`, close the unanswered native card first so
+the User cannot answer two copies.
 
-The card closes on the first answer:
+The first answer settles the question:
 
-- **A device answer** arrives in the card with its own
-  `notifai acknowledge req_…` command; run it before dependent work.
-- **A terminal answer** needs nothing from you. Notifai records it, so the
+- **A device answer** arrives with its own `notifai acknowledge req_…`
+  command; run it before dependent work. Where Notifai can reach the server
+  that runs this session, it arrives in the card and closes it. Elsewhere it
+  arrives at your next tool call, or as the next turn when you are idle, and
+  the card stays on screen until your turn ends: the answer is final, so do
+  not wait on the card.
+- **A terminal answer** needs nothing from you, including one typed in the
+  chat of an app around Codex (Orca, T3 Code). Notifai records it, so the
   devices stop asking.
-- **A question that expired on the devices** closes the card unanswered:
-  carry on without it.
-- **An existing `ask` hand-back that cannot link** retains its registered
-  question. Follow the tool context's conversation and `notifai close`
-  instructions; opening a competing card is refused to prevent two answers.
+- **A question that expired on the devices** closes the card unanswered
+  where Notifai can reach it: carry on without it.
+- **A card repeating a question that is already answered or expired** is
+  refused with what happened; do not ask it again.
 
 ## What arrives and what to do
 

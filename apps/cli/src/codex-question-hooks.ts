@@ -4,7 +4,6 @@ import { fit, fitChoiceLabels, oneLine, plainTextMarkdown, withoutRecommendedSuf
 import { matchCodexCardHandback } from './codex-card-handback.js'
 import { buildAskDraft, buildQuestions } from './commands-ask.js'
 import { makeClient, type CommandDeps } from './commands-core.js'
-import { connectCodexAnswerControl } from './codex-answer-control.js'
 import { codexCardHooksReady } from './codex-card-capability.js'
 import { resolveDraftInvocation } from './commands-send-support.js'
 import { loadConfig } from './config.js'
@@ -16,6 +15,9 @@ import { processIdentityLiveness } from './process-identity.js'
 import { projectBinding, projectDisabled } from './project-enablement.js'
 import { spawnQuestionSettlement } from './question-settlement-process.js'
 import { currentCodexTurn, recordTurnStart } from './session-attendant-state.js'
+
+/** Route-neutral: a device answer closes the card only where Notifai reaches the thread's own server. */
+const CARD_ANSWERS = 'Notifai records a terminal answer itself. A device answer arrives with its own acknowledgement command; run it before dependent work.'
 
 /** Only the same live root process may register or confirm its own card. */
 function cardOwner(deps: CommandDeps, envelope: HookEnvelope) {
@@ -42,22 +44,24 @@ async function routeCard(deps: CommandDeps, envelope: HookEnvelope, logger: Logg
   recordTurnStart(sessionId, deps.env, owner.key, envelope.turn_id)
   const service = { machine_id: credential.machineId, base_url: credential.baseUrl }
   const handback = matchCodexCardHandback(sessionId, deps.env, envelope, owner.key, service, accepted, (deps.now ?? Date.now)())
-  if (handback !== null) {
+  // A card that is not a hand-back of this turn is a card of its own. It is
+  // never refused; ask's still-open registration stays on the devices.
+  const unmatched = handback?.reason === 'mismatch' ? handback.registration.question_id : undefined
+  if (handback !== null && unmatched === undefined) {
     const id = handback.registration.question_id
     const delivery = handback.registration.confirmed_request_id === undefined
       ? 'Device delivery is not confirmed yet.' : 'Device registration is confirmed.'
     if (handback.reason !== undefined) {
+      // Only this question's own exact card, after the question settled: it
+      // would ask the User again what they already answered or let expire.
       if (accepted) return null
-      const text = handback.registration.questions.map(({ question }) =>
-        [question.text, ...(question.choices ?? []).map(choice => `- ${choice.label}`)].join('\n')).join('\n\n')
       const reason = handback.reason === 'expired' ? `${id} has expired without an answer: carry on without it, or ask in the conversation.`
         : handback.reason === 'answered' ? `${id} was already answered; it arrives as your next input. Do not ask it again.`
-        : handback.reason === 'delivered' ? `${id} was already answered, and that answer was delivered to you. Do not ask it again.`
-        : `${handback.reason === 'mismatch' ? 'This card does not match' : 'Open no card for'} the existing question registration ${id}, with your title, Body and images. ${delivery} Ask it in plain conversation text with these same choices and continue independent work; dependent work waits for the answer. Do not register it again with notifai ask. If the User answers another way (in the conversation, elsewhere, or by doing it) or the question stops being relevant (its work is done, superseded or cancelled, or a newer question replaces it), close it with notifai close ${id}. For a different question, run notifai ask for it.\n\n${text}`
+        : `${id} was already answered, and that answer was delivered to you. Do not ask it again.`
       deps.io.out(JSON.stringify({ hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'deny', permissionDecisionReason: reason } }))
       return null
     }
-    const context = `This card uses the existing registration ${id}. ${delivery} Never also notifai ask it. Notifai records a terminal answer itself. An answer from a device arrives in the card with its own acknowledgement command; run it before dependent work.`
+    const context = `This card uses the existing registration ${id}. ${delivery} Never also notifai ask it. ${CARD_ANSWERS}`
     if (accepted) return context
     deps.io.out(JSON.stringify({ hookSpecificOutput: { hookEventName: 'PreToolUse', additionalContext: context } }))
     return null
@@ -115,17 +119,17 @@ async function routeCard(deps: CommandDeps, envelope: HookEnvelope, logger: Logg
   if (!draft.ok) return null
   recordTurnStart(sessionId, deps.env, owner.key, envelope.turn_id)
   if (currentCodexTurn(sessionId, deps.env, owner.key) !== envelope.turn_id) return null
-  const [supported, transport] = await Promise.all([
-    makeClient(deps, service.base_url, `Bearer nfm_${credential.machineId}.${credential.secret}`, { timeoutMs: 1500 })
-      .compatibility().then(value => value === null ? null : value.server_capabilities?.includes('harness_answers') === true, () => null),
-    (deps.codexAnswerControl ?? connectCodexAnswerControl)(sessionId, envelope.turn_id, deps.env, performance.now() + 3000)
-      .then(control => { if (control === null) return false; control.close(); return true }, () => false),
-  ])
+  // A device answer closes the card when Notifai reaches the server that owns
+  // the thread. Without that route the card still registers, so the question
+  // shows on both ends: the answer reaches the agent at its next tool call (or
+  // by a wake when idle) and Codex clears the card when the turn ends.
+  const supported = await makeClient(deps, service.base_url, `Bearer nfm_${credential.machineId}.${credential.secret}`, { timeoutMs: 1500 })
+    .compatibility().then(value => value === null ? null : value.server_capabilities?.includes('harness_answers') === true, () => null)
   // A failed probe is not a capability withdrawal. Both leave a new native
   // card usable, without creating a competing ordinary device question.
-  if (supported !== true || !transport) {
+  if (supported !== true) {
     logger.info('hook.gate', { stage: 'form-terminal-only', form: 'codex-card', session: sessionId,
-      reason: supported === null ? 'compatibility-unavailable' : supported === false ? 'harness-answers-unsupported' : 'answer-control-unavailable' })
+      reason: supported === null ? 'compatibility-unavailable' : 'harness-answers-unsupported' })
     return null
   }
   if (!accepted) {
@@ -137,7 +141,7 @@ async function routeCard(deps: CommandDeps, envelope: HookEnvelope, logger: Logg
   }
   const shown = raw.map((entry, index) => ({ title: entry.title,
     labels: Object.fromEntries((form.questions[index]!.choices ?? []).map((choice, position) => [choice.id, entry.options[position]])) }))
-  const { question_id: questionId } = registerQuestion(sessionId, deps.env, {
+  const { question_id: questionId, registered: fresh } = registerQuestion(sessionId, deps.env, {
     question: form.questions[0]!.text, title: draft.draft.presentation.title, summary: draft.draft.presentation.summary,
     questions: form.questions, service_identity: service,
     ...(draft.draft.presentation.body === undefined ? {} : { body: draft.draft.presentation.body }),
@@ -151,15 +155,26 @@ async function routeCard(deps: CommandDeps, envelope: HookEnvelope, logger: Logg
   const registration = readSessionState(sessionId, deps.env).codex_question_bindings?.find(item => item.question_id === questionId)
   if (registration === undefined || registration.owner_key !== owner.key || cardOwner(deps, envelope)?.key !== owner.key ||
       currentCodexTurn(sessionId, deps.env, owner.key) !== envelope.turn_id) return null
+  const linked = !fresh
+  // An equal question another card of this session already carries keeps that card.
+  if (registration.card_call_id !== envelope.tool_use_id) {
+    return `This card repeats ${questionId}, which another card already carries to the User's devices; an answer arrives once, for that question.`
+  }
   try {
     ;(deps.spawnQuestionSettlement ?? spawnQuestionSettlement)({ envelope: { session_id: sessionId, cwd }, harness: 'codex', purpose: 'submission' })
   } catch (error) {
     logger.error('cli.error', { kind: 'question_submission_launch', session: sessionId, question_id: questionId,
       message: error instanceof Error ? error.message : String(error) })
   }
-  logger.info('ask.registered', { session: sessionId, question_id: questionId, origin: 'codex-card', questions: form.questions.length })
-  return `Notifai queued this card as ${questionId} for device registration; delivery is not confirmed yet. Never also notifai ask it. ` +
-    'Keep using the native card. Notifai records a terminal answer itself; a device answer arrives in the card with its own acknowledgement command.'
+  logger.info('ask.registered', { session: sessionId, question_id: questionId, origin: 'codex-card', questions: form.questions.length,
+    ...(linked ? { linked: true } : {}) })
+  const queued = linked
+    ? `This card is the question already registered as ${questionId}. Never also notifai ask it. Keep using the native card. ${CARD_ANSWERS}`
+    : `Notifai queued this card as ${questionId} for device registration; delivery is not confirmed yet. Never also notifai ask it. ` +
+      `Keep using the native card. ${CARD_ANSWERS}`
+  return unmatched === undefined || unmatched === questionId ? queued
+    : `${queued} It is not the card notifai ask handed back for ${unmatched}, which stays open on its own: open that card unchanged, ` +
+      `or close it with notifai close ${unmatched} if this card replaces it.`
 }
 
 /**

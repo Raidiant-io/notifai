@@ -43,7 +43,7 @@ export interface CodexQuestionRegistration {
   card_handback?: true
   /** Wall-clock deadline for the accepted tool result. */
   card_accept_until?: number
-  /** Absent for a card prevented before display because transport was missing. */
+  /** Absent on records of older CLIs, which prevented a card before display when transport was missing. */
   card_allowed?: true
   /** Positive receipt evidence only; never an unconfirmed reserved ID. */
   confirmed_request_id?: string
@@ -110,13 +110,20 @@ export function reserveCurrentCodexQuestion(state: SessionState, pending: Pendin
   }
   if (admission.card !== undefined) {
     const owner = readSessionIncarnation(sessionId, env)
+    // A hand-back no card has adopted yet yields to an equal card of its owner:
+    // the duplicate guard found that card to be the same question.
+    const existing = state.codex_question_bindings?.find(item => item.question_id === pending.question_id)
+    const adoptable = existing !== undefined && existing.card_handback === true && existing.owner_key === admission.owner_key &&
+      existing.card_call_id === undefined && existing.terminated !== true && existing.dismissed !== true &&
+      existing.terminal_answered !== true && !existing.questions.some(binding => binding.verified === true)
     if (state.harness !== 'codex' || owner?.key !== admission.owner_key || sessionHasEnded(sessionId, env) ||
         currentCodexTurn(sessionId, env, owner.key) !== admission.turn_id || pending.question_id === undefined ||
         pending.questions?.length !== admission.card.shown.length || admission.card.shown.length === 0 ||
-        state.codex_question_bindings?.some(item => item.question_id === pending.question_id)) return state
-    return { ...state, codex_question_bindings: [...(state.codex_question_bindings ?? []), {
+        (existing !== undefined && !adoptable)) return state
+    return { ...state, codex_question_bindings: [...(state.codex_question_bindings ?? []).filter(item => item !== existing), {
       question_id: pending.question_id, owner_key: owner.key, registration_turn_id: admission.turn_id,
       transcript: { file: '', identity: 'codex-card-hook', registered_offset: 0 },
+      ...(existing?.confirmed_request_id === undefined ? {} : { confirmed_request_id: existing.confirmed_request_id }),
       service_identity: { ...admission.service }, card_call_id: admission.card.call_id,
       ...(admission.card.allow ? { card_allowed: true as const } : { ordinary_only: true as const }),
       questions: pending.questions.map((question, index) => ({ question: structuredClone(question),

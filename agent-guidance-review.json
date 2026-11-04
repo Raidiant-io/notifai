@@ -1,7 +1,7 @@
 {
   "version": 1,
-  "behavior_digest": "sha256:58d9f3513c95f15ea3abb5f5012f57e874df6a94e51840448cacecdb29b617ca",
-  "outcome": "reviewed-no-impact",
+  "behavior_digest": "sha256:e1a9e9faee4d5ebd5536279ee6fcecdb5d3925c7410395e0644252fd0c25cf06",
+  "outcome": "guidance-updated",
   "surfaces_reviewed": [
     "lifecycle-hooks",
     "notifai-skill",
@@ -9,5 +9,5 @@
     "cli-readiness",
     "domain-terms"
   ],
-  "reason": "Reviewed lifecycle hooks, the Notifai skill, harness setup, CLI readiness and domain terms. Ownership-changing claim readers now preserve filesystem read errors: acquisition refuses an unknown holder while cleanup retains its retry, and both share the same parser. Readable corrupt or abandoned claims retain their existing recovery. Observational readers preserve their existing best-effort contract. No agent-facing command, approval, setting, session restart or delivery replay is added. Existing guidance remains correct; the release note describes the safety improvement."
+  "reason": "Reviewed lifecycle hooks, the Notifai skill, harness setup, CLI readiness and domain terms. Codex question cards now register on the User's devices whether or not a device answer can close them, and `ask` hands the card back without a transport preflight, so `native_question_unavailable` is no longer emitted. A card that differs from a hand-back registers as its own question instead of being refused; only a card repeating a settled question is refused. Card hook contexts now say a device answer arrives with its acknowledgement command without claiming it arrives in the card. The Codex harness reference and native-questions note describe both answer routes and the Orca/T3 plain-text terminal answers; doctor's shared-server line says a phone answer reaches the agent while the card clears at turn end. A guidance change note tells running sessions. No command, approval or setting is added."
 }

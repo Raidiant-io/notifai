@@ -34,12 +34,11 @@ import { CLAUDE_QUESTION_TOOL } from './claude-question-bindings.js'
 import { CLAUDE_PICKER_MATCHER } from './hook-events.js'
 import { handBackInput, recordHandBack, type ClaudePickerInput } from './claude-picker-handback.js'
 import { processIdentityLiveness } from './process-identity.js'
-import { connectCodexAnswerControl, type CodexAnswerUnavailable } from './codex-answer-control.js'
 import { currentCodexQuestionContext, type NativeQuestionAdmission } from './codex-question-bindings.js'
 import { hermesQuestionRouteReady } from './session-attendant-state.js'
 import { codexRoutingTrustFindings, findInstallations, handlerEvent, summarizeCodexTrustFindings } from './install-hooks.js'
 import { cardHandbackInput, cardShown } from './codex-card-handback.js'
-import { CODEX_CARD_VERSION_FLOOR, codexCardHooksReady, codexCardToolOffered } from './codex-card-capability.js'
+import { codexCardHooksReady, codexCardToolOffered } from './codex-card-capability.js'
 import { activeOpenclawGeneration } from './openclaw-session-access.js'
 import { openclawGatewayReady } from './openclaw-gateway-readiness.js'
 import { enableProjectNoting, inferredProjectName, projectBinding, projectDisabled, projectNameNudge } from './project-enablement.js'
@@ -518,7 +517,7 @@ function recordRegisteredQuestion(
   asker?: QuestionAsker,
 ): number | Promise<number> {
   const ordinary = () => persistRegisteredQuestion(deps, sessionId, built, draft, service, json, wait,
-    undefined, rootKey, undefined, rootKey !== undefined || asker !== undefined, asker)
+    undefined, rootKey, rootKey !== undefined || asker !== undefined, asker)
   // A wait ends the turn, and Codex drops every open card at turn end, so a
   // waiting ask never links one. Codex offers no subagent the card at all.
   if (wait || rootKey !== undefined || asker !== undefined) return ordinary()
@@ -528,8 +527,6 @@ function recordRegisteredQuestion(
   if (local === null) return ordinary()
   const credential = deps.store.load()
   if (credential === null || credential.machineId !== service.machine_id || credential.baseUrl !== service.base_url) return ordinary()
-  const persist = (nativeAdmission?: NativeQuestionAdmission, nativeUnavailable?: NativeUnavailable) =>
-    persistRegisteredQuestion(deps, sessionId, built, draft, service, json, false, nativeAdmission, local.owner_key, nativeUnavailable)
   // Discovery is optional and bounded. Missing service support must not create
   // a hidden binding or block ordinary question registration. Do not cache it.
   const client = makeClient(deps, service.base_url, `Bearer nfm_${credential.machineId}.${credential.secret}`, { timeoutMs: 1500 })
@@ -537,43 +534,14 @@ function recordRegisteredQuestion(
     support => Array.isArray(support?.server_capabilities) && support.server_capabilities.includes('harness_answers'),
     () => false,
   )
-  // A device answer can close the native form only by steering this exact
-  // turn through the server that owns the thread. Whether one is reachable is
-  // fixed when Codex launches: an embedded (no-daemon) TUI never gains one.
-  // Without it, a linked form would outlive its answer, so do not link.
-  // The first `codex` launch from a daemon-hosted tool has taken ~2s cold, so
-  // a tight budget misreads a slow server as an absent one. A missing socket
-  // still fails fast, so sessions without a server do not pay this budget.
-  // A server older than the card floor is reachable yet never linked; the
-  // agent hears that reason so it asks in plain text rather than retrying.
-  let unavailable: NativeUnavailable = { reason: 'no_owning_server_connection' }
-  const reachable = (deps.codexAnswerControl ?? connectCodexAnswerControl)(
-    sessionId, local.snapshot.latest.id, deps.env, performance.now() + NATIVE_PREFLIGHT_BUDGET_MS, undefined,
-    report => { unavailable = report },
-  ).then(control => {
-    if (control === null) return false
-    control.close()
-    return true
-  }, () => false)
-  return Promise.all([supported, reachable]).then(([service_ok, transport_ok]) => persist(
-    service_ok && transport_ok ? { owner_key: local.owner_key, turn_id: local.snapshot.latest.id, service, handback: cardShown(built.questions) } : undefined,
-    service_ok && !transport_ok ? unavailable : undefined,
-  ))
-}
-
-type NativeUnavailable = CodexAnswerUnavailable
-
-const NATIVE_PREFLIGHT_BUDGET_MS = 3_000
-
-/** Agent-facing only: the User never needs to hear about app-servers. */
-function nativeUnavailableDetail(unavailable: NativeUnavailable): string {
-  const cause = unavailable.reason === 'codex_version_unsupported'
-    ? `This Codex session's app-server${unavailable.version === undefined ? ' did not report a version' : ` is ${unavailable.version}`}, ` +
-      `older than the ${CODEX_CARD_VERSION_FLOOR} Notifai links cards on, so an answer from the user's devices cannot close a request_user_input_async form. `
-    : 'No connection to this Codex session\'s app-server is available, so an answer from the user\'s devices cannot close a request_user_input_async form. '
-  return cause +
-    'Ask this question in plain text in the conversation and do not open request_user_input_async for it. ' +
-    'Do not explain servers, daemons, versions or forms to the user.'
+  // The card is handed back whether or not a device answer can close it: the
+  // question shows on both ends either way. With a connection to the server
+  // that owns the thread, a device answer closes the card (turn/steer);
+  // without one it reaches the agent at its next tool call, or by a wake when
+  // idle, and Codex clears the card when the turn ends.
+  return supported.then(ok => persistRegisteredQuestion(deps, sessionId, built, draft, service, json, false,
+    ok ? { owner_key: local.owner_key, turn_id: local.snapshot.latest.id, service, handback: cardShown(built.questions) } : undefined,
+    local.owner_key))
 }
 
 /**
@@ -800,7 +768,6 @@ function persistRegisteredQuestion(
   wait = false,
   nativeAdmission?: NativeQuestionAdmission,
   ownerKey?: string,
-  nativeUnavailable?: NativeUnavailable,
   worker = false,
   asker?: QuestionAsker,
 ): number {
@@ -863,8 +830,6 @@ function persistRegisteredQuestion(
     text_chars: built.questions[0]!.text.length,
     choices: built.questions[0]!.choices?.length ?? 0,
     media: draft.presentation.media?.length ?? 0,
-    ...(nativeUnavailable === undefined ? {} : { native_unavailable: nativeUnavailable.reason,
-      ...('version' in nativeUnavailable && nativeUnavailable.version !== undefined ? { codex_version: nativeUnavailable.version } : {}) }),
   })
   const harness = readSessionState(sessionId, deps.env).harness
   let submission: 'scheduled' | 'launch-failed' = 'scheduled'
@@ -916,11 +881,6 @@ function persistRegisteredQuestion(
             ...(entry.multi === true ? { multi: true } : {}),
           })),
           ...(openForm === undefined ? {} : { open_form: openForm }),
-          ...(native === undefined && nativeUnavailable !== undefined ? { native_question_unavailable: {
-            reason: nativeUnavailable.reason, detail: nativeUnavailableDetail(nativeUnavailable),
-            ...('version' in nativeUnavailable && nativeUnavailable.version !== undefined ? { codex_version: nativeUnavailable.version } : {}),
-            ...(nativeUnavailable.reason === 'codex_version_unsupported' ? { codex_version_floor: CODEX_CARD_VERSION_FLOOR } : {}),
-          } } : {}),
           ...(handBack === null ? {} : { open_form: { tool: CLAUDE_QUESTION_TOOL, input: handBack } }),
           status: `notifai status ${questionId}`,
           close: `notifai close ${questionId}`,
@@ -1012,7 +972,6 @@ function persistRegisteredQuestion(
     deps.io.out(`Open ${openForm!.tool} with this input:`)
     deps.io.out(JSON.stringify(openForm!.input))
   } else {
-    if (nativeUnavailable !== undefined) deps.io.out(nativeUnavailableDetail(nativeUnavailable))
     deps.io.out(closeIt(questionId))
   }
   return EXIT.ok
