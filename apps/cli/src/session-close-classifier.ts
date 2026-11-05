@@ -305,10 +305,11 @@ const CONTINUED_IN_TAIL_BYTES = 256 * 1024
  *
  * Read as Claude Code reads it: from the end, the newest `continued-in` wins,
  * and a finished turn written after it means the conversation went on here
- * (Claude Code then resumes it here too). Null when the tail cannot be read
- * or names no other conversation.
+ * (Claude Code then resumes it here too). `at` is when the record was
+ * written (wall-clock milliseconds), null when it carries no readable time.
+ * Null when the tail cannot be read or names no other conversation.
  */
-export function claudeContinuedIn(transcriptPath: string | null, sessionId: string): string | null {
+export function claudeContinuedIn(transcriptPath: string | null, sessionId: string): { successor: string; at: number | null } | null {
   if (transcriptPath === null) return null
   let text: string
   try {
@@ -338,24 +339,51 @@ export function claudeContinuedIn(transcriptPath: string | null, sessionId: stri
     const entry = record as Record<string, unknown>
     if (entry['type'] === 'continued-in') {
       const named = entry['continuedInSessionId']
-      return typeof named === 'string' && named !== sessionId && /^[0-9A-Za-z-]{1,128}$/.test(named) ? named : null
+      if (typeof named !== 'string' || named === sessionId || !/^[0-9A-Za-z-]{1,128}$/.test(named)) return null
+      const at = typeof entry['timestamp'] === 'string' ? Date.parse(entry['timestamp']) : Number.NaN
+      return { successor: named, at: Number.isFinite(at) ? at : null }
     }
     if (finishedTurn(entry)) return null
   }
   return null
 }
 
-/** A turn this conversation finished: the model's final reply, or a prompt the User typed. */
+/** Claude Code's own test for text that is not a typed prompt: markup it added, or its interrupt marker. */
+const NOT_A_PROMPT = /^(?:\s*<[a-z][\w-]*[\s>]|\[Request interrupted by user[^\]]*\])/
+const SLASH_COMMAND = /<command-name>(.*?)<\/command-name>/
+const BASH_INPUT = /<bash-input>([\s\S]*?)<\/bash-input>/
+
+/**
+ * A turn this conversation finished, by Claude Code's own rule: the model's
+ * final reply, or a prompt the User typed (a `!` shell line counts; a tool
+ * result, a slash command's markup, other markup it added, and its interrupt
+ * marker do not).
+ */
 function finishedTurn(entry: Record<string, unknown>): boolean {
-  if (entry['isSidechain'] === true || entry['isMeta'] === true) return false
   const message = entry['message']
-  if (typeof message !== 'object' || message === null) return false
   if (entry['type'] === 'assistant') {
-    return entry['isApiErrorMessage'] !== true && typeof (message as Record<string, unknown>)['stop_reason'] === 'string'
+    return entry['isApiErrorMessage'] !== true && typeof message === 'object' && message !== null &&
+      typeof (message as Record<string, unknown>)['stop_reason'] === 'string'
   }
-  if (entry['type'] !== 'user') return false
+  if (entry['type'] !== 'user' || entry['isMeta'] === true || entry['isCompactSummary'] === true) return false
+  if (typeof message !== 'object' || message === null) return false
   const content = (message as Record<string, unknown>)['content']
-  if (typeof content === 'string') return content.trim() !== ''
-  return Array.isArray(content) && content.some((part) =>
-    typeof part === 'object' && part !== null && (part as Record<string, unknown>)['type'] === 'text')
+  const texts: string[] = []
+  if (typeof content === 'string') texts.push(content)
+  else if (Array.isArray(content)) {
+    for (const part of content) {
+      if (typeof part !== 'object' || part === null) continue
+      const block = part as Record<string, unknown>
+      if (block['type'] === 'tool_result') return false
+      if (block['type'] === 'text' && typeof block['text'] === 'string') texts.push(block['text'])
+    }
+  }
+  for (const raw of texts) {
+    const text = raw.replaceAll('\u00a0', ' ').trim()
+    if (text === '' || SLASH_COMMAND.test(text)) continue
+    if (BASH_INPUT.test(text)) return true
+    if (NOT_A_PROMPT.test(text)) continue
+    return true
+  }
+  return false
 }

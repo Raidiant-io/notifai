@@ -103,7 +103,22 @@ describe('the conversation a backgrounded Claude Code conversation continues in'
 
   it('reads the `continued-in` Claude Code 2.1.318 appends when it backgrounds a conversation, past its trailing bookkeeping', () => {
     expect(claudeContinuedIn(transcript([reply, { type: 'attachment', attachment: { type: 'session_cron_carry', tasks: [] } }, moved,
-      { type: 'cost-state', sessionId: OLD }, { type: 'last-prompt', lastPrompt: 'go', sessionId: OLD }], 2 * 1024 * 1024), OLD)).toBe(NEW)
+      { type: 'cost-state', sessionId: OLD }, { type: 'last-prompt', lastPrompt: 'go', sessionId: OLD }], 2 * 1024 * 1024), OLD))
+      .toEqual({ successor: NEW, at: Date.parse('2026-11-05T11:08:24.456Z') })
+  })
+
+  it('counts only what Claude Code counts as a finished turn after it: no tool result, markup, slash command or interrupt marker', () => {
+    const user = (content: unknown): unknown => ({ type: 'user', sessionId: OLD, message: { role: 'user', content } })
+    for (const later of [
+      user([{ type: 'tool_result', tool_use_id: 't1', content: 'ok' }, { type: 'text', text: 'and more' }]),
+      user('<local-command-stdout>done</local-command-stdout>'),
+      user('<command-name>/agents</command-name>'),
+      user([{ type: 'text', text: '[Request interrupted by user for tool use]' }]),
+      { ...(user('typed') as object), isMeta: true },
+      { type: 'assistant', sessionId: OLD, isApiErrorMessage: true, message: { stop_reason: 'end_turn', content: [] } },
+      { type: 'assistant', sessionId: OLD, message: { stop_reason: null, content: [] } },
+    ]) expect(claudeContinuedIn(transcript([moved, later]), OLD)?.successor).toBe(NEW)
+    expect(claudeContinuedIn(transcript([moved, user('<bash-input>ls</bash-input>')]), OLD)).toBeNull()
   })
 
   it('names nothing when the conversation finished a turn here afterwards, or was never moved', () => {

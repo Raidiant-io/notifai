@@ -270,8 +270,9 @@ export class ExchangeDriver {
       return
     }
     if (this.mode === 'per-session') {
+      const pokes = this.pokes
       this.superviseSessions(client)
-      await this.nextChange(5_000)
+      await this.nextChange(5_000, pokes)
       return
     }
     await this.batchOnce(client, loop)
@@ -628,11 +629,11 @@ export class ExchangeDriver {
     this.recent.push(this.host.clock.monotonic())
   }
 
-  /** Wait for a poke, never longer than `timeoutMs` or `HUB_IDLE_RECHECK_MS`. */
   /**
-   * Wait for the next change. `seenPokes` is the poke count when the caller
-   * started looking: a poke since then (a session asked while being looked
-   * at ended itself) is not waited out.
+   * Wait for a poke, never longer than `requestedMs` or `HUB_IDLE_RECHECK_MS`.
+   * `seenPokes` is the poke count when the caller started looking: a poke
+   * since then (a session that ended itself while being looked at) is not
+   * waited out.
    */
   private async nextChange(requestedMs?: number, seenPokes?: number): Promise<void> {
     if (this.stopping.signal.aborted) return

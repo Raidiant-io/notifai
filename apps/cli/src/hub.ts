@@ -23,7 +23,7 @@ import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import type { AttendanceMessage, SessionActivity } from '@raidiant/notifai-protocol'
 import { atomicWriteFileSync } from './atomic-file.js'
-import { claudeDescriptorDir, claudeMinInboxVersion, CLAUDE_PEER_PROTOCOL, claudeStatusActivity, claudeStatusWakeable, parseDescriptor } from './claude-wake.js'
+import { claudeDescriptorDir, claudeMinInboxVersion, CLAUDE_PEER_PROTOCOL, claudeStatusActivity, claudeStatusWakeable, parseDescriptor, type ClaudeSessionDescriptor } from './claude-wake.js'
 import { claudePickerHolds } from './claude-question-hooks.js'
 import { createClient, type ApiClient } from './client.js'
 import { codexInputObserver, type CodexWakeHold } from './codex-input-lifecycle.js'
@@ -578,7 +578,7 @@ class HubSession implements AttendedSession {
   /** Later hooks at which a fork's parent is looked for again; 0 when not a fork. */
   forkChecks = 0
   /** The last `continuedIn` read, kept while the transcript stays unchanged. */
-  private continuation: { size: number; mtimeMs: number; successor: string | null } | null = null
+  private continuation: { size: number; mtimeMs: number; record: { successor: string; at: number | null } | null } | null = null
   /** It was stopped when it ended (its Codex wake is only detached then). */
   wasStopped = false
   /**
@@ -753,15 +753,18 @@ class HubSession implements AttendedSession {
       return { state: 'uncertain', reason: 'process-start-mismatch' }
     }
     if (descriptor.sessionId !== this.id) return { state: 'ended', reason: 'session-replaced' }
-    // Parked on the agents view after ←: once the transcript names where the
-    // conversation went, it runs only there.
-    if (descriptor.parkedJobId !== undefined && this.continuedIn() !== null) return { state: 'ended', reason: 'moved' }
+    // Parked on the agents view after ← on the very job the transcript says
+    // the conversation continues as: it runs only there.
+    if (descriptor.parkedJobId !== undefined && parkedOn(descriptor, this.continuedIn())) return { state: 'ended', reason: 'moved' }
     return { state: 'running', activity: claudeStatusActivity(descriptor.status) }
   }
 
   /**
    * The session a Claude Code conversation records that it continues in
-   * (`continued-in`, written when it is backgrounded), or null.
+   * (`continued-in`, written when it is backgrounded), or null. Only a record
+   * written while the present host already hosted it counts: a process that
+   * opened the conversation afterwards (`claude --resume` of it) hosts it
+   * again, and its own close is a close.
    */
   continuedIn(): string | null {
     const transcript = this.registration.transcriptPath
@@ -769,10 +772,35 @@ class HubSession implements AttendedSession {
     let size: number, mtimeMs: number
     try { ({ size, mtimeMs } = statSync(transcript)) } catch { return null }
     const cached = this.continuation
-    if (cached !== null && cached.size === size && cached.mtimeMs === mtimeMs) return cached.successor
-    const successor = claudeContinuedIn(transcript, this.id)
-    this.continuation = { size, mtimeMs, successor }
-    return successor
+    const read = cached !== null && cached.size === size && cached.mtimeMs === mtimeMs ? cached.record : claudeContinuedIn(transcript, this.id)
+    this.continuation = { size, mtimeMs, record: read }
+    if (read === null) return null
+    const since = this.hostingSince()
+    return read.at === null || since === null || since <= read.at ? read.successor : null
+  }
+
+  /**
+   * When the present host began hosting this conversation (wall-clock
+   * milliseconds): its SessionStart, or for a conversation a restarted hub
+   * adopted, Claude Code's own record of when the process started it. Null
+   * when unknown.
+   */
+  private hostingSince(): number | null {
+    if (this.registration.hookEvent !== 'Adopted') return this.registration.stamp.wall
+    const descriptor = this.descriptor()
+    return descriptor === 'missing' || descriptor === null ? null : descriptor.startedAt
+  }
+
+  /**
+   * The present host no longer runs this conversation as `successorId` took
+   * it over: it is parked on that job, its harness has gone, or the
+   * conversation is ending, held for an end, or stopped.
+   */
+  leftFor(successorId: string): boolean {
+    if (this.ending !== null || this.endCandidate !== null || this.stopped !== null) return true
+    if (this.child?.ended === true || this.harnessGone()) return true
+    const descriptor = this.descriptor()
+    return descriptor !== 'missing' && descriptor !== null && parkedOn(descriptor, successorId)
   }
 
   descriptor(): ReturnType<typeof parseDescriptor> | 'missing' {
@@ -1176,6 +1204,12 @@ function stoppedOnDisk(sessionId: string, env: NodeJS.ProcessEnv): boolean {
   } catch {
     return false
   }
+}
+
+/** A Claude Code descriptor parked on the background job that runs `successorId` (a job is named by its session's first characters). */
+function parkedOn(descriptor: ClaudeSessionDescriptor, successorId: string | null): boolean {
+  const job = descriptor.parkedJobId
+  return job !== undefined && successorId !== null && job.length >= 8 && successorId.startsWith(job)
 }
 
 /** A Claude Code process's own session descriptor, or null. */
@@ -2278,10 +2312,14 @@ export class Hub {
       : readCodexSessionMeta(fork.registration.transcriptPath)?.forkedFrom ?? null
     if (parentId === null) {
       // A backgrounded Claude Code conversation names its continuation in
-      // the parent's transcript instead, and lives on only there.
+      // the parent's transcript instead. It has moved once its old process
+      // shows it no longer runs it (parked on this job, ended, gone); until
+      // then the User may still be working there, and the parent's own end
+      // or park moves it later.
       if (fork.harness !== 'claude-code') return
       for (const parent of this.sessions.values()) {
-        if (parent === fork || parent.harness !== 'claude-code' || parent.ending !== null || parent.continuedIn() !== fork.id) continue
+        if (parent === fork || parent.harness !== 'claude-code' || parent.ending !== null || parent.continuedIn() !== fork.id ||
+            !parent.leftFor(fork.id)) continue
         fork.forkChecks = 0
         this.moveConversation(parent, fork.id, parent.stopped !== null ? 'stopped' : 'continued-in')
         return

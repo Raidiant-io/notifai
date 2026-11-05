@@ -246,6 +246,26 @@ describe('hub exchange driver', () => {
     await running
   })
 
+  it('reports an end a session made while the exchange was looking at it, instead of sleeping through its poke', async () => {
+    const service = fakeService()
+    const session = new FakeSession(SESSION)
+    let driver: ExchangeDriver | null = null
+    // Looked at, it ends itself and pokes, as a conversation found moved does.
+    let looked = false
+    session.runnable = () => {
+      if (!looked) { looked = true; session.lease.generation = 1; session.lease.final = 'ended'; driver!.poke() }
+      return false
+    }
+    driver = new ExchangeDriver(driverHost(service, [session]))
+    const running = driver.run()
+    // Well inside the idle recheck it would otherwise wait out.
+    await until(() => session.outcomes.includes('reported'), 1_000)
+    expect(service.batches[0]!.body.sessions).toEqual([{ session_id: SESSION, incarnation: session.lease.incarnation, generation: 1, state: 'ended' }])
+    driver.stop()
+    service.release()
+    await running
+  })
+
   it('falls back to the per-session route against a service without the batch', async () => {
     const service = fakeService({ capabilities: ['session_attendance'] })
     const sessions = [new FakeSession(SESSION), new FakeSession(OTHER)]
@@ -2394,47 +2414,72 @@ describe('hub: Codex conversations stopped by their app or the machine, Orca pan
     }
   })
 
+  const prompt = { type: 'user', sessionId: SESSION, message: { role: 'user', content: 'Build the arena' } }
+  const reply = { type: 'assistant', sessionId: SESSION, message: { role: 'assistant', stop_reason: 'end_turn', content: [{ type: 'text', text: 'Asked.' }] } }
+  /** What Claude Code 2.1.318 appends to the old transcript when it backgrounds a conversation into OTHER. */
+  const backgroundRecords = (at = new Date()): unknown[] => [
+    { type: 'attachment', sessionId: SESSION, attachment: { type: 'session_cron_carry', tasks: [] } },
+    { type: 'continued-in', timestamp: at.toISOString(), sessionId: SESSION, continuedInSessionId: OTHER },
+    { type: 'cost-state', sessionId: SESSION },
+  ]
+  const appendRecords = (file: string, lines: unknown[]): void => appendFileSync(file, lines.map((line) => `${JSON.stringify(line)}\n`).join(''))
+  const park = (env: NodeJS.ProcessEnv, host: StandIn, job: string): void => {
+    const file = path.join(claudeDescriptorDir(env), `${host.pid}.json`)
+    writeFileSync(file, JSON.stringify({ ...JSON.parse(readFileSync(file, 'utf8')) as Record<string, unknown>, parkedJobId: job }))
+  }
+  /** A Claude Code terminal conversation with a question waiting, and a hub that can move it. */
+  async function claudeWithQuestion(lines: unknown[] = [prompt, reply]) {
+    const env = hubEnv()
+    recordSessionNotified(SESSION, env, Date.now())
+    const service = fakeService({ capabilities: ['session_attendance', 'session_attendance_batch', 'session_stopped_hold', 'session_continued_successor'] })
+    const peers = new Map<number, PeerCredentials>()
+    const { hub, done } = startHub(env, service, peers, memoryStore(), 100, { endConfirmMs: 150 },
+      { powerWatch: false, claudeDesktop: null, runHook: noHook })
+    await hubListening(env)
+    const host = await standIn()
+    describeHost(env, host)
+    const transcript = claudeTranscript(env, SESSION, lines)
+    const child = await claudeChild(env, peers, 900750, host, { transcript_path: transcript })
+    expect(child.frames[0]).toEqual({ type: 'registered', session_id: SESSION })
+    await until(() => renewals(service) >= 1)
+    question(env)
+    return { env, service, peers, hub, done, host, child, transcript }
+  }
+  async function backgroundFork(env: NodeJS.ProcessEnv, peers: Map<number, PeerCredentials>): Promise<FakeChild> {
+    const forkHost = await standIn()
+    describeHost(env, forkHost, OTHER)
+    const fork = await claudeChild(env, peers, 900751, forkHost, { source: 'fork',
+      transcript_path: claudeTranscript(env, OTHER, [{ type: 'ai-title', aiTitle: 'Build the arena', sessionId: OTHER }]) }, OTHER)
+    expect(fork.frames[0]).toEqual({ type: 'registered', session_id: OTHER })
+    return fork
+  }
+  const endsOf = (service: FakeService) => service.batches.flatMap((batch) => batch.body.sessions)
+    .filter((entry) => entry.session_id === SESSION && entry.state === 'ended')
+
   it('follows a Claude Code conversation backgrounded into a new session (continued-in), whether its old process stays parked or exits', async () => {
-    for (const variant of ['parked', 'parked-fork-unseen', 'exited'] as const) {
-      const env = hubEnv()
-      recordSessionNotified(SESSION, env, Date.now())
-      const service = fakeService({ capabilities: ['session_attendance', 'session_attendance_batch', 'session_stopped_hold', 'session_continued_successor'] })
-      const peers = new Map<number, PeerCredentials>()
-      const { hub, done } = startHub(env, service, peers, memoryStore(), 100, { endConfirmMs: 150 },
-        { powerWatch: false, claudeDesktop: null, runHook: noHook })
-      await hubListening(env)
-      const host = await standIn()
-      describeHost(env, host)
-      const prompt = { type: 'user', sessionId: SESSION, message: { role: 'user', content: 'Build the arena' } }
-      const reply = { type: 'assistant', sessionId: SESSION, message: { role: 'assistant', stop_reason: 'end_turn', content: [{ type: 'text', text: 'Asked.' }] } }
-      const transcript = claudeTranscript(env, SESSION, [prompt, reply])
-      const child = await claudeChild(env, peers, 900750, host, { transcript_path: transcript })
-      expect(child.frames[0]).toEqual({ type: 'registered', session_id: SESSION })
-      await until(() => renewals(service) >= 1)
-      question(env)
-      // The User backgrounds it: Claude Code records where it continues, as 2.1.318 does.
-      appendFileSync(transcript, `${JSON.stringify({ type: 'attachment', sessionId: SESSION, attachment: { type: 'session_cron_carry', tasks: [] } })}\n` +
-        `${JSON.stringify({ type: 'continued-in', timestamp: new Date().toISOString(), sessionId: SESSION, continuedInSessionId: OTHER })}\n` +
-        `${JSON.stringify({ type: 'cost-state', sessionId: SESSION })}\n`)
+    for (const variant of ['parked', 'parked-fork-unseen', 'exited', 'exited-after-fork'] as const) {
+      const { env, service, peers, hub, done, host, child, transcript } = await claudeWithQuestion()
+      appendRecords(transcript, backgroundRecords())
+      let fork: FakeChild | null = null
       if (variant === 'exited') {
         // `/background`: the old process ends with prompt_input_exit before the fork registers.
         await requestHub(env, { type: 'session-end-candidate', session_id: SESSION, harness_pid: host.pid, close_reason: 'prompt_input_exit' })
         exit(child, host)
+        fork = await backgroundFork(env, peers)
+      } else if (variant === 'exited-after-fork') {
+        // The fork registers while the old process still runs; its exit then moves it.
+        fork = await backgroundFork(env, peers)
+        await new Promise((resolve) => setTimeout(resolve, 300))
+        expect(ended(service)).toBe(false)
+        await requestHub(env, { type: 'session-end-candidate', session_id: SESSION, harness_pid: host.pid, close_reason: 'prompt_input_exit' })
+        exit(child, host)
       } else {
         // ←: the old process stays parked on the agents view, still naming the old conversation.
-        const descriptor = JSON.parse(readFileSync(path.join(claudeDescriptorDir(env), `${host.pid}.json`), 'utf8')) as Record<string, unknown>
-        writeFileSync(path.join(claudeDescriptorDir(env), `${host.pid}.json`), JSON.stringify({ ...descriptor, parkedJobId: OTHER.slice(0, 8) }))
-      }
-      const forkHost = await standIn()
-      let fork: FakeChild | null = null
-      if (variant !== 'parked-fork-unseen') {
-        describeHost(env, forkHost, OTHER)
-        fork = await claudeChild(env, peers, 900751, forkHost, { source: 'fork',
-          transcript_path: claudeTranscript(env, OTHER, [{ type: 'ai-title', aiTitle: 'Build the arena', sessionId: OTHER }]) }, OTHER)
-        expect(fork.frames[0]).toEqual({ type: 'registered', session_id: OTHER })
+        park(env, host, OTHER.slice(0, 8))
+        if (variant === 'parked') fork = await backgroundFork(env, peers)
       }
       await until(() => { service.release(); return ended(service) }, 5_000)
-      const ends = service.batches.flatMap((batch) => batch.body.sessions).filter((entry) => entry.session_id === SESSION && entry.state === 'ended')
+      const ends = endsOf(service)
       // A move, never a close: the question is the continuation's to collect.
       expect(ends.every((entry) => 'end_reason' in entry && entry.end_reason === 'continued')).toBe(true)
       expect(ends[0]).toMatchObject({ end_reason: 'continued', successor_session_id: OTHER })
@@ -2444,6 +2489,42 @@ describe('hub: Codex conversations stopped by their app or the machine, Orca pan
       // The continuation is attended from now on, so its notes and answers are handed in there.
       expect(sessionNotified(OTHER, env)).toBe(true)
       if (fork !== null) await until(() => { service.release(); return renewals(service, OTHER) >= 1 }, 5_000)
+      fork?.socket.destroy()
+      child.socket.destroy()
+      await stopHub(hub, service, done)
+    }
+  })
+
+  it('keeps a Claude Code conversation whose old process still runs it, and closes one resumed after its continuation', async () => {
+    for (const variant of ['still-hosting', 'parked-elsewhere', 'resumed-then-closed'] as const) {
+      // Resumed: the continuation was recorded before this process opened the conversation again.
+      const { env, service, peers, hub, done, host, child, transcript } = await claudeWithQuestion(
+        variant === 'resumed-then-closed' ? [prompt, reply, ...backgroundRecords(new Date(Date.now() - 60_000))] : [prompt, reply])
+      let fork: FakeChild | null = null
+      if (variant === 'still-hosting') {
+        // The background process starts, but the User goes on working in the old one.
+        appendRecords(transcript, backgroundRecords())
+        fork = await backgroundFork(env, peers)
+      } else if (variant === 'parked-elsewhere') {
+        // Parked on the agents view for some other job.
+        appendRecords(transcript, backgroundRecords())
+        park(env, host, 'abcdef12')
+      }
+      if (variant === 'resumed-then-closed') {
+        await requestHub(env, { type: 'session-end-candidate', session_id: SESSION, harness_pid: host.pid, close_reason: 'prompt_input_exit' })
+        exit(child, host)
+        await until(() => { service.release(); return ended(service) }, 5_000)
+        // A close, as for any conversation the User quits: nothing follows into the old continuation.
+        expect(endsOf(service).some((entry) => 'end_reason' in entry && entry.end_reason === 'continued')).toBe(false)
+        expect(readSessionState(OTHER, env).pending ?? []).toEqual([])
+      } else {
+        await new Promise((resolve) => setTimeout(resolve, 600))
+        service.release()
+        await new Promise((resolve) => setTimeout(resolve, 200))
+        expect(ended(service)).toBe(false)
+        expect(hub.sessions.get(SESSION)?.ending).toBeNull()
+        expect(readSessionState(SESSION, env).pending?.map((entry) => entry.request_id)).toEqual(['req_1111'])
+      }
       fork?.socket.destroy()
       child.socket.destroy()
       await stopHub(hub, service, done)
