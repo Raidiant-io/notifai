@@ -781,7 +781,7 @@ it('resumes the same init after a required CLI update becomes current', async ()
     expect(io.prompts).toEqual(['Connect Notifai to which agent apps?', '<proof sent>'])
     expect(findInstallations(env, deps.hookAdapterHome).map((item) => item.harness)).toEqual(['claude-code'])
     const settings = JSON.parse(readFileSync(settingsFile('claude-code', env), 'utf8')) as { permissions?: { allow?: string[] } }
-    expect(settings.permissions?.allow).toContain('Bash(notifai init *)')
+    expect(settings.permissions?.allow).toContain('Bash(notifai *)')
     const done = io.notes.find((note) => note.title === 'Notifai is set up for user@example.test')
     expect(done?.message).toContain('To start: Claude Code: open a new session')
     expect(done?.message).toContain("Claude Code can now run Notifai's commands without asking.")

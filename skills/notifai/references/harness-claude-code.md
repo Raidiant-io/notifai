@@ -123,10 +123,10 @@ apps to connect. Otherwise, on the User's yes:
 notifai init --claude-commands --json
 ```
 
-That adds allow rules to the User's Claude Code settings for `send`, `ask`,
-`receive`, `acknowledge`, `status`, `replies`, `close`, `guidance` and
-`session rename` only. Setup, configuration, guidance edits, logs and sign-out
-keep their prompt. `notifai hooks uninstall` removes the rules with the wiring.
+That adds allow rules for every `notifai` command to the User's Claude Code
+settings. A Notifai update replaces the narrower list an earlier Notifai added.
+The User's other rules stay, and their `ask` or `deny` rules still win.
+`notifai hooks uninstall` removes the rules with the wiring.
 Never add them without one of those, and never edit Claude Code's permission settings by hand.
 If setup reports that the rules were not added, it says why in one line: relay
 that to the User and do not retry. `dontAsk` refuses the setup command itself:

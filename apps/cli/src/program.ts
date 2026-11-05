@@ -7,6 +7,7 @@ import {
   askCommand,
   accessStatusCommand,
   agentSessionRenameCommand,
+  agentSessionStatusCommand,
   authAdoptCommand,
   authStatusCommand,
   capabilitiesCommand,
@@ -147,6 +148,7 @@ const defaultRunners = {
   projectSet: projectSetCommand,
   projectIcons: projectIconsCommand,
   agentSessionRename: agentSessionRenameCommand,
+  agentSessionStatus: agentSessionStatusCommand,
   send: sendCommand,
   replies: repliesCommand,
   acknowledge: acknowledgeCommand,
@@ -382,9 +384,9 @@ export function buildProgram(deps: CommandDeps, options: BuildProgramOptions = {
     )
     .option('--hooks', 'install supported harness lifecycle hooks')
     .option('--no-hooks', 'skip the hooks without being asked')
-    .option('--claude-commands', `let Claude Code run the Notifai ${CLAUDE_COMMANDS_PROSE} commands without a permission prompt; inside Claude Code, not added when the session is known to run in bypassPermissions mode, which needs none`)
+    .option('--claude-commands', `let Claude Code run ${CLAUDE_COMMANDS_PROSE} without a permission prompt; inside Claude Code, not added when the session is known to run in bypassPermissions mode, which needs none`)
     .option('--no-claude-commands', 'leave Claude Code command approval as it is without being asked')
-    .option('--codex-commands', `let Codex run the Notifai ${CODEX_COMMANDS_PROSE} commands outside its sandbox without a permission prompt`)
+    .option('--codex-commands', `let Codex run ${CODEX_COMMANDS_PROSE} outside its sandbox without a permission prompt`)
     .option('--no-codex-commands', 'leave Codex command approval as it is without being asked')
     .action(
       async (opts: {
@@ -607,9 +609,16 @@ export function buildProgram(deps: CommandDeps, options: BuildProgramOptions = {
     .summary('Inspect or rename the current Agent Session')
     .description('Operate on the exact Agent Session owned by the active harness')
   session
+    .command('status')
+    .description('Show this Agent Session\'s name and where it came from')
+    .option('--json', 'machine-readable output')
+    .action((opts: { json?: boolean }) => {
+      exit(runners.agentSessionStatus(deps, opts))
+    })
+  session
     .command('rename <label>')
     .description(
-      'Rename this exact Agent Session; agents use this only after its job changes completely enough that the old label would mislead',
+      'Rename this exact Agent Session in 2-6 words; use it when its name does not fit your overall job, or that job changes',
     )
     .option('--json', 'machine-readable output')
     .action(async (label: string, opts: { json?: boolean }) => {
@@ -736,7 +745,7 @@ export function buildProgram(deps: CommandDeps, options: BuildProgramOptions = {
     .addOption(new Option('--session-id <id>', 'low-level automation override for an opaque exact Agent Session (env: NOTIFAI_SESSION_ID)').hideHelp())
     .option(
       '--session-label <text>',
-      'name this Agent Session; needed only on its first send or ask, then use session rename for a changed job (env: NOTIFAI_SESSION_LABEL)',
+      'optional first name for this Agent Session; Notifai names it otherwise, and session rename changes it (env: NOTIFAI_SESSION_LABEL)',
     )
     .optionsGroup(SEND_GROUP.presentation)
     .option('--collapse-key <key>', 'replace earlier notifications with the same key')
@@ -906,7 +915,7 @@ export function buildProgram(deps: CommandDeps, options: BuildProgramOptions = {
     .option('--projectless', 'deliberately omit Project identity for this question')
     .option(
       '--session-label <text>',
-      'name this Agent Session; needed only on its first send or ask, then use session rename for a changed job (env: NOTIFAI_SESSION_LABEL)',
+      'optional first name for this Agent Session; Notifai names it otherwise, and session rename changes it (env: NOTIFAI_SESSION_LABEL)',
     )
     .action(async (question: string | undefined, opts: {
       title?: string

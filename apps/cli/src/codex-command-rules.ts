@@ -1,5 +1,5 @@
 /**
- * Codex execution-policy rules for the Notifai commands an away User depends on.
+ * Codex execution-policy rules that let it run every Notifai command.
  *
  * Codex's default sandbox has no network, and outside full-access mode Codex
  * asks before running a command outside it. A question, its wake-up and its
@@ -7,10 +7,12 @@
  * terminal nobody is watching and nothing reaches a device.
  *
  * Setup adds it, without asking, for a User who connects Codex, and says so in
- * its last message; `--no-codex-commands` leaves it out. It covers sending,
- * asking, reading, acknowledging, and rerunning setup, which an agent does
- * repeatedly while it waits for the User's steps. Configuration, guidance
- * edits, logs and sign-out keep their prompt.
+ * its last message; `--no-codex-commands` leaves it out. It covers every
+ * `notifai` command: one an agent needs that waits at a prompt nobody sees is
+ * the failure the rule exists to prevent. An earlier Notifai wrote a rule for
+ * a list of commands. `update --resume` rewrites that file, with no new
+ * question, only when it is byte for byte what a Notifai build wrote; an
+ * edited file may hold the User's own rules, so only setup replaces it.
  *
  * What Codex documents about rules, and what this module does with it:
  *
@@ -32,6 +34,7 @@
  *   this file. `doctor` reports that as the organization's choice.
  */
 import { execFile } from 'node:child_process'
+import { createHash } from 'node:crypto'
 import { existsSync, lstatSync, readdirSync, readFileSync, rmSync } from 'node:fs'
 import path from 'node:path'
 import { promisify } from 'node:util'
@@ -43,23 +46,14 @@ import type { ReadinessState } from './readiness.js'
 
 const execute = promisify(execFile)
 
-/** The Notifai subcommands the rule lets Codex run outside its sandbox unprompted. */
-export const CODEX_ALLOWED_COMMANDS: readonly string[] = [
-  'send',
-  'ask',
-  'receive',
-  'acknowledge',
-  'status',
-  'replies',
-  'close',
-  'init',
-]
-
 /** First line of the file; ownership evidence, since Codex rules carry no marker. */
 export const CODEX_COMMAND_RULES_HEADER = '# Notifai command rules. Written by `notifai init --codex-commands`; removed by `notifai hooks uninstall --harness codex`.'
 
-/** Every command the file allows, as the consent and readiness text names them. */
-export const CODEX_COMMANDS_PROSE = `${[...CODEX_ALLOWED_COMMANDS, 'guidance'].join(', ')} and session rename`
+/** The program names the rule matches: `notifai`, and its Windows npm shims and native executable. */
+export const CODEX_PROGRAM_NAMES: readonly string[] = ['notifai', 'notifai.cmd', 'notifai.ps1', 'notifai.exe']
+
+/** What the file allows, as the consent and readiness text names it. */
+export const CODEX_COMMANDS_PROSE = 'every Notifai command'
 
 const CODEX_COMMAND_RULES_FILE_NAME = 'notifai.rules'
 
@@ -80,14 +74,15 @@ function starlarkList(items: readonly string[], indent: string): string {
 export function renderCodexCommandRules(): string {
   return [
     CODEX_COMMAND_RULES_HEADER,
-    '# Lets Codex run the Notifai commands an away User depends on outside its sandbox without asking first.',
-    '# Rerunning setup is allowed; configuration and guidance edits keep their prompt. Rules match a literal `notifai …` argument list only.',
+    '# Lets Codex run every Notifai command outside its sandbox without asking first. Rules match a literal `notifai …` argument list only.',
     'prefix_rule(',
-    `    pattern = ["notifai", [${CODEX_ALLOWED_COMMANDS.map((command) => JSON.stringify(command)).join(', ')}]],`,
+    // Windows shells may name the npm shims or the native executable.
+    `    pattern = [[${CODEX_PROGRAM_NAMES.map((name) => JSON.stringify(name)).join(', ')}]],`,
     '    decision = "allow",',
-    '    justification = "Notifai notifications and answers",',
+    '    justification = "Notifai notifications, answers and setup",',
     '    match = [',
     starlarkList([
+      'notifai',
       'notifai send --kind done --title Users-can-create-accounts --summary Sign-up-works-on-staging',
       'notifai ask Which-environment --choice Staging --choice Production --json',
       'notifai receive',
@@ -95,36 +90,24 @@ export function renderCodexCommandRules(): string {
       'notifai status q_123 --json',
       'notifai replies --pending --json',
       'notifai close --pending',
+      'notifai guidance',
+      'notifai guidance set when-to-notify Only-when-blocked --local --yes',
+      'notifai session status --json',
+      'notifai session rename New-job',
       'notifai init --json --wait 240 --apps claude-code,codex',
+      'notifai config set ask_notifications false',
+      'notifai update',
+      'notifai.cmd send --kind done --title A --summary B',
+      'notifai.ps1 session status',
+      'notifai.exe receive',
     ], '        '),
     '    ],',
     '    not_match = [',
     starlarkList([
-      'notifai config set ask_notifications false',
-      'notifai hooks uninstall --harness codex',
-      'notifai update',
-      'notifai logout',
+      'npx notifai send --kind done --title A --summary B',
+      'notifai-helper send',
     ], '        '),
     '    ],',
-    ')',
-    'prefix_rule(',
-    '    pattern = ["notifai", "guidance"],',
-    '    decision = "allow",',
-    '    justification = "Reads Notifai guidance",',
-    '    match = ["notifai guidance"],',
-    ')',
-    '# A prefix rule cannot exclude a longer prefix, so guidance edits get their prompt back explicitly.',
-    'prefix_rule(',
-    '    pattern = ["notifai", "guidance", ["set", "unset"]],',
-    '    decision = "prompt",',
-    '    justification = "Guidance edits are the User\'s standing word and keep their prompt",',
-    '    match = ["notifai guidance set when-to-notify Only-when-blocked --local --yes", "notifai guidance unset when-to-notify --local --yes"],',
-    ')',
-    'prefix_rule(',
-    '    pattern = ["notifai", "session", "rename"],',
-    '    decision = "allow",',
-    '    justification = "Renames the Agent Session",',
-    '    match = ["notifai session rename New-job"],',
     ')',
     '',
   ].join('\n')
@@ -138,13 +121,26 @@ export function codexCommandRulesFile(
   return path.join(codexGlobalDir(env, platform), 'rules', CODEX_COMMAND_RULES_FILE_NAME)
 }
 
+/**
+ * SHA-256 of every rules file an earlier Notifai build wrote, oldest first.
+ * Only these are rewritten unasked: any other text under Notifai's header may
+ * hold a rule the User added. Append the current text's hash before changing
+ * `renderCodexCommandRules`.
+ */
+export const SHIPPED_CODEX_RULES_SHA256: readonly string[] = [
+  '07ae66e42a864f4f3f50daf8a8989c093f088b07024758f65f1de34f755e57b2',
+  '4ff13a00f422a4644968ccc0ac68887b29b66a376580d148fe53ae6abd5bb3e3',
+]
+
 export type CodexCommandRulesCondition =
   /** No file. */
   | 'missing'
   /** Notifai's current file. */
   | 'current'
-  /** Notifai wrote it, but an earlier build did. */
+  /** Exactly the file an earlier Notifai build wrote. */
   | 'outdated'
+  /** Notifai's header, but text no Notifai build wrote: someone edited it. */
+  | 'edited'
   /** Something other than Notifai put a file at this path; never touched. */
   | 'foreign'
 
@@ -176,7 +172,8 @@ export function inspectCodexCommandRules(
   const ours = contents.split(/\r?\n/, 1)[0] === CODEX_COMMAND_RULES_HEADER
   return {
     file,
-    condition: !ours ? 'foreign' : contents === renderCodexCommandRules() ? 'current' : 'outdated',
+    condition: !ours ? 'foreign' : contents === renderCodexCommandRules() ? 'current'
+      : SHIPPED_CODEX_RULES_SHA256.includes(createHash('sha256').update(contents).digest('hex')) ? 'outdated' : 'edited',
     writtenAt: metadata.mtimeMs,
   }
 }
@@ -203,6 +200,19 @@ export function installCodexCommandRules(
     atomicWriteFileSync(file, renderCodexCommandRules(), { mode: 0o644, requireCurrentUserOwner: true })
     return true
   })
+}
+
+/**
+ * Rewrite a rules file exactly as an earlier Notifai wrote it, the User's
+ * earlier yes being the consent. A missing, foreign or edited file is left to
+ * doctor and setup. Returns whether it changed.
+ */
+export function upgradeCodexCommandRules(
+  env: NodeJS.ProcessEnv,
+  platform: NodeJS.Platform | HookHostPlatform = process.platform,
+): boolean {
+  if (inspectCodexCommandRules(env, platform).condition !== 'outdated') return false
+  return installCodexCommandRules(env, platform)
 }
 
 /** Remove the file if Notifai wrote it. A foreign file at the path is left alone. */
@@ -322,7 +332,7 @@ export function codexCommandReadiness(input: CodexCommandReadinessInput): Readin
   const base = { id: CODEX_COMMANDS_STATE_ID, title: TITLE, harnesses: ['codex'] as const }
   const installRemedy = {
     by: 'cli' as const,
-    summary: "on the User's yes, let Codex run the Notifai commands an away User depends on outside its sandbox without asking first",
+    summary: "on the User's yes, let Codex run every Notifai command outside its sandbox without asking first",
     command: INSTALL_COMMAND,
   }
   if (inspection.condition === 'missing') {
@@ -351,9 +361,18 @@ export function codexCommandReadiness(input: CodexCommandReadinessInput): Readin
     return {
       ...base,
       status: 'optional-gap',
-      detail: `an earlier Notifai wrote ${inspection.file}; refresh it so it matches the commands this build teaches`,
+      detail: `an earlier Notifai wrote ${inspection.file} for only some Notifai commands, so Codex may still ask before the others; setup rewrites it for every Notifai command`,
       technical: { rules_file: inspection.file, condition: inspection.condition },
-      remedy: { ...installRemedy, summary: 'rewrite the Codex rule for this Notifai build' },
+      remedy: { ...installRemedy, summary: 'rewrite the Notifai rule the User already granted so it covers every Notifai command' },
+    }
+  }
+  if (inspection.condition === 'edited') {
+    return {
+      ...base,
+      status: 'optional-gap',
+      detail: `${inspection.file} was changed after Notifai wrote it, so Notifai leaves it as it is and Codex may still ask before some Notifai commands; setup rewrites it for every Notifai command, dropping any rule added there`,
+      technical: { rules_file: inspection.file, condition: inspection.condition },
+      remedy: { ...installRemedy, summary: 'on the User\'s yes, rewrite the Notifai rule for every Notifai command; rules the User added to that file belong in another .rules file beside it' },
     }
   }
   const technical: Record<string, unknown> = { rules_file: inspection.file, condition: inspection.condition }
@@ -362,7 +381,7 @@ export function codexCommandReadiness(input: CodexCommandReadinessInput): Readin
     return {
       ...base,
       status: 'ready',
-      detail: `Codex may run the Notifai ${CODEX_COMMANDS_PROSE} commands outside its sandbox without asking first (${inspection.file}); no \`codex\` executable here to re-check the rule`,
+      detail: `Codex may run ${CODEX_COMMANDS_PROSE} outside its sandbox without asking first (${inspection.file}); no \`codex\` executable here to re-check the rule`,
       technical: { ...technical, verified: false },
     }
   }
@@ -411,7 +430,7 @@ export function codexCommandReadiness(input: CodexCommandReadinessInput): Readin
   return {
     ...base,
     status: 'ready',
-    detail: `Codex runs the Notifai ${CODEX_COMMANDS_PROSE} commands outside its sandbox without asking first (${inspection.file}${verified ? ', re-checked with `codex execpolicy check`' : ''})`,
+    detail: `Codex runs ${CODEX_COMMANDS_PROSE} outside its sandbox without asking first (${inspection.file}${verified ? ', re-checked with `codex execpolicy check`' : ''})`,
     technical: { ...technical, verified },
   }
 }

@@ -1,5 +1,5 @@
 /**
- * Claude Code permission rules for the Notifai commands an away User depends on.
+ * Claude Code permission rules that let it run every Notifai command.
  *
  * Claude Code checks each Bash command against its permission rules. When no
  * rule matches, every mode but bypassPermissions holds the command up: default
@@ -12,9 +12,12 @@
  *
  * Setup adds them, without asking, for a User who connects Claude Code, and
  * says so in its last message; `--no-claude-commands` leaves them out. They
- * cover sending, asking, reading, acknowledging, and rerunning setup, which an
- * agent does repeatedly while it waits for the User's steps. Configuration,
- * guidance edits, logs and sign-out keep their prompt.
+ * cover every `notifai` command: a command an agent needs that waits at a
+ * prompt nobody sees is the failure these rules exist to prevent. An earlier
+ * Notifai allowed a list of commands. `update --resume` replaces that whole
+ * list with these rules, with no new question; a partial list may be the
+ * User's own narrowing, so only setup widens it.
+ * A User's own `ask` or `deny` rule still wins over an allow rule.
  *
  * The offer is made at a terminal outside Claude Code, and inside a Claude
  * Code session unless the session is known to run in bypassPermissions mode,
@@ -32,6 +35,16 @@ import { applyPlan, loadSettings, settingsFile, type SettingsDocument } from './
 import type { ReadinessState } from './readiness.js'
 
 export const CLAUDE_COMMAND_RULES: readonly string[] = [
+  'Bash(notifai)',
+  'Bash(notifai *)',
+]
+
+/**
+ * The per-command list an earlier Notifai wrote. Only these exact strings are
+ * Notifai's; they are replaced by `CLAUDE_COMMAND_RULES` and removed with the
+ * wiring. Never extend this list: it records what shipped.
+ */
+export const LEGACY_CLAUDE_COMMAND_RULES: readonly string[] = [
   'Bash(notifai send *)',
   'Bash(notifai ask *)',
   'Bash(notifai receive)',
@@ -46,14 +59,10 @@ export const CLAUDE_COMMAND_RULES: readonly string[] = [
   'Bash(notifai init *)',
 ]
 
-function proseList(items: readonly string[]): string {
-  return items.length < 2 ? items.join('') : `${items.slice(0, -1).join(', ')} and ${items.at(-1)}`
-}
+const OWNED_RULES: readonly string[] = [...CLAUDE_COMMAND_RULES, ...LEGACY_CLAUDE_COMMAND_RULES]
 
 /** The commands the rules allow, as the consent and readiness text names them. */
-export const CLAUDE_COMMANDS_PROSE = proseList([
-  ...new Set(CLAUDE_COMMAND_RULES.map((rule) => /^Bash\(notifai ([a-z ]+?)(?: \*)?\)$/.exec(rule)![1]!)),
-])
+export const CLAUDE_COMMANDS_PROSE = 'every Notifai command'
 
 function allowList(document: SettingsDocument): unknown[] | null {
   const permissions = document['permissions']
@@ -68,10 +77,23 @@ export function missingClaudeCommandRules(document: SettingsDocument): string[] 
   return CLAUDE_COMMAND_RULES.filter((rule) => !allow.includes(rule))
 }
 
-/** Add the missing rules, keeping every existing rule and key as it was. */
+/**
+ * Whether an earlier Notifai's whole list is in place. A partial list may be
+ * the User's own narrowing, so it is never widened unasked.
+ */
+export function hasLegacyClaudeCommandRules(document: SettingsDocument): boolean {
+  const allow = allowList(document) ?? []
+  return LEGACY_CLAUDE_COMMAND_RULES.every((rule) => allow.includes(rule))
+}
+
+/**
+ * Add the missing rules and drop an earlier Notifai's narrower ones, which
+ * they cover; every other rule and key stays as it was.
+ */
 export function addClaudeCommandRules(document: SettingsDocument): { document: SettingsDocument; changed: boolean } {
   const missing = missingClaudeCommandRules(document)
-  if (missing.length === 0) return { document, changed: false }
+  const allow = allowList(document) ?? []
+  if (missing.length === 0 && !LEGACY_CLAUDE_COMMAND_RULES.some((rule) => allow.includes(rule))) return { document, changed: false }
   const permissions = document['permissions']
   if (permissions !== undefined && (typeof permissions !== 'object' || permissions === null || Array.isArray(permissions))) {
     throw new Error('`permissions` in the Claude Code settings is not an object; fix it before adding rules.')
@@ -81,18 +103,21 @@ export function addClaudeCommandRules(document: SettingsDocument): { document: S
     throw new Error('`permissions.allow` in the Claude Code settings is not a list; fix it before adding rules.')
   }
   return {
-    document: { ...document, permissions: { ...existing, allow: [...((existing['allow'] as unknown[] | undefined) ?? []), ...missing] } },
+    document: { ...document, permissions: { ...existing, allow: [
+      ...((existing['allow'] as unknown[] | undefined) ?? []).filter((rule) => !(typeof rule === 'string' && LEGACY_CLAUDE_COMMAND_RULES.includes(rule))),
+      ...missing,
+    ] } },
     changed: true,
   }
 }
 
-/** Remove exactly these rules; an allow list or permissions object this empties goes with them. */
+/** Remove exactly Notifai's rules, current and earlier; an allow list or permissions object this empties goes with them. */
 export function removeClaudeCommandRules(document: SettingsDocument): { document: SettingsDocument; changed: boolean } {
   const allow = allowList(document)
-  if (allow === null || !allow.some((rule) => typeof rule === 'string' && CLAUDE_COMMAND_RULES.includes(rule))) {
+  if (allow === null || !allow.some((rule) => typeof rule === 'string' && OWNED_RULES.includes(rule))) {
     return { document, changed: false }
   }
-  const kept = allow.filter((rule) => !(typeof rule === 'string' && CLAUDE_COMMAND_RULES.includes(rule)))
+  const kept = allow.filter((rule) => !(typeof rule === 'string' && OWNED_RULES.includes(rule)))
   const permissions = { ...(document['permissions'] as Record<string, unknown>) }
   if (kept.length > 0) permissions['allow'] = kept
   else delete permissions['allow']
@@ -115,6 +140,35 @@ export function claudeCommandRulesInstalled(env: NodeJS.ProcessEnv): boolean {
   } catch {
     return false
   }
+}
+
+/** Whether an earlier Notifai's narrower list is installed and the current rules are not. */
+export function claudeLegacyCommandRulesOnly(env: NodeJS.ProcessEnv): boolean {
+  const file = claudeCommandRulesFile(env)
+  if (!existsSync(file)) return false
+  try {
+    const document = loadSettings(file)
+    return missingClaudeCommandRules(document).length > 0 && hasLegacyClaudeCommandRules(document)
+  } catch {
+    return false
+  }
+}
+
+/**
+ * Replace an earlier Notifai's whole narrower list with the current rules, the
+ * User's earlier yes being the consent; nothing happens without that list.
+ * Returns whether the file changed.
+ */
+export function upgradeClaudeCommandRules(env: NodeJS.ProcessEnv): boolean {
+  const file = claudeCommandRulesFile(env)
+  if (!existsSync(file)) return false
+  return withTargetFileLock(file, () => {
+    const document = loadSettings(file)
+    if (!hasLegacyClaudeCommandRules(document)) return false
+    const result = addClaudeCommandRules(document)
+    if (result.changed) applyPlan(file, result.document)
+    return result.changed
+  })
 }
 
 /** Write the rules into the User's Claude Code settings. Returns whether the file changed. */
@@ -231,14 +285,14 @@ export function claudeCommandsNotWritten(state: ReadinessState | undefined, inst
 }
 
 /** What the rules mean for this invocation; pure so every branch is testable. */
-export function claudeCommandReadiness(installed: boolean, context: ClaudeCommandContext): ReadinessState {
+export function claudeCommandReadiness(installed: boolean, context: ClaudeCommandContext, legacy = false): ReadinessState {
   const base = { id: CLAUDE_COMMANDS_STATE_ID, title: 'Claude Code command approval', harnesses: ['claude-code'] as const }
   const mode = context?.permissionMode ?? null
   if (installed) {
     return {
       ...base,
       status: 'ready',
-      detail: `Claude Code runs the Notifai ${CLAUDE_COMMANDS_PROSE} commands without asking first`,
+      detail: `Claude Code runs ${CLAUDE_COMMANDS_PROSE} without asking first`,
     }
   }
   const source = context?.source ?? null
@@ -250,6 +304,19 @@ export function claudeCommandReadiness(installed: boolean, context: ClaudeComman
       technical: { permission_mode: mode, permission_mode_source: source, applicable: false },
     }
   }
+  if (legacy) {
+    return {
+      ...base,
+      status: 'optional-gap',
+      detail: 'an earlier Notifai allowed only some Notifai commands, so Claude Code may still ask before the others; setup widens that to every Notifai command',
+      ...(context === null ? {} : { technical: { permission_mode: mode, permission_mode_source: source, applicable: true, earlier_rules: true } }),
+      remedy: {
+        by: 'cli',
+        summary: 'replace the earlier Notifai rules the User already granted with one rule for every Notifai command',
+        command: 'notifai init --claude-commands',
+      },
+    }
+  }
   return {
     ...base,
     status: 'optional-gap',
@@ -257,7 +324,7 @@ export function claudeCommandReadiness(installed: boolean, context: ClaudeComman
     ...(context === null ? {} : { technical: { permission_mode: mode, permission_mode_source: source, applicable: true } }),
     remedy: {
       by: 'cli',
-      summary: 'on the User\'s yes, let Claude Code run the Notifai commands an away User depends on without asking first',
+      summary: 'on the User\'s yes, let Claude Code run every Notifai command without asking first',
       command: 'notifai init --claude-commands',
     },
   }

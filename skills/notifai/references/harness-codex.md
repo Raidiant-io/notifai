@@ -172,9 +172,9 @@ notifai init --codex-commands --json
 ```
 
 That writes `rules/notifai.rules` in the Codex home (`~/.codex`, or
-`CODEX_HOME`) with an allow rule for `send`, `ask`, `receive`, `acknowledge`,
-`status`, `replies`, `close`, `guidance` and `session rename` only. Setup,
-configuration and guidance edits keep their prompt.
+`CODEX_HOME`) with one allow rule for every `notifai` command, also when
+Windows names it `notifai.cmd`, `notifai.ps1` or `notifai.exe`. A Notifai
+update rewrites the narrower file an earlier Notifai wrote.
 `notifai hooks uninstall --harness codex` removes the file. Never write it
 without one of those, and never edit Codex rules by hand.
 

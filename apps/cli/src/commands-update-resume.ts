@@ -25,6 +25,8 @@ import { TRUST_SENSITIVE_HOOK_HARNESSES } from './activation-plan.js'
 import { claudeHookFormFor } from './claude-hook-form.js'
 import { recordClaudeFormDeferral } from './claude-form-readers.js'
 import { claimOlderHubHandover } from './hub-handover.js'
+import { upgradeClaudeCommandRules } from './claude-command-approval.js'
+import { upgradeCodexCommandRules } from './codex-command-rules.js'
 
 /** Never replace package files while this exact owner still owes an answer. */
 export function updateWorkPending(deps: CommandDeps): string | null {
@@ -151,6 +153,20 @@ export async function updateResumeCommand(deps: CommandDeps, flags: { json?: boo
         continue
       }
       if (!existsSync(installation.file) || readFileSync(installation.file, 'utf8') !== before) changed.push(`${installation.harness}-hooks`)
+    }
+    // An earlier Notifai's command approval named a list of commands. Exactly
+    // as Notifai wrote it, it is Notifai's own grant, so it widens to every
+    // Notifai command here with no new question. A grant the User edited, or
+    // never gave, is left to doctor and setup.
+    for (const { installation, env } of assessment.installations) {
+      try {
+        const upgraded = installation.harness === 'claude-code' ? publish(() => upgradeClaudeCommandRules(env))
+          : installation.harness === 'codex' ? publish(() => upgradeCodexCommandRules(env, deps.hookPlatform ?? process.platform))
+            : false
+        if (upgraded) changed.push(`${installation.harness}-commands`)
+      } catch (err) {
+        diagnostics.push(`Could not widen the ${installation.harness} command approval: ${err instanceof Error ? err.message : String(err)}`)
+      }
     }
     assessment = localIntegrationAssessment(deps)
     const afterSkill = skillInventory(deps)

@@ -58,6 +58,8 @@ notifai guidance set when-to-notify 'Only when you'"'"'re blocked' --local --yes
 
 ## Send
 
+Notifai names your session automatically when it first sends. If `notifai session status` shows a name that doesn't fit your overall job, rename it with `notifai session rename '<2–6 words>'`. When your overall job changes, rename the session accordingly.
+
 Quote every text value for the tool's shell:
 
 - **bash/zsh**: single-quote; nothing expands. Replace each ASCII apostrophe
@@ -134,21 +136,6 @@ the dashboard and phone apps show the change at once.
 If the Project already has a name or avatar, nothing changes and the command
 says so; leave it. Add `--replace` only when the User asked in this conversation
 to change that name or avatar.
-
-### Name the Agent Session
-
-Name it once: pass `--session-label` on your first send or ask, 2-6 words
-about the Agent Session's job, never the Project, branch, status, result,
-identifier, hash, or filesystem path. The name stays, so leave the flag off
-after that. Where the harness does not identify the Agent Session, the CLI
-sets it aside.
-
-At each change of job, check whether the name still describes the work. If the
-job changed completely enough that the old name would mislead the User, run
-`notifai session rename 'New job'` as you start it, without waiting for a
-notification or User reminder. Keep the name for milestones, ordinary
-progress, and same-job refinements. The command takes no Agent Session id: the active harness must
-prove the exact session.
 
 ## Ask a question
 

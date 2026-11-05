@@ -131,6 +131,7 @@ import { CLI_UPDATE_AVAILABLE, SERVICE_UPDATE_IN_PROGRESS } from './cli-contract
 import {
   claudeCommandReadiness,
   claudeCommandRulesInstalled,
+  claudeLegacyCommandRulesOnly,
   claudeLaunchMode,
   claudeSessionPermissionMode,
   claudeSettingsDefaultMode,
@@ -1176,7 +1177,7 @@ async function codexSharedServerStates(deps: CommandDeps): Promise<ReadinessStat
 }
 
 /**
- * Whether Codex may run the commands an away User depends on outside its
+ * Whether Codex may run every Notifai command outside its
  * sandbox without a terminal approval. Reported only once Codex is wired, and
  * never a blocker: full-access sessions do not need the rule, and hooks work
  * without it.
@@ -1377,7 +1378,7 @@ function readinessRemedy(
 }
 
 /**
- * Whether Claude Code may run the commands an away User depends on without a
+ * Whether Claude Code may run every Notifai command without a
  * terminal approval. Reported only once Claude Code is wired, never a blocker,
  * and offered unless this runs in a Claude Code session known to be in
  * bypassPermissions mode; see claude-command-approval.ts.
@@ -1387,7 +1388,8 @@ function claudeCommandStates(deps: CommandDeps, installations: readonly { harnes
   const installed = claudeCommandRulesInstalled(deps.env)
   const { active, contested } = resolveActiveHarness(deps.env, deps.cwd, (deps.now ?? Date.now)())
   const inClaude = active?.harness === 'claude-code' || contested.some((candidate) => candidate.harness === 'claude-code')
-  if (!inClaude || installed) return [claudeCommandReadiness(installed, inClaude ? { permissionMode: null } : null)]
+  const legacy = !installed && claudeLegacyCommandRulesOnly(deps.env)
+  if (!inClaude || installed) return [claudeCommandReadiness(installed, inClaude ? { permissionMode: null } : null, legacy)]
   const exact = contested.length <= 1 && active?.sessionId !== undefined
   const root = projectLocation(deps.cwd, deps.env)?.root
   const known = claudeSessionPermissionMode({
@@ -1395,7 +1397,7 @@ function claudeCommandStates(deps: CommandDeps, installations: readonly { harnes
     launch: exact ? claudeLaunchMode(processArguments(claudeSessionPid(deps.env))) : null,
     settings: claudeSettingsDefaultMode(deps.env, root === undefined ? [deps.cwd] : [deps.cwd, root]),
   })
-  return [claudeCommandReadiness(installed, { permissionMode: known?.mode ?? null, source: known?.source ?? null })]
+  return [claudeCommandReadiness(installed, { permissionMode: known?.mode ?? null, source: known?.source ?? null }, legacy)]
 }
 
 interface HookCheck {

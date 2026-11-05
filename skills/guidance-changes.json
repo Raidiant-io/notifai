@@ -1,5 +1,5 @@
 {
-  "current": "bed0a92291e51e4c9944a27db78d02a7f56fabc90583661bf30bec31c4615543",
+  "current": "84258922fc45c5e110084be9cae7d25bdc2a37f577233976f45f317218027c70",
   "releases": [
     {
       "digest": "3e47b01bc6bbfb43e910c660b9964fab6459d75148c3c02dcbcd0be64cfb2963",
@@ -356,6 +356,10 @@
     {
       "digest": "bed0a92291e51e4c9944a27db78d02a7f56fabc90583661bf30bec31c4615543",
       "note": "After the User stops a Codex turn, an answer or note from their devices can now start the agent's next turn where the app around Codex can start one: the Codex app when it has the conversation open, an app chat, or a terminal app whose message box is empty (Notifai types its usual wake there and never types over a draft; the User can turn the terminal case off, see `notifai config explain wake.orca_terminal`). The turn starts with Notifai's usual wake; follow it as before. Elsewhere the input still arrives with the User's next message."
+    },
+    {
+      "digest": "84258922fc45c5e110084be9cae7d25bdc2a37f577233976f45f317218027c70",
+      "note": "Notifai names your Agent Session when it first sends; you no longer pass `--session-label`. If `notifai session status` shows a name that doesn't fit your overall job, rename it with `notifai session rename '<2–6 words>'`. When your overall job changes, rename the session accordingly. Setup's command approval for Claude Code and Codex now covers every `notifai` command, and a Notifai update widens the narrower approval an earlier Notifai added."
     }
   ]
 }

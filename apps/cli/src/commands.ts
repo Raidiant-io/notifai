@@ -63,7 +63,7 @@ export {
   projectIconsCommand,
   projectStatusCommand,
 } from './commands-project.js'
-export { agentSessionRenameCommand } from './commands-agent-sessions.js'
+export { agentSessionRenameCommand, agentSessionStatusCommand } from './commands-agent-sessions.js'
 export { realIo } from './commands-io.js'
 
 export { updateSkillCommand } from './commands-update-skill.js'

@@ -17,7 +17,7 @@ export const ROOT_ACTIVATION_MARK = 'You own Notification Requests unless your a
 function rootOwnership(skillFile: string | null, request = false): string {
   return `${request ? 'Notifai guidance for this Notification Request.' : 'Notifai is enabled for this Project.'} ${ROOT_ACTIVATION_MARK} ` +
     'If another agent started this Agent Session with a task brief, that agent owns them unless the brief delegates them to you: report Agent Events to it and send none yourself. ' +
-    `${skillFile === null ? 'Repair the Notifai skill with \`notifai init --skills\`, then load its verified copy' : `Read the Notifai skill at \`${skillFile}\``} before your first Notification Request; when your job changes completely, load it again and rename this Agent Session. ` +
+    `${skillFile === null ? 'Repair the Notifai skill with \`notifai init --skills\`, then load its verified copy' : `Read the Notifai skill at \`${skillFile}\``} before your first Notification Request; when your overall job changes, load it again and rename this Agent Session. ` +
     'The guidance below governs; unless it says otherwise, when work you own or coordinate needs a User decision, approval, sign-in, credential setup or physical action, register it with `notifai ask` in the same turn you ask it in the conversation: conversation alone misses an away User. ' +
     'When you brief an agent in its own Agent Session, name the Notification Request owner; delegating them delegates the work their answers unblock. Ask the User yourself when you will act on the answer. ' +
     'If you ask, do the work the answer unblocks before you report back, even when a brief says to end after asking. ' +

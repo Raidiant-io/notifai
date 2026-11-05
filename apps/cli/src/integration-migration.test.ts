@@ -15,6 +15,8 @@ import { localIntegrationAssessment } from './integration-health.js'
 import * as nativeInstallation from './native-installation.js'
 import { nativeSkills } from './native-skills.js'
 import { packageVersion } from './release.js'
+import { CLAUDE_COMMAND_RULES, claudeCommandRulesFile, LEGACY_CLAUDE_COMMAND_RULES } from './claude-command-approval.js'
+import { codexCommandRulesFile, inspectCodexCommandRules, renderCodexCommandRules } from './codex-command-rules.js'
 
 const roots: string[] = []
 afterEach(() => { vi.restoreAllMocks(); for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }) })
@@ -115,6 +117,50 @@ it('refreshes every outdated Notifai skill copy beside hook repair, preserving f
   expect(JSON.parse(f.out.at(-1)!)).toMatchObject({ migration_complete: true, pending_actions: [] })
 })
 
+it.each(['darwin', 'win32'] as const)('widens an earlier Notifai command approval on update, for Claude Code and Codex, without a new question (%s)', async (platform) => {
+  for (const automatic of [false, true]) {
+    const f = fixture(platform)
+    f.deps.env['CLAUDE_CONFIG_DIR'] = path.join(f.home, '.claude')
+    expect(hooksInstallCommand(f.deps, { harness: 'claude-code', narrate: false })).toBe(0)
+    const settings = claudeCommandRulesFile(f.deps.env)
+    const document = JSON.parse(readFileSync(settings, 'utf8'))
+    document.permissions = { allow: ['Bash(git status)', ...LEGACY_CLAUDE_COMMAND_RULES], deny: ['Bash(notifai logout)'] }
+    writeFileSync(settings, JSON.stringify(document, null, 2))
+    const rules = codexCommandRulesFile(f.deps.env, platform)
+    mkdirSync(path.dirname(rules), { recursive: true })
+    writeFileSync(rules, readFileSync(new URL('./fixtures/codex-notifai-rules-2026-10-26.rules', import.meta.url), 'utf8'))
+    const hooksBefore = JSON.parse(readFileSync(settings, 'utf8')).hooks
+    f.out.length = 0
+    await updateResumeCommand(f.deps, { json: true, automatic })
+    expect(JSON.parse(f.out.at(-1)!).changed).toEqual(expect.arrayContaining(['claude-code-commands', 'codex-commands']))
+    const after = JSON.parse(readFileSync(settings, 'utf8'))
+    expect(after.permissions).toEqual({ allow: ['Bash(git status)', ...CLAUDE_COMMAND_RULES], deny: ['Bash(notifai logout)'] })
+    expect(after.hooks).toEqual(hooksBefore)
+    expect(readFileSync(rules, 'utf8')).toBe(renderCodexCommandRules())
+    expect(inspectCodexCommandRules(f.deps.env, platform).condition).toBe('current')
+    f.out.length = 0
+    await updateResumeCommand(f.deps, { json: true, automatic })
+    expect(JSON.parse(f.out.at(-1)!).changed).not.toEqual(expect.arrayContaining(['claude-code-commands']))
+    expect(JSON.parse(f.out.at(-1)!).changed).not.toEqual(expect.arrayContaining(['codex-commands']))
+  }
+})
+
+it('keeps a Codex rules file the User edited under Notifai\'s header through an update', async () => {
+  const f = fixture()
+  const rules = codexCommandRulesFile(f.deps.env)
+  mkdirSync(path.dirname(rules), { recursive: true })
+  const edited = `${readFileSync(new URL('./fixtures/codex-notifai-rules-2026-10-26.rules', import.meta.url), 'utf8')}` +
+    'prefix_rule(pattern = ["notifai", "logout"], decision = "prompt", justification = "Ask me first")\n'
+  writeFileSync(rules, edited)
+  for (const automatic of [false, true]) {
+    f.out.length = 0
+    await updateResumeCommand(f.deps, { json: true, automatic })
+    expect(JSON.parse(f.out.at(-1)!).changed).not.toEqual(expect.arrayContaining(['codex-commands']))
+    expect(readFileSync(rules, 'utf8')).toBe(edited)
+  }
+  expect(inspectCodexCommandRules(f.deps.env).condition).toBe('edited')
+})
+
 it('verifies an unchanged healthy integration without optional setup or a restart', async () => {
   const f = fixture()
   const protectedBytes = readFileSync(f.installation.file, 'utf8')
@@ -122,6 +168,8 @@ it('verifies an unchanged healthy integration without optional setup or a restar
   expect(JSON.parse(f.out.at(-1)!)).toMatchObject({ files_complete: true, migration_complete: true,
     changed: [], pending_actions: [] })
   expect(readFileSync(f.installation.file, 'utf8')).toBe(protectedBytes)
+  // Command approval the User never granted is never added by an update.
+  expect(existsSync(codexCommandRulesFile(f.deps.env))).toBe(false)
 })
 
 function approveCodex(f: ReturnType<typeof fixture>) {

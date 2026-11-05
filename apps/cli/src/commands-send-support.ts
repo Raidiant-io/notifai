@@ -70,7 +70,7 @@ export function resolveDraftInvocation(
   if (!source.ok) return source
   if (source.generatedSessionLabel !== undefined) {
     deps.io.err(
-      `Heads up (source.session_label): No semantic Agent Session title was available, so the User sees this Agent Session under the generated name "${source.generatedSessionLabel}" until it is named. Pass --session-label with a concise task name when one is available.`,
+      `Heads up (source.session_label): No semantic Agent Session title was available, so the User sees this Agent Session under the generated name "${source.generatedSessionLabel}" until it is renamed with \`notifai session rename '<2–6 words>'\`.`,
     )
   }
   if (source.droppedSessionLabel === true) {
@@ -85,7 +85,7 @@ export function resolveDraftInvocation(
   }
   if (source.unchangedSessionLabel !== undefined) {
     deps.io.err(
-      `Heads up (source.session_label): The supplied label did not rename this Agent Session; its local name remains ${JSON.stringify(source.unchangedSessionLabel)}. If the job changed completely enough that this name would mislead, run \`notifai session rename 'New job'\` inside the exact active Agent Session. Keep the current name for milestones, progress, or same-job refinements.`,
+      `Heads up (source.session_label): The supplied label did not rename this Agent Session; its local name remains ${JSON.stringify(source.unchangedSessionLabel)}. If it does not fit your overall job, run \`notifai session rename '<2–6 words>'\`.`,
     )
   }
   return {

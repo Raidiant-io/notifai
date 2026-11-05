@@ -1,0 +1,43 @@
+# Notifai command rules. Written by `notifai init --codex-commands`; removed by `notifai hooks uninstall --harness codex`.
+# Lets Codex run the Notifai commands an away User depends on outside its sandbox without asking first.
+# Setup, configuration and guidance edits keep their prompt. Rules match a literal `notifai …` argument list only.
+prefix_rule(
+    pattern = ["notifai", ["send", "ask", "receive", "acknowledge", "status", "replies", "close"]],
+    decision = "allow",
+    justification = "Notifai notifications and answers",
+    match = [
+        "notifai send --kind done --title Users-can-create-accounts --summary Sign-up-works-on-staging",
+        "notifai ask Which-environment --choice Staging --choice Production --json",
+        "notifai receive",
+        "notifai acknowledge req_123 --text Rolling-out-to-staging",
+        "notifai status q_123 --json",
+        "notifai replies --pending --json",
+        "notifai close --pending",
+    ],
+    not_match = [
+        "notifai init --hooks --json",
+        "notifai config set ask_notifications false",
+        "notifai hooks uninstall --harness codex",
+        "notifai update",
+        "notifai logout",
+    ],
+)
+prefix_rule(
+    pattern = ["notifai", "guidance"],
+    decision = "allow",
+    justification = "Reads Notifai guidance",
+    match = ["notifai guidance"],
+)
+# A prefix rule cannot exclude a longer prefix, so guidance edits get their prompt back explicitly.
+prefix_rule(
+    pattern = ["notifai", "guidance", ["set", "unset"]],
+    decision = "prompt",
+    justification = "Guidance edits are the User's standing word and keep their prompt",
+    match = ["notifai guidance set when-to-notify Only-when-blocked --local --yes", "notifai guidance unset when-to-notify --local --yes"],
+)
+prefix_rule(
+    pattern = ["notifai", "session", "rename"],
+    decision = "allow",
+    justification = "Renames the Agent Session",
+    match = ["notifai session rename New-job"],
+)
