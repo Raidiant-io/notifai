@@ -404,6 +404,17 @@ const INFO: Record<ConfigKey, Omit<ConfigKeyInfo, 'key'>> = {
       'On (the default), when you stop a Codex app conversation and an answer or note arrives for it while no app window has it open, Notifai runs its next turn in the background with the app\'s own Codex, so the agent gets what arrived right away. You see that turn when you next open the conversation. Requests for approval or input in that turn are declined, since nobody is there to answer them. A conversation a window has open is always woken through that window instead.\n\nOff, it gets what arrived with your next message. `on` and `off` are accepted as well as `true` and `false`. If this file cannot be read, nothing runs in the background.',
     example: 'false',
   },
+  'wake.t3': {
+    label: 'Wake stopped T3 Code agents',
+    group: 'wake',
+    integration: 't3',
+    kind: 'boolean',
+    machineOnly: true,
+    summary: 'Whether an answer wakes a Codex agent you stopped in T3 Code',
+    detail:
+      'On (the default), when you stop a Codex agent in T3 Code and an answer or note arrives for it, Notifai sends its short wake message to that thread with T3 Code\'s own `t3 thread send`, while T3 Code runs, so the agent gets what arrived right away. It shows in the thread like any message. With `reopen.t3` off, Notifai sends nothing to T3 Code either way.\n\nOff, a stopped T3 Code agent gets what arrived with your next message. `on` and `off` are accepted as well as `true` and `false`. If this file cannot be read, nothing is sent.',
+    example: 'false',
+  },
   log_level: {
     label: 'Log level',
     group: 'diagnostics',

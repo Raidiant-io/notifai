@@ -139,7 +139,7 @@ export async function connectCodexControl(
  * Codex cannot be asked in time or refuses.
  */
 export function codexStdioRequest(env: NodeJS.ProcessEnv, cwd: string, method: 'hooks/list' | 'thread/queue/delete', params: unknown,
-  timeoutMs = 5_000): Promise<unknown> {
+  timeoutMs = 5_000, executable = 'codex'): Promise<unknown> {
   return new Promise((resolve) => {
     let settled = false
     let child: ReturnType<typeof spawn> | undefined
@@ -152,7 +152,7 @@ export function codexStdioRequest(env: NodeJS.ProcessEnv, cwd: string, method: '
     }
     const timer = setTimeout(() => finish(null), timeoutMs)
     try {
-      child = spawn('codex', ['app-server'], { cwd, env, stdio: ['pipe', 'pipe', 'ignore'], windowsHide: true })
+      child = spawn(executable, ['app-server'], { cwd, env, stdio: ['pipe', 'pipe', 'ignore'], windowsHide: true })
     } catch {
       finish(null)
       return

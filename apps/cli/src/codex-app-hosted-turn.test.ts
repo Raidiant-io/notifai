@@ -2,7 +2,7 @@ import { EventEmitter } from 'node:events'
 import { PassThrough } from 'node:stream'
 import type { ChildProcess } from 'node:child_process'
 import { describe, expect, it } from 'vitest'
-import { hostedTurnEnv, startHostedCodexAppTurn } from './codex-app-hosted-turn.js'
+import { hostedTurnEnv, notifaiHooksStandDown, runHostedCodexAppTurn, startHostedCodexAppTurn } from './codex-app-hosted-turn.js'
 
 const THREAD = '01a1abbc-72db-7b31-8454-c857da5388e4'
 
@@ -48,7 +48,7 @@ function fakeServer(options: { resume?: 'ok' | 'refused'; lastTurn?: string; req
   return { spawnServer, calls, replies, spawned: () => spawned, killed: () => killed }
 }
 
-const run = (server: ReturnType<typeof fakeServer>, maxTurnMs = 60_000) => startHostedCodexAppTurn({ threadId: THREAD, codexHome: '/Users/u/.codex',
+const run = (server: ReturnType<typeof fakeServer>, maxTurnMs = 60_000, graceMs?: number) => startHostedCodexAppTurn({ ...(graceMs === undefined ? {} : { graceMs }), threadId: THREAD, codexHome: '/Users/u/.codex',
   executable: '/Applications/ChatGPT.app/Contents/Resources/codex-cli/CodexCLI.app/Contents/MacOS/codex', cwd: '/p', text: 'WAKE',
   env: { HOME: '/Users/u', PATH: '/usr/bin' }, startTimeoutMs: 5_000, maxTurnMs, spawnServer: server.spawnServer })
 
@@ -61,8 +61,9 @@ describe('a stopped Codex app conversation\'s turn in the background', () => {
     expect(await hosted.done).toBe('completed')
     expect(server.calls.map((call) => call.method)).toEqual(['initialize', 'initialized', 'thread/resume', 'turn/start', 'thread/unsubscribe'])
     expect(server.calls[3]!.params).toEqual({ threadId: THREAD, input: [{ type: 'text', text: 'WAKE', text_elements: [] }] })
-    // The app's own Codex, on the app's home, with hooks off: they would read its exit as the conversation's end.
-    expect(server.spawned()).toMatchObject({ args: ['-c', 'features.hooks=false', 'app-server'], env: { CODEX_HOME: '/Users/u/.codex' } })
+    // The app's own Codex, on the app's home, with every hook on: only Notifai's stand down, by the server's own marker.
+    expect(server.spawned()).toMatchObject({ args: ['app-server'], env: { CODEX_HOME: '/Users/u/.codex' } })
+    expect(server.spawned()!.args).not.toContain('features.hooks=false')
     expect(server.killed()).toBe(true)
   })
 
@@ -82,14 +83,59 @@ describe('a stopped Codex app conversation\'s turn in the background', () => {
     if (!hosted.started) throw new Error('expected a start')
     await hosted.done
     expect(asking.replies).toContainEqual(expect.objectContaining({ id: 900, error: expect.objectContaining({ code: -32601 }) }))
+    // A server that ends nothing after the interrupt is stopped once the grace runs out.
     const long = fakeServer({ complete: false })
-    const capped = await run(long, 20)
+    const capped = await run(long, 20, 30)
     if (!capped.started) throw new Error('expected a start')
-    await new Promise((resolve) => setTimeout(resolve, 60))
+    await new Promise((resolve) => setTimeout(resolve, 40))
     expect(long.calls.map((call) => call.method)).toContain('turn/interrupt')
+    expect(long.killed()).toBe(false)
+    expect(await capped.done).toBe('stopped')
+    expect(long.killed()).toBe(true)
   })
 
-  it('passes the conversation\'s environment for tools, without Notifai\'s own', () => {
-    expect(hostedTurnEnv({ HOME: '/h', PATH: '/bin', NOTIFAI_HOOK_SOURCE_PID: '1', CODEX_THREAD_ID: 't', SECRET_TOKEN: 'x' })).toEqual({ HOME: '/h', PATH: '/bin' })
+  it('passes the conversation\'s environment for its tools, less the markers of one hook or command', () => {
+    const env = { HOME: '/h', PATH: '/bin', SSH_AUTH_SOCK: '/s', GH_TOKEN: 'g', HTTPS_PROXY: 'p', XDG_CONFIG_HOME: '/x', NOTIFAI_CREDENTIALS: 'file',
+      NOTIFAI_HOOK_SOURCE_PID: '1', NOTIFAI_NATIVE_ENTRY: 'launcher-v1', NOTIFAI_INTERNAL_HOSTED_TURN_INPUT: '{}', CODEX_THREAD_ID: 't' }
+    expect(hostedTurnEnv(env)).toEqual({ HOME: '/h', PATH: '/bin', SSH_AUTH_SOCK: '/s', GH_TOKEN: 'g', HTTPS_PROXY: 'p', XDG_CONFIG_HOME: '/x', NOTIFAI_CREDENTIALS: 'file' })
+  })
+
+  it('runs only where every Notifai hook knows to stand down there', async () => {
+    const hooks = (commands: string[]) => async () => ({ data: [{ cwd: '/p', hooks: commands.map((command) => ({ command })) }] })
+    const notifai = "'/Users/u/.notifai/bin/notifai' hook user-prompt-submit --owner notifai --harness codex"
+    const check = (commands: string[], versions: Record<string, number | null>) => notifaiHooksStandDown({ executable: '/c', codexHome: '/h', cwd: '/p',
+      env: { PATH: '/usr/bin' }, list: hooks(commands), launcherVersion: (program) => versions[program] ?? null })
+    expect(await check([notifai, '/usr/local/bin/guard --strict'], { '/Users/u/.notifai/bin/notifai': 2 })).toBe(true)
+    // An older launcher would let Notifai's hooks read the server as a second host.
+    expect(await check([notifai], { '/Users/u/.notifai/bin/notifai': 1 })).toBe(false)
+    expect(await check([notifai], {})).toBe(false)
+    expect(await notifaiHooksStandDown({ executable: '/c', codexHome: '/h', cwd: '/p', env: {}, list: async () => null })).toBe(false)
+  })
+
+  it('has its detached runner record the turn\'s start and end, as its hooks would', async () => {
+    const { mkdtempSync, rmSync } = await import('node:fs')
+    const os = await import('node:os')
+    const path = await import('node:path')
+    const { readSessionState, writeSessionState } = await import('./hook-session-state.js')
+    const { codexInterruptedTurn, recordTurnInterrupt, recordTurnStart, observedCodexTurnActivity } = await import('./session-attendant-state.js')
+    const root = mkdtempSync(path.join(os.tmpdir(), 'notifai-hosted-runner-'))
+    try {
+      const env = { HOME: root, XDG_STATE_HOME: path.join(root, 'state') }
+      writeSessionState(THREAD, env, { harness: 'codex', interrupt_wake: { key: 'owner', turn: 'turn-stopped', route: 'codex-app', at: 1, outcome: 'trying' } })
+      recordTurnStart(THREAD, env, 'owner', 'turn-stopped')
+      recordTurnInterrupt(THREAD, env, 'turn-stopped')
+      let finish: (status: 'completed') => void = () => undefined
+      const done = new Promise<'completed'>((resolve) => { finish = resolve })
+      const running = runHostedCodexAppTurn({ session_id: THREAD, owner_key: 'owner', turn: 'turn-stopped', codex_home: '/h', executable: '/c', cwd: '/p', text: 'WAKE', max_turn_ms: 1_000 },
+        env, { start: async () => ({ started: true, turnId: 'turn-hosted', done }) })
+      await new Promise((resolve) => setTimeout(resolve, 20))
+      expect(readSessionState(THREAD, env).interrupt_wake).toMatchObject({ outcome: 'started', hosted: { turn: 'turn-hosted' } })
+      expect(codexInterruptedTurn(THREAD, env, 'owner')).toBeNull()
+      expect(observedCodexTurnActivity(THREAD, env, 'owner')).toBe('working')
+      finish('completed')
+      expect(await running).toBe('completed')
+      expect(observedCodexTurnActivity(THREAD, env, 'owner')).toBe('idle')
+      expect(readSessionState(THREAD, env).interrupt_wake?.hosted).toMatchObject({ ended: true })
+    } finally { rmSync(root, { recursive: true, force: true }) }
   })
 })

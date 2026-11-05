@@ -266,6 +266,8 @@ export interface SessionState {
     key: string; turn: string; route: InterruptRoute; at: number; outcome: InterruptWakeOutcome; retry_at?: number
     /** When the first attempt ran: a held wake gives up two minutes after it. */
     tried_at?: number
+    /** A background Codex app turn: its detached runner, the turn it started, and whether that turn's end was recorded. */
+    hosted?: { launched_at?: number; runner?: ProcessIdentity; turn?: string; ended?: true }
     stop_screen?: StopScreen
   }
   /** The Orca terminal a Codex terminal owner runs in, for waking it past a stop (`orca-terminal-wake.ts`). */

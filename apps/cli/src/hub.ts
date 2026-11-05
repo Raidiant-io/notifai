@@ -126,7 +126,6 @@ import {
   currentCodexTurn,
   observedCodexTurnActivity,
   recordTurnInterrupt,
-  recordTurnStart,
   recordTurnStop,
   readAttendantEndingLease,
   turnActivityPath,
@@ -158,10 +157,11 @@ export type { InterruptRoute } from './hook-types.js'
 import { compareVersions } from './version.js'
 import { codexThreadOnSharedServer, removeQueuedCodexWake, startPausedCodexWake } from './codex-paused-wake.js'
 import { codexAppIpcPath, codexAppIpcVerified, openCodexAppIpc } from './codex-app-ipc.js'
-import { codexAppCodexOf, hostedTurnEnv, startHostedCodexAppTurn } from './codex-app-hosted-turn.js'
+import { readNativeTurnTail } from './codex-native-turn.js'
+import { codexAppCodexOf, hostedTurnEnv, launchHostedTurn, notifaiHooksStandDown, type HostedTurnRequest } from './codex-app-hosted-turn.js'
 import { sendT3Wake, systemT3Host, t3Plan } from './reopen-t3.js'
 import { readStopScreen, wakeOrcaTerminal } from './orca-terminal-wake.js'
-import { machineSwitch } from './config.js'
+import { machineSetting, machineSwitch } from './config.js'
 import { orcaCardGroup, orcaChatPresentation, sendOrcaChatWake } from './orca-chat-answers.js'
 import { orcaBlockingAnswerWaits, orcaBlockingPresentation, reconcileOrcaBlocking } from './orca-blocking-questions.js'
 import type { OrcaRuntime } from './orca-runtime.js'
@@ -218,6 +218,8 @@ const ORCA_TERMINAL_HOLD_MS = 2 * 60_000
 const ORCA_TERMINAL_ENTER_AFTER_MS = 50
 /** The longest a background Codex app turn runs before it is interrupted. */
 const HOSTED_TURN_MAX_MS = 60 * 60_000
+/** How long a background turn's runner has to record itself before it counts as gone. */
+const HOSTED_RUNNER_START_MS = 60_000
 
 /** A turn whose rollout was written this recently may have just paused on a question. */
 const ORCA_BLOCKING_RECENT_MS = 10_000
@@ -345,7 +347,10 @@ export interface HubOptions {
     codexApp?: typeof openCodexAppIpc
     orcaTerminal?: typeof wakeOrcaTerminal
     settleMs?: number
-    hostedTurn?: typeof startHostedCodexAppTurn
+    /** Present in tests: the background turn may run off macOS. */
+    hostedTurn?: true
+    launchHostedTurn?: typeof launchHostedTurn
+    hooksStandDown?: typeof notifaiHooksStandDown
     codexAppCodex?: string
     t3?: ReturnType<typeof systemT3Host>
     stopScreen?: typeof readStopScreen
@@ -4025,7 +4030,8 @@ export class Hub {
     const place = session.registration.place
     if (place === 'orca-chat') return state.orca_chat?.key === session.record.key ? 'orca-chat' : null
     if (place === 'codex-app') return 'codex-app'
-    if (place === 't3') return 't3'
+    // T3 Code: unless waking it is off, or the User turned its reopening off.
+    if (place === 't3') return machineSwitch('wake.t3', this.env) && machineSetting('reopen.t3', this.env).value !== 'off' ? 't3' : null
     if (place === 'terminal' && state.orca_terminal?.key === session.record.key &&
         machineSwitch('wake.orca_terminal', this.env)) return 'orca-terminal'
     return null
@@ -4048,18 +4054,59 @@ export class Hub {
     if ((this.options.codexThreadHeld ?? codexThreadHeld)(home, session.id) !== false) { record('unavailable', 'thread-held'); return }
     const executable = this.options.interruptWake?.codexAppCodex ?? codexAppCodexOf(session.harnessProcess.pid)
     if (executable === null) { record('unavailable', 'app-codex-missing'); return }
+    const cwd = session.registration.cwd ?? os.homedir()
+    const env = hostedTurnEnv(session.env)
+    // Every hook still runs there; Notifai's own must know to stand down, or it would read the server as a second host.
+    if (!(await (this.options.interruptWake?.hooksStandDown ?? notifaiHooksStandDown)({ executable, codexHome: home, cwd, env }))) {
+      record('unavailable', 'notifai-hooks-old'); return
+    }
     if (!step.stillWaiting() || !(await step.clearQueued())) { record('unavailable', 'queued-wake-kept'); return }
-    const hosted = await (this.options.interruptWake?.hostedTurn ?? startHostedCodexAppTurn)({ threadId: session.id, codexHome: home, executable,
-      cwd: session.registration.cwd ?? os.homedir(), text: step.text, env: hostedTurnEnv(session.env),
-      startTimeoutMs: Math.max(1, step.remainingMs()), maxTurnMs: HOSTED_TURN_MAX_MS })
-    if (!hosted.started) { record('unavailable', `background-${hosted.reason}`); return }
-    try { recordTurnStart(session.id, session.env, attempt.key, hosted.turnId) } catch { /* Activity is a hint. */ }
-    record('started', 'background-started')
-    void hosted.done.then((status) => {
-      try { recordTurnStop(session.id, session.env, attempt.key, hosted.turnId) } catch { /* Activity is a hint. */ }
-      this.logger.info('delivery.handoff', { route: 'interrupt-codex-app', stage: `background-${status}`, session: session.id })
-      if (this.pausedWakeSettable(session)) session.checkInput()
-    })
+    const request: HostedTurnRequest = { session_id: session.id, owner_key: attempt.key, turn: attempt.turn, codex_home: home, executable, cwd,
+      text: step.text, max_turn_ms: HOSTED_TURN_MAX_MS }
+    // A detached runner owns the turn to its end: the hub may exit meanwhile (an update, a sign-out, a crash).
+    const launchedAt = this.clock.wall()
+    updateSessionState(session.id, session.env, (state) => state.interrupt_wake?.key !== attempt.key || state.interrupt_wake.turn !== attempt.turn ? state
+      : { ...state, interrupt_wake: { ...state.interrupt_wake, hosted: { launched_at: launchedAt } } })
+    try {
+      await (this.options.interruptWake?.launchHostedTurn ?? launchHostedTurn)(request, env)
+    } catch (err) {
+      record('unavailable', 'background-launch-failed')
+      this.logger.error('delivery.handoff', { route: 'interrupt-codex-app', stage: 'background-launch-failed', session: session.id,
+        message: err instanceof Error ? err.message : String(err) })
+      return
+    }
+    this.logger.info('delivery.handoff', { route: 'interrupt-codex-app', stage: 'background-launched', session: session.id })
+  }
+
+  /**
+   * A background Codex app turn whose runner is gone without recording the
+   * turn's end (killed, or the machine stopped): the turn is over unless
+   * something still holds the thread and the rollout still shows it running.
+   * Recorded from the rollout so the session does not read as working
+   * forever; a runner that never started a turn leaves the input to the
+   * ordinary route.
+   */
+  recoverHostedTurn(session: HubSession): void {
+    const wake = readSessionState(session.id, session.env).interrupt_wake
+    const hosted = wake?.hosted
+    if (wake === undefined || hosted === undefined || hosted.ended === true || wake.key !== session.record.key) return
+    // A runner that has not said who it is yet gets a minute to start.
+    if (hosted.runner === undefined && this.clock.wall() - (hosted.launched_at ?? 0) < HOSTED_RUNNER_START_MS) return
+    if (hosted.runner !== undefined && processIdentityLiveness(hosted.runner) !== 'gone') return
+    const end = (change: Partial<NonNullable<SessionState['interrupt_wake']>>) => updateSessionState(session.id, session.env, (state) =>
+      state.interrupt_wake?.key !== wake.key || state.interrupt_wake.turn !== wake.turn ? state
+        : { ...state, interrupt_wake: { ...state.interrupt_wake, ...change, hosted: { ...state.interrupt_wake.hosted, ended: true } } })
+    if (hosted.turn === undefined) {
+      if (wake.outcome === 'trying') end({ outcome: 'unavailable' })
+      return
+    }
+    const home = session.registration.codexHome ?? path.join(os.homedir(), '.codex')
+    const latest = readNativeTurnTail(session.registration.transcriptPath, session.id, session.env)?.latest
+    const running = latest?.id === hosted.turn && latest.ended !== true
+    if (running && (this.options.codexThreadHeld ?? codexThreadHeld)(home, session.id) !== false) return
+    try { recordTurnStop(session.id, session.env, wake.key, hosted.turn) } catch { /* Activity is a hint. */ }
+    end({})
+    this.logger.info('delivery.handoff', { route: 'interrupt-codex-app', stage: 'background-recovered', session: session.id })
   }
 
   /**
@@ -4136,6 +4183,8 @@ export class Hub {
       updateSessionState(session.id, session.env, (latest) => ({ ...latest, interrupt_wake: fresh }))
     }
     if (tried.outcome === 'started' || tried.outcome === 'unavailable' || tried.outcome === 'unknown') return
+    // A background turn's runner owns this stop now.
+    if (tried.hosted !== undefined) return
     if (tried.outcome === 'held' && now < (tried.retry_at ?? 0)) return
     // A stop the app's quit caused is followed at once by the session's end.
     const settle = this.options.interruptWake?.settleMs ?? INTERRUPT_SETTLE_MS
@@ -4183,8 +4232,10 @@ export class Hub {
         if (codexAppSurface(meta?.originator ?? null) !== 'app') { record('unavailable', 'not-the-codex-app'); return }
         if (!codexAppIpcVerified(meta?.cliVersion)) { record('unavailable', 'unverified-build'); return }
         const ipc = await (this.options.interruptWake?.codexApp ?? openCodexAppIpc)(codexAppIpcPath(session.env), Date.now() + Math.max(1, remainingMs()))
-        let unowned = ipc === null
-        if (ipc !== null) {
+        // Only the router's own "no window has it" counts: an unreachable router says nothing.
+        if (ipc === null) { record('unavailable', 'router-unreachable'); return }
+        let unowned = false
+        {
           try {
             const owner = await ipc.owner(session.id)
             if (owner.kind === 'owned') {
@@ -4349,6 +4400,7 @@ export class Hub {
           this.closing(session, 'harness-gone')
         }
       }
+      if (session.harness === 'codex') this.recoverHostedTurn(session)
       session.checkInput()
     }
     if (now - this.lastHeartbeat >= 60 * 60_000) {

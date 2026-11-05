@@ -1,5 +1,5 @@
 {
-  "current": "84258922fc45c5e110084be9cae7d25bdc2a37f577233976f45f317218027c70",
+  "current": "d9ec73815aeec96905355c7d416c848a94af4723910428561cdb8e5e3cfdd306",
   "releases": [
     {
       "digest": "3e47b01bc6bbfb43e910c660b9964fab6459d75148c3c02dcbcd0be64cfb2963",
@@ -360,6 +360,10 @@
     {
       "digest": "84258922fc45c5e110084be9cae7d25bdc2a37f577233976f45f317218027c70",
       "note": "Notifai names your Agent Session when it first sends; you no longer pass `--session-label`. If `notifai session status` shows a name that doesn't fit your overall job, rename it with `notifai session rename '<2–6 words>'`. When your overall job changes, rename the session accordingly. Setup's command approval for Claude Code and Codex now covers every `notifai` command, and a Notifai update widens the narrower approval an earlier Notifai added."
+    },
+    {
+      "digest": "d9ec73815aeec96905355c7d416c848a94af4723910428561cdb8e5e3cfdd306",
+      "note": "After the User stops a Codex turn, an answer or note can now also start the agent's next turn in a T3 Code thread (`wake.t3`), and in a Codex app conversation no window has open, run in the background with the app's own Codex (`wake.codex_app_background`); `notifai config explain` describes both. In the background case Notifai's own hooks stand down, so none supplies the input: the wake asks you to run `notifai receive`, so do. The User's other hooks run as usual; approval requests in that turn are declined."
     }
   ]
 }

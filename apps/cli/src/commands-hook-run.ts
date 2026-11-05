@@ -5,6 +5,7 @@ import { observeCodexTerminalAnswers, reportCodexTerminalAnswers, takeCodexTermi
 import { isOrcaChatSentPrompt, recordOrcaChatSession, takeOrcaChatSentContext } from './orca-chat-answers.js'
 import { orcaBlockingPostToolUse, takeOrcaBlockingTypedAck } from './orca-blocking-questions.js'
 import { recordOrcaTerminal } from './orca-terminal-wake.js'
+import { HOSTED_TURN_INPUT_ENV, parseHostedTurnRequest, runHostedCodexAppTurn } from './codex-app-hosted-turn.js'
 import { observeLoadedIntegration } from './integration-revision.js'
 /** Fail-open CLI adapter from harness input to hook lifecycle handlers. */
 import { pendingAgentUpdateNotice } from './agent-update-notice.js'
@@ -122,7 +123,7 @@ const INTERNAL_HOOK_EVENTS = [
   'openclaw-turn-start', 'openclaw-turn-end', 'openclaw-list-pending',
   'openclaw-native-session', 'openclaw-attendance-ready', 'openclaw-settlement',
   'openclaw-verify-prepared', 'maintenance', 'retirement', 'hub-handover',
-  'end-confirmation', 'guidance-check',
+  'end-confirmation', 'guidance-check', 'codex-hosted-turn',
 ] as const
 
 /**
@@ -211,6 +212,11 @@ export async function hookRunCommand(
     deps.io.err(`Unknown hook event "${event}". Valid: ${HOOK_EVENTS.join(', ')}`)
     return EXIT.usage
   }
+  // A Codex turn Notifai runs in the background (`codex-app-hosted-turn.ts`):
+  // Notifai's own hooks stand down in that server. The launcher already
+  // stops them; this covers an entry that reaches the runtime directly.
+  const hosted = deps.env['NOTIFAI_HOSTED_TURN_PID']
+  if ((HOOK_EVENTS as readonly string[]).includes(event) && hosted !== undefined && hosted !== '' && hosted === deps.env['NOTIFAI_HOOK_SOURCE_PID']) return EXIT.ok
   // A Windows Codex hook declares the PowerShell its command starts; every
   // ownership check below compares the Codex process above it.
   if (harness === 'codex' && process.platform === 'win32' && (HOOK_EVENTS as readonly string[]).includes(event)) {
@@ -256,6 +262,20 @@ export async function hookRunCommand(
     return EXIT.ok
   }
   // SessionEnds no hub decides, waiting out their end confirmation detached.
+  // A stopped Codex app conversation's background turn, started detached by the hub.
+  if (event === 'codex-hosted-turn') {
+    const request = parseHostedTurnRequest(deps.env[HOSTED_TURN_INPUT_ENV])
+    logger.info('hook.start', { hook: event, harness: harness ?? 'unknown' })
+    if (request === null) { logger.info('hook.end', { hook: event, outcome: 'malformed-request', decided: false }); return EXIT.ok }
+    logger.bind({ session: request.session_id })
+    try {
+      const outcome = await runHostedCodexAppTurn(request, deps.env, { log: (stage, data) => logger.info('delivery.handoff', { route: 'interrupt-codex-app', stage, ...data }) })
+      logger.info('hook.end', { hook: event, outcome, decided: false })
+    } catch (err) {
+      logger.error('hook.end', { hook: event, outcome: 'failed', ...failureData(err) })
+    }
+    return EXIT.ok
+  }
   if (event === 'end-confirmation') {
     logger.info('hook.start', { hook: event, harness: harness ?? 'unknown' })
     try {

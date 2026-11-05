@@ -143,3 +143,23 @@ describe('running a stopped Codex app conversation in the background', () => {
     } finally { rmSync(root, { recursive: true, force: true }) }
   })
 })
+
+describe('waking stopped T3 Code agents', () => {
+  it('is on by default, machine-wide, fails toward off, and is listed for T3 Code', async () => {
+    const { INTEGRATION_CONFIG_KEYS, MACHINE_ONLY_CONFIG_KEYS, machineSwitch, globalConfigPath } = await import('./config.js')
+    const { mkdtempSync, mkdirSync, writeFileSync, rmSync } = await import('node:fs')
+    const os = await import('node:os')
+    const path = await import('node:path')
+    expect(INTEGRATION_CONFIG_KEYS.t3).toEqual(['wake.t3'])
+    expect(MACHINE_ONLY_CONFIG_KEYS).toContain('wake.t3')
+    expect(configInfo('wake.t3')).toMatchObject({ group: 'wake', integration: 't3', kind: 'boolean' })
+    const root = mkdtempSync(path.join(os.tmpdir(), 'notifai-t3-wake-'))
+    try {
+      const env = { HOME: root, XDG_CONFIG_HOME: path.join(root, 'config') }
+      expect(machineSwitch('wake.t3', env)).toBe(true)
+      mkdirSync(path.dirname(globalConfigPath(env)), { recursive: true })
+      writeFileSync(globalConfigPath(env), '[wake]\nt3 = "off"\n')
+      expect(machineSwitch('wake.t3', env)).toBe(false)
+    } finally { rmSync(root, { recursive: true, force: true }) }
+  })
+})

@@ -29,7 +29,7 @@ import { resolveSessionLabel } from './session-labels.js'
 import { nullLogger,type Logger } from './logging.js'
 import { pidExists,processStartTime } from './process-identity.js'
 import { CODEX_WAKE_DELAY_MS } from './codex-input-lifecycle.js'
-import { attendantClaimPath,attendantStatusPath,codexTurnInterrupted,readAttendantEndingLease,readAttendantLease,recordTurnStop,recordTurnStart } from './session-attendant-state.js'
+import { attendantClaimPath,attendantStatusPath,codexTurnInterrupted,observedCodexTurnActivity,readAttendantEndingLease,readAttendantLease,recordTurnStop,recordTurnStart } from './session-attendant-state.js'
 import { hasSessionInputs,sessionInputWake,stageSessionMessages } from './session-inputs.js'
 import { globalConfigPath } from './config.js'
 import { runWakeCommand } from './wake-support.js'
@@ -1497,13 +1497,15 @@ describe('hub and Codex SessionEnd', () => {
         } finally { await run.stop() }
       })
 
-      it('in the Codex app, leaves a stopped turn no window has open to the User\'s next message, asking once', async () => {
+      it('in the Codex app with background turns off, leaves a stopped turn no window has open to the User\'s next message, asking once', async () => {
         const r = rig()
         const app = appRouter(false)
         const run = await sharedServer({ state: attached, wake: r.wake, hostKind: () => 'app-server', originator: 'Codex Desktop', cliVersion: '0.166.0',
           interruptWake: { settleMs: 0, codexApp: app.open },
           pausedWake: { owned: async () => false, start: async () => 'unreachable', remove: async (_thread, _env, _cwd, id) => { r.removed.push(id); return 'deleted' } } })
         try {
+          ensurePrivateDirectory(path.dirname(globalConfigPath(run.env)))
+          writeFileSync(globalConfigPath(run.env), '[wake]\ncodex_app_background = false\n', { mode: 0o600 })
           const key = readSessionIncarnation(SESSION, run.env)!.key
           recordTurnStart(SESSION, run.env, key, 'turn-2')
           await interrupt(run.env, 'turn-2')
@@ -1516,13 +1518,18 @@ describe('hub and Codex SessionEnd', () => {
       })
 
       it('in the Codex app with no window on the conversation, runs its turn in the background where nothing holds the thread, unless turned off', async () => {
-        for (const [name, held, off, expected] of [['free', false, false, 1], ['held', true, false, 0], ['off', false, true, 0]] as const) {
-          const hosted: Array<{ threadId: string; text: string }> = []
+        for (const [name, held, off, router, hooks, expected] of [['free', false, false, 'no-window', true, 1], ['held', true, false, 'no-window', true, 0],
+          ['off', false, true, 'no-window', true, 0], ['router unreachable', false, false, 'unreachable', true, 0],
+          ['old Notifai launcher', false, false, 'no-window', false, 0]] as const) {
+          const hosted: Array<{ threadId: string; text: string; turn: string }> = []
           const r = rig()
+          const app = appRouter(false)
           const run = await sharedServer({ state: attached, wake: r.wake, hostKind: () => 'app-server', originator: 'Codex Desktop', cliVersion: '0.166.0-alpha.6',
             codexThreadHeld: () => held,
-            interruptWake: { settleMs: 0, codexApp: appRouter(false).open, codexAppCodex: '/Applications/ChatGPT.app/Contents/Resources/codex-cli/CodexCLI.app/Contents/MacOS/codex',
-              hostedTurn: async (input) => { hosted.push({ threadId: input.threadId, text: input.text }); return { started: true, turnId: 'turn-hosted', done: new Promise(() => undefined) } } },
+            interruptWake: { settleMs: 0, codexApp: router === 'unreachable' ? async () => null : app.open,
+              codexAppCodex: '/Applications/ChatGPT.app/Contents/Resources/codex-cli/CodexCLI.app/Contents/MacOS/codex',
+              hostedTurn: true, hooksStandDown: async () => hooks,
+              launchHostedTurn: async (request) => { hosted.push({ threadId: request.session_id, text: request.text, turn: request.turn }) } },
             pausedWake: { owned: async () => false, start: async () => 'unreachable', remove: async (_thread, _env, _cwd, id) => { r.removed.push(id); return 'deleted' } } })
           try {
             if (off) {
@@ -1535,15 +1542,31 @@ describe('hub and Codex SessionEnd', () => {
             for (let round = 0; round < 6 && hosted.length === 0; round += 1) await run.deliverNote(2)
             if (expected > 0) await until(() => hosted.length > 0)
             await run.deliverNote(3)
-            expect(hosted, name).toEqual(expected > 0 ? [{ threadId: SESSION, text: sessionInputWake() }] : [])
-            // A started background turn ends the stop: the turn record names it.
-            if (expected > 0) expect(readSessionState(SESSION, run.env).interrupt_wake, name).toMatchObject({ outcome: 'started' })
+            expect(hosted, name).toEqual(expected > 0 ? [{ threadId: SESSION, text: sessionInputWake(), turn: 'turn-2' }] : [])
+            // The detached runner reports the start; until then the stop's one try is spent.
+            if (expected > 0) expect(readSessionState(SESSION, run.env).interrupt_wake, name).toMatchObject({ outcome: 'trying' })
           } finally { await run.stop() }
         }
       })
 
+      it('in the Codex app, ends a background turn whose runner is gone, from the rollout', async () => {
+        const run = await sharedServer({ state: attached, wake: rig().wake, hostKind: () => 'app-server', originator: 'Codex Desktop', cliVersion: '0.166.0',
+          codexThreadHeld: () => false })
+        try {
+          const key = readSessionIncarnation(SESSION, run.env)!.key
+          recordTurnStart(SESSION, run.env, key, 'turn-hosted')
+          writeFileSync(run.transcript, [{ type: 'task_started', turn_id: 'turn-hosted' }, { type: 'task_complete', turn_id: 'turn-hosted' }]
+            .map((payload) => JSON.stringify({ type: 'event_msg', payload })).join('\n') + '\n', { flag: 'a' })
+          // A runner that is no longer running (its process identity names nothing alive).
+          updateSessionState(SESSION, run.env, (state) => ({ ...state, interrupt_wake: { key, turn: 'turn-2', route: 'codex-app' as const, at: 1, outcome: 'started' as const,
+            hosted: { runner: { pid: 2_147_483_000, start: 'Thu Jan  1 00:00:00 1970' }, turn: 'turn-hosted' } } }))
+          await until(() => readSessionState(SESSION, run.env).interrupt_wake?.hosted?.ended === true, 5_000)
+          expect(observedCodexTurnActivity(SESSION, run.env, key)).toBe('idle')
+        } finally { await run.stop() }
+      })
+
       it('in T3 Code, wakes the stopped thread with T3 Code\'s own send, after removing a queued wake', async () => {
-        for (const running of [true, false]) {
+        for (const [running, config] of [[true, ''], [false, ''], [true, '[wake]\nt3 = false\n'], [true, '[reopen]\nt3 = "off"\n']] as const) {
           const events: string[] = []
           const r = rig()
           const t3: NonNullable<HubOptions['interruptWake']>['t3'] = {
@@ -1554,16 +1577,21 @@ describe('hub and Codex SessionEnd', () => {
             interruptWake: { settleMs: 0, t3 },
             pausedWake: { owned: async () => false, start: async () => 'unreachable', remove: async (_thread, _env, _cwd, id) => { events.push(`remove:${id}`); return 'deleted' } } })
           try {
+            if (config !== '') {
+              ensurePrivateDirectory(path.dirname(globalConfigPath(run.env)))
+              writeFileSync(globalConfigPath(run.env), config, { mode: 0o600 })
+            }
+            const sends = running && config === ''
             await run.deliverNote(2)
             await until(() => r.queued.length > 0)
             const key = readSessionIncarnation(SESSION, run.env)!.key
             recordTurnStart(SESSION, run.env, key, 'turn-2')
             await interrupt(run.env, 'turn-2')
             for (let round = 0; round < 4 && !events.some((event) => event.startsWith('send')); round += 1) await run.deliverNote(2)
-            if (running) await until(() => events.some((event) => event.startsWith('send')))
+            if (sends) await until(() => events.some((event) => event.startsWith('send')))
             await run.deliverNote(2)
-            expect(events.filter((event) => event.startsWith('send')), String(running)).toEqual(running ? ['send:thread-t3:wake'] : [])
-            if (running) expect(events.indexOf('remove:qs_1')).toBeLessThan(events.indexOf('send:thread-t3:wake'))
+            expect(events.filter((event) => event.startsWith('send')), `${running} ${config}`).toEqual(sends ? ['send:thread-t3:wake'] : [])
+            if (sends) expect(events.indexOf('remove:qs_1')).toBeLessThan(events.indexOf('send:thread-t3:wake'))
           } finally { await run.stop() }
         }
       })

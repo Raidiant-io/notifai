@@ -414,6 +414,19 @@ static int owned_path(const char *file, int directory) {
 
 #include "posix-file-users.h"
 #include "session-child.h"
+
+/* True for a hook run by the server NOTIFAI_HOSTED_TURN_PID names: its parent,
+ * or its grandparent through a shell that did not exec, as the harness is found. */
+static int hosted_turn_hook(int argc, char **argv) {
+    if (argc < 2 || strcmp(argv[1], "hook")) return 0;
+    const char *marker = getenv("NOTIFAI_HOSTED_TURN_PID");
+    if (!marker || !*marker) return 0;
+    char *end = NULL;
+    long named = strtol(marker, &end, 10);
+    if (!end || *end || named <= 1) return 0;
+    pid_t harness = expected_harness();
+    return harness > 1 && (long)harness == named;
+}
 #include "cursor-imported-hook.h"
 #include "grok-imported-hook.h"
 #include "hook-ingress.h"
@@ -486,7 +499,11 @@ int main(int argc, char **argv) {
     if (argc == 4 && !strcmp(argv[1], "--internal-codex-app-url")) return codex_app_url(argv[2], argv[3]);
     if (argc >= 3 && !strcmp(argv[1], "--internal-file-users"))
         return file_users(argc - 2, argv + 2);
-    if (argc == 2 && !strcmp(argv[1], "--internal-launcher-version")) { puts("1"); return 0; }
+    if (argc == 2 && !strcmp(argv[1], "--internal-launcher-version")) { puts("2"); return 0; }
+    /* A Codex turn Notifai runs in the background names its own server: Notifai's
+     * hooks there stand down, before any of them registers or reaches the hub,
+     * since they would read that server as a second host of the conversation. */
+    if (hosted_turn_hook(argc, argv)) return 0;
     /* launchSelf already creates the detached process group on POSIX. This
      * marker preserves the originating hook identity across that self-launch. */
     int detached = argc >= 2 && !strcmp(argv[1], "--internal-detach");
