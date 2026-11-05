@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "behavior_digest": "sha256:6d84630761649acec8eae7fcf50e6ebbf566aa60f426f8651991cac0b62104a4",
+  "behavior_digest": "sha256:1960cade1184615f5c995ab541f4ca3d78718522ac7d10eee39b4ba7c7911918",
   "outcome": "guidance-updated",
   "surfaces_reviewed": [
     "lifecycle-hooks",
@@ -9,5 +9,5 @@
     "cli-readiness",
     "domain-terms"
   ],
-  "reason": "Reviewed lifecycle hooks, the Notifai skill, harness setup, CLI readiness and domain terms. In an Orca chat on this machine the hub now reads Orca's chat only while a running turn's rollout was just written (or, more slowly, while a mirrored question is open) and mirrors Codex's pausing request_user_input to the devices as one question (capability-gated on agent-session.question-answers.v1). A device choice answers Orca's own question item (agentSession.respondToQuestion); typed text, and any choice the item refused, is sent as the User's message (agentSession.send), as typing in Orca's chat does; a part already answered in Orca is left out. PostToolUse of that tool adds only the acknowledgement command, once, and no longer adds the not-carried notice for a mirrored call; the prompt hook that sees a typed answer adds it if PostToolUse did not. An answer given in Orca withdraws the device question silently. The Codex reference says, without naming an app, that request_user_input may also reach the devices where an app shows each pausing question as its own item, and still says to use ask. Route detection ranks the Codex process kind above inherited environment (environment alone where the kind cannot be read), so a terminal started from an Orca chat or T3 shell keeps terminal behaviour, and the T3 originator 'T3' is recognised. No command, approval, hook matcher or setting is added. A guidance change note tells running sessions."
+  "reason": "Notifai now follows a Claude Code conversation that continues in a background session (continued-in), moving its questions, notes and held answers to the successor only once the old process stopped hosting it, and reads continued-in with Claude Code's own finished-turn rule; the hub's wake signal no longer gets lost mid-check. Reviewed lifecycle hooks, the Notifai skill, harness setup, CLI readiness and domain terms. Agent-facing change: one release-authored change note in skills/guidance-changes.json; skill text, setup and readiness are unchanged."
 }
