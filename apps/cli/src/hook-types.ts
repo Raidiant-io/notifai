@@ -1,4 +1,9 @@
 import type { OrcaBlockingRegistration } from './orca-blocking-questions.js'
+import type { StopScreen } from './orca-terminal-wake.js'
+
+/** The apps that can start a stopped Codex turn themselves. */
+export type InterruptRoute = 'codex-app' | 'orca-chat' | 'orca-terminal'
+export type InterruptWakeOutcome = 'trying' | 'held' | 'started' | 'unavailable' | 'unknown'
 import type { CodexTerminalObservation, CodexTerminalConflict } from './codex-terminal-answers.js'
 import type { RuntimeBuildReference } from './launch-self.js'
 import type { NativeAnswerOperation } from './native-answer-operation.js'
@@ -250,6 +255,19 @@ export interface SessionState {
   claude_handbacks?: Array<{ question_id: string; at: number }>
   /** Codex in an Orca chat on this machine: Orca's own session id for the owner (`orca-chat-answers.ts`). */
   orca_chat?: { key: string; session_id: string; user_data?: string }
+  /**
+   * Waking the owner's stopped turn through its app (the hub's
+   * `wakeInterruptedElsewhere`): tried once per stopped turn, across hubs.
+   * `at` is when the stop was first seen (wall clock), `retry_at` when a held
+   * wake is looked at again; `stop_screen` what an Orca terminal showed
+   * right after the stop.
+   */
+  interrupt_wake?: {
+    key: string; turn: string; route: InterruptRoute; at: number; outcome: InterruptWakeOutcome; retry_at?: number
+    /** When the first attempt ran: a held wake gives up two minutes after it. */
+    tried_at?: number
+    stop_screen?: StopScreen
+  }
   /** The Orca terminal a Codex terminal owner runs in, for waking it past a stop (`orca-terminal-wake.ts`). */
   orca_terminal?: { key: string; handle: string; user_data?: string }
   /**

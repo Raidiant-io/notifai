@@ -151,13 +151,13 @@ import {
   WAKE_SEND_TIMEOUT_MS,
 } from './session-inputs.js'
 
-/** The apps that can start a stopped Codex turn themselves. */
-export type InterruptRoute = 'codex-app' | 'orca-chat' | 'orca-terminal'
+import type { InterruptRoute, InterruptWakeOutcome } from './hook-types.js'
+export type { InterruptRoute } from './hook-types.js'
 import { compareVersions } from './version.js'
 import { codexThreadOnSharedServer, removeQueuedCodexWake, startPausedCodexWake } from './codex-paused-wake.js'
 import { codexAppIpcPath, codexAppIpcVerified, openCodexAppIpc } from './codex-app-ipc.js'
-import { wakeOrcaTerminal } from './orca-terminal-wake.js'
-import { machineSetting } from './config.js'
+import { readStopScreen, wakeOrcaTerminal } from './orca-terminal-wake.js'
+import { machineSwitch } from './config.js'
 import { orcaCardGroup, orcaChatPresentation, sendOrcaChatWake } from './orca-chat-answers.js'
 import { orcaBlockingAnswerWaits, orcaBlockingPresentation, reconcileOrcaBlocking } from './orca-blocking-questions.js'
 import type { OrcaRuntime } from './orca-runtime.js'
@@ -203,6 +203,8 @@ const IDLE_BEFORE_WAKE_REPLACEMENT_MS = 30_000
 const ORCA_BLOCKING_WATCH_MS = 4_000
 /** How long after a stop its wake waits: an app's quit stops the turn, then ends the session within a fraction of a second. */
 const INTERRUPT_SETTLE_MS = 3_000
+/** When an Orca terminal's screen is read after a stop: once Codex has drawn it. */
+const STOP_SCREEN_DELAY_MS = 1_500
 /** One wake past a stop, discovery to receipt. */
 const INTERRUPT_WAKE_DEADLINE_MS = 30_000
 /** While the User has something in an Orca terminal's composer, how often it is looked at again, and for how long. */
@@ -334,6 +336,8 @@ export interface HubOptions {
     codexApp?: typeof openCodexAppIpc
     orcaTerminal?: typeof wakeOrcaTerminal
     settleMs?: number
+    stopScreen?: typeof readStopScreen
+    stopScreenDelayMs?: number
   }
   /** Test seams for a Codex wake behind an interrupted turn (see `codex-paused-wake.ts`). */
   pausedWake?: {
@@ -576,13 +580,6 @@ class HubSession implements AttendedSession {
    * can start (`thread/queue/start`), as found once for that turn.
    */
   interruptStart: { turn: string; owned: boolean } | null = null
-  /**
-   * Waking the interrupted turn where no shared server can: through the
-   * Codex app, Orca's chat or Orca's terminal (`wakeInterruptedElsewhere`).
-   * `seenAt` is when the hub first saw this turn interrupted; `retryAt` when a
-   * held wake (a draft in the terminal) is looked at again.
-   */
-  interruptWake: { turn: string; route: InterruptRoute; seenAt: number; outcome: 'trying' | 'held' | 'started' | 'unavailable' | 'unknown'; retryAt?: number } | null = null
   /** Monotonic time before which the Orca chat route is not tried again after it could not send. */
   orcaChatRetryAt = -Infinity
   attachWatchPaused = false
@@ -1967,7 +1964,10 @@ export class Hub {
           releaseCodexCardHandbacks(session.id, { ...session.env, NOTIFAI_HOOK_SOURCE_PID: String(pid) }, {}, 'interrupt', this.clock.wall())
           // A launcher from before turn ids names no turn: the interrupt is of the one running.
           const turn = typeof frame['turn_id'] === 'string' ? frame['turn_id'] : currentCodexTurn(session.id, session.env, session.record.key)
-          if (turn !== null) { try { recordTurnInterrupt(session.id, session.env, turn) } catch { /* Activity is a hint. */ } }
+          if (turn !== null) {
+            try { recordTurnInterrupt(session.id, session.env, turn) } catch { /* Activity is a hint. */ }
+            this.noteInterrupt(session, turn)
+          }
           // A wake already queued now waits behind the interrupt.
           try { markInputWakePaused(session.id, session.env) } catch { /* A busy lock: the wake runs after the next prompt's turn, as before. */ }
         }
@@ -4014,7 +4014,7 @@ export class Hub {
     if (place === 'orca-chat') return state.orca_chat?.key === session.record.key ? 'orca-chat' : null
     if (place === 'codex-app') return 'codex-app'
     if (place === 'terminal' && state.orca_terminal?.key === session.record.key &&
-        machineSetting('orca.wake_stopped_terminals', this.env).value) return 'orca-terminal'
+        machineSwitch('wake.orca_terminal', this.env)) return 'orca-terminal'
     return null
   }
 
@@ -4028,8 +4028,35 @@ export class Hub {
     if (turn === null) return false
     const route = this.interruptRoute(session)
     if (route === null) return false
-    const tried = session.interruptWake
-    return tried === null || tried.turn !== turn || tried.route !== route || tried.outcome === 'trying' || tried.outcome === 'held' || tried.outcome === 'started'
+    const tried = readSessionState(session.id, session.env).interrupt_wake
+    return tried === undefined || tried.key !== session.record.key || tried.turn !== turn || tried.route !== route ||
+      tried.outcome === 'trying' || tried.outcome === 'held' || tried.outcome === 'started'
+  }
+
+  /**
+   * The stop just happened: for an Orca terminal, remember what it shows
+   * once the stop has rendered, so a later wake types only into that same
+   * screen (`StopScreen`). Kept with the turn's wake record, across hubs.
+   */
+  noteInterrupt(session: HubSession, turn: string): void {
+    if (this.interruptRoute(session) !== 'orca-terminal') return
+    const terminal = readSessionState(session.id, session.env).orca_terminal
+    if (terminal === undefined) return
+    const timer = setTimeout(() => {
+      if (!this.pausedWakeSettable(session) || codexInterruptedTurn(session.id, session.env, session.record.key) !== turn) return
+      void (this.options.interruptWake?.stopScreen ?? readStopScreen)({ env: session.env, terminal,
+        ...(this.options.orcaRuntime === undefined ? {} : { runtime: this.options.orcaRuntime }) }).then((screen) => {
+        if (screen === null) return
+        updateSessionState(session.id, session.env, (state) => {
+          const current = state.interrupt_wake
+          const same = current?.key === session.record.key && current.turn === turn
+          if (same && current.stop_screen !== undefined) return state
+          return { ...state, interrupt_wake: { ...(same ? current : { key: session.record.key, turn, route: 'orca-terminal' as const,
+            at: this.clock.wall(), outcome: 'trying' as const }), stop_screen: screen } }
+        })
+      }).catch(() => undefined)
+    }, this.options.interruptWake?.stopScreenDelayMs ?? STOP_SCREEN_DELAY_MS)
+    timer.unref?.()
   }
 
   /**
@@ -4042,7 +4069,7 @@ export class Hub {
    * - an Orca chat, with one message through Orca (`sendOrcaChatWake`);
    * - an Orca terminal, by typing the wake there through Orca while Codex is
    *   at rest with an empty composer (`orca-terminal-wake.ts`), unless
-   *   `orca.wake_stopped_terminals` is off.
+   *   `wake.orca_terminal` is off.
    *
    * Each sends Notifai's ordinary wake text, so the new turn's hooks hand the
    * input in as for any wake. A queued wake is removed first, or it would run
@@ -4056,20 +4083,28 @@ export class Hub {
     const state = readSessionState(session.id, session.env)
     const route = this.interruptRoute(session, state)
     if (route === null) return
-    const now = this.clock.monotonic()
-    let tried = session.interruptWake
-    if (tried === null || tried.turn !== turn || tried.route !== route) {
-      tried = { turn, route, seenAt: now, outcome: 'trying' }
-      session.interruptWake = tried
+    const now = this.clock.wall()
+    // Once per stopped turn, across hubs: the record is the session's own.
+    let tried = state.interrupt_wake
+    if (tried === undefined || tried.key !== session.record.key || tried.turn !== turn || tried.route !== route) {
+      tried = { key: session.record.key, turn, route, at: now, outcome: 'trying' }
+      const fresh = tried
+      updateSessionState(session.id, session.env, (latest) => ({ ...latest, interrupt_wake: fresh }))
     }
     if (tried.outcome === 'started' || tried.outcome === 'unavailable' || tried.outcome === 'unknown') return
-    if (tried.outcome === 'held' && now < (tried.retryAt ?? 0)) return
+    if (tried.outcome === 'held' && now < (tried.retry_at ?? 0)) return
     // A stop the app's quit caused is followed at once by the session's end.
     const settle = this.options.interruptWake?.settleMs ?? INTERRUPT_SETTLE_MS
-    if (now - tried.seenAt < settle) {
-      const timer = setTimeout(() => { if (this.pausedWakeSettable(session)) session.checkInput() }, settle - (now - tried.seenAt) + 50)
+    if (now - tried.at < settle) {
+      const timer = setTimeout(() => { if (this.pausedWakeSettable(session)) session.checkInput() }, settle - (now - tried.at) + 50)
       timer.unref?.()
       return
+    }
+    const attempt = tried
+    if (attempt.tried_at === undefined) {
+      attempt.tried_at = now
+      updateSessionState(session.id, session.env, (latest) => latest.interrupt_wake?.key !== attempt.key || latest.interrupt_wake.turn !== attempt.turn
+        ? latest : { ...latest, interrupt_wake: { ...latest.interrupt_wake, tried_at: now } })
     }
     const lease = session.lease.generation === null ? null : { incarnation: session.lease.incarnation, generation: session.lease.generation }
     if (lease === null || !hasSessionInputs(session.id, session.env, lease) || this.client() === null) return
@@ -4077,8 +4112,11 @@ export class Hub {
     const deadline = this.clock.monotonic() + INTERRUPT_WAKE_DEADLINE_MS
     const remainingMs = () => deadline - this.clock.monotonic()
     const text = sessionInputWake()
-    const record = (outcome: NonNullable<HubSession['interruptWake']>['outcome'], stage: string) => {
-      tried!.outcome = outcome
+    let outcome: InterruptWakeOutcome = attempt.outcome
+    const record = (next: InterruptWakeOutcome, stage: string, retryAt?: number) => {
+      outcome = next
+      updateSessionState(session.id, session.env, (latest) => latest.interrupt_wake?.key !== attempt.key || latest.interrupt_wake.turn !== attempt.turn ? latest
+        : { ...latest, interrupt_wake: { ...latest.interrupt_wake, outcome: next, ...(retryAt === undefined ? {} : { retry_at: retryAt }) } })
       this.logger.info('delivery.handoff', { route: `interrupt-${route}`, stage, session: session.id })
     }
     try {
@@ -4120,15 +4158,16 @@ export class Hub {
         return
       }
       const terminal = state.orca_terminal!
+      // The queued wake goes before any look: from then on only typing, or the User's next message, wakes it.
+      if (!stillWaiting() || !(await clearQueued())) { record('unavailable', 'queued-wake-kept'); return }
       const typed = await (this.options.interruptWake?.orcaTerminal ?? wakeOrcaTerminal)({ env: session.env, terminal, text, remainingMs,
-        mayType: async () => stillWaiting() && await clearQueued(),
+        stopScreen: readSessionState(session.id, session.env).interrupt_wake?.stop_screen,
         ...(this.options.orcaRuntime === undefined ? {} : { runtime: this.options.orcaRuntime }) })
       if (typed === 'held') {
-        // Something is in the composer: look again shortly, and never type over it.
-        const held = now - tried.seenAt >= ORCA_TERMINAL_HOLD_MS
-        tried.retryAt = this.clock.monotonic() + ORCA_TERMINAL_RECHECK_MS
-        record(held ? 'unavailable' : 'held', held ? 'draft-kept' : 'held-draft')
-        if (!held) {
+        // Something is in the composer, or the screen is not settled: look again shortly, never type over it.
+        const late = this.clock.wall() - (attempt.tried_at ?? now) >= ORCA_TERMINAL_HOLD_MS
+        record(late ? 'unavailable' : 'held', late ? 'draft-kept' : 'held-draft', this.clock.wall() + ORCA_TERMINAL_RECHECK_MS)
+        if (!late) {
           const timer = setTimeout(() => { if (this.pausedWakeSettable(session)) session.checkInput() }, ORCA_TERMINAL_RECHECK_MS + 50)
           timer.unref?.()
         }
@@ -4136,13 +4175,13 @@ export class Hub {
       }
       record(typed === 'sent' ? 'started' : typed === 'unknown' ? 'unknown' : 'unavailable', typed)
     } catch (err) {
-      tried.outcome = 'unavailable'
+      record('unavailable', 'failed')
       this.logger.error('delivery.handoff', { route: `interrupt-${route}`, stage: 'failed', session: session.id,
         message: err instanceof Error ? err.message : String(err) })
     } finally {
       this.interruptWaking.delete(session.id)
       // Nothing started it: the ordinary route takes the input again (it waits for the User's next message).
-      if (tried.outcome === 'unavailable' && this.pausedWakeSettable(session)) queueMicrotask(() => session.checkInput())
+      if (outcome === 'unavailable' && this.pausedWakeSettable(session)) queueMicrotask(() => session.checkInput())
     }
   }
 

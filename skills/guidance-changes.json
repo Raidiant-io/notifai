@@ -1,5 +1,5 @@
 {
-  "current": "a82c613daf4a4c5a86e14075e5a396681a689a8495ebed07b3c7d6f11e983321",
+  "current": "bed0a92291e51e4c9944a27db78d02a7f56fabc90583661bf30bec31c4615543",
   "releases": [
     {
       "digest": "3e47b01bc6bbfb43e910c660b9964fab6459d75148c3c02dcbcd0be64cfb2963",
@@ -352,6 +352,10 @@
     {
       "digest": "a82c613daf4a4c5a86e14075e5a396681a689a8495ebed07b3c7d6f11e983321",
       "note": "A Claude Code conversation sent to the background (`/background`, or ← at its prompt) now keeps its open questions, waiting answers and Session Notes: they follow it into the background session, which receives them there, instead of staying with the old terminal or expiring. Nothing changes in what you run or acknowledge."
+    },
+    {
+      "digest": "bed0a92291e51e4c9944a27db78d02a7f56fabc90583661bf30bec31c4615543",
+      "note": "After the User stops a Codex turn, an answer or note from their devices can now start the agent's next turn where the app around Codex can start one: the Codex app when it has the conversation open, an app chat, or a terminal app whose message box is empty (Notifai types its usual wake there and never types over a draft; the User can turn the terminal case off, see `notifai config explain wake.orca_terminal`). The turn starts with Notifai's usual wake; follow it as before. Elsewhere the input still arrives with the User's next message."
     }
   ]
 }

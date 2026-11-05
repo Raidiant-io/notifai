@@ -1525,26 +1525,105 @@ describe('hub and Codex SessionEnd', () => {
         } finally { await run.stop() }
       })
 
-      it('in an Orca terminal, types the wake through Orca, unless that is turned off', async () => {
-        for (const enabled of [true, false]) {
-          const typed: string[] = []
-          const run = await sharedServer({ state: attached, wake: rig().wake, hostKind: () => 'other',
-            interruptWake: { settleMs: 0, orcaTerminal: async (input) => { typed.push(input.terminal.handle); return await input.mayType() ? 'sent' : 'not-sent' } } })
-          try {
-            if (!enabled) {
-              ensurePrivateDirectory(path.dirname(globalConfigPath(run.env)))
-              writeFileSync(globalConfigPath(run.env), '[orca]\nwake_stopped_terminals = false\n', { mode: 0o600 })
-            }
-            const key = readSessionIncarnation(SESSION, run.env)!.key
-            updateSessionState(SESSION, run.env, (state) => ({ ...state, orca_terminal: { key, handle: 'term_scratch' } }))
-            recordTurnStart(SESSION, run.env, key, 'turn-2')
-            await interrupt(run.env, 'turn-2')
-            for (let round = 0; round < 4 && typed.length === 0; round += 1) await run.deliverNote(2)
-            if (enabled) await until(() => typed.length > 0)
-            await run.deliverNote(2)
-            expect(typed).toEqual(enabled ? ['term_scratch'] : [])
-          } finally { await run.stop() }
+      /** A stopped Codex in an Orca terminal; `outcomes` is what typing there returns, attempt by attempt. */
+      async function orcaTerminal(outcomes: Array<'sent' | 'held' | 'not-sent' | 'unknown'>, options: { off?: boolean } = {}) {
+        const attempts: Array<{ handle: string; stop: unknown }> = []
+        const removed: string[] = []
+        let shift = 0
+        const clock = { monotonic: () => performance.now() + shift, wall: () => Date.now() + shift }
+        const r = rig()
+        const run = await sharedServer({ state: attached, wake: r.wake, hostKind: () => 'other', clock,
+          pausedWake: { owned: async () => false, start: async () => 'unreachable', remove: async (_thread, _env, _cwd, id) => { removed.push(id); return 'deleted' } },
+          interruptWake: { settleMs: 0, stopScreenDelayMs: 0, stopScreen: async () => ({ above: ['■ Conversation interrupted'], composer: 'Ask Codex to do anything' }),
+            orcaTerminal: async (input) => {
+              attempts.push({ handle: input.terminal.handle, stop: input.stopScreen })
+              return outcomes[Math.min(attempts.length - 1, outcomes.length - 1)]!
+            } } })
+        const setOff = (off: boolean) => {
+          ensurePrivateDirectory(path.dirname(globalConfigPath(run.env)))
+          writeFileSync(globalConfigPath(run.env), `[wake]\norca_terminal = ${off ? 'false' : 'true'}\n`, { mode: 0o600 })
         }
+        if (options.off === true) setOff(true)
+        const key = readSessionIncarnation(SESSION, run.env)!.key
+        updateSessionState(SESSION, run.env, (state) => ({ ...state, orca_terminal: { key, handle: 'term_scratch' } }))
+        recordTurnStart(SESSION, run.env, key, 'turn-2')
+        await interrupt(run.env, 'turn-2')
+        return { run, attempts, removed, r, setOff, advance: (ms: number) => { shift += ms } }
+      }
+
+      it('in an Orca terminal, types the wake once, into the screen read at the stop', async () => {
+        const t = await orcaTerminal(['sent'])
+        try {
+          for (let round = 0; round < 4 && t.attempts.length === 0; round += 1) await t.run.deliverNote(2)
+          await until(() => t.attempts.length > 0)
+          await t.run.deliverNote(3)
+          expect(t.attempts).toEqual([{ handle: 'term_scratch', stop: { above: ['■ Conversation interrupted'], composer: 'Ask Codex to do anything' } }])
+          expect(readSessionState(SESSION, t.run.env).interrupt_wake).toMatchObject({ turn: 'turn-2', route: 'orca-terminal', outcome: 'started' })
+          expect(t.r.queued).toEqual([])
+        } finally { await t.run.stop() }
+      })
+
+      it('in an Orca terminal turned off, types nothing and leaves the input to the next message', async () => {
+        const t = await orcaTerminal(['sent'], { off: true })
+        try {
+          for (let round = 0; round < 4; round += 1) await t.run.deliverNote(2)
+          expect(t.attempts).toEqual([])
+          expect(t.run.pending()).toBe(true)
+        } finally { await t.run.stop() }
+      })
+
+      it('in an Orca terminal with a draft, looks again every 5 seconds, gives up after 2 minutes, and stops when turned off', async () => {
+        const t = await orcaTerminal(['held'])
+        try {
+          for (let round = 0; round < 4 && t.attempts.length === 0; round += 1) await t.run.deliverNote(2)
+          await until(() => t.attempts.length > 0)
+          // Within the 5 seconds nothing is tried again.
+          await t.run.deliverNote(3)
+          expect(t.attempts).toHaveLength(1)
+          expect(readSessionState(SESSION, t.run.env).interrupt_wake).toMatchObject({ outcome: 'held' })
+          t.advance(5_100)
+          await t.run.deliverNote(3)
+          await until(() => t.attempts.length > 1)
+          // Two minutes after the first attempt, the draft stays the User's: no more tries.
+          t.advance(2 * 60_000)
+          await t.run.deliverNote(3)
+          await until(() => readSessionState(SESSION, t.run.env).interrupt_wake?.outcome === 'unavailable')
+          const tried = t.attempts.length
+          t.advance(10_000)
+          await t.run.deliverNote(3)
+          // The input waits for the User's next message (the clock jump also lapses the lease, so it is not read here).
+          expect(t.attempts).toHaveLength(tried)
+        } finally { await t.run.stop() }
+        const off = await orcaTerminal(['held'])
+        try {
+          for (let round = 0; round < 4 && off.attempts.length === 0; round += 1) await off.run.deliverNote(2)
+          await until(() => off.attempts.length > 0)
+          off.setOff(true)
+          off.advance(5_100)
+          await off.run.deliverNote(4)
+          expect(off.attempts).toHaveLength(1)
+        } finally { await off.run.stop() }
+      })
+
+      it('in an Orca terminal, never tries a stopped turn again once a try could not be confirmed, across hubs', async () => {
+        const t = await orcaTerminal(['unknown'])
+        try {
+          for (let round = 0; round < 4 && t.attempts.length === 0; round += 1) await t.run.deliverNote(2)
+          await until(() => t.attempts.length > 0)
+          t.advance(60_000)
+          await t.run.deliverNote(4)
+          expect(t.attempts).toHaveLength(1)
+          expect(readSessionState(SESSION, t.run.env).interrupt_wake).toMatchObject({ outcome: 'unknown' })
+        } finally { await t.run.stop() }
+        // A new hub reads the same record: the turn's one try is spent.
+        const again = await orcaTerminal(['sent'])
+        try {
+          const key = readSessionIncarnation(SESSION, again.run.env)!.key
+          updateSessionState(SESSION, again.run.env, (state) => ({ ...state,
+            interrupt_wake: { key, turn: 'turn-2', route: 'orca-terminal' as const, at: Date.now() - 60_000, outcome: 'unknown' as const } }))
+          for (let round = 0; round < 4; round += 1) await again.run.deliverNote(2)
+          expect(again.attempts).toEqual([])
+        } finally { await again.run.stop() }
       })
 
       it('in an Orca chat, wakes the stopped turn for a note with one message through Orca', async () => {

@@ -37,7 +37,7 @@ export type ConfigKind = 'string' | 'url' | 'integer' | 'boolean' | 'enum' | 'li
  * Which surface a key belongs to. Grouping is the difference between a flat
  * list of keys and a few short ones a reader can hold in their head.
  */
-export type ConfigGroup = 'questions' | 'delivery' | 'project' | 'trust' | 'updates' | 'reopen' | 'integrations' | 'diagnostics'
+export type ConfigGroup = 'questions' | 'delivery' | 'project' | 'trust' | 'updates' | 'reopen' | 'wake' | 'diagnostics'
 
 export const CONFIG_GROUPS: { id: ConfigGroup; title: string; blurb: string }[] = [
   {
@@ -71,9 +71,9 @@ export const CONFIG_GROUPS: { id: ConfigGroup; title: string; blurb: string }[] 
     blurb: 'Whether a conversation stopped by a restart or a crash opens again where it was when an answer or note arrives for it. Settings for the whole machine; no project can change them.',
   },
   {
-    id: 'integrations',
-    title: 'Apps around your agents',
-    blurb: 'How Notifai works with the apps your agents run in, such as Orca. Settings for the whole machine; no project can change them.',
+    id: 'wake',
+    title: 'Waking stopped agents',
+    blurb: 'Whether an answer or note may start the next turn of an agent you stopped, in the apps where that takes typing. Settings for the whole machine; no project can change them.',
   },
   {
     id: 'diagnostics',
@@ -113,7 +113,7 @@ export interface ConfigKeyInfo {
    * neither a Project nor an Agent Session layer may set it.
    */
   machineOnly?: boolean
-  /** The app around the agent this key belongs to (`INTEGRATIONS`), for keys in the `integrations` group. */
+  /** The app around the agent this key concerns (`INTEGRATIONS`), for per-app views. */
   integration?: IntegrationId
 }
 
@@ -382,15 +382,15 @@ const INFO: Record<ConfigKey, Omit<ConfigKeyInfo, 'key'>> = {
       '`same` (the default) resumes it with the permission options it was started with and the mode it last ran in, and never with more permissive ones; a conversation whose permissions Notifai cannot repeat exactly waits for you instead. `default` resumes it in the harness\'s ordinary mode, or a narrower one it ran in, without the options that widen it: the agent then stops at its first approval until you answer it at this machine.',
     advanced: true,
   },
-  'orca.wake_stopped_terminals': {
+  'wake.orca_terminal': {
     label: 'Wake stopped agents in Orca terminals',
-    group: 'integrations',
+    group: 'wake',
     integration: 'orca',
     kind: 'boolean',
     machineOnly: true,
     summary: 'Whether an answer wakes a Codex agent you stopped in an Orca terminal',
     detail:
-      'On (the default), when you stop a Codex agent in an Orca terminal and an answer or note arrives for it, Notifai types a short wake into that terminal through Orca, as if you had sent it a message, so the agent gets what arrived right away. It types only while the agent is at rest, its message box is empty and nothing changed on screen for a few seconds; it never types over something you started writing. Then the answer arrives with your next message instead.\n\nOff, a stopped agent in an Orca terminal gets what arrived with your next message. `on` and `off` are accepted as well as `true` and `false`.',
+      'On (the default), when you stop a Codex agent in an Orca terminal and an answer or note arrives for it, Notifai types its short wake message into that terminal through Orca, as if you had sent it, so the agent gets what arrived right away. It types only while Codex is at rest, its message box is empty and the screen is the one you stopped it on. It never types over something you started writing: the answer then arrives with your next message.\n\nOff, a stopped agent in an Orca terminal gets what arrived with your next message. `on` and `off` are accepted as well as `true` and `false`. If this file cannot be read, Notifai does not type.',
     example: 'false',
   },
   log_level: {

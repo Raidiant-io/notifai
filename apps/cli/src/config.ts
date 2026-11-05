@@ -130,14 +130,13 @@ export interface CliConfig {
   'reopen.focus': ResolvedValue<ReopenFocus>
   'reopen.permission_mode': ResolvedValue<ReopenPermissionMode>
   /**
-   * Integration settings, one namespace per app around the agent
-   * (`<integration>.<setting>`, see `INTEGRATION_CONFIG_KEYS`). Machine-wide:
-   * the hub acts on them for every Project.
-   *
    * Waking a Codex agent the User stopped in an Orca terminal by typing the
    * wake into that terminal through Orca, when an answer or note arrives.
+   * Machine-wide, like `reopen.*`: named by what it does, then where. Each
+   * app it concerns lists it in `INTEGRATION_CONFIG_KEYS`. Read with
+   * `machineSwitch`, which fails toward off.
    */
-  'orca.wake_stopped_terminals': ResolvedValue<boolean>
+  'wake.orca_terminal': ResolvedValue<boolean>
 }
 
 export const REOPEN_TERMINAL_POLICIES = ['automatic', 'off'] as const
@@ -178,7 +177,7 @@ export const CONFIG_KEYS = [
   'reopen.terminal_command',
   'reopen.focus',
   'reopen.permission_mode',
-  'orca.wake_stopped_terminals',
+  'wake.orca_terminal',
 ] as const
 export type ConfigKey = (typeof CONFIG_KEYS)[number]
 
@@ -190,23 +189,23 @@ export type ConfigKey = (typeof CONFIG_KEYS)[number]
  * runs on it.
  */
 export const MACHINE_ONLY_CONFIG_KEYS: readonly ConfigKey[] = ['updates.automatic', 'reopen.automatic', 'reopen.terminal', 'reopen.codex_app',
-  'reopen.t3', 'reopen.terminal_app', 'reopen.terminal_command', 'reopen.focus', 'reopen.permission_mode', 'orca.wake_stopped_terminals']
+  'reopen.t3', 'reopen.terminal_app', 'reopen.terminal_command', 'reopen.focus', 'reopen.permission_mode', 'wake.orca_terminal']
 
-/** The apps around an agent that have settings of their own, and the keys each one has. */
+/** The apps around an agent that settings concern, and the keys concerning each one (for per-app views). */
 export const INTEGRATIONS = [{ id: 'orca', name: 'Orca' }] as const
 export type IntegrationId = (typeof INTEGRATIONS)[number]['id']
 export const INTEGRATION_CONFIG_KEYS: Readonly<Record<IntegrationId, readonly ConfigKey[]>> = {
-  orca: ['orca.wake_stopped_terminals'],
+  orca: ['wake.orca_terminal'],
 }
 
 /** Keys whose TOML value must be a list of normalized http(s) origins. */
 export const ORIGIN_LIST_CONFIG_KEYS: readonly ConfigKey[] = ['media_origins', 'approve_origins']
 
 /** Keys whose TOML value must parse as a boolean; used by `config set`. */
-export const BOOLEAN_CONFIG_KEYS: readonly ConfigKey[] = ['ask_notifications', 'updates.automatic', 'reopen.automatic', 'orca.wake_stopped_terminals']
+export const BOOLEAN_CONFIG_KEYS: readonly ConfigKey[] = ['ask_notifications', 'updates.automatic', 'reopen.automatic', 'wake.orca_terminal']
 
 /** Machine-wide switches that also read naturally as `on` and `off`. */
-export const ON_OFF_CONFIG_KEYS: readonly ConfigKey[] = ['updates.automatic', 'reopen.automatic', 'orca.wake_stopped_terminals']
+export const ON_OFF_CONFIG_KEYS: readonly ConfigKey[] = ['updates.automatic', 'reopen.automatic', 'wake.orca_terminal']
 
 /** Keys whose TOML value must parse as an integer within its configured bounds. */
 export const NUMERIC_CONFIG_KEYS: readonly ConfigKey[] = [
@@ -283,7 +282,7 @@ const DEFAULTS = {
   'reopen.focus': 'background',
   'reopen.permission_mode': 'same',
   // On by default ("as a setting you can turn off? ON by default", 2026-11-05).
-  'orca.wake_stopped_terminals': true,
+  'wake.orca_terminal': true,
 } satisfies Record<ConfigKey, unknown>
 
 /** The shipped value beneath every user-controlled configuration layer. */
@@ -635,6 +634,25 @@ export function machineSetting<K extends ConfigKey>(key: K, env: NodeJS.ProcessE
   }
 }
 
+/**
+ * A machine-wide on/off switch that must fail toward off: anything that
+ * cannot be read as on (an unparsable file, an unknown value) is off. `on`
+ * and `off` written by hand count as `true` and `false`. A file without the
+ * key keeps the shipped default.
+ */
+export function machineSwitch(key: ConfigKey, env: NodeJS.ProcessEnv = process.env): boolean {
+  const file = globalConfigPath(env)
+  let raw: unknown
+  try {
+    if (!existsSync(file)) return DEFAULTS[key] === true
+    raw = rawLayerValue(readTomlFile(file), key)
+  } catch {
+    return false
+  }
+  if (raw === undefined) return DEFAULTS[key] === true
+  return raw === true || (typeof raw === 'string' && ['on', 'true'].includes(raw.trim().toLowerCase()))
+}
+
 /** The automatic-update switch, from this machine's own configuration only. */
 export function automaticUpdatesSetting(env: NodeJS.ProcessEnv = process.env): { enabled: boolean; source: 'default' | 'user' } {
   const setting = machineSetting('updates.automatic', env)
@@ -740,6 +758,6 @@ export function loadConfig(options: {
     'reopen.terminal_command': resolve('reopen.terminal_command'),
     'reopen.focus': resolve('reopen.focus'),
     'reopen.permission_mode': resolve('reopen.permission_mode'),
-    'orca.wake_stopped_terminals': resolve('orca.wake_stopped_terminals'),
+    'wake.orca_terminal': resolve('wake.orca_terminal'),
   }
 }

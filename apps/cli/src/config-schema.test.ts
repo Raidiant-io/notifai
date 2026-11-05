@@ -94,24 +94,30 @@ describe('examples', () => {
   })
 })
 
-describe('integration settings', () => {
-  it('wakes stopped agents in Orca terminals by default, machine-wide, under the Orca integration', async () => {
-    const { INTEGRATION_CONFIG_KEYS, MACHINE_ONLY_CONFIG_KEYS, ON_OFF_CONFIG_KEYS, configDefaultValue, machineSetting, globalConfigPath } = await import('./config.js')
+describe('waking stopped agents in Orca terminals', () => {
+  it('is on by default, machine-wide, fails toward off, and is listed for Orca', async () => {
+    const { INTEGRATION_CONFIG_KEYS, MACHINE_ONLY_CONFIG_KEYS, ON_OFF_CONFIG_KEYS, configDefaultValue, machineSwitch, globalConfigPath } = await import('./config.js')
     const { mkdtempSync, mkdirSync, writeFileSync, rmSync } = await import('node:fs')
     const os = await import('node:os')
     const path = await import('node:path')
-    expect(configDefaultValue('orca.wake_stopped_terminals')).toBe(true)
-    expect(INTEGRATION_CONFIG_KEYS.orca).toContain('orca.wake_stopped_terminals')
-    expect(MACHINE_ONLY_CONFIG_KEYS).toContain('orca.wake_stopped_terminals')
-    expect(ON_OFF_CONFIG_KEYS).toContain('orca.wake_stopped_terminals')
-    expect(configInfo('orca.wake_stopped_terminals')).toMatchObject({ group: 'integrations', integration: 'orca', kind: 'boolean' })
+    expect(configDefaultValue('wake.orca_terminal')).toBe(true)
+    expect(INTEGRATION_CONFIG_KEYS.orca).toContain('wake.orca_terminal')
+    expect(MACHINE_ONLY_CONFIG_KEYS).toContain('wake.orca_terminal')
+    expect(ON_OFF_CONFIG_KEYS).toContain('wake.orca_terminal')
+    expect(configInfo('wake.orca_terminal')).toMatchObject({ group: 'wake', integration: 'orca', kind: 'boolean' })
     const root = mkdtempSync(path.join(os.tmpdir(), 'notifai-integration-'))
     try {
       const env = { HOME: root, XDG_CONFIG_HOME: path.join(root, 'config') }
-      expect(machineSetting('orca.wake_stopped_terminals', env).value).toBe(true)
+      expect(machineSwitch('wake.orca_terminal', env)).toBe(true)
       mkdirSync(path.dirname(globalConfigPath(env)), { recursive: true })
-      writeFileSync(globalConfigPath(env), '[orca]\nwake_stopped_terminals = false\n')
-      expect(machineSetting('orca.wake_stopped_terminals', env)).toEqual({ value: false, source: 'user' })
+      const written = (text: string) => { writeFileSync(globalConfigPath(env), text); return machineSwitch('wake.orca_terminal', env) }
+      expect(written('[wake]\norca_terminal = false\n')).toBe(false)
+      expect(written('[wake]\norca_terminal = "off"\n')).toBe(false)
+      expect(written('[wake]\norca_terminal = "on"\n')).toBe(true)
+      expect(written('[updates]\nautomatic = true\n')).toBe(true)
+      // Unreadable or unknown: Notifai does not type.
+      expect(written('[wake\norca_terminal = true\n')).toBe(false)
+      expect(written('[wake]\norca_terminal = "maybe"\n')).toBe(false)
     } finally { rmSync(root, { recursive: true, force: true }) }
   })
 })

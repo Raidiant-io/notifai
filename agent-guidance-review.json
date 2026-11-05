@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "behavior_digest": "sha256:1960cade1184615f5c995ab541f4ca3d78718522ac7d10eee39b4ba7c7911918",
+  "behavior_digest": "sha256:dab520326405faa6f3740ffb1abe7e0feeace7487b107e50f9883f5cc8ea2799",
   "outcome": "guidance-updated",
   "surfaces_reviewed": [
     "lifecycle-hooks",
@@ -9,5 +9,5 @@
     "cli-readiness",
     "domain-terms"
   ],
-  "reason": "Notifai now follows a Claude Code conversation that continues in a background session (continued-in), moving its questions, notes and held answers to the successor only once the old process stopped hosting it, and reads continued-in with Claude Code's own finished-turn rule; the hub's wake signal no longer gets lost mid-check. Reviewed lifecycle hooks, the Notifai skill, harness setup, CLI readiness and domain terms. Agent-facing change: one release-authored change note in skills/guidance-changes.json; skill text, setup and readiness are unchanged."
+  "reason": "Notifai now follows a Claude Code conversation that continues in a background session (continued-in), moving its questions, notes and held answers to the successor only once the old process stopped hosting it, and reads continued-in with Claude Code's own finished-turn rule; the hub's wake signal no longer gets lost mid-check. Reviewed lifecycle hooks, the Notifai skill, harness setup, CLI readiness and domain terms. Agent-facing change: one release-authored change note in skills/guidance-changes.json; skill text, setup and readiness are unchanged. Also: Reviewed lifecycle hooks, the Notifai skill, harness setup, CLI readiness and domain terms. After the User stops a Codex turn, the hub now starts the next turn where the app around Codex can: the Codex app's local IPC router (thread-follower-start-turn to the window that has the conversation open, Codex 0.166 or later), an Orca chat (agentSession.send) and an Orca terminal (two guarded terminal.send writes that Orca refuses without an agent in the foreground, behind its mailbox guards and the screen read at the stop, never over a draft; machine setting wake.orca_terminal, on by default, failing toward off). Each sends Notifai's existing wake text, so the agent sees the same wake it already follows; no hook output or instruction changes, and the Codex reference needs no edit. The Codex app wake link is no longer sent for a stopped conversation. A new machine-only setting group, Waking stopped agents, appears in config show and explain. A guidance change note tells running sessions, including how the User can turn the terminal case off. No command, approval or hook is added."
 }
