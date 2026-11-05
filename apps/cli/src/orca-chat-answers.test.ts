@@ -28,7 +28,7 @@ afterEach(() => {
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true })
 })
 const SESSION = '019a2b3c-4d5e-7f60-8a9b-0c1d2e3f4a5b'
-const ORCA = 'codex_8203811a_1e0d_4338_a190_b89344f198cb'
+const ORCA = 'codex_00000000_0000_4000_8000_00000000a008'
 const OWNER = 'owner-key'
 const SERVICE = { base_url: 'https://api.example.test', machine_id: 'machine_test' }
 const LEASE = { incarnation: 'inc-1', generation: 3 }

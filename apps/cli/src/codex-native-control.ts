@@ -138,7 +138,7 @@ export async function connectCodexControl(
  * non-originating identity as every other Notifai connection. Null when
  * Codex cannot be asked in time or refuses.
  */
-export function codexStdioRequest(env: NodeJS.ProcessEnv, cwd: string, method: 'hooks/list' | 'thread/queue/delete', params: unknown,
+export function codexStdioRequest(env: NodeJS.ProcessEnv, cwd: string, method: 'hooks/list' | 'thread/queue/list' | 'thread/queue/delete', params: unknown,
   timeoutMs = 5_000, executable = 'codex'): Promise<unknown> {
   return new Promise((resolve) => {
     let settled = false

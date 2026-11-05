@@ -1,4 +1,5 @@
 import { agentAppsReport } from './agent-apps.js'
+import { readOrphanSweepReport } from './codex-orphan-sweep.js'
 import { localStorageReadiness } from './storage-readiness.js'
 import { visibleInputWakeFault } from './session-inputs.js'
 import { automaticUpdateReport, automaticUpdatesRunHere } from './automatic-update.js'
@@ -1638,6 +1639,8 @@ function hookChecks(deps: CommandDeps, codexTrust: CodexTrust): HookCheck[] {
   if (attendants !== null) checks.push(attendants)
   const hub = sessionHubCheck(deps)
   if (hub !== null) checks.push(hub)
+  const queues = codexQueueSweepCheck(deps.env)
+  if (queues !== null) checks.push(queues)
 
   // A handler naming an event this build dropped exits 2 every time the harness
   // fires it, which the harness reports as a hook failure.
@@ -2320,5 +2323,30 @@ function sessionAttendantCheck(
     reportOnly: true,
     detail: parts.join('; '),
     technical: { attendants: live },
+  }
+}
+
+/**
+ * What the hub's one-time cleanup of other Codex homes found (`codex-orphan-
+ * sweep.ts`): Notifai's own leftover wakes it removed, and anything else
+ * queued there, which it leaves for the User. Report only.
+ */
+export function codexQueueSweepCheck(env: NodeJS.ProcessEnv): HookCheck | null {
+  const report = readOrphanSweepReport(env)
+  if (report === null) return null
+  const left = report.left.reduce((sum, entry) => sum + entry.items, 0)
+  if (report.deleted === 0 && left === 0 && report.done) return null
+  const parts = [
+    ...(report.deleted > 0 ? [`removed ${report.deleted} leftover Notifai wake-up${report.deleted === 1 ? '' : 's'} from Codex queues the conversations no longer run in`] : []),
+    ...report.left.map((entry) => `${entry.items} queued message${entry.items === 1 ? '' : 's'} for ${entry.threads} conversation${entry.threads === 1 ? '' : 's'} in ${entry.home} are not Notifai's and were left as they are`),
+    ...(report.done ? [] : ['some could not be checked yet; the hub tries again when it next starts']),
+  ]
+  return {
+    name: 'codex queues in other homes',
+    harnesses: ['codex'],
+    ok: true,
+    reportOnly: true,
+    detail: parts.join('; '),
+    technical: { deleted: report.deleted, left, undecided: report.undecided, attempts: report.attempts, done: report.done },
   }
 }

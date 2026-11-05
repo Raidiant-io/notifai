@@ -143,7 +143,7 @@ describe('the empty composer', () => {
 })
 
 describe('which Orca terminal a Codex session runs in', () => {
-  const env = { TERM_PROGRAM: 'Orca', ORCA_TERMINAL_HANDLE: 'term_6b5d950d-f2ac-490e-a103-67acd2c6a30e', ORCA_PANE_KEY: 'pane', ORCA_USER_DATA_PATH: '/u/orca' }
+  const env = { TERM_PROGRAM: 'Orca', ORCA_TERMINAL_HANDLE: 'term_00000000-0000-4000-8000-00000000a006', ORCA_PANE_KEY: 'pane', ORCA_USER_DATA_PATH: '/u/orca' }
   it('is the Orca terminal a Codex TUI runs in directly, on this machine', () => {
     const tui = (extra: NodeJS.ProcessEnv, kind: 'other' | 'shared-server' | 'app-server' = 'other') =>
       orcaTerminalOf({ ...env, ...extra }, codexRouteProfile({ ...env, ...extra }, kind, 'darwin'))

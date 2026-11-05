@@ -43,6 +43,9 @@ import {
   type RolloutPlace,
 } from './codex-session-end.js'
 import { codexHome, inspectCodexQueue, systemCodexWakeAdapters, type CodexWakeAdapters } from './codex-wake.js'
+import { codexThreadHoldersAsync } from './codex-session-end.js'
+import { orphanSweepDue, sweepCodexOrphanWakes } from './codex-orphan-sweep.js'
+import { codexHomeCandidates, locateCodexThreadHome, removeOrphanCodexWake, sameCodexHome, type CodexThreadHome } from './codex-thread-home.js'
 import { EXIT, log, makeClient, type CommandDeps } from './commands-core.js'
 import type { CredentialStore, MachineCredential } from './credentials.js'
 import { buildIdentity } from './distribution.js'
@@ -76,7 +79,7 @@ import {
   type AutomaticUpdateHost,
   type WaitingReason,
 } from './automatic-update.js'
-import { adoptionCandidates, childWatching, parseAdoptionRecord, recordedRolloutArchived, sessionDisplayOf, sessionPathOf, stoppedCandidates,
+import { adoptionCandidates, attendanceStatuses, childWatching, parseAdoptionRecord, recordedRolloutArchived, sessionDisplayOf, sessionPathOf, stoppedCandidates,
   type AdoptionRecord, type SessionDisplay, type StoppedRecord, type StoppedWatch } from './hub-adoption.js'
 import { hubEnvironment } from './hub-client.js'
 import { readActiveBuild } from './hub-handover.js'
@@ -207,6 +210,16 @@ const IDLE_BEFORE_WAKE_REPLACEMENT_MS = 30_000
 const ORCA_BLOCKING_WATCH_MS = 4_000
 /** How long after a stop its wake waits: an app's quit stops the turn, then ends the session within a fraction of a second. */
 const INTERRUPT_SETTLE_MS = 3_000
+/** The least time between two looks for a Codex thread's home. */
+const CODEX_HOME_LOOK_MS = 5_000
+/** How long a look at who holds a Codex thread stands. */
+const CODEX_HOLDERS_FRESH_MS = 3_000
+/** An idle session that has not taken its wake this long: look for the thread's home again. */
+const WAKE_NOT_TAKEN_MS = 30_000
+/** Removal attempts for a wake left in a home the thread moved away from. */
+const ORPHAN_WAKE_TRIES = 5
+/** How long after a hub starts its one-time sweep of other Codex homes runs. */
+const ORPHAN_SWEEP_DELAY_MS = 60_000
 /** When an Orca terminal's screen is read after a stop: once Codex has drawn it. */
 const STOP_SCREEN_DELAY_MS = 1_500
 /** One wake past a stop, discovery to receipt. */
@@ -372,6 +385,12 @@ export interface HubOptions {
   }
   /** Test seam: whether a process holds a Codex thread's writer lock; production asks `lsof` or `/proc`. */
   codexHostHoldsThread?: (codexHome: string | null, threadId: string, pid: number) => boolean
+  /** Test seam: the Codex homes a thread may run in (see `codex-thread-home.ts`). */
+  codexHomes?: (session: HubSession) => string[]
+  /** Test seam: the one-time sweep of Notifai's wakes left in other Codex homes; false turns it off. */
+  orphanSweep?: false | { delayMs?: number; homes?: string[]; run?: typeof sweepCodexOrphanWakes }
+  /** Test seam: removing a wake left in a home the thread moved away from. */
+  orphanWakeRemoval?: typeof removeOrphanCodexWake
   /** Test seam: whether any process has a Codex thread loaded; production asks `lsof` or `/proc`. */
   codexThreadHeld?: (codexHome: string | null, threadId: string) => boolean | 'unknown'
   /** Test seam: which processes have a Codex thread loaded; production asks `lsof` or `/proc`. */
@@ -644,10 +663,21 @@ class HubSession implements AttendedSession {
     this.observeCodex()
   }
 
-  private observeCodex(): void {
+  /**
+   * The thread runs in another Codex home now (an Orca account restart), in
+   * a process whose hooks have not run yet: it counts as running while that
+   * process holds the thread's writer lock there (`followCodexHome`).
+   */
+  followedHome = false
+  /** Monotonic time of the last look for the thread's home. */
+  homeLookedAt = -Infinity
+
+  observeCodex(): void {
     if (this.harness !== 'codex') return
     this.codexObserver = codexInputObserver(this.id, this.env, this.record.key,
-      (owner) => this.harnessAlive(owner), (owner) => this.hub.codexIdleWake(this, owner), () => this.hub.clock.wall(),
+      (owner) => this.harnessAlive(owner) || (this.followedHome && identityKey(owner) === identityKey(this.harnessProcess) &&
+        processIdentityLiveness(owner) === 'alive' && this.hub.holdsInItsHome(this)),
+      (owner) => this.hub.codexIdleWake(this, owner), () => this.hub.clock.wall(),
       () => {
         const turn = codexInterruptedTurn(this.id, this.env, this.record.key)
         return turn !== null && this.interruptStart?.turn === turn && this.interruptStart.owned
@@ -700,6 +730,7 @@ class HubSession implements AttendedSession {
     this.registration = writer.registration
     this.env = writer.env
     this.reloadedAt = null
+    this.followedHome = false
     this.rehost(writer.harnessProcess, writer.registration.boot)
     this.observeCodex()
     this.lease.needsFresh = true
@@ -1008,6 +1039,12 @@ class HubSession implements AttendedSession {
     } else {
       const stored = inputWakeStored(state, this.lease.incarnation, this.wakeScope())
       const hasInput = hasSessionInputs(this.id, this.env, lease)
+      // A wake an idle thread has not taken: it may run in another home now (an Orca account restart).
+      if (hasInput && stored && state.input_wake?.queued_at !== undefined && this.hub.clock.wall() - state.input_wake.queued_at >= WAKE_NOT_TAKEN_MS &&
+          observedCodexTurnActivity(this.id, this.env, this.record.key) !== 'working' && codexInterruptedTurn(this.id, this.env, this.record.key) === null) {
+        // A follow writes the replacement through its own check.
+        void this.hub.relocateCodexHome(this, 'wake-not-taken')
+      }
       const waiting = hasInput && (!stored || (this.settledIdle() && inputWakeOverdue(state, this.hub.clock.wall())))
       const hold = !waiting ? null : this.codexObserver === null ? 'session-gone' : this.codexObserver.hold()
       this.noteWakeHold(hasInput ? hold : null)
@@ -1053,7 +1090,10 @@ class HubSession implements AttendedSession {
   }
 
   writerAvailable(): boolean {
-    if (this.child === null || this.child.closed || this.endCandidate !== null) return false
+    if (this.endCandidate !== null) return false
+    // A thread followed into another home runs there before its first hook brings a child: its lock says so.
+    const followed = this.harness === 'codex' && this.followedHome && this.hub.holdsInItsHome(this)
+    if ((this.child === null || this.child.closed) && !followed) return false
     if (this.harness === 'codex') {
       if (inspectCodexQueue(this.id, this.env).state !== 'ready') return false
       return this.hub.codexAdapters(this).available?.() !== false
@@ -1105,8 +1145,10 @@ class HubSession implements AttendedSession {
     const lease: DeliveryLease = { incarnation: this.lease.incarnation, generation }
     stageSessionMessages(this.id, this.env, lease, messages)
     if (inputWakeRetryDeferred(readSessionState(this.id, this.env), this.hub.clock.wall())) return 'done'
-    const mayWake = (): boolean => this.codexObserver?.mayWake() ?? false
     if (!hasSessionInputs(this.id, this.env, lease)) return 'done'
+    // A wake goes where the thread runs now: an Orca account restart moves it to another home before any hook says so.
+    await this.hub.relocateCodexHome(this, 'wake')
+    const mayWake = (): boolean => this.codexObserver?.mayWake() ?? false
     // An Orca chat's card answers go through Orca, and that message is the wake.
     if (this.hub.orcaChatReady(this, readSessionState(this.id, this.env))) { void this.hub.orcaChatAnswers(this); return 'done' }
     // Past a stop, the app or Orca starts the next turn where it can; a queued wake would only run after it.
@@ -1131,6 +1173,12 @@ class HubSession implements AttendedSession {
       return result.status === 'written' || result.status === 'failed' ? result.status : 'not-attempted'
     }, this.hub.logger, { now: () => this.hub.clock.wall(), scope: codexHome(this.env), replaceLost: () => this.settledIdle(),
       stored: () => ({ ...(queuedId === undefined ? {} : { queued_id: queuedId }), paused }) })
+    // The thread was followed into another home while this wake was written: it went to the old home.
+    const written = readSessionState(this.id, this.env).input_wake
+    if (written?.queued === true && written.scope !== undefined && !sameCodexHome(written.scope, codexHome(this.env))) {
+      this.hub.orphanWake(this, written)
+      return 'done'
+    }
     // A wake written past an interrupt runs only when started.
     if (paused) void this.hub.wakeAfterInterrupt(this)
     return 'done'
@@ -1160,6 +1208,7 @@ class HubSession implements AttendedSession {
       launch: registration.launch,
       session_path: registration.sessionPath,
       display: registration.display,
+      ...(this.followedHome ? { followed_home: true as const } : {}),
     }
   }
 
@@ -1483,6 +1532,7 @@ export class Hub {
     this.orcaWatchTimer = setInterval(() => this.watchOrcaBlocking(), this.options.orcaWatchMs ?? ORCA_BLOCKING_WATCH_MS)
     this.orcaWatchTimer.unref?.()
     this.scheduleAutomaticUpdate(this.options.automaticUpdate?.firstDelayMs ?? AUTOMATIC_UPDATE_FIRST_MS)
+    this.scheduleOrphanSweep()
     // An exit asked for during startup (a signal, `stop`) must not be lost.
     if (!this.exiting) await new Promise<void>((resolve) => { this.exitResolve = resolve })
     signals?.()
@@ -1721,6 +1771,7 @@ export class Hub {
     if (this.safetyTimer !== null) clearInterval(this.safetyTimer)
     if (this.watchdogTimer !== null) clearInterval(this.watchdogTimer)
     if (this.attachWatchTimer !== null) clearInterval(this.attachWatchTimer)
+    if (this.orphanSweepTimer !== null) clearTimeout(this.orphanSweepTimer)
     if (this.orcaWatchTimer !== null) clearInterval(this.orcaWatchTimer)
     if (this.updateTimer !== null) clearTimeout(this.updateTimer)
     this.driver.stop()
@@ -2850,7 +2901,7 @@ export class Hub {
   }
 
   /** The end confirmation passed: the conversation came back, the app only unloaded it, or it closed. */
-  private resolveEnd(session: HubSession): void {
+  private async resolveEnd(session: HubSession): Promise<void> {
     const candidate = session.endCandidate
     if (candidate === null || session.ending !== null || this.sessions.get(session.id) !== session || this.exiting) return
     session.endCandidate = null
@@ -2915,6 +2966,16 @@ export class Hub {
       session.reloadedAt = this.clock.monotonic()
       session.writeStatus(true)
       kept('hosted-elsewhere')
+      return
+    }
+    // The thread runs in another Codex home now (an Orca account restart): it moved, it did not close.
+    const moved = await this.locateCodexHome(session)
+    // Anything that happened meanwhile (a child came back, the session ended, the hub left) decides instead.
+    if (session.ending !== null || this.sessions.get(session.id) !== session || this.exiting || session.endCandidate !== null || session.child !== (primary?.child ?? null)) return
+    if (moved !== null && moved !== 'unknown' && !sameCodexHome(moved.home, this.currentCodexHome(session))) {
+      if (primary !== null) this.letGo(session, primary)
+      this.followCodexHome(session, moved, 'end-confirmation')
+      kept('moved-home')
       return
     }
     if (this.holdForShutdown(session, candidate)) return
@@ -3176,6 +3237,213 @@ export class Hub {
       this.holdEnd(session, candidate.reason, candidate.transcriptPath, Math.max(0, (this.options.endConfirmMs ?? END_CONFIRM_MS) - waited), candidate.since)
     }
     this.statusChanged()
+  }
+
+  private readonly holderCache = new Map<string, { at: number; value: number[] | 'unknown'; refreshing?: Promise<number[] | 'unknown'> }>()
+
+  /**
+   * The Codex processes that hold a thread's writer lock in a home, looked up
+   * off the hub's reply path (`lsof` runs as a child process) and kept for a
+   * few seconds: several checks a tick ask the same.
+   */
+  async codexHolders(home: string, threadId: string): Promise<number[] | 'unknown'> {
+    const key = `${home}\0${threadId}`
+    const cached = this.holderCache.get(key)
+    const now = this.clock.monotonic()
+    if (cached !== undefined && now - cached.at < CODEX_HOLDERS_FRESH_MS) return cached.value
+    if (cached?.refreshing !== undefined) return await cached.refreshing
+    const refreshing = (async () => this.options.codexThreadHolders !== undefined
+      ? this.options.codexThreadHolders(home, threadId) : await codexThreadHoldersAsync(home, threadId))()
+    this.holderCache.set(key, { at: cached?.at ?? -Infinity, value: cached?.value ?? 'unknown', refreshing })
+    try {
+      const value = await refreshing
+      this.holderCache.set(key, { at: this.clock.monotonic(), value })
+      return value
+    } catch {
+      this.holderCache.delete(key)
+      return 'unknown'
+    }
+  }
+
+  /** The last holders seen, without waiting; a stale entry is refreshed in the background. */
+  private cachedCodexHolders(home: string, threadId: string): number[] | 'unknown' {
+    const key = `${home}\0${threadId}`
+    const cached = this.holderCache.get(key)
+    if (cached === undefined || this.clock.monotonic() - cached.at >= CODEX_HOLDERS_FRESH_MS) void this.codexHolders(home, threadId)
+    return cached?.value ?? 'unknown'
+  }
+
+  /** Whether the session's recorded process holds the thread's writer lock in the session's home, as last seen. */
+  holdsInItsHome(session: HubSession): boolean {
+    const holders = this.cachedCodexHolders(this.currentCodexHome(session), session.id)
+    return holders !== 'unknown' && holders.includes(session.harnessProcess.pid)
+  }
+
+  /** The Codex home this session's thread was last known to run in. */
+  currentCodexHome(session: HubSession): string {
+    return session.registration.codexHome ?? session.env['CODEX_HOME'] ?? path.join(os.homedir(), '.codex')
+  }
+
+  /** Where the session's Codex thread runs now, across every home it may run in (`codex-thread-home.ts`). */
+  async locateCodexHome(session: HubSession): Promise<CodexThreadHome | null | 'unknown'> {
+    const candidates = this.options.codexHomes?.(session) ?? codexHomeCandidates({ recorded: this.currentCodexHome(session),
+      known: [...this.sessions.values()].map((other) => other.registration.codexHome), env: session.env })
+    return await locateCodexThreadHome(session.id, candidates, {
+      holders: (home, id) => this.codexHolders(home, id),
+      exited: (identity) => session.exited.has(identityKey(identity)),
+    })
+  }
+
+  /**
+   * Find the thread's home again (`why`: at a wake, or when a wake was not
+   * taken), and follow it when it runs in another home now. Never while the
+   * recorded process still holds the thread in its own home: an app that
+   * keeps a thread loaded for days is where the User is, whatever else
+   * resumed it meanwhile. At most once every few seconds per session.
+   */
+  async relocateCodexHome(session: HubSession, why: 'wake' | 'wake-not-taken'): Promise<boolean> {
+    if (session.harness !== 'codex' || session.ending !== null || session.stopped !== null) return false
+    const now = this.clock.monotonic()
+    if (now - session.homeLookedAt < CODEX_HOME_LOOK_MS) return false
+    session.homeLookedAt = now
+    const own = await this.codexHolders(this.currentCodexHome(session), session.id)
+    if (own === 'unknown' || own.includes(session.harnessProcess.pid)) return false
+    const located = await this.locateCodexHome(session)
+    if (located === null || located === 'unknown' || sameCodexHome(located.home, this.currentCodexHome(session))) return false
+    if (session.ending !== null || session.stopped !== null || this.sessions.get(session.id) !== session) return false
+    const primary = session.primary()
+    if (primary !== null && primary.harnessProcess.pid !== located.holder.pid) this.letGo(session, primary)
+    this.followCodexHome(session, located, why)
+    return true
+  }
+
+  /**
+   * The thread runs in another Codex home now: attend it there, in the
+   * process that holds it, until that process's first hook registers it.
+   * A wake left in the old home is kept as an orphan to remove once nothing
+   * runs the thread there; the next wake is written in the new home.
+   */
+  followCodexHome(session: HubSession, located: CodexThreadHome, why: string): void {
+    const old = this.currentCodexHome(session)
+    const wake = readSessionState(session.id, session.env).input_wake
+    if (wake?.queued === true) this.recordOrphanWake(session, wake, old)
+    session.child = null
+    session.env = { ...session.env, CODEX_HOME: located.home }
+    session.harnessProcess = located.holder
+    session.registration = { ...session.registration, codexHome: located.home, harnessProcess: located.holder, harnessTicks: null }
+    session.rehost(located.holder, session.registration.boot)
+    session.reloadedAt = this.clock.monotonic()
+    session.followedHome = true
+    session.observeCodex()
+    session.writeStatus(true)
+    this.logger.info('hub.session', { event: 'followed-home', session: session.id, why, ambiguous: located.ambiguous })
+    void this.removeOrphanWakes(session)
+    queueMicrotask(() => session.checkInput())
+  }
+
+  private orphanSweepTimer: ReturnType<typeof setTimeout> | null = null
+
+  /**
+   * Once, a minute after a hub starts (so once after the update that brings
+   * it): remove Notifai's own wakes left in Codex homes threads no longer run
+   * in (`codex-orphan-sweep.ts`). Not on Windows, where who holds a thread
+   * cannot be told.
+   */
+  private scheduleOrphanSweep(): void {
+    if (this.options.orphanSweep === false || (process.platform === 'win32' && this.options.orphanSweep === undefined) || !orphanSweepDue(this.env)) return
+    this.orphanSweepTimer = setTimeout(() => {
+      this.orphanSweepTimer = null
+      if (this.exiting || this.handingOver) return
+      void this.runOrphanSweep().catch((err: unknown) => {
+        this.logger.error('hub.session', { event: 'orphan-sweep-failed', message: err instanceof Error ? err.message : String(err) })
+      })
+    }, (this.options.orphanSweep === undefined ? undefined : this.options.orphanSweep.delayMs) ?? ORPHAN_SWEEP_DELAY_MS)
+    this.orphanSweepTimer.unref?.()
+  }
+
+  private async runOrphanSweep(): Promise<void> {
+    const seams = this.options.orphanSweep === false ? undefined : this.options.orphanSweep
+    const statuses = attendanceStatuses(this.env)
+    const threads: string[] = []
+    const known: Array<string | null> = []
+    for (const { sessionId, status } of statuses) {
+      const record = parseAdoptionRecord(status['adoption'])
+      const codex = record !== null ? record.harness === 'codex'
+        : readSessionState(sessionId, this.sessionEnv({ claudeConfigDir: null, codexHome: null })).harness === 'codex'
+      if (!codex) continue
+      threads.push(sessionId)
+      known.push(record?.codex_home ?? null)
+    }
+    if (threads.length === 0) return
+    const homes = seams?.homes ?? codexHomeCandidates({ recorded: null, known, env: this.env })
+    // A live session's own wake is the hub's: never removed here.
+    const keep = (threadId: string, itemId: string) => {
+      const session = this.sessions.get(threadId)
+      return session !== undefined && readSessionState(threadId, session.env).input_wake?.queued_id === itemId
+    }
+    const report = await (seams?.run ?? sweepCodexOrphanWakes)({ env: this.env, threads, homes, keep, cwd: os.homedir(), now: this.clock.wall(),
+      holders: (home, id) => this.codexHolders(home, id) })
+    this.logger.info('hub.session', { event: 'orphan-sweep', deleted: report.deleted, undecided: report.undecided,
+      left_items: report.left.reduce((sum, entry) => sum + entry.items, 0) })
+  }
+
+  /**
+   * Keep a wake written into a home the thread no longer runs in as an
+   * orphan to remove, and forget it as the session's wake, so the next one
+   * is written where the thread runs.
+   */
+  private recordOrphanWake(session: HubSession, wake: NonNullable<SessionState['input_wake']>, home: string): void {
+    updateSessionState(session.id, session.env, (latest) => {
+      const next = { ...latest }
+      if (wake.queued_id !== undefined) {
+        next.orphan_wakes = [...(latest.orphan_wakes ?? []).filter((entry) => entry.queued_id !== wake.queued_id),
+          { home: wake.scope ?? home, queued_id: wake.queued_id, cwd: session.registration.cwd ?? os.homedir(), at: this.clock.wall() }]
+      }
+      if (latest.input_wake?.token === wake.token) delete next.input_wake
+      return next
+    })
+  }
+
+  /** A wake that went to the old home while the session followed its thread elsewhere. */
+  orphanWake(session: HubSession, wake: NonNullable<SessionState['input_wake']>): void {
+    this.recordOrphanWake(session, wake, wake.scope ?? this.currentCodexHome(session))
+    this.logger.info('hub.session', { event: 'wake-in-old-home', session: session.id })
+    void this.removeOrphanWakes(session)
+    queueMicrotask(() => session.checkInput())
+  }
+
+  private readonly orphanRemoving = new Set<string>()
+
+  /**
+   * Remove the wakes this session left in homes its thread no longer runs
+   * in, once nothing runs it there (`removeOrphanCodexWake`): only Notifai's
+   * own content-free wakes, by their exact ids. Tried a few times, then left.
+   */
+  async removeOrphanWakes(session: HubSession): Promise<void> {
+    const orphans = readSessionState(session.id, session.env).orphan_wakes ?? []
+    if (orphans.length === 0 || this.orphanRemoving.has(session.id)) return
+    this.orphanRemoving.add(session.id)
+    try {
+      for (const orphan of orphans) {
+        if (sameCodexHome(orphan.home, this.currentCodexHome(session))) continue
+        const outcome = await (this.options.orphanWakeRemoval ?? removeOrphanCodexWake)({ home: orphan.home, threadId: session.id, queuedId: orphan.queued_id,
+          env: session.env, cwd: orphan.cwd, holders: (home, id) => this.codexHolders(home, id) })
+        // Held there again, or a shared server owns that queue: not a failed try, only a later one.
+        if (outcome === 'held' || outcome === 'shared-server') {
+          this.logger.info('hub.session', { event: 'orphan-wake-kept', session: session.id, outcome })
+          continue
+        }
+        const tries = (orphan.tries ?? 0) + 1
+        const done = outcome === 'deleted' || outcome === 'gone' || outcome === 'not-a-wake' || tries >= ORPHAN_WAKE_TRIES
+        updateSessionState(session.id, session.env, (latest) => ({ ...latest, orphan_wakes: (latest.orphan_wakes ?? []).flatMap((entry) =>
+          entry.queued_id !== orphan.queued_id ? [entry] : done ? [] : [{ ...entry, tries }]) }))
+        this.logger.info('hub.session', { event: outcome === 'deleted' ? 'orphan-wake-removed' : 'orphan-wake-kept', session: session.id, outcome })
+      }
+    } catch (err) {
+      this.logger.error('hub.session', { event: 'orphan-wake-failed', session: session.id, message: err instanceof Error ? err.message : String(err) })
+    } finally {
+      this.orphanRemoving.delete(session.id)
+    }
   }
 
   /** A live process other than the recorded host that has the session's Codex thread loaded, or null. */
@@ -3516,6 +3784,8 @@ export class Hub {
     if (incarnation === null) return
     const session = new HubSession(this, sessionId, record.harness, env, record.harness_process, incarnation, registration)
     if (record.last_activity_at !== null) session.lastActivity = record.last_activity_at
+    // Followed into another home before this hub: it still runs there while its process holds it.
+    if (record.followed_home === true && record.harness === 'codex') { session.followedHome = true; session.reloadedAt = this.clock.monotonic() }
     session.transcriptSeen = record.transcript_seen
     session.transcriptGone()
     session.claimToken = await this.takeClaim(session)
@@ -4400,7 +4670,10 @@ export class Hub {
           this.closing(session, 'harness-gone')
         }
       }
-      if (session.harness === 'codex') this.recoverHostedTurn(session)
+      if (session.harness === 'codex') {
+        this.recoverHostedTurn(session)
+        if ((readSessionState(session.id, session.env).orphan_wakes ?? []).length > 0) void this.removeOrphanWakes(session)
+      }
       session.checkInput()
     }
     if (now - this.lastHeartbeat >= 60 * 60_000) {

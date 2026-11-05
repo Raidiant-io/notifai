@@ -95,6 +95,12 @@ export interface AdoptionRecord {
   /** The PATH the session's harness ran with: what its Codex wakes resolve `codex` on. Null: the hub's. */
   session_path: string | null
   display: SessionDisplay
+  /**
+   * The thread was followed into another Codex home (an Orca account
+   * restart) and its process there has not registered through a hook yet:
+   * the next hub keeps writing wakes there while that process holds it.
+   */
+  followed_home?: true
 }
 
 function processOf(value: unknown): ProcessIdentity | null {
@@ -150,6 +156,7 @@ export function parseAdoptionRecord(value: unknown): AdoptionRecord | null {
     launch: parseLaunchRecord(record['launch']),
     session_path: sessionPathOf(record['session_path']),
     display: sessionDisplayOf(record['display']),
+    ...(record['followed_home'] === true ? { followed_home: true as const } : {}),
   }
 }
 

@@ -4,7 +4,7 @@ import type { ChildProcess } from 'node:child_process'
 import { describe, expect, it } from 'vitest'
 import { hostedTurnEnv, notifaiHooksStandDown, runHostedCodexAppTurn, startHostedCodexAppTurn } from './codex-app-hosted-turn.js'
 
-const THREAD = '01a1abbc-72db-7b31-8454-c857da5388e4'
+const THREAD = '00000000-0000-7000-8000-00000000a001'
 
 /**
  * A private `codex app-server` as the app's Codex 0.166 answered in a

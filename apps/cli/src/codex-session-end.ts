@@ -6,8 +6,8 @@
  * tell a close from a reload, an unload or an archive. The hub decides after
  * its end confirmation from this evidence (see `session-close-classifier.ts`).
  */
-import { execFileSync } from 'node:child_process'
-import { closeSync, fstatSync, existsSync, openSync, readdirSync, readlinkSync, readSync, realpathSync, statSync, type Dirent } from 'node:fs'
+import { execFile, execFileSync } from 'node:child_process'
+import { closeSync, fstatSync, existsSync, openSync, readdirSync, readFileSync, readlinkSync, readSync, realpathSync, statSync, type Dirent } from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import type { CodexHostKind } from './session-place.js'
@@ -293,4 +293,42 @@ export function readCodexLastTurnInterrupted(transcriptPath: string | null | und
   } finally {
     closeSync(fd)
   }
+}
+
+/**
+ * `codexThreadHolders`, without blocking: `lsof` runs as a child process on
+ * macOS, and only processes running Codex count (a viewer or backup tool
+ * with the lock file open does not run the thread).
+ */
+export async function codexThreadHoldersAsync(codexHome: string | null, threadId: string, platform: NodeJS.Platform = process.platform): Promise<number[] | 'unknown'> {
+  const lock = codexThreadWriterLockPath(codexHome, threadId)
+  if (!existsSync(lock)) return []
+  let pids: number[] | 'unknown'
+  if (platform === 'darwin') {
+    pids = await new Promise<number[] | 'unknown'>((resolve) => {
+      execFile('lsof', ['-t', '--', lock], { encoding: 'utf8', timeout: 3_000, env: { PATH: '/usr/sbin:/usr/bin:/bin:/sbin', LC_ALL: 'C' } }, (err, stdout) => {
+        if (err !== null) { resolve((err as { code?: unknown }).code === 1 ? [] : 'unknown'); return }
+        resolve(stdout.split(/\s+/).filter((pid) => /^\d+$/.test(pid)).map(Number))
+      })
+    })
+  } else pids = codexThreadHolders(codexHome, threadId, platform)
+  if (pids === 'unknown' || pids.length === 0) return pids
+  return await codexProcessesAmong(pids, platform)
+}
+
+/** The processes among these that run Codex, by their executable's name. */
+export async function codexProcessesAmong(pids: readonly number[], platform: NodeJS.Platform = process.platform): Promise<number[]> {
+  const names = new Map<number, string>()
+  if (platform === 'linux') {
+    for (const pid of pids) { try { names.set(pid, readFileSync(`/proc/${pid}/comm`, 'utf8').trim()) } catch { /* gone */ } }
+  } else {
+    const listed = await new Promise<string>((resolve) => {
+      execFile('/bin/ps', ['-o', 'pid=,comm=', '-p', pids.join(',')], { encoding: 'utf8', timeout: 3_000 }, (_err, stdout) => resolve(stdout ?? ''))
+    })
+    for (const line of listed.split('\n')) {
+      const match = /^\s*(\d+)\s+(.+)$/u.exec(line)
+      if (match !== null) names.set(Number(match[1]), match[2]!.trim())
+    }
+  }
+  return pids.filter((pid) => /codex/iu.test(path.basename(names.get(pid) ?? '')))
 }

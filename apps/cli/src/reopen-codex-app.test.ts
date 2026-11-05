@@ -5,7 +5,7 @@ import { describe, expect, it } from 'vitest'
 import { readCodexLastTurnInterrupted } from './codex-session-end.js'
 import { codexAppPlan, type CodexAppHost } from './reopen-codex-app.js'
 
-const THREAD = '01a1ab45-a8ef-7893-b1dd-b985a616cd66'
+const THREAD = '00000000-0000-7000-8000-00000000a002'
 const APP = { pid: 89_000, start: 'Thu Nov  5 09:00:00 2026' }
 const SERVER = { pid: 89_640, start: 'Thu Nov  5 09:00:01 2026' }
 

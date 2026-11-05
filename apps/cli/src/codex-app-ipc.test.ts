@@ -5,7 +5,7 @@ import path from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
 import { codexAppIpcPath, codexAppIpcVerified, openCodexAppIpc } from './codex-app-ipc.js'
 
-const THREAD = '01a1ab45-a8ef-7893-b1dd-b985a616cd66'
+const THREAD = '00000000-0000-7000-8000-00000000a002'
 const cleanup: Array<() => void> = []
 afterEach(() => { for (const step of cleanup.splice(0)) step() })
 

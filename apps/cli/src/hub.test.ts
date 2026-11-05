@@ -1301,6 +1301,11 @@ describe('hub and Codex SessionEnd', () => {
       orcaStructured?: boolean
       codexThreadHeld?: HubOptions['codexThreadHeld']
       frame?: Record<string, unknown>
+      codexThreadHolders?: HubOptions['codexThreadHolders']
+      codexHomes?: HubOptions['codexHomes']
+      orphanWakeRemoval?: HubOptions['orphanWakeRemoval']
+      host?: { pid: number; start: string }
+      orphanSweep?: HubOptions['orphanSweep']
     }) {
       const env = hubEnv()
       recordSessionNotified(SESSION, env, Date.now())
@@ -1331,11 +1336,15 @@ describe('hub and Codex SessionEnd', () => {
         ...(options.orcaWatchMs === undefined ? {} : { orcaWatchMs: options.orcaWatchMs }),
         ...(options.interruptWake === undefined ? {} : { interruptWake: options.interruptWake }),
         ...(options.codexThreadHeld === undefined ? {} : { codexThreadHeld: options.codexThreadHeld }),
+        ...(options.codexThreadHolders === undefined ? {} : { codexThreadHolders: options.codexThreadHolders }),
+        ...(options.codexHomes === undefined ? {} : { codexHomes: options.codexHomes }),
+        ...(options.orphanWakeRemoval === undefined ? {} : { orphanWakeRemoval: options.orphanWakeRemoval }),
+        orphanSweep: options.orphanSweep ?? false,
         ...(options.logger === undefined ? {} : { logger: options.logger }),
         ...(options.clock === undefined ? {} : { clock: options.clock }),
       })
       await hubListening(env)
-      const child = await codexSession(env, service, peers, 900120, transcript, HARNESS, { ...(options.orcaStructured === true ? { orca_structured: '1' } : {}), ...(options.frame ?? {}) })
+      const child = await codexSession(env, service, peers, 900120, transcript, options.host ?? HARNESS, { ...(options.orcaStructured === true ? { orca_structured: '1' } : {}), ...(options.frame ?? {}) })
       for (const type of ['task_started', 'task_complete']) {
         writeFileSync(transcript, `${JSON.stringify({ type: 'event_msg', payload: { type, turn_id: 'turn-1' } })}\n`, { flag: 'a' })
       }
@@ -1371,7 +1380,7 @@ describe('hub and Codex SessionEnd', () => {
           await new Promise((resolve) => setTimeout(resolve, 100))
         }
       }
-      return { env, hub, service, transcript, queued, asked, builds, pending, deliverNote, consumeNote, stop }
+      return { env, hub, service, transcript, queued, asked, builds, pending, deliverNote, consumeNote, stop, child }
     }
 
     it('keeps a note out of the queue during a hook-observed turn, then wakes remaining input at its Stop', async () => {
@@ -1969,6 +1978,156 @@ describe('hub and Codex SessionEnd', () => {
         await new Promise((resolve) => setTimeout(resolve, 400))
         expect(looks.length).toBe(settled)
       } finally { await run.stop() }
+    })
+
+    describe('after Orca restarts the conversation on another account', () => {
+      /**
+       * The thread resumed in another Codex home (Orca's "Restart Session"
+       * onto another account hard-links only the rollout), in a process
+       * whose hooks have not run yet: only its writer lock there says so.
+       */
+      async function moved(clock?: HubOptions['clock'], options: { both?: boolean; gate?: Promise<void> } = {}) {
+        const other = spawn('sleep', ['60'], { stdio: 'ignore' })
+        const old = spawn('sleep', ['60'], { stdio: 'ignore' })
+        await until(() => other.pid !== undefined && processStartTime(other.pid) !== null && old.pid !== undefined && processStartTime(old.pid) !== null)
+        const host = { pid: old.pid!, start: processStartTime(old.pid!)! }
+        let where: 'A' | 'B' = 'A'
+        const removals: Array<{ home: string; queuedId: string }> = []
+        let homeA = ''
+        const homeB = mkdtempSync(path.join('/tmp', 'notifai-home-b-'))
+        const queued: string[] = []
+        const r = { queued, wake: { available: () => true, queue: async (threadId: string) => {
+          queued.push(threadId)
+          const id = `qs_${queued.length}`
+          if (options.gate !== undefined && queued.length === 1) await options.gate
+          return id
+        } } as CodexWakeAdapters }
+        const lookups: string[] = []
+        const run = await sharedServer({ state: () => ({ state: 'attached', confirmed: true, reason: 'terminal-live+joined' }), wake: r.wake, hostKind: () => 'other',
+          codexHomes: () => [homeA, homeB],
+          codexThreadHolders: (home) => {
+            lookups.push(home === homeB ? 'B' : 'A')
+            // `both`: the recorded process keeps the thread in A while another process resumed it in B.
+            if (options.both === true && where === 'B') return home === homeA ? [host.pid] : home === homeB ? [other.pid!] : []
+            return where === 'A' ? (home === homeA ? [host.pid] : []) : (home === homeB ? [other.pid!] : [])
+          }, host,
+          ...(clock === undefined ? {} : { clock }),
+          orphanWakeRemoval: async (input) => { removals.push({ home: input.home, queuedId: input.queuedId }); return 'deleted' } })
+        homeA = path.dirname(path.dirname(run.transcript))
+        return { run, r, removals, homeA, homeB, other, old, lookups, move: () => { where = 'B' },
+          done: async () => { other.kill(); old.kill(); await run.stop(); rmSync(homeB, { recursive: true, force: true }) } }
+      }
+
+      it('follows the thread into its new home when its old process exits, instead of ending it, and wakes it there', async () => {
+        const m = await moved()
+        try {
+          await m.run.deliverNote(2)
+          await until(() => m.r.queued.length > 0)
+          expect(readSessionState(SESSION, m.run.env).input_wake).toMatchObject({ queued_id: 'qs_1' })
+          // The old terminal closes; the thread already runs in B.
+          m.move()
+          m.old.kill('SIGKILL')
+          m.run.child.socket.destroy()
+          await until(() => m.removals.length > 0, 5_000)
+          expect(m.removals).toEqual([{ home: m.homeA, queuedId: 'qs_1' }])
+          expect(readSessionEndMarker(SESSION, m.run.env)).toBeNull()
+          // The next note is woken in B, where the thread runs.
+          await m.run.deliverNote(4)
+          await until(() => m.r.queued.length > 1)
+          expect(readSessionState(SESSION, m.run.env).input_wake?.scope).toBe(m.homeB)
+          expect(readSessionState(SESSION, m.run.env).orphan_wakes ?? []).toEqual([])
+        } finally { await m.done() }
+      })
+
+      it('looks for the thread again when an idle session has not taken its wake for 30 seconds, and wakes it where it runs', async () => {
+        let shift = 0
+        const m = await moved({ monotonic: () => performance.now() + shift, wall: () => Date.now() + shift })
+        try {
+          await m.run.deliverNote(2)
+          await until(() => m.r.queued.length > 0)
+          m.move()
+          // Not yet 30 seconds: the wake in A stands.
+          await m.run.deliverNote(2)
+          expect(m.removals).toEqual([])
+          shift += 31_000
+          await m.run.deliverNote(4)
+          await until(() => m.r.queued.length > 1 && m.removals.length > 0)
+          expect(m.removals).toEqual([{ home: m.homeA, queuedId: 'qs_1' }])
+          expect(readSessionState(SESSION, m.run.env).input_wake?.scope).toBe(m.homeB)
+        } finally { await m.done() }
+      })
+
+      it('never leaves a thread its recorded process still holds in its own home, whatever else resumed it', async () => {
+        const m = await moved(undefined, { both: true })
+        try {
+          m.move()
+          await m.run.deliverNote(4)
+          await until(() => m.r.queued.length > 0)
+          expect(readSessionState(SESSION, m.run.env).input_wake?.scope).toBe(m.homeA)
+          expect(m.removals).toEqual([])
+        } finally { await m.done() }
+      })
+
+      it('makes a wake written into the old home while the session followed its thread an orphan, and writes one where it runs', async () => {
+        let release: () => void = () => undefined
+        const m = await moved(undefined, { gate: new Promise<void>((resolve) => { release = resolve }) })
+        try {
+          await m.run.deliverNote(2)
+          await until(() => m.r.queued.length > 0)
+          // The thread moves while that wake is still being written into A.
+          m.move()
+          const hub = m.run.hub as unknown as { sessions: Map<string, unknown>; followCodexHome(session: unknown, located: unknown, why: string): void }
+          hub.followCodexHome(hub.sessions.get(SESSION), { home: m.homeB, holder: { pid: m.other.pid!, start: processStartTime(m.other.pid!)! }, ambiguous: false }, 'test')
+          release()
+          await until(() => m.removals.length > 0)
+          expect(m.removals).toEqual([{ home: m.homeA, queuedId: 'qs_1' }])
+          await m.run.deliverNote(4)
+          await until(() => m.r.queued.length > 1)
+          expect(readSessionState(SESSION, m.run.env).input_wake?.scope).toBe(m.homeB)
+        } finally { await m.done() }
+      })
+
+      it('looks up who holds the thread at most once every few seconds, and keeps the follow across hubs', async () => {
+        const m = await moved()
+        try {
+          m.move()
+          await m.run.deliverNote(2)
+          await until(() => m.r.queued.length > 0)
+          const before = m.lookups.length
+          for (let round = 0; round < 6; round += 1) { m.run.hub.inputStaged(SESSION); await new Promise((resolve) => setTimeout(resolve, 100)) }
+          // Six checks in under a second ask each home at most once more.
+          expect(m.lookups.length - before).toBeLessThanOrEqual(2)
+          const session = (m.run.hub as unknown as { sessions: Map<string, { adoptionRecord(): Record<string, unknown> }> }).sessions.get(SESSION)!
+          expect(session.adoptionRecord()).toMatchObject({ followed_home: true, codex_home: m.homeB })
+        } finally { await m.done() }
+      })
+
+      it('sweeps other Codex homes once after it starts, for the Codex conversations it attended, sparing a live session\'s own wake', async () => {
+        const runs: Array<{ threads: readonly string[]; homes: readonly string[]; keeps: boolean }> = []
+        const queued: string[] = []
+        const wake = { available: () => true, queue: async (threadId: string) => { queued.push(threadId); return 'qs_live' } } as CodexWakeAdapters
+        const run = await sharedServer({ state: () => ({ state: 'attached', confirmed: true, reason: 'terminal-live+joined' }), wake, hostKind: () => 'other',
+          orphanSweep: { delayMs: 1_500, homes: ['/acct-a', '/acct-b'], run: async (input) => {
+            runs.push({ threads: input.threads, homes: input.homes, keeps: input.keep(SESSION, 'qs_live') && !input.keep(SESSION, 'qs_old') })
+            return { version: 1, at: input.now, attempts: 1, done: true, deleted: 0, left: [], undecided: 0 }
+          } } })
+        try {
+          await run.deliverNote(2)
+          await until(() => queued.length > 0)
+          await until(() => runs.length > 0, 5_000)
+          expect(runs).toEqual([{ threads: [SESSION], homes: ['/acct-a', '/acct-b'], keeps: true }])
+        } finally { await run.stop() }
+      })
+
+      it('writes a wake into the home the thread runs in now, even before its old process is seen to exit', async () => {
+        const m = await moved()
+        try {
+          m.move()
+          await m.run.deliverNote(4)
+          await until(() => m.r.queued.length > 0)
+          expect(readSessionState(SESSION, m.run.env).input_wake?.scope).toBe(m.homeB)
+        } finally { await m.done() }
+      })
     })
 
     it('never lets a turn it saw start hold a note past the bound, whether or not that turn ever ended', async () => {

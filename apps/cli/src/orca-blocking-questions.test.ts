@@ -17,9 +17,9 @@ import { enableProject, projectBinding } from './project-enablement.js'
 
 const roots: string[] = []
 afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }) })
-const THREAD = '01a1ab13-ffe0-7aa0-bc84-b5e319a9aa5b'
-const ORCA = 'codex_e0c051e3_64dc_499b_969b_46619624348e'
-const CALL = 'call_28fec65658a541e6bb9df9a56fbc677c'
+const THREAD = '00000000-0000-7000-8000-00000000a003'
+const ORCA = 'codex_00000000_0000_4000_8000_00000000a005'
+const CALL = 'call_0000000000000000000000000000a004'
 const SERVICE = { base_url: 'https://api.example.test', machine_id: 'machine_test' }
 const item = (question: string) => `orca:codex-prompt%3A${THREAD}%3A${CALL}%3A${question}`
 /** As Orca 1.4.248 shows a two-question `request_user_input` (live, 2026-11-05). */

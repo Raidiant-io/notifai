@@ -279,6 +279,12 @@ export interface SessionState {
   orca_chat_sent?: Array<{ digest: string; operation_id: string; context: string; at: number; shown?: true }>
   /** Codex's pausing questions in an Orca chat, mirrored to the devices (`orca-blocking-questions.ts`). */
   orca_blocking?: OrcaBlockingRegistration[]
+  /**
+   * Notifai's wakes left in Codex homes the thread no longer runs in (an Orca
+   * account restart), to remove once nothing runs it there (the hub's
+   * `removeOrphanWakes`).
+   */
+  orphan_wakes?: Array<{ home: string; queued_id: string; cwd: string; at: number; tries?: number }>
   /** A content-free native wake is outstanding for this incarnation. */
   input_wake?: {
     incarnation: string; token: string; queued: boolean; writer: ProcessIdentity
