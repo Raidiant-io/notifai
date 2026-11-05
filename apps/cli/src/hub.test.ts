@@ -7,7 +7,7 @@ CompatibilityResponse,
 MachineSetupIssue,
 } from '@raidiant/notifai-protocol'
 import { spawn,type ChildProcess } from 'node:child_process'
-import { mkdirSync,mkdtempSync,readFileSync,rmSync,writeFileSync } from 'node:fs'
+import { mkdirSync,mkdtempSync,readFileSync,rmSync,utimesSync,writeFileSync } from 'node:fs'
 import { createConnection,createServer,type Socket } from 'node:net'
 import path from 'node:path'
 import { afterEach,beforeEach,describe,expect,it,vi } from 'vitest'
@@ -1272,6 +1272,8 @@ describe('hub and Codex SessionEnd', () => {
       hostKind?: HubOptions['codexHostKind']
       pausedWake?: HubOptions['pausedWake']
       orcaRuntime?: HubOptions['orcaRuntime']
+      orcaWatchMs?: number
+      logger?: Logger
     }) {
       const env = hubEnv()
       recordSessionNotified(SESSION, env, Date.now())
@@ -1299,6 +1301,8 @@ describe('hub and Codex SessionEnd', () => {
         // Hermetic by default: no Codex server owns the thread.
         pausedWake: options.pausedWake ?? { owned: async () => false, start: async () => 'unreachable', remove: async () => 'failed' },
         ...(options.orcaRuntime === undefined ? {} : { orcaRuntime: options.orcaRuntime }),
+        ...(options.orcaWatchMs === undefined ? {} : { orcaWatchMs: options.orcaWatchMs }),
+        ...(options.logger === undefined ? {} : { logger: options.logger }),
         ...(options.clock === undefined ? {} : { clock: options.clock }),
       })
       await hubListening(env)
@@ -1626,6 +1630,46 @@ describe('hub and Codex SessionEnd', () => {
         expect(readSessionState(SESSION, run.env).waiting_answers ?? []).toEqual([])
         expect(readSessionState(SESSION, run.env).orca_blocking![0]!.presented).toBe(true)
         expect(queued).toEqual([])
+      } finally { await run.stop() }
+    })
+
+    it('in an Orca chat, puts a pausing question on the devices only while Codex just wrote, without binding the hub\'s log to it', async () => {
+      const item = 'orca:codex-prompt%3A' + SESSION + '%3Acall_w%3Acolor'
+      const looks: string[] = []
+      const runtime: OrcaRuntime = { call: async (method) => {
+        looks.push(method)
+        if (method === 'status.get') return { ok: true, result: { capabilities: ['agent-session.structured.v1', 'agent-session.question-answers.v1', 'agent-session.accepted-send.v1'] } }
+        if (method === 'agentSession.history') return { ok: true, result: { page: { fence: 3, submissions: [], actionablePromptIds: [item],
+          items: [{ itemId: item, revision: 1, body: { kind: 'question', question: 'Which color?', options: [{ id: 'color:Red', label: 'Red' }, { id: 'color:Blue', label: 'Blue' }],
+            resolution: { state: 'pending' } } }] } } }
+        return { ok: false, code: 'method_not_found' }
+      } }
+      const bound: unknown[] = []
+      const logger: Logger = { ...nullLogger(), bind: (fields) => { bound.push(fields) } }
+      const run = await sharedServer({ state: () => ({ state: 'attached', confirmed: true, reason: 'terminal-live+joined' }), hostKind: () => 'app-server',
+        orcaRuntime: runtime, orcaWatchMs: 50, logger })
+      try {
+        const key = readSessionIncarnation(SESSION, run.env)!.key
+        updateSessionState(SESSION, run.env, (state) => ({ ...state, orca_chat: { key, session_id: 'codex_orca_chat' } }))
+        // An idle turn is never looked at.
+        await new Promise((resolve) => setTimeout(resolve, 300))
+        expect(looks).toEqual([])
+        recordTurnStart(SESSION, run.env, key, 'turn-2')
+        const transcript = run.transcript
+        writeFileSync(transcript, `${JSON.stringify({ type: 'event_msg', payload: { type: 'task_started', turn_id: 'turn-2' } })}\n`, { flag: 'a' })
+        await until(() => (readSessionState(SESSION, run.env).orca_blocking ?? []).length > 0)
+        const entry = readSessionState(SESSION, run.env).orca_blocking![0]!
+        expect(entry).toMatchObject({ call_id: 'call_w', orca_session_id: 'codex_orca_chat' })
+        expect(readSessionState(SESSION, run.env).pending?.map((question) => question.question_id)).toContain(entry.question_id)
+        expect(bound.filter((fields) => 'session' in (fields as object))).toEqual([])
+        // Codex wrote nothing more (a pausing question, or a Stop the hub missed): no more looks once it settled.
+        updateSessionState(SESSION, run.env, (state) => ({ ...state, orca_blocking: state.orca_blocking!.map((item) => ({ ...item, ended: true as const })) }))
+        const old = new Date(Date.now() - 60_000)
+        utimesSync(transcript, old, old)
+        await new Promise((resolve) => setTimeout(resolve, 100))
+        const settled = looks.length
+        await new Promise((resolve) => setTimeout(resolve, 400))
+        expect(looks.length).toBe(settled)
       } finally { await run.stop() }
     })
 

@@ -94,7 +94,8 @@ export function codexRouteProfile(env: NodeJS.ProcessEnv, hostKind: CodexHostKin
     // A terminal, the Codex app and the IDE extension answer cards with Codex's envelope only.
     textAnswers: host !== null ? host
       : surface !== null || !(appServer || hostKind === 'unknown') ? 'none' : 'labels',
-    orcaChat: host === 'orca' && appServer && local && (env['ORCA_AGENT_SESSION_ID']?.trim() ?? '') !== '',
+    // `host` already requires Orca's app-server, or a process kind `ps` could not tell, where the environment decides as before.
+    orcaChat: host === 'orca' && local && (env['ORCA_AGENT_SESSION_ID']?.trim() ?? '') !== '',
   }
 }
 

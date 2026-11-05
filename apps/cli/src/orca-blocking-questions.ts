@@ -39,7 +39,7 @@ import { acknowledgementContext } from './hook-acknowledgements.js'
 import { registerQuestion } from './hook-lifecycle.js'
 import { readSessionIncarnation, readSessionState, sessionHasEnded, updateSessionState } from './hook-session-state.js'
 import type { AnsweredPending, HookEnvelope, SessionState } from './hook-types.js'
-import { orcaCapabilities, orcaOperationId, orcaPayloadFingerprint, orcaRuntime, type OrcaRuntime } from './orca-runtime.js'
+import { orcaCapabilities, orcaOperationId, orcaPayloadFingerprint, orcaRuntime, type OrcaRpcResult, type OrcaRuntime } from './orca-runtime.js'
 import { projectBinding, projectDisabled } from './project-enablement.js'
 import { spawnQuestionSettlement } from './question-settlement-process.js'
 import type { DeliveryLease } from './session-delivery.js'
@@ -47,6 +47,10 @@ import type { NativeInputAnswers } from './session-inputs.js'
 
 /** What Orca must offer: structured sessions, answers to its question items, and a send that reports acceptance. */
 export const ORCA_BLOCKING_CAPABILITIES = Object.freeze(['agent-session.structured.v1', 'agent-session.question-answers.v1', 'agent-session.accepted-send.v1'])
+/** How long a capability check of Orca stands. */
+export const ORCA_BLOCKING_CAPABILITY_MS = 300_000
+/** What a look at the chat reads: a pausing question's items are the last a turn shows while it waits. */
+export const ORCA_BLOCKING_HISTORY_LIMIT = 30
 /** A request whose items stay gone this long, with nothing from Notifai's hooks, ended without a device answer. */
 export const ORCA_BLOCKING_GONE_MS = 15_000
 
@@ -60,6 +64,8 @@ export interface OrcaBlockingItem {
   title: string
   /** Device choice id → Orca option id. */
   options: Record<string, string>
+  /** Orca option id → its label as Orca shows it. */
+  labels?: Record<string, string>
 }
 
 export interface OrcaBlockingRegistration {
@@ -72,7 +78,8 @@ export interface OrcaBlockingRegistration {
   /** A device answer went back through Orca. */
   presented?: true
   /** Its acknowledgement command, for the first hook that sees the answer; `digest` names a typed message. */
-  ack?: { context: string; digest?: string; shown?: true; typed_seen?: true }
+  /** `digests` name the typed messages it sent, for the prompt hook that hands them in. */
+  ack?: { context: string; digests?: string[]; shown?: true; seen?: string[] }
   /** Settled another way (answered in Orca, or gone): nothing more is sent for it. */
   ended?: true
   missing_since?: number
@@ -184,7 +191,10 @@ export function registerOrcaBlockingQuestion(deps: CommandDeps, input: {
   if (!source.ok) return null
   const draft = buildAskDraft(config, form, {}, source.invocation, [], undefined, env)
   if (!draft.ok) return null
+  // One id per request and owner: registering again after a crash between the
+  // two writes below finds the same open question instead of asking twice.
   const { question_id: questionId } = registerQuestion(sessionId, env, {
+    question_id: `q_${createHash('sha256').update(`orca-blocking\0${input.ownerKey}\0${request.callId}`).digest('base64url').slice(0, 16)}`,
     question: form.questions[0]!.text, title: draft.draft.presentation.title, summary: draft.draft.presentation.summary,
     questions: form.questions, service_identity: service,
     ...(draft.draft.presentation.body === undefined ? {} : { body: draft.draft.presentation.body }),
@@ -200,6 +210,7 @@ export function registerOrcaBlockingQuestion(deps: CommandDeps, input: {
     items: request.items.map((item, index) => ({
       item_id: item.itemId, codex_question_id: item.codexQuestionId, question_id: form.questions[index]!.id, title: item.question,
       options: Object.fromEntries((form.questions[index]!.choices ?? []).map((choice, position) => [choice.id, item.options[position]!.id])),
+      labels: Object.fromEntries(item.options.map((option) => [option.id, option.label])),
     })),
   }
   updateSessionState(sessionId, env, (state) => state.orca_blocking?.some((entry) => entry.call_id === request.callId) ? state
@@ -243,8 +254,13 @@ export function orcaBlockingPlan(registration: OrcaBlockingRegistration, answer:
 const sha256 = (text: string): string => createHash('sha256').update(text).digest('hex')
 const promptDigest = (text: string): string => sha256(text.replace(/\r\n?/gu, '\n').trimEnd())
 
-async function historyPage(runtime: OrcaRuntime, sessionId: string, timeoutMs: number): Promise<Record<string, unknown> | null> {
-  const reply = await runtime.call('agentSession.history', { sessionId, direction: 'tail', limit: 100 }, timeoutMs)
+/** The label the User picked on the device, as Orca shows it. */
+function choiceLabel(item: OrcaBlockingItem, option: string): string | null {
+  return item.labels?.[option] ?? (option.startsWith(`${item.codex_question_id}:`) ? option.slice(item.codex_question_id.length + 1) : null)
+}
+
+async function historyPage(runtime: OrcaRuntime, sessionId: string, timeoutMs: number, limit: number): Promise<Record<string, unknown> | null> {
+  const reply = await runtime.call('agentSession.history', { sessionId, direction: 'tail', limit }, timeoutMs)
   const page = reply.ok ? (reply.result as { page?: Record<string, unknown> } | null)?.page : undefined
   return page !== undefined && page !== null && typeof page['fence'] === 'number' ? page : null
 }
@@ -279,12 +295,22 @@ export function orcaBlockingPresentation(input: {
       if (runtime === null) return null
       const capabilities = await orcaCapabilities(runtime, budget(2_000))
       if (capabilities === null || !ORCA_BLOCKING_CAPABILITIES.every((capability) => capabilities.has(capability))) return null
-      const typedText = plan.typed.map(({ item, text }) => `> ${item.title.replace(/[\r\n]+/gu, ' ')}\n\n${text}`).join('\n\n')
-      const context = 'Notifai — the User answered this question on their device' +
-        (plan.picks.length > 0 ? '; their choice is in the tool result' : '') +
-        (plan.typed.length > 0 ? `; what they typed arrives as their message` : '') + ', and it is final.' + acknowledgementContext([answer!])
+      const quote = (parts: Array<{ item: OrcaBlockingItem; text: string }>) =>
+        parts.map(({ item, text }) => `> ${item.title.replace(/[\r\n]+/gu, ' ')}\n\n${text}`).join('\n\n')
+      const contextFor = (picked: boolean, typed: boolean) => 'Notifai — the User answered this question on their device' +
+        (picked ? '; their choice is in the tool result' : '') + (typed ? '; what they typed arrives as their message' : '') +
+        ', and it is final.' + acknowledgementContext([answer!])
       const validate = (latest: SessionState) => ({ state: latest, valid: registration(answer!, latest) !== undefined &&
         isDeepStrictEqual(orcaBlockingPlan(registration(answer!, latest)!, answer!), plan) })
+      const setAck = (latest: SessionState, ack: NonNullable<OrcaBlockingRegistration['ack']>): SessionState => ({ ...latest,
+        orca_blocking: (latest.orca_blocking ?? []).map((item) => item.call_id === entry.call_id ? { ...item, presented: true as const, ack } : item) })
+      const send = async (text: string, fence: unknown) => {
+        const body = { kind: 'message', role: 'user', blocks: [{ type: 'text', text }] }
+        return await runtime.call('agentSession.send', { envelope: { sessionId: entry.orca_session_id,
+          clientOperationId: orcaOperationId(input.wall()), expectedRuntimeFence: fence,
+          payloadFingerprint: orcaPayloadFingerprint('agentSession.send', entry.orca_session_id, { body }) }, body }, budget(4_000))
+      }
+      const lost = (reply: OrcaRpcResult) => !reply.ok && ['timeout', 'connection_closed'].includes(reply.code)
       return {
         presentation: {
           kind: 'orca-blocking-answer', request_id: answer!.pending.request_id!, question_id: entry.question_id,
@@ -295,51 +321,66 @@ export function orcaBlockingPresentation(input: {
         validate,
         write: async (mayWrite) => {
           if (!input.serviceCurrent()) throw new CodexControlNotSent('The Approved Machine changed before the Orca answer was sent')
-          let page = await historyPage(runtime, entry.orca_session_id, budget(3_000))
+          let page = await historyPage(runtime, entry.orca_session_id, budget(3_000), 100)
           if (page === null) throw new CodexControlNotSent('Orca history is not readable')
           const live = (itemId: string) => (page!['items'] as Array<{ itemId?: unknown; revision?: unknown; body?: { resolution?: { state?: unknown } } }> | undefined)
-            ?.find((item) => item?.itemId === itemId)
+            ?.find((item) => item?.itemId === itemId) as { revision?: number; body?: { resolution?: { state?: unknown } } } | undefined
+          const pending = (item: OrcaBlockingItem) => live(item.item_id)?.body?.resolution?.state === 'pending'
           // Every item of the answer must still be this chat's, or nothing is sent.
           if (![...plan.picks, ...plan.typed].every(({ item }) => live(item.item_id) !== undefined)) throw new CodexControlNotSent('The Orca chat does not show this question')
+          // First reply wins: a part whose question the User already answered in Orca is left out, typed or picked.
+          const picks = plan.picks.filter(({ item }) => pending(item))
+          const typed = plan.typed.filter(({ item }) => pending(item))
+          if (picks.length + typed.length === 0) throw new CodexControlNotSent('The User answered this question in Orca first')
+          const typedText = quote(typed)
           let valid = false
           updateSessionState(input.sessionId, input.env, (latest) => {
             valid = validate(latest).valid && mayWrite()
-            return !valid ? latest : { ...latest, orca_blocking: (latest.orca_blocking ?? []).map((item) => item.call_id === entry.call_id
-              ? { ...item, presented: true as const, ack: { context, ...(typedText === '' ? {} : { digest: promptDigest(typedText) }) } } : item) }
+            return !valid ? latest : setAck(latest, { context: contextFor(picks.length > 0, typed.length > 0),
+              ...(typedText === '' ? {} : { digests: [promptDigest(typedText)] }) })
           })
           if (!valid) throw new CodexControlNotSent('Answer authority changed before the Orca answer')
-          let answered = 0
+          let reached = false
           let unsettled = false
-          for (const { item, option } of plan.picks) {
+          // Typed text first, as typing in Orca's composer does while the question is open.
+          if (typedText !== '') {
+            const reply = await send(typedText, page['fence'])
+            reached = reply.ok && refusal(reply.result) === null
+            unsettled ||= lost(reply)
+          }
+          // A choice Orca's item refused outright still reaches the agent, as the User's typed answer would.
+          const refused: Array<{ item: OrcaBlockingItem; text: string }> = []
+          for (const { item, option } of picks) {
             for (let attempt = 0; attempt < 2; attempt += 1) {
-              const current = live(item.item_id) as { revision?: number; body?: { resolution?: { state?: unknown } } } | undefined
+              const current = live(item.item_id)
               if (current?.body?.resolution?.state !== 'pending' || typeof current.revision !== 'number') break
               const fields = { itemId: item.item_id, expectedRevision: current.revision, answers: [{ questionId: 'q1', optionIds: [option] }] }
               const reply = await runtime.call('agentSession.respondToQuestion', { envelope: { sessionId: entry.orca_session_id,
                 clientOperationId: orcaOperationId(input.wall()), expectedRuntimeFence: page['fence'],
                 payloadFingerprint: orcaPayloadFingerprint('agentSession.respondTo:question', entry.orca_session_id, fields) }, ...fields }, budget(3_000))
-              const refused = reply.ok ? refusal(reply.result) : reply.code
-              if (refused === null) { answered += 1; break }
+              const code = reply.ok ? refusal(reply.result) : reply.code
+              if (code === null) { reached = true; break }
               // Answered in Orca first: that answer stands.
-              if (refused === 'agent_session_already_resolved') break
-              if (refused === 'agent_session_item_revision_stale' && attempt === 0) {
-                page = await historyPage(runtime, entry.orca_session_id, budget(2_000)) ?? page
+              if (code === 'agent_session_already_resolved') break
+              if (code === 'agent_session_item_revision_stale' && attempt === 0) {
+                page = await historyPage(runtime, entry.orca_session_id, budget(2_000), 100) ?? page
                 continue
               }
-              if (!reply.ok && ['timeout', 'connection_closed'].includes(reply.code)) unsettled = true
+              // A lost reply may have been taken: never sent again in another form.
+              if (lost(reply)) unsettled = true
+              else refused.push({ item, text: choiceLabel(item, option) ?? '' })
               break
             }
           }
-          let sent = false
-          if (typedText !== '') {
-            const body = { kind: 'message', role: 'user', blocks: [{ type: 'text', text: typedText }] }
-            const reply = await runtime.call('agentSession.send', { envelope: { sessionId: entry.orca_session_id,
-              clientOperationId: orcaOperationId(input.wall()), expectedRuntimeFence: page['fence'],
-              payloadFingerprint: orcaPayloadFingerprint('agentSession.send', entry.orca_session_id, { body }) }, body }, budget(4_000))
-            sent = reply.ok && refusal(reply.result) === null
-            if (!reply.ok && ['timeout', 'connection_closed'].includes(reply.code)) unsettled = true
+          const fallback = quote(refused.filter((part) => part.text !== ''))
+          if (fallback !== '') {
+            updateSessionState(input.sessionId, input.env, (latest) => setAck(latest, { context: contextFor(reached, true),
+              digests: [...(typedText === '' ? [] : [promptDigest(typedText)]), promptDigest(fallback)] }))
+            const reply = await send(fallback, page['fence'])
+            reached ||= reply.ok && refusal(reply.result) === null
+            unsettled ||= lost(reply)
           }
-          if (answered > 0 || sent) return
+          if (reached) return
           if (unsettled) throw new Error('The Orca answer may have been taken; it is not sent again')
           // Nothing of it reached Orca: the ordinary route keeps the answer.
           updateSessionState(input.sessionId, input.env, (latest) => ({ ...latest, orca_blocking: (latest.orca_blocking ?? []).map((item) => {
@@ -398,7 +439,7 @@ export function orcaBlockingPostToolUse(deps: CommandDeps, envelope: HookEnvelop
 export function takeOrcaBlockingTypedAck(sessionId: string, env: NodeJS.ProcessEnv, prompt: unknown): { typed: boolean; context: string | null } {
   if (typeof prompt !== 'string') return { typed: false, context: null }
   const digest = promptDigest(prompt)
-  const which = (item: OrcaBlockingRegistration) => item.ack?.digest === digest && item.ack.typed_seen !== true
+  const which = (item: OrcaBlockingRegistration) => item.ack?.digests?.includes(digest) === true && item.ack.seen?.includes(digest) !== true
   if (!readSessionState(sessionId, env).orca_blocking?.some(which)) return { typed: false, context: null }
   let context: string | null = null
   let typed = false
@@ -406,7 +447,7 @@ export function takeOrcaBlockingTypedAck(sessionId: string, env: NodeJS.ProcessE
     if (typed || !which(item)) return item
     typed = true
     if (item.ack!.shown !== true) context = item.ack!.context
-    return { ...item, ack: { ...item.ack!, shown: true as const, typed_seen: true as const } }
+    return { ...item, ack: { ...item.ack!, shown: true as const, seen: [...(item.ack!.seen ?? []), digest] } }
   }) }))
   return { typed, context }
 }
@@ -436,6 +477,8 @@ function endRegistration(sessionId: string, env: NodeJS.ProcessEnv, callId: stri
 export async function reconcileOrcaBlocking(deps: CommandDeps, input: {
   sessionId: string; env: NodeJS.ProcessEnv; cwd: string; ownerKey: string; transcriptPath?: string
   runtime?: OrcaRuntime | null; now: number; skip: Set<string>
+  /** The last capability check, kept by the caller: Orca is asked again only every few minutes. */
+  capabilities?: { capabilities?: { at: number; ok: boolean } }
 }): Promise<{ registered: string[]; withdrawn: string[] }> {
   const result = { registered: [] as string[], withdrawn: [] as string[] }
   const state = readSessionState(input.sessionId, input.env)
@@ -444,9 +487,16 @@ export async function reconcileOrcaBlocking(deps: CommandDeps, input: {
   const runtime = input.runtime !== undefined ? input.runtime
     : orcaRuntime({ ...input.env, ...(chat.user_data === undefined ? {} : { ORCA_USER_DATA_PATH: chat.user_data }) })
   if (runtime === null) return result
-  const capabilities = await orcaCapabilities(runtime, 2_000)
-  if (capabilities === null || !ORCA_BLOCKING_CAPABILITIES.every((capability) => capabilities.has(capability))) return result
-  const page = await historyPage(runtime, chat.session_id, 3_000)
+  const cached = input.capabilities?.capabilities
+  let capable = cached !== undefined && input.now - cached.at < ORCA_BLOCKING_CAPABILITY_MS ? cached.ok : null
+  if (capable === null) {
+    const capabilities = await orcaCapabilities(runtime, 2_000)
+    capable = capabilities !== null && ORCA_BLOCKING_CAPABILITIES.every((capability) => capabilities.has(capability))
+    // A failed check is not kept: Orca may just be starting.
+    if (input.capabilities !== undefined && capabilities !== null) input.capabilities.capabilities = { at: input.now, ok: capable }
+  }
+  if (!capable) return result
+  const page = await historyPage(runtime, chat.session_id, 3_000, ORCA_BLOCKING_HISTORY_LIMIT)
   if (page === null) return result
   const requests = orcaBlockingRequests(page, input.sessionId)
   const known = new Set((state.orca_blocking ?? []).map((entry) => entry.call_id))
@@ -462,7 +512,9 @@ export async function reconcileOrcaBlocking(deps: CommandDeps, input: {
     if (id === null) input.skip.add(request.callId)
     else result.registered.push(id)
   }
-  const pendingIds = new Set(requests.flatMap((request) => request.items.map((item) => item.itemId)))
+  // Orca lists every unanswered item of the chat here, whatever the page holds.
+  const pendingIds = new Set(Array.isArray(page['actionablePromptIds'])
+    ? (page['actionablePromptIds'] as unknown[]).filter((id): id is string => typeof id === 'string') : [])
   for (const entry of readSessionState(input.sessionId, input.env).orca_blocking ?? []) {
     if (entry.owner_key !== input.ownerKey || entry.ended === true || entry.presented === true) continue
     const showing = entry.items.some((item) => pendingIds.has(item.item_id))

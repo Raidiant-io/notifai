@@ -40,8 +40,12 @@ const SURFACES: Row[] = [
     { host: null, steersCards: false, textAnswers: 'none', orcaChat: false }, 'headless'],
   ['Windows, where the process kind cannot be read', { CODEX_THREAD_ID: 't' }, 'unknown', 'win32',
     { host: null, steersCards: false, textAnswers: 'none', orcaChat: false }, 'unknown'],
+  // Where `ps` cannot tell the process kind, the environment decides, as before the process kind was read.
+  ['Orca chat whose process kind cannot be read', ORCA_CHAT, 'unknown', 'darwin',
+    { host: 'orca', steersCards: true, textAnswers: 'orca', orcaChat: true }, 'orca-chat'],
+  // Windows runs no hub, so the Orca chat routes never act there.
   ['Windows Orca chat', ORCA_CHAT, 'unknown', 'win32',
-    { host: 'orca', steersCards: false, textAnswers: 'orca', orcaChat: false }, 'orca-chat'],
+    { host: 'orca', steersCards: false, textAnswers: 'orca', orcaChat: true }, 'orca-chat'],
 ]
 
 describe('where a Codex session runs, and the logic it gets', () => {

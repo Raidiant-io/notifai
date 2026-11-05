@@ -151,6 +151,39 @@ describe('returning a device answer through Orca', () => {
     expect(readSessionState(THREAD, none.env).orca_blocking![0]!.presented).toBeUndefined()
   })
 
+  it('leaves out a typed part whose question the User already answered in Orca (first reply wins)', async () => {
+    const h = home()
+    const orca = fakeOrca({ items: [pendingItem('color', 'Which color?', ['Red', 'Blue'], 'resolved', 2), pendingItem('size', 'Which size?', ['Small', 'Large'])] })
+    const device = answer([{ question_id: 'which-color', text: 'teal' }, { question_id: 'which-size', choice_ids: ['large'] }])
+    await (await presentation(h.env, orca.runtime).prepareGroup!([device], readSessionState(THREAD, h.env), 0))!.write(() => true)
+    expect(orca.calls.some((call) => call.method === 'agentSession.send')).toBe(false)
+    expect(orca.calls.filter((call) => call.method === 'agentSession.respondToQuestion').map((call) => (call.params as { itemId: string }).itemId)).toEqual([item('size')])
+    // Answered in Orca throughout: nothing goes, and the ordinary route keeps the device answer.
+    const all = home()
+    const resolved = fakeOrca({ items: [pendingItem('color', 'Which color?', ['Red', 'Blue'], 'resolved', 2)] })
+    const typedOnly = (await presentation(all.env, resolved.runtime).prepareGroup!([answer([{ question_id: 'which-color', text: 'teal' }])], readSessionState(THREAD, all.env), 0))!
+    await expect(typedOnly.write(() => true)).rejects.toBeInstanceOf(CodexControlNotSent)
+    expect(resolved.calls.some((call) => call.method === 'agentSession.send')).toBe(false)
+  })
+
+  it('sends a choice Orca\'s item refused as the User\'s message, so the whole device answer reaches the agent once', async () => {
+    const h = home()
+    const orca = fakeOrca({ respond: (itemId) => itemId === item('size')
+      ? { ok: true, result: { ok: false, refusal: { code: 'agent_session_operation_invalid' } } } : { ok: true, result: { ok: true } } })
+    const device = answer([{ question_id: 'which-color', choice_ids: ['blue'] }, { question_id: 'which-size', choice_ids: ['large'] }])
+    await (await presentation(h.env, orca.runtime).prepareGroup!([device], readSessionState(THREAD, h.env), 0))!.write(() => true)
+    const sends = orca.calls.filter((call) => call.method === 'agentSession.send').map((call) => (call.params as { body: { blocks: Array<{ text: string }> } }).body.blocks[0]!.text)
+    expect(sends).toEqual(['> Which size?\n\nLarge'])
+    const ack = readSessionState(THREAD, h.env).orca_blocking![0]!.ack!
+    expect(ack.context).toContain('their choice is in the tool result; what they typed arrives as their message')
+    expect(takeOrcaBlockingTypedAck(THREAD, h.env, '> Which size?\n\nLarge').typed).toBe(true)
+    // A lost reply may have been taken: it is never sent again as a message.
+    const lost = home()
+    const timeout = fakeOrca({ respond: (itemId) => itemId === item('size') ? { ok: false, code: 'timeout' } : { ok: true, result: { ok: true } } })
+    await (await presentation(lost.env, timeout.runtime).prepareGroup!([device], readSessionState(THREAD, lost.env), 0))!.write(() => true)
+    expect(timeout.calls.some((call) => call.method === 'agentSession.send')).toBe(false)
+  })
+
   it('offers nothing without Orca\'s question answers, and nothing for another chat\'s items', async () => {
     const h = home()
     const device = answer([{ question_id: 'which-color', choice_ids: ['blue'] }])
@@ -213,6 +246,26 @@ describe('looking at an Orca chat', () => {
     expect(state.orca_blocking![0]!.items.map((entry) => Object.values(entry.options))).toEqual([['color:Red', 'color:Blue'], ['size:Small', 'size:Large']])
     expect(h.launch).toHaveBeenCalledTimes(1)
     expect((await run()).registered).toEqual([])
+  })
+
+  it('asks once per request even when its record was lost after registering, and asks Orca\'s capabilities only every few minutes', async () => {
+    const h = project()
+    const cache: { capabilities?: { at: number; ok: boolean } } = {}
+    const orca = fakeOrca()
+    const run = (now: number) => reconcileOrcaBlocking(h.deps, { sessionId: THREAD, env: h.env, cwd: h.root, ownerKey: h.owner, transcriptPath: h.transcript,
+      runtime: orca.runtime, now, skip: new Set(), capabilities: cache })
+    const first = await run(1_000)
+    // A crash between the question's registration and the Orca record.
+    const state = readSessionState(THREAD, h.env)
+    writeSessionState(THREAD, h.env, { ...state, orca_blocking: [] })
+    const again = await run(2_000)
+    expect(again.registered).toEqual(first.registered)
+    expect(readSessionState(THREAD, h.env).pending).toHaveLength(1)
+    expect(orca.calls.filter((call) => call.method === 'status.get')).toHaveLength(1)
+    // Only the tail of the chat is read.
+    expect(orca.calls.find((call) => call.method === 'agentSession.history')!.params).toMatchObject({ limit: 30 })
+    await run(1_000 + 300_000)
+    expect(orca.calls.filter((call) => call.method === 'status.get')).toHaveLength(2)
   })
 
   it('withdraws, without a new alert, a question whose request left Orca unanswered', async () => {

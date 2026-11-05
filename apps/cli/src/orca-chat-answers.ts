@@ -66,7 +66,15 @@ export function orcaChatSessionOf(env: NodeJS.ProcessEnv, platform: NodeJS.Platf
 export function recordOrcaChatSession(sessionId: string, env: NodeJS.ProcessEnv, ownerKey: string,
   hostKind?: (pid: number) => CodexHostKind): void {
   const chat = orcaChatSessionOf(env, process.platform, hookCodexRouteProfile(env, hostKind))
-  if (chat === null) return
+  if (chat === null) {
+    // An older CLI recorded a terminal started from an Orca chat's shell as that chat: forget it.
+    if (readSessionState(sessionId, env).orca_chat !== undefined) updateSessionState(sessionId, env, (state) => {
+      const next = { ...state }
+      delete next.orca_chat
+      return next
+    })
+    return
+  }
   const current = readSessionState(sessionId, env).orca_chat
   if (current?.key === ownerKey && current.session_id === chat.session_id && current.user_data === chat.user_data) return
   updateSessionState(sessionId, env, (state) => ({ ...state, orca_chat: { key: ownerKey, ...chat } }))

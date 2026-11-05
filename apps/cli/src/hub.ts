@@ -17,7 +17,7 @@ import { releaseCodexCardHandbacks } from './codex-card-handback.js'
  */
 import { execFileSync, spawn } from 'node:child_process'
 import os from 'node:os'
-import { existsSync, readdirSync, readFileSync, rmSync, chmodSync } from 'node:fs'
+import { existsSync, readdirSync, readFileSync, rmSync, chmodSync, statSync } from 'node:fs'
 import { createServer, type Server, type Socket } from 'node:net'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -112,7 +112,7 @@ import { dropExpiredHeldAnswers, moveQuestionsToSuccessor } from './stopped-hold
 import { shareGitIdentityAnswers } from './git-query.js'
 import { ingressRefusal, parseIngressRequest, resultFrames, runIngressHook, type IngressHost, type IngressIdentity } from './hub-ingress.js'
 import { currentRuntimeBuild } from './launch-self.js'
-import { bootstrapLogger, type Logger } from './logging.js'
+import { bootstrapLogger, nullLogger, type Logger } from './logging.js'
 import { nativeUninstallPending } from './native-uninstall-barrier.js'
 import { accountHome } from './platform.js'
 import { currentProcessIdentity, descriptorStartMatches, linuxStartTicks, normalizeProcessStart, pidExists, processIdentityLiveness, processStartTime, type ProcessIdentity } from './process-identity.js'
@@ -192,6 +192,10 @@ export const HUB_CRASH_WINDOW_MS = 10 * 60_000
 const IDLE_BEFORE_WAKE_REPLACEMENT_MS = 30_000
 /** How often the hub looks at an Orca chat for Codex's pausing question while its turn runs. */
 const ORCA_BLOCKING_WATCH_MS = 4_000
+/** A turn whose rollout was written this recently may have just paused on a question. */
+const ORCA_BLOCKING_RECENT_MS = 10_000
+/** How often a pausing question already on the devices is looked at, to see it leave Orca. */
+const ORCA_BLOCKING_OPEN_WATCH_MS = 20_000
 /** One Orca chat send, claims to receipt. */
 const ORCA_CHAT_DEADLINE_MS = 15_000
 /** After the Orca chat route could not send, the ordinary route has this long before it is offered again. */
@@ -3101,6 +3105,7 @@ export class Hub {
   forget(session: HubSession, reason: string): void {
     if (this.sessions.get(session.id) !== session) return
     this.sessions.delete(session.id)
+    this.orcaWatch.delete(session.id)
     this.setupIssues.ended(session.id)
     session.lease.setPhase('exited', reason)
     session.writeStatus(true)
@@ -3477,12 +3482,23 @@ export class Hub {
   private async runInternalHook(event: string, envelope: Record<string, unknown> | null, harness: HookInstallableHarness, env: NodeJS.ProcessEnv): Promise<number> {
     if (this.options.runHook !== undefined) return this.options.runHook(event, envelope, harness, env)
     const { hookRunCommand } = await import('./commands-hook-run.js')
+    const deps = this.inProcessDeps(env, typeof envelope?.['cwd'] === 'string' ? envelope['cwd'] : undefined)
+    return hookRunCommand(deps, event, async () => envelope === null ? '' : JSON.stringify(envelope), harness)
+  }
+
+  /**
+   * Command deps for work the hub runs in its own process: a logger, io and
+   * settlement launcher of the call's own, so nothing it binds (a session, a
+   * command) reaches the hub's own records, and nothing it prints reaches the
+   * hub's stderr.
+   */
+  private inProcessDeps(env: NodeJS.ProcessEnv, cwd: string | undefined): CommandDeps {
     const deps: CommandDeps = {
       ...this.deps,
       env,
-      // Each in-process hook binds its own command and session to its logger.
-      ...(this.deps.logger?.enabled === true ? { logger: bootstrapLogger({ env,
-        ...(typeof envelope?.['cwd'] === 'string' ? { cwd: envelope['cwd'] } : {}) }) } : {}),
+      ...(cwd === undefined ? {} : { cwd }),
+      // Each in-process call binds its own command and session to a logger of its own, never the hub's.
+      logger: this.deps.logger?.enabled === true ? bootstrapLogger({ env, ...(cwd === undefined ? {} : { cwd }) }) : nullLogger(),
       store: this.cachedStore(),
       // Every client a waiter makes ends with the credential it was made with.
       clientFactory: (baseUrl, bearer, options) =>
@@ -3497,7 +3513,7 @@ export class Hub {
     delete deps.spawnRetirement
     delete deps.spawnEndConfirmation
     delete deps.spawnHubHandover
-    return hookRunCommand(deps, event, async () => envelope === null ? '' : JSON.stringify(envelope), harness)
+    return deps
   }
 
   /** Local end work a handover waits for. */
@@ -3736,38 +3752,52 @@ export class Hub {
   }
 
   private readonly orcaLooking = new Set<string>()
-  private readonly orcaSkipped = new Map<string, Set<string>>()
+  private readonly orcaWatch = new Map<string, { skip: Set<string>; lookedAt: number; capabilities?: { at: number; ok: boolean } }>()
 
   /**
    * Codex's pausing question in an Orca chat runs no Notifai hook while it
-   * waits, so the hub looks at Orca's chat itself, every few seconds and only
-   * while an Orca chat turn runs or one of its questions is still on the
-   * devices (`orca-blocking-questions.ts`). Nowhere else.
+   * waits, so the hub looks at Orca's chat itself (`orca-blocking-questions.ts`),
+   * and only where a pausing question can have just started: an Orca chat
+   * turn that runs and whose rollout Codex wrote within the last few seconds
+   * (a pausing Codex writes nothing more, and a turn whose Stop was missed
+   * is not looked at again). A question already on the devices is looked at
+   * at a slower pace until it settles. Nowhere else.
    */
   private watchOrcaBlocking(): void {
     if (this.handingOver || this.exiting) return
+    const now = this.clock.wall()
     for (const session of this.sessions.values()) {
       if (!this.pausedWakeSettable(session) || this.orcaLooking.has(session.id)) continue
       const state = readSessionState(session.id, session.env)
       if (state.orca_chat?.key !== session.record.key) continue
+      const watch = this.orcaWatch.get(session.id) ?? { skip: new Set<string>(), lookedAt: -Infinity }
+      this.orcaWatch.set(session.id, watch)
       const open = state.orca_blocking?.some((entry) => entry.owner_key === session.record.key && entry.ended !== true && entry.presented !== true) === true
-      if (!open && observedCodexTurnActivity(session.id, session.env, session.record.key) !== 'working') continue
-      void this.lookAtOrcaChat(session)
+      const fresh = observedCodexTurnActivity(session.id, session.env, session.record.key) === 'working' &&
+        now - this.lastCodexWrite(session) < ORCA_BLOCKING_RECENT_MS
+      if (!fresh && !(open && now - watch.lookedAt >= ORCA_BLOCKING_OPEN_WATCH_MS)) continue
+      watch.lookedAt = now
+      void this.lookAtOrcaChat(session, watch)
     }
   }
 
-  private async lookAtOrcaChat(session: HubSession): Promise<void> {
+  /** When Codex last wrote this session's rollout, or its last hook boundary when the rollout is not known. */
+  private lastCodexWrite(session: HubSession): number {
+    const transcript = session.registration.transcriptPath
+    if (transcript === null || transcript === undefined) return session.lastActivity
+    try { return statSync(transcript).mtimeMs } catch { return session.lastActivity }
+  }
+
+  private async lookAtOrcaChat(session: HubSession, watch: { skip: Set<string>; capabilities?: { at: number; ok: boolean } }): Promise<void> {
     if (this.client() === null) return
     this.orcaLooking.add(session.id)
     try {
-      const skip = this.orcaSkipped.get(session.id) ?? new Set<string>()
-      this.orcaSkipped.set(session.id, skip)
-      // The hub's single credential read, never another store helper run.
-      const result = await reconcileOrcaBlocking({ ...this.deps, store: this.cachedStore() }, { sessionId: session.id, env: session.env,
-        cwd: session.registration.cwd ?? process.cwd(), ownerKey: session.record.key,
+      const cwd = session.registration.cwd ?? process.cwd()
+      const result = await reconcileOrcaBlocking(this.inProcessDeps(session.env, cwd), { sessionId: session.id, env: session.env,
+        cwd, ownerKey: session.record.key,
         ...(session.registration.transcriptPath === null || session.registration.transcriptPath === undefined ? {} : { transcriptPath: session.registration.transcriptPath }),
         ...(this.options.orcaRuntime === undefined ? {} : { runtime: this.options.orcaRuntime }),
-        now: this.clock.wall(), skip })
+        now: this.clock.wall(), skip: watch.skip, capabilities: watch })
       for (const id of result.registered) this.logger.info('ask.registered', { session: session.id, question_id: id, origin: 'orca-blocking' })
       for (const id of result.withdrawn) this.logger.info('hook.answer', { stage: 'orca-blocking-withdrawn', question_id: id, session: session.id })
       if (result.registered.length > 0) session.checkInput()

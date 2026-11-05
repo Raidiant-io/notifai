@@ -61,9 +61,10 @@ models, in the terminal and the apps alike.
 
 `request_user_input` (no `_async`) is not linked to Notifai: where Codex
 accepts it, it waits in Codex, where an away User never sees it. Use
-`ask` for those questions too. Only in an Orca chat does it also reach the
-devices: a device choice arrives as the tool's result, and typed text as
-the User's next message once the question is answered, with the
+`ask` for those questions too. In an app around Codex that shows each
+pausing question as its own item, Notifai may also put it on the devices;
+when it does, a device choice arrives as the tool's result, and typed text
+as the User's next message once the question is answered, with the
 acknowledgement command beside it.
 
 If `ask` is refused with `codex_hook_approval_required`, nothing was

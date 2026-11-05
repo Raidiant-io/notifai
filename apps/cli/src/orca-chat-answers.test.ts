@@ -15,7 +15,7 @@ import type { CodexQuestionRegistration } from './codex-question-bindings.js'
 import { readSessionState, writeSessionState } from './hook-session-state.js'
 import type { AnsweredPending, SessionState } from './hook-types.js'
 import {
-  isOrcaChatSentPrompt, orcaAnswerText, orcaCardGroup, orcaChatPresentation, orcaChatSessionOf, orcaChatShowsCards, takeOrcaChatSentContext,
+  isOrcaChatSentPrompt, orcaAnswerText, orcaCardGroup, orcaChatPresentation, orcaChatSessionOf, orcaChatShowsCards, recordOrcaChatSession, takeOrcaChatSentContext,
 } from './orca-chat-answers.js'
 import { codexRouteProfile } from './codex-surface.js'
 import type { CodexHostKind } from './session-place.js'
@@ -72,6 +72,19 @@ describe('which Orca chat a hook runs in', () => {
     // A Codex terminal started from an Orca chat's shell inherits the chat's variables.
     expect(chat(base, 'other')).toBeNull()
     expect(chat(base, 'shared-server')).toBeNull()
+  })
+
+  it('forgets an Orca chat an older CLI recorded for a terminal started from that chat\'s shell', () => {
+    const root = mkdtempSync(path.join(os.tmpdir(), 'notifai-orca-stale-'))
+    try {
+      const env: NodeJS.ProcessEnv = { ...base, HOME: root, XDG_STATE_HOME: path.join(root, 'state'), NOTIFAI_HOOK_SOURCE_PID: String(process.pid) }
+      writeSessionState(SESSION, env, { harness: 'codex', orca_chat: { key: 'old', session_id: ORCA } })
+      recordOrcaChatSession(SESSION, env, 'owner', () => 'other')
+      expect(readSessionState(SESSION, env).orca_chat).toBeUndefined()
+      // Orca's own app-server records it.
+      recordOrcaChatSession(SESSION, env, 'owner', () => 'app-server')
+      expect(readSessionState(SESSION, env).orca_chat).toMatchObject({ key: 'owner', session_id: ORCA })
+    } finally { rmSync(root, { recursive: true, force: true }) }
   })
 
   it('finds Orca\'s userData the way its own CLI does', () => {
