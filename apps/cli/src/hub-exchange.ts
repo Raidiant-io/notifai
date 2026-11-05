@@ -95,6 +95,8 @@ export class ExchangeDriver {
   /** Held long-polls only: a poke cuts these, never an exchange that is already answering. */
   private readonly held = new Set<AbortController>()
   private readonly wakers = new Set<() => void>()
+  /** Every poke so far, so one that lands while sessions are being looked at is not slept through. */
+  private pokes = 0
   private readonly stopping = new AbortController()
   private readonly perSession = new Map<string, Promise<void>>()
   /** Grows with each failed exchange; only a successful attendance exchange resets it. */
@@ -153,6 +155,7 @@ export class ExchangeDriver {
    * activity, or has local input): cut a held exchange and look again.
    */
   poke(): void {
+    this.pokes += 1
     for (const exchange of this.held) exchange.abort()
     const waiting = [...this.wakers]
     this.wakers.clear()
@@ -261,7 +264,8 @@ export class ExchangeDriver {
       return
     }
     if (this.mode === 'unknown' || this.mode === 'unsupported') {
-      if (!this.work(now).some(Boolean)) { await this.nextChange(); return }
+      const pokes = this.pokes
+      if (!this.work(now).some(Boolean)) { await this.nextChange(undefined, pokes); return }
       await this.discover(client)
       return
     }
@@ -337,6 +341,7 @@ export class ExchangeDriver {
   private async batchOnce(client: ApiClient, loop: number): Promise<void> {
     const now = this.host.clock.monotonic()
     const sessions = this.host.sessions()
+    const pokes = this.pokes
     for (const [session, until] of this.setAside) if (until <= now || !sessions.includes(session)) this.setAside.delete(session)
     const finals: Chosen[] = []
     const running: Chosen[] = []
@@ -368,7 +373,7 @@ export class ExchangeDriver {
     const isolated = candidates.find((item) => this.isolating.has(item.session))
     if (candidates.length === 0) {
       const next = Math.min(...sessions.map((s) => s.lease.pausedUntil).filter((at) => at > now), ...this.setAside.values())
-      await this.nextChange(Number.isFinite(next) ? next - now : undefined)
+      await this.nextChange(Number.isFinite(next) ? next - now : undefined, pokes)
       return
     }
     if (isolated !== undefined) this.isolating.delete(isolated.session)
@@ -624,8 +629,14 @@ export class ExchangeDriver {
   }
 
   /** Wait for a poke, never longer than `timeoutMs` or `HUB_IDLE_RECHECK_MS`. */
-  private async nextChange(requestedMs?: number): Promise<void> {
+  /**
+   * Wait for the next change. `seenPokes` is the poke count when the caller
+   * started looking: a poke since then (a session asked while being looked
+   * at ended itself) is not waited out.
+   */
+  private async nextChange(requestedMs?: number, seenPokes?: number): Promise<void> {
     if (this.stopping.signal.aborted) return
+    if (seenPokes !== undefined && seenPokes !== this.pokes) return
     const timeoutMs = Math.min(requestedMs ?? HUB_IDLE_RECHECK_MS, HUB_IDLE_RECHECK_MS)
     await new Promise<void>((resolve) => {
       const done = (): void => {

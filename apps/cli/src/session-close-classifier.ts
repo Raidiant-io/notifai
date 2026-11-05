@@ -291,3 +291,71 @@ export function claudeForkParent(transcriptPath: string | null, sessionId: strin
   }
   return null
 }
+
+/** `continued-in` lands near a transcript's end; read no further back than this. */
+const CONTINUED_IN_TAIL_BYTES = 256 * 1024
+
+/**
+ * The conversation this Claude Code conversation continues in, when its own
+ * transcript records the move. Backgrounding a conversation (`/background`,
+ * or ← at the prompt) moves it to a new session id in a background process
+ * and appends `{"type":"continued-in","continuedInSessionId":…}` to the old
+ * transcript. The old process exits, or, after ←, stays parked on the agents
+ * view; the conversation runs only in the new session from then on.
+ *
+ * Read as Claude Code reads it: from the end, the newest `continued-in` wins,
+ * and a finished turn written after it means the conversation went on here
+ * (Claude Code then resumes it here too). Null when the tail cannot be read
+ * or names no other conversation.
+ */
+export function claudeContinuedIn(transcriptPath: string | null, sessionId: string): string | null {
+  if (transcriptPath === null) return null
+  let text: string
+  try {
+    const fd = openSync(transcriptPath, 'r')
+    try {
+      const size = statSync(transcriptPath).size
+      const length = Math.min(size, CONTINUED_IN_TAIL_BYTES)
+      const buffer = Buffer.alloc(length)
+      const read = readSync(fd, buffer, 0, length, size - length)
+      text = buffer.subarray(0, read).toString('utf8')
+      // A first line cut by the read limit is not evidence.
+      if (length < size) text = text.slice(text.indexOf('\n') + 1)
+    } finally {
+      closeSync(fd)
+    }
+  } catch {
+    return null
+  }
+  if (!text.includes('"continued-in"')) return null
+  const lines = text.split('\n')
+  for (let index = lines.length - 1; index >= 0; index -= 1) {
+    const line = lines[index]!
+    if (!line.includes('"continued-in"') && !line.includes('"user"') && !line.includes('"assistant"')) continue
+    let record: unknown
+    try { record = JSON.parse(line) } catch { continue }
+    if (typeof record !== 'object' || record === null) continue
+    const entry = record as Record<string, unknown>
+    if (entry['type'] === 'continued-in') {
+      const named = entry['continuedInSessionId']
+      return typeof named === 'string' && named !== sessionId && /^[0-9A-Za-z-]{1,128}$/.test(named) ? named : null
+    }
+    if (finishedTurn(entry)) return null
+  }
+  return null
+}
+
+/** A turn this conversation finished: the model's final reply, or a prompt the User typed. */
+function finishedTurn(entry: Record<string, unknown>): boolean {
+  if (entry['isSidechain'] === true || entry['isMeta'] === true) return false
+  const message = entry['message']
+  if (typeof message !== 'object' || message === null) return false
+  if (entry['type'] === 'assistant') {
+    return entry['isApiErrorMessage'] !== true && typeof (message as Record<string, unknown>)['stop_reason'] === 'string'
+  }
+  if (entry['type'] !== 'user') return false
+  const content = (message as Record<string, unknown>)['content']
+  if (typeof content === 'string') return content.trim() !== ''
+  return Array.isArray(content) && content.some((part) =>
+    typeof part === 'object' && part !== null && (part as Record<string, unknown>)['type'] === 'text')
+}

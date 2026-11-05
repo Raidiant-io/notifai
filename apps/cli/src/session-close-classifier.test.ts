@@ -5,6 +5,7 @@ import { afterEach,describe,expect,it } from 'vitest'
 import {
 classifyClaudeEnd,
 classifyCodexEnd,
+claudeContinuedIn,
 claudeForkParent,
 claudeTranscriptPresent,
 machineDownEarlierBoot,
@@ -85,6 +86,32 @@ describe('the conversation a Claude Code fork came from', () => {
   it('reads `/branch`\'s `forkedFrom`, which names the parent on the copied lines', () => {
     expect(claudeForkParent(transcript([{ type: 'mode', sessionId: FORK }, { type: 'user', sessionId: FORK, forkedFrom: { sessionId: PARENT, messageUuid: 'u1' } }]), FORK))
       .toBe(PARENT)
+  })
+})
+
+describe('the conversation a backgrounded Claude Code conversation continues in', () => {
+  const OLD = '2fbfcdac-1a18-46e5-959a-26274e821f78'
+  const NEW = '2fa01815-a02e-4539-a22f-0150bb5b4e2c'
+  const reply = { type: 'assistant', sessionId: OLD, message: { stop_reason: 'end_turn', content: [{ type: 'text', text: 'Done.' }] } }
+  const moved = { type: 'continued-in', timestamp: '2026-11-05T11:08:24.456Z', sessionId: OLD, continuedInSessionId: NEW }
+  function transcript(lines: unknown[], padding = 0): string {
+    const file = path.join(root(), `${OLD}.jsonl`)
+    const filler = padding === 0 ? '' : `${JSON.stringify({ type: 'progress', data: 'x'.repeat(padding) })}\n`
+    writeFileSync(file, filler + lines.map((line) => JSON.stringify(line)).join('\n') + '\n')
+    return file
+  }
+
+  it('reads the `continued-in` Claude Code 2.1.318 appends when it backgrounds a conversation, past its trailing bookkeeping', () => {
+    expect(claudeContinuedIn(transcript([reply, { type: 'attachment', attachment: { type: 'session_cron_carry', tasks: [] } }, moved,
+      { type: 'cost-state', sessionId: OLD }, { type: 'last-prompt', lastPrompt: 'go', sessionId: OLD }], 2 * 1024 * 1024), OLD)).toBe(NEW)
+  })
+
+  it('names nothing when the conversation finished a turn here afterwards, or was never moved', () => {
+    expect(claudeContinuedIn(transcript([moved, { type: 'user', sessionId: OLD, message: { role: 'user', content: 'still here' } }]), OLD)).toBeNull()
+    expect(claudeContinuedIn(transcript([moved, reply]), OLD)).toBeNull()
+    expect(claudeContinuedIn(transcript([reply]), OLD)).toBeNull()
+    expect(claudeContinuedIn(transcript([{ ...moved, continuedInSessionId: OLD }]), OLD)).toBeNull()
+    expect(claudeContinuedIn(null, OLD)).toBeNull()
   })
 })
 

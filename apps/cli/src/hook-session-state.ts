@@ -439,6 +439,25 @@ export function sessionNotified(sessionId: string, env: NodeJS.ProcessEnv): bool
 }
 
 /**
+ * Write the marker that an Agent Session notified, without telling the hub:
+ * true when this call created it. Exclusive creation: of several first sends
+ * racing in one session, exactly one records the marker; the rest find it
+ * present. The hub calls it for a session the service now holds items for.
+ */
+export function markSessionNotified(sessionId: string, env: NodeJS.ProcessEnv, now: number): boolean {
+  const file = sessionNotifiedPath(sessionId, env)
+  if (existsSync(file)) return false
+  mkdirSync(path.dirname(file), { recursive: true })
+  try {
+    writeFileSync(file, `${now}\n`, { mode: 0o600, flag: 'wx' })
+    return true
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code !== 'EEXIST') throw err
+    return false
+  }
+}
+
+/**
  * Record an accepted Notification Request of an Agent Session. Never throws.
  *
  * `codex`: the send came from that Codex thread itself. Its hooks may never
@@ -448,19 +467,7 @@ export function sessionNotified(sessionId: string, env: NodeJS.ProcessEnv): bool
  */
 export function recordSessionNotified(sessionId: string, env: NodeJS.ProcessEnv, now: number, codex?: SendingCodexThread): void {
   try {
-    const file = sessionNotifiedPath(sessionId, env)
-    let first = false
-    if (!existsSync(file)) {
-      mkdirSync(path.dirname(file), { recursive: true })
-      // Exclusive creation: of several first sends racing in one session, exactly
-      // one records the marker; the rest find it present.
-      try {
-        writeFileSync(file, `${now}\n`, { mode: 0o600, flag: 'wx' })
-        first = true
-      } catch (err) {
-        if ((err as NodeJS.ErrnoException).code !== 'EEXIST') throw err
-      }
-    }
+    const first = markSessionNotified(sessionId, env, now)
     if (!first && codex === undefined) return
     // The hub attends a session only once it notified; tell it now.
     finishBeforeExit(import('./hub-client.js').then(({ hubRunsSession, notifyHubSessionNotified }) =>

@@ -61,6 +61,7 @@ import {
   rehostSessionIncarnation,
   rotateSessionIncarnation,
   sessionHasEnded,
+  markSessionNotified,
   sessionNotified,
   updateSessionState,
   type SessionIncarnation,
@@ -171,6 +172,7 @@ import {
   classifyCodexEnd,
   claudeDesktopPauseLogged,
   claudeDesktopPaths,
+  claudeContinuedIn,
   claudeForkParent,
   claudeTranscriptPresent,
   machineDownEarlierBoot,
@@ -446,7 +448,7 @@ type EndReason = 'harness-gone' | 'session-replaced' | 'session-end-hook' | 'ses
   'terminal-closed' |
   /** A stopped conversation: every window it waited for ended, it was deleted or archived, or its app quit. */
   'window-over' | 'confirmed-close' | 'run-ended' | 'session-deleted' | 'app-quit' |
-  /** It continued as a fork with a new id; until the service can re-home its items there, they expire. */
+  /** It continued under a new id (a fork, or backgrounded); its items follow where the service can re-home them, else they expire. */
   'moved'
 
 /** Why a conversation stopped without the User closing it: its app paused it, or the machine went down. */
@@ -575,6 +577,8 @@ class HubSession implements AttendedSession {
   lastActivity: number
   /** Later hooks at which a fork's parent is looked for again; 0 when not a fork. */
   forkChecks = 0
+  /** The last `continuedIn` read, kept while the transcript stays unchanged. */
+  private continuation: { size: number; mtimeMs: number; successor: string | null } | null = null
   /** It was stopped when it ended (its Codex wake is only detached then). */
   wasStopped = false
   /**
@@ -749,7 +753,26 @@ class HubSession implements AttendedSession {
       return { state: 'uncertain', reason: 'process-start-mismatch' }
     }
     if (descriptor.sessionId !== this.id) return { state: 'ended', reason: 'session-replaced' }
+    // Parked on the agents view after ←: once the transcript names where the
+    // conversation went, it runs only there.
+    if (descriptor.parkedJobId !== undefined && this.continuedIn() !== null) return { state: 'ended', reason: 'moved' }
     return { state: 'running', activity: claudeStatusActivity(descriptor.status) }
+  }
+
+  /**
+   * The session a Claude Code conversation records that it continues in
+   * (`continued-in`, written when it is backgrounded), or null.
+   */
+  continuedIn(): string | null {
+    const transcript = this.registration.transcriptPath
+    if (this.harness !== 'claude-code' || transcript === null) return null
+    let size: number, mtimeMs: number
+    try { ({ size, mtimeMs } = statSync(transcript)) } catch { return null }
+    const cached = this.continuation
+    if (cached !== null && cached.size === size && cached.mtimeMs === mtimeMs) return cached.successor
+    const successor = claudeContinuedIn(transcript, this.id)
+    this.continuation = { size, mtimeMs, successor }
+    return successor
   }
 
   descriptor(): ReturnType<typeof parseDescriptor> | 'missing' {
@@ -2240,22 +2263,31 @@ export class Hub {
   /**
    * A new conversation that is a fork of one this hub attends. When that one
    * is stopped, or ending with nowhere left to run, it continues only in the
-   * fork: it has moved. Where the service can move its questions (it offers
-   * `session_stopped_hold`, and either creates an unseen successor with
-   * `session_continued_successor` or already knows the fork because it has
-   * notified), they continue there, with its held answers and notes;
-   * otherwise they expire as for a close. A
-   * fork of a conversation still open somewhere is a new conversation beside
-   * it, and changes nothing. Only a fork that records its origin counts
-   * (Claude Code's `/branch`, a Codex fork); one that records none is a new
-   * conversation.
+   * fork: it has moved (see `moveConversation`). A fork of a conversation
+   * still open somewhere is a new conversation beside it, and changes
+   * nothing. Only a fork whose origin is recorded counts: Claude Code's
+   * `/branch` and a Codex fork record it in the fork; a backgrounded Claude
+   * Code conversation records `continued-in` in the parent, and has always
+   * moved, even while its old process stays parked. One that records none
+   * is a new conversation.
    */
   checkFork(fork: HubSession): void {
     if (fork.forkChecks <= 0) return
     fork.forkChecks -= 1
     const parentId = fork.harness === 'claude-code' ? claudeForkParent(fork.registration.transcriptPath, fork.id)
       : readCodexSessionMeta(fork.registration.transcriptPath)?.forkedFrom ?? null
-    if (parentId === null) return
+    if (parentId === null) {
+      // A backgrounded Claude Code conversation names its continuation in
+      // the parent's transcript instead, and lives on only there.
+      if (fork.harness !== 'claude-code') return
+      for (const parent of this.sessions.values()) {
+        if (parent === fork || parent.harness !== 'claude-code' || parent.ending !== null || parent.continuedIn() !== fork.id) continue
+        fork.forkChecks = 0
+        this.moveConversation(parent, fork.id, parent.stopped !== null ? 'stopped' : 'continued-in')
+        return
+      }
+      return
+    }
     fork.forkChecks = 0
     const parent = this.sessions.get(parentId)
     if (parent === undefined || parent === fork || parent.ending !== null) return
@@ -2263,11 +2295,36 @@ export class Hub {
     const stillOpen = parent.stopped === null && (parent.endCandidate === null || (primary !== null && parent.hosts(primary)) ||
       parent.nextPrimary() !== null)
     if (stillOpen) return
-    const continued = this.driver.offers('session_stopped_hold') &&
-      (this.driver.offers('session_continued_successor') || fork.notified)
-    this.logger.info('hub.session', { event: 'moved', session: parent.id, to: fork.id, from_state: parent.stopped !== null ? 'stopped' : 'ending',
-      follows: continued })
-    this.endSession(parent, 'moved', continued ? fork.id : null)
+    this.moveConversation(parent, fork.id, parent.stopped !== null ? 'stopped' : 'ending')
+  }
+
+  /**
+   * The conversation goes on only as `successorId`: it has moved. Where the
+   * service can move its questions (it offers `session_stopped_hold`, and
+   * either creates an unseen successor with `session_continued_successor` or
+   * already knows it because it has notified), they continue there, with its
+   * held answers and notes; otherwise they expire as for a close.
+   */
+  private moveConversation(session: HubSession, successorId: string, from: string): void {
+    const successor = this.sessions.get(successorId)
+    const known = successor === undefined ? sessionNotified(successorId, session.env) : successor.notified
+    const continued = this.driver.offers('session_stopped_hold') && (this.driver.offers('session_continued_successor') || known)
+    this.logger.info('hub.session', { event: 'moved', session: session.id, to: successorId, from_state: from, follows: continued })
+    this.endSession(session, 'moved', continued ? successorId : null)
+  }
+
+  /**
+   * A Claude Code conversation whose transcript records that it continues in
+   * another session (it was backgrounded) has moved there, whatever its old
+   * process does next: exits, or stays parked on the agents view. True when
+   * it was moved.
+   */
+  private followContinuation(session: HubSession, from: string): boolean {
+    if (session.ending !== null) return false
+    const successor = session.continuedIn()
+    if (successor === null) return false
+    this.moveConversation(session, successor, from)
+    return true
   }
 
   /**
@@ -2282,8 +2339,13 @@ export class Hub {
       answers: moved.answers.length })
     this.endLocally(session)
     this.forget(session, 'reported-continued')
+    // The service holds the successor's questions and notes now: it is
+    // attended as one that notified, wherever it runs.
+    try { markSessionNotified(successorId, session.env, this.clock.wall()) } catch { /* Its own first send records it. */ }
     const successor = this.sessions.get(successorId)
     if (successor === undefined) return
+    successor.lease.needsFresh = true
+    this.driver.poke()
     const state = readSessionState(successorId, successor.env)
     if (pendingList(state).length > 0 || state.accepted !== undefined) this.settle(successorId, successor.harness, successor.registration.cwd, 'settlement')
     successor.checkInput()
@@ -2578,6 +2640,7 @@ export class Hub {
       this.driver.poke()
       return
     }
+    if (this.followContinuation(session, reason)) return
     if (session.endCandidate !== null) return
     this.holdEnd(session, reason, session.registration.transcriptPath)
   }
@@ -2620,6 +2683,8 @@ export class Hub {
         return
       }
     }
+    // `/background` exits the old process once the conversation continues elsewhere.
+    if (this.followContinuation(session, 'session-end-hook')) return
     if (session.harness === 'claude-code' && (session.registration.place === 'terminal' || session.registration.place === 'claude-ide') && (closeReason === 'prompt_input_exit' || closeReason === 'logout')) {
       this.endSession(session, 'confirmed-close')
       return
@@ -2728,6 +2793,7 @@ export class Hub {
         kept('hosted-elsewhere')
         return
       }
+      if (this.followContinuation(session, 'end-confirmation')) return
       const probe = session.probe()
       if (probe.state === 'ended' && probe.reason === 'session-replaced') { this.endSession(session, 'session-replaced'); return }
       // The machine is going down: the next boot decides (machine down); a cancellation, this hub.
@@ -3381,7 +3447,7 @@ export class Hub {
     const state = readSessionState(sessionId, env)
     if (pendingList(state).length > 0 || state.accepted !== undefined) this.settle(sessionId, record.harness, record.cwd, 'settlement')
     const probe = session.probe()
-    if (probe.state === 'ended') this.endSession(session, probe.reason)
+    if (probe.state === 'ended') { if (!this.followContinuation(session, 'adopted')) this.endSession(session, probe.reason) }
     else if (session.transcriptGone()) this.endSession(session, 'session-archived')
     else if (session.harnessGone()) this.closing(session, 'harness-gone')
     // An end the previous hub was still confirming: confirm what is left of it.

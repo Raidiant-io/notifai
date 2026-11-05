@@ -56,6 +56,11 @@ export interface ClaudeSessionDescriptor {
   peerProtocol: number
   messagingSocketPath: string
   status: string
+  /**
+   * Set while this process is parked on Claude Code's agents view after ←
+   * moved its conversation to the background job of that id.
+   */
+  parkedJobId?: string
 }
 
 /** The inbox socket and per-session token Claude Code exports to its hooks and commands. */
@@ -191,6 +196,7 @@ export function parseDescriptor(value: unknown): ClaudeSessionDescriptor | null 
     peerProtocol: value['peerProtocol'],
     messagingSocketPath: value['messagingSocketPath'],
     status: value['status'],
+    ...(typeof value['parkedJobId'] === 'string' && value['parkedJobId'] !== '' ? { parkedJobId: value['parkedJobId'] } : {}),
   }
 }
 

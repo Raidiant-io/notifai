@@ -7,7 +7,7 @@ CompatibilityResponse,
 MachineSetupIssue,
 } from '@raidiant/notifai-protocol'
 import { spawn,type ChildProcess } from 'node:child_process'
-import { mkdirSync,mkdtempSync,readFileSync,rmSync,utimesSync,writeFileSync } from 'node:fs'
+import { appendFileSync,mkdirSync,mkdtempSync,readFileSync,rmSync,utimesSync,writeFileSync } from 'node:fs'
 import { createConnection,createServer,type Socket } from 'node:net'
 import path from 'node:path'
 import { afterEach,beforeEach,describe,expect,it,vi } from 'vitest'
@@ -18,7 +18,7 @@ import type { CodexWakeAdapters } from './codex-wake.js'
 import type { CommandDeps } from './commands-core.js'
 import { hookRunCommand } from './commands-hook-run.js'
 import type { CredentialStore,MachineCredential } from './credentials.js'
-import { beginSessionIncarnation,lifecycleStamp,markSessionEnded,readSessionEndMarker,readSessionIncarnation,readSessionState,recordSessionNotified,updateSessionState } from './hook-session-state.js'
+import { beginSessionIncarnation,lifecycleStamp,markSessionEnded,readSessionEndMarker,readSessionIncarnation,readSessionState,recordSessionNotified,sessionNotified,updateSessionState } from './hook-session-state.js'
 import { ExchangeDriver,type AttendedSession,type ExchangeHost } from './hub-exchange.js'
 import { credentialGenerationPath,encodeFrame,ensurePrivateDirectory,FrameDecoder,hubLockPath,hubSocketPath,requestHub } from './hub-ipc.js'
 import { HUB_WRITE_MARGIN_MS,SessionLease } from './hub-lease.js'
@@ -2389,6 +2389,62 @@ describe('hub: Codex conversations stopped by their app or the machine, Orca pan
         expect(readSessionEndMarker(SESSION, env)).toBeNull()
         expect(readSessionState(SESSION, env).pending).toHaveLength(1)
       }
+      child.socket.destroy()
+      await stopHub(hub, service, done)
+    }
+  })
+
+  it('follows a Claude Code conversation backgrounded into a new session (continued-in), whether its old process stays parked or exits', async () => {
+    for (const variant of ['parked', 'parked-fork-unseen', 'exited'] as const) {
+      const env = hubEnv()
+      recordSessionNotified(SESSION, env, Date.now())
+      const service = fakeService({ capabilities: ['session_attendance', 'session_attendance_batch', 'session_stopped_hold', 'session_continued_successor'] })
+      const peers = new Map<number, PeerCredentials>()
+      const { hub, done } = startHub(env, service, peers, memoryStore(), 100, { endConfirmMs: 150 },
+        { powerWatch: false, claudeDesktop: null, runHook: noHook })
+      await hubListening(env)
+      const host = await standIn()
+      describeHost(env, host)
+      const prompt = { type: 'user', sessionId: SESSION, message: { role: 'user', content: 'Build the arena' } }
+      const reply = { type: 'assistant', sessionId: SESSION, message: { role: 'assistant', stop_reason: 'end_turn', content: [{ type: 'text', text: 'Asked.' }] } }
+      const transcript = claudeTranscript(env, SESSION, [prompt, reply])
+      const child = await claudeChild(env, peers, 900750, host, { transcript_path: transcript })
+      expect(child.frames[0]).toEqual({ type: 'registered', session_id: SESSION })
+      await until(() => renewals(service) >= 1)
+      question(env)
+      // The User backgrounds it: Claude Code records where it continues, as 2.1.318 does.
+      appendFileSync(transcript, `${JSON.stringify({ type: 'attachment', sessionId: SESSION, attachment: { type: 'session_cron_carry', tasks: [] } })}\n` +
+        `${JSON.stringify({ type: 'continued-in', timestamp: new Date().toISOString(), sessionId: SESSION, continuedInSessionId: OTHER })}\n` +
+        `${JSON.stringify({ type: 'cost-state', sessionId: SESSION })}\n`)
+      if (variant === 'exited') {
+        // `/background`: the old process ends with prompt_input_exit before the fork registers.
+        await requestHub(env, { type: 'session-end-candidate', session_id: SESSION, harness_pid: host.pid, close_reason: 'prompt_input_exit' })
+        exit(child, host)
+      } else {
+        // ←: the old process stays parked on the agents view, still naming the old conversation.
+        const descriptor = JSON.parse(readFileSync(path.join(claudeDescriptorDir(env), `${host.pid}.json`), 'utf8')) as Record<string, unknown>
+        writeFileSync(path.join(claudeDescriptorDir(env), `${host.pid}.json`), JSON.stringify({ ...descriptor, parkedJobId: OTHER.slice(0, 8) }))
+      }
+      const forkHost = await standIn()
+      let fork: FakeChild | null = null
+      if (variant !== 'parked-fork-unseen') {
+        describeHost(env, forkHost, OTHER)
+        fork = await claudeChild(env, peers, 900751, forkHost, { source: 'fork',
+          transcript_path: claudeTranscript(env, OTHER, [{ type: 'ai-title', aiTitle: 'Build the arena', sessionId: OTHER }]) }, OTHER)
+        expect(fork.frames[0]).toEqual({ type: 'registered', session_id: OTHER })
+      }
+      await until(() => { service.release(); return ended(service) }, 5_000)
+      const ends = service.batches.flatMap((batch) => batch.body.sessions).filter((entry) => entry.session_id === SESSION && entry.state === 'ended')
+      // A move, never a close: the question is the continuation's to collect.
+      expect(ends.every((entry) => 'end_reason' in entry && entry.end_reason === 'continued')).toBe(true)
+      expect(ends[0]).toMatchObject({ end_reason: 'continued', successor_session_id: OTHER })
+      await until(() => { service.release(); return readSessionEndMarker(SESSION, env) !== null }, 5_000)
+      expect(readSessionState(OTHER, env).pending?.map((entry) => entry.request_id)).toEqual(['req_1111'])
+      expect(readSessionState(SESSION, env).pending ?? []).toEqual([])
+      // The continuation is attended from now on, so its notes and answers are handed in there.
+      expect(sessionNotified(OTHER, env)).toBe(true)
+      if (fork !== null) await until(() => { service.release(); return renewals(service, OTHER) >= 1 }, 5_000)
+      fork?.socket.destroy()
       child.socket.destroy()
       await stopHub(hub, service, done)
     }
