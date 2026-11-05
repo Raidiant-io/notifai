@@ -30,7 +30,8 @@ import { nullLogger,type Logger } from './logging.js'
 import { pidExists,processStartTime } from './process-identity.js'
 import { CODEX_WAKE_DELAY_MS } from './codex-input-lifecycle.js'
 import { attendantClaimPath,attendantStatusPath,codexTurnInterrupted,readAttendantEndingLease,readAttendantLease,recordTurnStop,recordTurnStart } from './session-attendant-state.js'
-import { hasSessionInputs,stageSessionMessages } from './session-inputs.js'
+import { hasSessionInputs,sessionInputWake,stageSessionMessages } from './session-inputs.js'
+import { globalConfigPath } from './config.js'
 import { runWakeCommand } from './wake-support.js'
 
 const SESSION = '11111111-2222-3333-4444-555555555555'
@@ -1001,21 +1002,21 @@ describe('hub end confirmation and writers', () => {
 // ---------------------------------------------------------------------------
 
 describe('hub and Codex SessionEnd', () => {
-  function codexRollout(env: NodeJS.ProcessEnv, originator: string): string {
+  function codexRollout(env: NodeJS.ProcessEnv, originator: string, meta: Record<string, unknown> = {}): string {
     const directory = path.join(env['XDG_STATE_HOME']!, '..', 'codex', 'sessions')
     mkdirSync(directory, { recursive: true })
     const file = path.join(directory, `rollout-${SESSION}.jsonl`)
-    writeFileSync(file, `${JSON.stringify({ type: 'session_meta', payload: { id: SESSION, originator, source: 'vscode' } })}\n`)
+    writeFileSync(file, `${JSON.stringify({ type: 'session_meta', payload: { id: SESSION, originator, source: 'vscode', ...meta } })}\n`)
     return file
   }
 
 
   /** A codex host for this test: this process, or a real child process the test can stop. */
   async function codexSession(env: NodeJS.ProcessEnv, service: FakeService, peers: Map<number, PeerCredentials>, childPid: number,
-    transcript: string, host = HARNESS): Promise<FakeChild> {
+    transcript: string, host = HARNESS, frame: Record<string, unknown> = {}): Promise<FakeChild> {
     const child = await registered(env, SESSION, childPid, peerOf(childPid, { pid: host.pid, comm: 'codex', start: host.start }), peers,
       { harness: 'codex', harness_pid: host.pid, harness_start: host.start, transcript_path: transcript, codex_home: path.dirname(path.dirname(transcript)),
-        claude_config_dir: undefined, inbox_token: undefined })
+        claude_config_dir: undefined, inbox_token: undefined, ...frame })
     expect(child.frames[0]).toEqual({ type: 'registered', session_id: SESSION })
     // One finished turn: the thread is idle and attended.
     const key = readSessionIncarnation(SESSION, env)!.key
@@ -1294,10 +1295,14 @@ describe('hub and Codex SessionEnd', () => {
       orcaRuntime?: HubOptions['orcaRuntime']
       orcaWatchMs?: number
       logger?: Logger
+      originator?: string
+      cliVersion?: string
+      interruptWake?: HubOptions['interruptWake']
+      orcaStructured?: boolean
     }) {
       const env = hubEnv()
       recordSessionNotified(SESSION, env, Date.now())
-      const transcript = codexRollout(env, 'codex-tui')
+      const transcript = codexRollout(env, options.originator ?? 'codex-tui', options.cliVersion === undefined ? {} : { cli_version: options.cliVersion })
       const queued: string[] = []
       const asked: AttachInput[] = []
       const builds: number[] = []
@@ -1322,11 +1327,12 @@ describe('hub and Codex SessionEnd', () => {
         pausedWake: options.pausedWake ?? { owned: async () => false, start: async () => 'unreachable', remove: async () => 'failed' },
         ...(options.orcaRuntime === undefined ? {} : { orcaRuntime: options.orcaRuntime }),
         ...(options.orcaWatchMs === undefined ? {} : { orcaWatchMs: options.orcaWatchMs }),
+        ...(options.interruptWake === undefined ? {} : { interruptWake: options.interruptWake }),
         ...(options.logger === undefined ? {} : { logger: options.logger }),
         ...(options.clock === undefined ? {} : { clock: options.clock }),
       })
       await hubListening(env)
-      const child = await codexSession(env, service, peers, 900120, transcript)
+      const child = await codexSession(env, service, peers, 900120, transcript, HARNESS, options.orcaStructured === true ? { orca_structured: '1' } : {})
       for (const type of ['task_started', 'task_complete']) {
         writeFileSync(transcript, `${JSON.stringify({ type: 'event_msg', payload: { type, turn_id: 'turn-1' } })}\n`, { flag: 'a' })
       }
@@ -1455,6 +1461,114 @@ describe('hub and Codex SessionEnd', () => {
           await run.deliverNote(4)
           expect(r.started).toEqual(['qs_1'])
           expect(r.queued).toEqual([SESSION])
+        } finally { await run.stop() }
+      })
+
+      /** A Codex app router that a window owns this thread in, or not; it records what it is asked, in order. */
+      function appRouter(owned: boolean) {
+        const events: string[] = []
+        const ipc = { owner: async (thread: string) => { events.push(`owner:${thread}`); return owned ? { kind: 'owned' as const, clientId: 'win_1' } : { kind: 'not-owned' as const } },
+          startTurn: async (owner: string, thread: string, text: string) => { events.push(`start:${owner}:${thread}:${text === sessionInputWake() ? 'wake' : text}`); return 'started' as const },
+          close: () => undefined }
+        return { events, open: async () => ipc }
+      }
+
+      it('in the Codex app, starts the stopped turn through the window that has it open, removing the queued wake first', async () => {
+        const r = rig()
+        const app = appRouter(true)
+        const run = await sharedServer({ state: attached, wake: r.wake, hostKind: () => 'app-server', originator: 'Codex Desktop', cliVersion: '0.166.0-alpha.6',
+          interruptWake: { settleMs: 0, codexApp: app.open },
+          pausedWake: { owned: async () => false, start: async () => 'unreachable', remove: async (_thread, _env, _cwd, id) => { app.events.push(`remove:${id}`); return 'deleted' } } })
+        try {
+          await run.deliverNote(2)
+          await until(() => r.queued.length > 0)
+          const key = readSessionIncarnation(SESSION, run.env)!.key
+          recordTurnStart(SESSION, run.env, key, 'turn-2')
+          await interrupt(run.env, 'turn-2')
+          for (let round = 0; round < 4 && !app.events.some((event) => event.startsWith('start:')); round += 1) await run.deliverNote(2)
+          await until(() => app.events.some((event) => event.startsWith('start:')))
+          await run.deliverNote(3)
+          expect(app.events).toEqual([`owner:${SESSION}`, 'remove:qs_1', `start:win_1:${SESSION}:wake`])
+          // No second wake was queued behind the stop.
+          expect(r.queued).toEqual([SESSION])
+        } finally { await run.stop() }
+      })
+
+      it('in the Codex app, leaves a stopped turn no window has open to the User\'s next message, asking once', async () => {
+        const r = rig()
+        const app = appRouter(false)
+        const run = await sharedServer({ state: attached, wake: r.wake, hostKind: () => 'app-server', originator: 'Codex Desktop', cliVersion: '0.166.0',
+          interruptWake: { settleMs: 0, codexApp: app.open },
+          pausedWake: { owned: async () => false, start: async () => 'unreachable', remove: async (_thread, _env, _cwd, id) => { r.removed.push(id); return 'deleted' } } })
+        try {
+          const key = readSessionIncarnation(SESSION, run.env)!.key
+          recordTurnStart(SESSION, run.env, key, 'turn-2')
+          await interrupt(run.env, 'turn-2')
+          for (let round = 0; round < 4; round += 1) await run.deliverNote(2)
+          await until(() => app.events.length > 0)
+          await run.deliverNote(4)
+          expect(app.events).toEqual([`owner:${SESSION}`])
+          expect(run.pending()).toBe(true)
+        } finally { await run.stop() }
+      })
+
+      it('in the Codex app, asks nothing of a thread on a Codex build its router was not verified with', async () => {
+        const app = appRouter(true)
+        const run = await sharedServer({ state: attached, wake: rig().wake, hostKind: () => 'app-server', originator: 'Codex Desktop', cliVersion: '0.165.0',
+          interruptWake: { settleMs: 0, codexApp: app.open } })
+        try {
+          const key = readSessionIncarnation(SESSION, run.env)!.key
+          recordTurnStart(SESSION, run.env, key, 'turn-2')
+          await interrupt(run.env, 'turn-2')
+          for (let round = 0; round < 4; round += 1) await run.deliverNote(2)
+          expect(app.events).toEqual([])
+        } finally { await run.stop() }
+      })
+
+      it('in an Orca terminal, types the wake through Orca, unless that is turned off', async () => {
+        for (const enabled of [true, false]) {
+          const typed: string[] = []
+          const run = await sharedServer({ state: attached, wake: rig().wake, hostKind: () => 'other',
+            interruptWake: { settleMs: 0, orcaTerminal: async (input) => { typed.push(input.terminal.handle); return await input.mayType() ? 'sent' : 'not-sent' } } })
+          try {
+            if (!enabled) {
+              ensurePrivateDirectory(path.dirname(globalConfigPath(run.env)))
+              writeFileSync(globalConfigPath(run.env), '[orca]\nwake_stopped_terminals = false\n', { mode: 0o600 })
+            }
+            const key = readSessionIncarnation(SESSION, run.env)!.key
+            updateSessionState(SESSION, run.env, (state) => ({ ...state, orca_terminal: { key, handle: 'term_scratch' } }))
+            recordTurnStart(SESSION, run.env, key, 'turn-2')
+            await interrupt(run.env, 'turn-2')
+            for (let round = 0; round < 4 && typed.length === 0; round += 1) await run.deliverNote(2)
+            if (enabled) await until(() => typed.length > 0)
+            await run.deliverNote(2)
+            expect(typed).toEqual(enabled ? ['term_scratch'] : [])
+          } finally { await run.stop() }
+        }
+      })
+
+      it('in an Orca chat, wakes the stopped turn for a note with one message through Orca', async () => {
+        const sends: Array<Record<string, unknown>> = []
+        const runtime: OrcaRuntime = { call: async (method, params) => {
+          if (method === 'status.get') return { ok: true, result: { capabilities: ['agent-session.structured.v1', 'agent-session.accepted-send.v1'] } }
+          if (method === 'agentSession.history') return { ok: true, result: { page: { fence: 4, submissions: [], items: [], latestTurn: { turn: { state: 'interrupted' } } } } }
+          if (method === 'agentSession.send') { sends.push(params as Record<string, unknown>); return { ok: true, result: { ok: true } } }
+          return { ok: false, code: 'method_not_found' }
+        } }
+        const r = rig()
+        const run = await sharedServer({ state: attached, wake: r.wake, hostKind: () => 'app-server', orcaStructured: true, orcaRuntime: runtime,
+          interruptWake: { settleMs: 0 } })
+        try {
+          const key = readSessionIncarnation(SESSION, run.env)!.key
+          updateSessionState(SESSION, run.env, (state) => ({ ...state, orca_chat: { key, session_id: 'codex_orca_chat' } }))
+          recordTurnStart(SESSION, run.env, key, 'turn-2')
+          await interrupt(run.env, 'turn-2')
+          for (let round = 0; round < 4 && sends.length === 0; round += 1) await run.deliverNote(2)
+          await until(() => sends.length > 0)
+          await run.deliverNote(3)
+          expect(sends).toHaveLength(1)
+          expect((sends[0]!['body'] as { blocks: Array<{ text: string }> }).blocks[0]!.text).toBe(sessionInputWake())
+          expect(r.queued).toEqual([])
         } finally { await run.stop() }
       })
 

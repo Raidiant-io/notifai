@@ -329,3 +329,40 @@ export function isOrcaChatSentPrompt(sessionId: string, env: NodeJS.ProcessEnv, 
   return typeof prompt === 'string' && readSessionState(sessionId, env).orca_chat_sent?.some((entry) =>
     entry.digest === promptDigest(prompt) && entry.shown !== true) === true
 }
+
+/**
+ * Wake an Orca chat whose turn the User stopped, for input of any kind (an
+ * answer, a note) waiting for it: one message through Orca
+ * (`agentSession.send`) with Notifai's wake text, which is what the User
+ * sending a message there does. Orca starts a new turn with it; that turn's
+ * hooks hand the input in, as for any wake. Sent only while the chat's turn
+ * is not running; a lost reply is settled by Orca's record and never resent.
+ */
+export async function sendOrcaChatWake(input: {
+  env: NodeJS.ProcessEnv; chat: { session_id: string; user_data?: string }; text: string; wall(): number
+  remainingMs(): number; runtime?: OrcaRuntime | null
+}): Promise<'sent' | 'not-sent' | 'unknown'> {
+  const budget = (ms: number): number => Math.max(1, Math.min(ms, input.remainingMs()))
+  const runtime = input.runtime !== undefined ? input.runtime
+    : orcaRuntime({ ...input.env, ...(input.chat.user_data === undefined ? {} : { ORCA_USER_DATA_PATH: input.chat.user_data }) })
+  if (runtime === null) return 'not-sent'
+  const capabilities = await orcaCapabilities(runtime, budget(2_000))
+  if (capabilities === null || !ORCA_CHAT_CAPABILITIES.every((capability) => capabilities.has(capability))) return 'not-sent'
+  const read = await history(runtime, input.chat.session_id, budget(3_000))
+  if (read === null) return 'not-sent'
+  // A running turn takes its input at the next hook; only a stopped chat needs the wake.
+  const turn = (read.page['latestTurn'] as { turn?: { state?: unknown } } | undefined)?.turn
+  if (turn?.state === 'running' || turn?.state === 'starting') return 'not-sent'
+  if (input.remainingMs() < 2_500) return 'not-sent'
+  const operationId = orcaOperationId(input.wall())
+  const body = { kind: 'message', role: 'user', blocks: [{ type: 'text', text: input.text }] }
+  const reply = await runtime.call('agentSession.send', {
+    envelope: { sessionId: input.chat.session_id, clientOperationId: operationId, expectedRuntimeFence: read.fence,
+      payloadFingerprint: orcaPayloadFingerprint('agentSession.send', input.chat.session_id, { body }) },
+    body,
+  }, budget(5_000))
+  if (reply.ok && (reply.result as { ok?: unknown } | null)?.ok !== false) return 'sent'
+  if (reply.ok || !['timeout', 'connection_closed'].includes(reply.code)) return 'not-sent'
+  const known = await submitted(runtime, input.chat.session_id, operationId, budget(2_000))
+  return known === 'accepted' ? 'sent' : known === 'absent' ? 'not-sent' : 'unknown'
+}

@@ -7,7 +7,7 @@
  * its end confirmation from this evidence (see `session-close-classifier.ts`).
  */
 import { execFileSync } from 'node:child_process'
-import { closeSync, existsSync, openSync, readdirSync, readlinkSync, readSync, realpathSync, statSync, type Dirent } from 'node:fs'
+import { closeSync, fstatSync, existsSync, openSync, readdirSync, readlinkSync, readSync, realpathSync, statSync, type Dirent } from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import type { CodexHostKind } from './session-place.js'
@@ -39,6 +39,8 @@ export interface CodexSessionMeta {
   originator: string | null
   /** The thread this one was forked from, when Codex recorded it. */
   forkedFrom: string | null
+  /** The Codex build that started the thread (`cli_version`): the Codex app's bundled one for its threads. */
+  cliVersion?: string | null
 }
 
 /** A rollout's first line (its session metadata), or null when it cannot be read. */
@@ -62,7 +64,7 @@ export function readCodexSessionMeta(transcriptPath: string | null | undefined):
     const first = JSON.parse(Buffer.concat(chunks).toString('utf8')) as { type?: unknown; payload?: Record<string, unknown> }
     if (first.type !== 'session_meta' || typeof first.payload !== 'object' || first.payload === null) return null
     const text = (value: unknown): string | null => typeof value === 'string' && value !== '' && value.length <= 256 ? value : null
-    return { originator: text(first.payload['originator']), forkedFrom: text(first.payload['forked_from_id']) }
+    return { originator: text(first.payload['originator']), forkedFrom: text(first.payload['forked_from_id']), cliVersion: text(first.payload['cli_version']) }
   } catch {
     return null
   } finally {
@@ -257,5 +259,38 @@ export function codexHostHoldsThread(codexHome: string | null, threadId: string,
   } catch {
     // `lsof` exits 1 when the process does not have the file open.
     return false
+  }
+}
+
+/**
+ * Whether a rollout's last turn was stopped by the User: its last turn event
+ * is `turn_aborted` with reason `interrupted`, which is also how Codex
+ * rebuilds the thread's paused state when it loads it. Null when unreadable.
+ */
+export function readCodexLastTurnInterrupted(transcriptPath: string | null | undefined): boolean | null {
+  if (typeof transcriptPath !== 'string' || transcriptPath === '') return null
+  let fd: number
+  try { fd = openSync(transcriptPath, 'r') } catch { return null }
+  try {
+    const size = fstatSync(fd).size
+    const at = Math.max(0, size - 256 * 1024)
+    const bytes = Buffer.alloc(size - at)
+    readSync(fd, bytes, 0, bytes.length, at)
+    const lines = bytes.toString('utf8').split('\n')
+    for (let index = lines.length - 1; index >= (at === 0 ? 0 : 1); index -= 1) {
+      const line = lines[index]!
+      if (!line.includes('"event_msg"') || !/"(task_started|task_complete|turn_aborted)"/u.test(line)) continue
+      let record: { type?: unknown; payload?: { type?: unknown; reason?: unknown } }
+      try { record = JSON.parse(line) as typeof record } catch { continue }
+      if (record.type !== 'event_msg') continue
+      const type = record.payload?.type
+      if (type === 'turn_aborted') return record.payload?.reason === 'interrupted'
+      if (type === 'task_started' || type === 'task_complete') return false
+    }
+    return false
+  } catch {
+    return null
+  } finally {
+    closeSync(fd)
   }
 }

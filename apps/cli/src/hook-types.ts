@@ -250,6 +250,8 @@ export interface SessionState {
   claude_handbacks?: Array<{ question_id: string; at: number }>
   /** Codex in an Orca chat on this machine: Orca's own session id for the owner (`orca-chat-answers.ts`). */
   orca_chat?: { key: string; session_id: string; user_data?: string }
+  /** The Orca terminal a Codex terminal owner runs in, for waking it past a stop (`orca-terminal-wake.ts`). */
+  orca_terminal?: { key: string; handle: string; user_data?: string }
   /**
    * Card answers sent through Orca as the User's own answer message, matched
    * by the prompt's digest when that message reaches Codex. Never answer text.

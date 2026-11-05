@@ -15,7 +15,7 @@ import type { CodexQuestionRegistration } from './codex-question-bindings.js'
 import { readSessionState, writeSessionState } from './hook-session-state.js'
 import type { AnsweredPending, SessionState } from './hook-types.js'
 import {
-  isOrcaChatSentPrompt, orcaAnswerText, orcaCardGroup, orcaChatPresentation, orcaChatSessionOf, orcaChatShowsCards, recordOrcaChatSession, takeOrcaChatSentContext,
+  isOrcaChatSentPrompt, orcaAnswerText, orcaCardGroup, orcaChatPresentation, orcaChatSessionOf, orcaChatShowsCards, recordOrcaChatSession, sendOrcaChatWake, takeOrcaChatSentContext,
 } from './orca-chat-answers.js'
 import { codexRouteProfile } from './codex-surface.js'
 import type { CodexHostKind } from './session-place.js'
@@ -407,5 +407,43 @@ describe('the Orca route as a presentation', () => {
     expect(await h.drain()).toBe(false)
     expect(hasSessionInputs(SESSION, h.env, h.lease)).toBe(true)
     expect(readSessionState(SESSION, h.env).orca_chat_sent ?? []).toEqual([])
+  })
+})
+
+describe('waking a stopped Orca chat', () => {
+  function chatRuntime(state: string, send: OrcaRpcResult = { ok: true, result: { ok: true } }, recorded?: string) {
+    const sends: Array<Record<string, unknown>> = []
+    const runtime: OrcaRuntime = { call: async (method, params) => {
+      if (method === 'status.get') return { ok: true, result: { capabilities: ['agent-session.structured.v1', 'agent-session.accepted-send.v1'] } }
+      // What Orca recorded for the send, by its operation id.
+      const submissions = recorded === undefined ? [] : sends.map((entry) => ({ clientMessageId: (entry['envelope'] as { clientOperationId: string }).clientOperationId, dispatchState: recorded }))
+      if (method === 'agentSession.history') return { ok: true, result: { page: { fence: 9, items: [], submissions, latestTurn: { turn: { state } } } } }
+      if (method === 'agentSession.send') { sends.push(params as Record<string, unknown>); return send }
+      return { ok: false, code: 'method_not_found' }
+    } }
+    return { runtime, sends }
+  }
+  const wake = (runtime: OrcaRuntime) => sendOrcaChatWake({ env: {}, chat: { session_id: ORCA }, text: 'WAKE', wall: () => 1_793_900_000_000, remainingMs: () => 15_000, runtime })
+
+  it('sends the wake as one message, signed with the history fence, only once the turn is not running', async () => {
+    const stopped = chatRuntime('interrupted')
+    expect(await wake(stopped.runtime)).toBe('sent')
+    expect(stopped.sends).toHaveLength(1)
+    const body = { kind: 'message', role: 'user', blocks: [{ type: 'text', text: 'WAKE' }] }
+    expect(stopped.sends[0]).toMatchObject({ body, envelope: { sessionId: ORCA, expectedRuntimeFence: 9,
+      payloadFingerprint: orcaPayloadFingerprint('agentSession.send', ORCA, { body }) } })
+    const running = chatRuntime('running')
+    expect(await wake(running.runtime)).toBe('not-sent')
+    expect(running.sends).toEqual([])
+  })
+
+  it('settles a lost reply by Orca\'s own record, and never sends it again', async () => {
+    for (const [recorded, outcome] of [['accepted', 'sent'], ['pending', 'unknown'], [undefined, 'not-sent']] as const) {
+      const lost = chatRuntime('interrupted', { ok: false, code: 'timeout' }, recorded)
+      expect(await wake(lost.runtime)).toBe(outcome)
+      expect(lost.sends).toHaveLength(1)
+    }
+    const refused = chatRuntime('interrupted', { ok: true, result: { ok: false, refusal: { code: 'agent_session_fence_stale' } } })
+    expect(await wake(refused.runtime)).toBe('not-sent')
   })
 })

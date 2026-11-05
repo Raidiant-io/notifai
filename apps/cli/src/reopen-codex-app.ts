@@ -20,7 +20,12 @@
  * 5. nobody has the thread loaded (its writer lock is free);
  * 6. Notifai's own wake is queued in the thread and not yet consumed;
  * 7. this wake has had no link before (one link per wake, across hubs);
- * 8. the app has not ignored a link before on this app version.
+ * 8. the app has not ignored a link before on this app version;
+ * 9. the User did not stop the conversation's last turn: past a stop Codex
+ *    runs nothing queued, so the link would only have the app's server load
+ *    the thread (and hold it) without starting anything. A stopped
+ *    conversation the app has open is woken through the app's own router
+ *    instead (`codex-app-ipc.ts`).
  *
  * The link goes as an Apple Event addressed to that app's process id
  * (`--internal-codex-app-url`), which cannot start an app that has quit.
@@ -36,7 +41,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { atomicWriteFileSync } from './atomic-file.js'
-import { codexAppSurface, codexThreadHolders, locateCodexRollout, readCodexThreadOriginator } from './codex-session-end.js'
+import { codexAppSurface, codexThreadHolders, locateCodexRollout, readCodexLastTurnInterrupted, readCodexThreadOriginator } from './codex-session-end.js'
 import { readSessionState } from './hook-session-state.js'
 import { processIdentityLiveness, type ProcessIdentity } from './process-identity.js'
 
@@ -61,7 +66,7 @@ export function codexAppOpenArgs(url: string): string[] {
 
 /** Why a Codex app conversation was left waiting for the User. */
 export type CodexAppWait = 'not-macos' | 'not-app-thread' | 'archived' | 'app-not-running' | 'app-unrecognised' | 'app-server-gone' |
-  'live-elsewhere' | 'live-unknown' | 'no-wake-queued' | 'wake-linked' | 'app-ignored-links' | 'launcher-missing'
+  'live-elsewhere' | 'live-unknown' | 'no-wake-queued' | 'wake-linked' | 'app-ignored-links' | 'launcher-missing' | 'turn-stopped'
 
 /** One stopped Codex app conversation, as the hub knows it. */
 export interface CodexAppTarget {
@@ -89,7 +94,9 @@ export interface CodexAppHost {
   /** The processes running this executable, or unknown. */
   processesOf(executable: string): number[] | 'unknown'
   holders(codexHome: string | null, threadId: string): number[] | 'unknown'
-  originator(codexHome: string | null, threadId: string, transcriptPath: string | null): { place: 'sessions' | 'archived' | 'missing' | 'unknown'; originator: string | null }
+  originator(codexHome: string | null, threadId: string, transcriptPath: string | null): { place: 'sessions' | 'archived' | 'missing' | 'unknown'; originator: string | null; path?: string | null }
+  /** Whether the rollout's last turn was stopped by the User; null when unreadable. */
+  lastTurnInterrupted(rolloutPath: string | null): boolean | null
   /** Notifai's own queued wake for the thread, unconsumed: its token, or null. */
   queuedWake(sessionId: string, env: NodeJS.ProcessEnv): string | null
   /** Pid-addressed Apple Event through the launcher. */
@@ -110,6 +117,8 @@ export function codexAppPlan(target: CodexAppTarget, host: CodexAppHost, faults:
   const rollout = host.originator(target.codexHome, target.sessionId, target.transcriptPath)
   if (rollout.place === 'archived') return { wait: 'archived' }
   if (rollout.place !== 'sessions' || codexAppSurface(rollout.originator) !== 'app') return { wait: 'not-app-thread' }
+  // Unknown counts as stopped: a link that starts nothing can hold the thread.
+  if (host.lastTurnInterrupted(rollout.path ?? target.transcriptPath) !== false) return { wait: 'turn-stopped' }
   const app = target.hostApp
   if (app === null || !host.alive(app)) return { wait: 'app-not-running' }
   const bundle = host.bundleOf(app.pid)
@@ -230,8 +239,9 @@ export function systemCodexAppHost(launcher: string | null): CodexAppHost {
     holders: (home, id) => codexThreadHolders(home, id),
     originator: (home, id, transcriptPath) => {
       const located = locateCodexRollout(home, id, transcriptPath)
-      return { place: located.place, originator: readCodexThreadOriginator(located.path) }
+      return { place: located.place, originator: readCodexThreadOriginator(located.path), path: located.path }
     },
+    lastTurnInterrupted: (rolloutPath) => readCodexLastTurnInterrupted(rolloutPath),
     queuedWake: (sessionId, env) => {
       const state = readSessionState(sessionId, env)
       const wake = state.input_wake

@@ -68,14 +68,17 @@ export type OrcaRpcResult = { ok: true; result: unknown } | { ok: false; code: s
 
 export interface OrcaRuntime {
   /** One request on its own connection. Never throws; a timeout or refusal is `ok: false`. */
-  call(method: string, params: unknown, timeoutMs?: number): Promise<OrcaRpcResult>
+  call(method: string, params: unknown, timeoutMs?: number, envelope?: OrcaRpcEnvelope): Promise<OrcaRpcResult>
 }
+
+/** Request fields beside `params`: the id that makes a prompt send idempotent and its receipt observable. */
+export interface OrcaRpcEnvelope { orchestrationRequestId?: string }
 
 export function orcaRuntime(env: NodeJS.ProcessEnv, platform: NodeJS.Platform = process.platform): OrcaRuntime | null {
   const userData = orcaUserDataPath(env, platform)
   if (userData === null) return null
   return {
-    call: (method, params, timeoutMs = 4_000) => new Promise((resolve) => {
+    call: (method, params, timeoutMs = 4_000, envelope = {}) => new Promise((resolve) => {
       // Read per request: Orca rewrites the file when it restarts.
       const endpoint = readEndpoint(userData, platform)
       if (endpoint === null) { resolve({ ok: false, code: 'runtime_unavailable' }); return }
@@ -95,7 +98,8 @@ export function orcaRuntime(env: NodeJS.ProcessEnv, platform: NodeJS.Platform = 
       socket.once('error', () => finish({ ok: false, code: 'connection_failed' }))
       socket.once('close', () => finish({ ok: false, code: 'connection_closed' }))
       socket.once('connect', () => {
-        socket.write(`${JSON.stringify({ id, authToken: endpoint.authToken, method, params })}\n`)
+        const extra = envelope.orchestrationRequestId === undefined ? {} : { orchestrationRequestId: envelope.orchestrationRequestId }
+        socket.write(`${JSON.stringify({ id, authToken: endpoint.authToken, method, params, ...extra })}\n`)
       })
       socket.on('data', (chunk: string) => {
         buffer += chunk
@@ -104,9 +108,10 @@ export function orcaRuntime(env: NodeJS.ProcessEnv, platform: NodeJS.Platform = 
         while ((at = buffer.indexOf('\n')) >= 0) {
           const line = buffer.slice(0, at)
           buffer = buffer.slice(at + 1)
-          let frame: { id?: unknown; ok?: unknown; result?: unknown; error?: { code?: unknown } }
+          let frame: { id?: unknown; ok?: unknown; result?: unknown; error?: { code?: unknown }; _keepalive?: unknown }
           try { frame = JSON.parse(line) as typeof frame } catch { continue }
-          if (frame?.id !== id) continue
+          // A long request (a prompt send waiting for its turn) is kept alive with these.
+          if (frame?._keepalive === true || frame?.id !== id) continue
           finish(frame.ok === true ? { ok: true, result: frame.result }
             : { ok: false, code: typeof frame.error?.code === 'string' ? frame.error.code : 'refused' })
         }

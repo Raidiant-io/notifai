@@ -93,3 +93,25 @@ describe('examples', () => {
     }
   })
 })
+
+describe('integration settings', () => {
+  it('wakes stopped agents in Orca terminals by default, machine-wide, under the Orca integration', async () => {
+    const { INTEGRATION_CONFIG_KEYS, MACHINE_ONLY_CONFIG_KEYS, ON_OFF_CONFIG_KEYS, configDefaultValue, machineSetting, globalConfigPath } = await import('./config.js')
+    const { mkdtempSync, mkdirSync, writeFileSync, rmSync } = await import('node:fs')
+    const os = await import('node:os')
+    const path = await import('node:path')
+    expect(configDefaultValue('orca.wake_stopped_terminals')).toBe(true)
+    expect(INTEGRATION_CONFIG_KEYS.orca).toContain('orca.wake_stopped_terminals')
+    expect(MACHINE_ONLY_CONFIG_KEYS).toContain('orca.wake_stopped_terminals')
+    expect(ON_OFF_CONFIG_KEYS).toContain('orca.wake_stopped_terminals')
+    expect(configInfo('orca.wake_stopped_terminals')).toMatchObject({ group: 'integrations', integration: 'orca', kind: 'boolean' })
+    const root = mkdtempSync(path.join(os.tmpdir(), 'notifai-integration-'))
+    try {
+      const env = { HOME: root, XDG_CONFIG_HOME: path.join(root, 'config') }
+      expect(machineSetting('orca.wake_stopped_terminals', env).value).toBe(true)
+      mkdirSync(path.dirname(globalConfigPath(env)), { recursive: true })
+      writeFileSync(globalConfigPath(env), '[orca]\nwake_stopped_terminals = false\n')
+      expect(machineSetting('orca.wake_stopped_terminals', env)).toEqual({ value: false, source: 'user' })
+    } finally { rmSync(root, { recursive: true, force: true }) }
+  })
+})

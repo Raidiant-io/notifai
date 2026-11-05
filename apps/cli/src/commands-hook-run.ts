@@ -4,6 +4,7 @@ import { stopAnswerOutput } from './hook-acknowledgements.js'
 import { observeCodexTerminalAnswers, reportCodexTerminalAnswers, takeCodexTerminalConflictContext } from './codex-terminal-answers.js'
 import { isOrcaChatSentPrompt, recordOrcaChatSession, takeOrcaChatSentContext } from './orca-chat-answers.js'
 import { orcaBlockingPostToolUse, takeOrcaBlockingTypedAck } from './orca-blocking-questions.js'
+import { recordOrcaTerminal } from './orca-terminal-wake.js'
 import { observeLoadedIntegration } from './integration-revision.js'
 /** Fail-open CLI adapter from harness input to hook lifecycle handlers. */
 import { pendingAgentUpdateNotice } from './agent-update-notice.js'
@@ -1255,7 +1256,10 @@ export async function hookRunCommand(
       if (harness === 'codex' && !elsewhere && envelope.session_id !== undefined && envelope.agent_id === undefined) {
         const owner = readSessionIncarnation(envelope.session_id, deps.env)
         if (owner?.harness_process?.pid === Number(deps.env['NOTIFAI_HOOK_SOURCE_PID'])) {
-          try { recordOrcaChatSession(envelope.session_id, deps.env, owner.key, deps.codexHostKind) } catch { /* A busy lock: the next hook records it. */ }
+          try {
+            recordOrcaChatSession(envelope.session_id, deps.env, owner.key, deps.codexHostKind)
+            recordOrcaTerminal(envelope.session_id, deps.env, owner.key, deps.codexHostKind)
+          } catch { /* A busy lock: the next hook records it. */ }
         }
         orcaSent = takeOrcaChatSentContext(envelope.session_id, deps.env, envelope.prompt)
         if (orcaSent === null) {
