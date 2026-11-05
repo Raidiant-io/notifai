@@ -482,7 +482,8 @@ async function settingsGroupScreen(
     const info = CONFIG_GROUPS.find((entry) => entry.id === group)!
     const keys = configKeysByGroup(group)
 
-    const key = await clack.select<ConfigKey | 'back'>({
+    // Typed as plain strings: a union of every key is past what TypeScript expands for clack's option type.
+    const key = await clack.select<string>({
       message: info.title,
       options: [
         ...keys.map((entry) => {
@@ -495,7 +496,7 @@ async function settingsGroupScreen(
             hint: source.label === 'default' ? style.dim(value) : `${value} ${style.dim(`(${source.label})`)}`,
           }
         }),
-        { value: 'back' as const, label: '← Back' },
+        { value: 'back', label: '← Back' },
       ],
     })
     if (cancelled(key) || key === 'back') return result

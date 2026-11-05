@@ -393,6 +393,17 @@ const INFO: Record<ConfigKey, Omit<ConfigKeyInfo, 'key'>> = {
       'On (the default), when you stop a Codex agent in an Orca terminal and an answer or note arrives for it, Notifai types its short wake message into that terminal through Orca, as if you had sent it, so the agent gets what arrived right away. It types only while Codex is at rest, its message box is empty and the screen is the one you stopped it on. It never types over something you started writing: the answer then arrives with your next message.\n\nOff, a stopped agent in an Orca terminal gets what arrived with your next message. `on` and `off` are accepted as well as `true` and `false`. If this file cannot be read, Notifai does not type.',
     example: 'false',
   },
+  'wake.codex_app_background': {
+    label: 'Wake stopped Codex app conversations in the background',
+    group: 'wake',
+    integration: 'codex_app',
+    kind: 'boolean',
+    machineOnly: true,
+    summary: 'Whether an answer runs a stopped Codex app conversation that no window has open',
+    detail:
+      'On (the default), when you stop a Codex app conversation and an answer or note arrives for it while no app window has it open, Notifai runs its next turn in the background with the app\'s own Codex, so the agent gets what arrived right away. You see that turn when you next open the conversation. Requests for approval or input in that turn are declined, since nobody is there to answer them. A conversation a window has open is always woken through that window instead.\n\nOff, it gets what arrived with your next message. `on` and `off` are accepted as well as `true` and `false`. If this file cannot be read, nothing runs in the background.',
+    example: 'false',
+  },
   log_level: {
     label: 'Log level',
     group: 'diagnostics',

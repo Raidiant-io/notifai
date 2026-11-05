@@ -121,3 +121,25 @@ describe('waking stopped agents in Orca terminals', () => {
     } finally { rmSync(root, { recursive: true, force: true }) }
   })
 })
+
+describe('running a stopped Codex app conversation in the background', () => {
+  it('is on by default, machine-wide, fails toward off, and is listed for the Codex app', async () => {
+    const { INTEGRATION_CONFIG_KEYS, MACHINE_ONLY_CONFIG_KEYS, machineSwitch, globalConfigPath } = await import('./config.js')
+    const { mkdtempSync, mkdirSync, writeFileSync, rmSync } = await import('node:fs')
+    const os = await import('node:os')
+    const path = await import('node:path')
+    expect(INTEGRATION_CONFIG_KEYS.codex_app).toEqual(['wake.codex_app_background'])
+    expect(MACHINE_ONLY_CONFIG_KEYS).toContain('wake.codex_app_background')
+    expect(configInfo('wake.codex_app_background')).toMatchObject({ group: 'wake', integration: 'codex_app', kind: 'boolean' })
+    const root = mkdtempSync(path.join(os.tmpdir(), 'notifai-background-'))
+    try {
+      const env = { HOME: root, XDG_CONFIG_HOME: path.join(root, 'config') }
+      expect(machineSwitch('wake.codex_app_background', env)).toBe(true)
+      mkdirSync(path.dirname(globalConfigPath(env)), { recursive: true })
+      writeFileSync(globalConfigPath(env), '[wake]\ncodex_app_background = "off"\n')
+      expect(machineSwitch('wake.codex_app_background', env)).toBe(false)
+      writeFileSync(globalConfigPath(env), 'not toml [')
+      expect(machineSwitch('wake.codex_app_background', env)).toBe(false)
+    } finally { rmSync(root, { recursive: true, force: true }) }
+  })
+})

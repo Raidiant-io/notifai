@@ -2,7 +2,7 @@ import type { OrcaBlockingRegistration } from './orca-blocking-questions.js'
 import type { StopScreen } from './orca-terminal-wake.js'
 
 /** The apps that can start a stopped Codex turn themselves. */
-export type InterruptRoute = 'codex-app' | 'orca-chat' | 'orca-terminal'
+export type InterruptRoute = 'codex-app' | 'orca-chat' | 'orca-terminal' | 't3'
 export type InterruptWakeOutcome = 'trying' | 'held' | 'started' | 'unavailable' | 'unknown'
 import type { CodexTerminalObservation, CodexTerminalConflict } from './codex-terminal-answers.js'
 import type { RuntimeBuildReference } from './launch-self.js'

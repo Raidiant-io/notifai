@@ -1299,6 +1299,8 @@ describe('hub and Codex SessionEnd', () => {
       cliVersion?: string
       interruptWake?: HubOptions['interruptWake']
       orcaStructured?: boolean
+      codexThreadHeld?: HubOptions['codexThreadHeld']
+      frame?: Record<string, unknown>
     }) {
       const env = hubEnv()
       recordSessionNotified(SESSION, env, Date.now())
@@ -1328,11 +1330,12 @@ describe('hub and Codex SessionEnd', () => {
         ...(options.orcaRuntime === undefined ? {} : { orcaRuntime: options.orcaRuntime }),
         ...(options.orcaWatchMs === undefined ? {} : { orcaWatchMs: options.orcaWatchMs }),
         ...(options.interruptWake === undefined ? {} : { interruptWake: options.interruptWake }),
+        ...(options.codexThreadHeld === undefined ? {} : { codexThreadHeld: options.codexThreadHeld }),
         ...(options.logger === undefined ? {} : { logger: options.logger }),
         ...(options.clock === undefined ? {} : { clock: options.clock }),
       })
       await hubListening(env)
-      const child = await codexSession(env, service, peers, 900120, transcript, HARNESS, options.orcaStructured === true ? { orca_structured: '1' } : {})
+      const child = await codexSession(env, service, peers, 900120, transcript, HARNESS, { ...(options.orcaStructured === true ? { orca_structured: '1' } : {}), ...(options.frame ?? {}) })
       for (const type of ['task_started', 'task_complete']) {
         writeFileSync(transcript, `${JSON.stringify({ type: 'event_msg', payload: { type, turn_id: 'turn-1' } })}\n`, { flag: 'a' })
       }
@@ -1512,6 +1515,59 @@ describe('hub and Codex SessionEnd', () => {
         } finally { await run.stop() }
       })
 
+      it('in the Codex app with no window on the conversation, runs its turn in the background where nothing holds the thread, unless turned off', async () => {
+        for (const [name, held, off, expected] of [['free', false, false, 1], ['held', true, false, 0], ['off', false, true, 0]] as const) {
+          const hosted: Array<{ threadId: string; text: string }> = []
+          const r = rig()
+          const run = await sharedServer({ state: attached, wake: r.wake, hostKind: () => 'app-server', originator: 'Codex Desktop', cliVersion: '0.166.0-alpha.6',
+            codexThreadHeld: () => held,
+            interruptWake: { settleMs: 0, codexApp: appRouter(false).open, codexAppCodex: '/Applications/ChatGPT.app/Contents/Resources/codex-cli/CodexCLI.app/Contents/MacOS/codex',
+              hostedTurn: async (input) => { hosted.push({ threadId: input.threadId, text: input.text }); return { started: true, turnId: 'turn-hosted', done: new Promise(() => undefined) } } },
+            pausedWake: { owned: async () => false, start: async () => 'unreachable', remove: async (_thread, _env, _cwd, id) => { r.removed.push(id); return 'deleted' } } })
+          try {
+            if (off) {
+              ensurePrivateDirectory(path.dirname(globalConfigPath(run.env)))
+              writeFileSync(globalConfigPath(run.env), '[wake]\ncodex_app_background = false\n', { mode: 0o600 })
+            }
+            const key = readSessionIncarnation(SESSION, run.env)!.key
+            recordTurnStart(SESSION, run.env, key, 'turn-2')
+            await interrupt(run.env, 'turn-2')
+            for (let round = 0; round < 6 && hosted.length === 0; round += 1) await run.deliverNote(2)
+            if (expected > 0) await until(() => hosted.length > 0)
+            await run.deliverNote(3)
+            expect(hosted, name).toEqual(expected > 0 ? [{ threadId: SESSION, text: sessionInputWake() }] : [])
+            // A started background turn ends the stop: the turn record names it.
+            if (expected > 0) expect(readSessionState(SESSION, run.env).interrupt_wake, name).toMatchObject({ outcome: 'started' })
+          } finally { await run.stop() }
+        }
+      })
+
+      it('in T3 Code, wakes the stopped thread with T3 Code\'s own send, after removing a queued wake', async () => {
+        for (const running of [true, false]) {
+          const events: string[] = []
+          const r = rig()
+          const t3: NonNullable<HubOptions['interruptWake']>['t3'] = {
+            serverRunning: () => running, cli: () => '/Users/u/.t3/bin/t3', pause: async () => undefined, threadOf: () => 'thread-t3',
+            send: async (_cli, _home, thread, message) => { events.push(`send:${thread}:${message === sessionInputWake() ? 'wake' : message}`); return true },
+          }
+          const run = await sharedServer({ state: attached, wake: r.wake, hostKind: () => 'app-server', frame: { originator_override: 'T3' },
+            interruptWake: { settleMs: 0, t3 },
+            pausedWake: { owned: async () => false, start: async () => 'unreachable', remove: async (_thread, _env, _cwd, id) => { events.push(`remove:${id}`); return 'deleted' } } })
+          try {
+            await run.deliverNote(2)
+            await until(() => r.queued.length > 0)
+            const key = readSessionIncarnation(SESSION, run.env)!.key
+            recordTurnStart(SESSION, run.env, key, 'turn-2')
+            await interrupt(run.env, 'turn-2')
+            for (let round = 0; round < 4 && !events.some((event) => event.startsWith('send')); round += 1) await run.deliverNote(2)
+            if (running) await until(() => events.some((event) => event.startsWith('send')))
+            await run.deliverNote(2)
+            expect(events.filter((event) => event.startsWith('send')), String(running)).toEqual(running ? ['send:thread-t3:wake'] : [])
+            if (running) expect(events.indexOf('remove:qs_1')).toBeLessThan(events.indexOf('send:thread-t3:wake'))
+          } finally { await run.stop() }
+        }
+      })
+
       it('in the Codex app, asks nothing of a thread on a Codex build its router was not verified with', async () => {
         const app = appRouter(true)
         const run = await sharedServer({ state: attached, wake: rig().wake, hostKind: () => 'app-server', originator: 'Codex Desktop', cliVersion: '0.165.0',
@@ -1527,7 +1583,7 @@ describe('hub and Codex SessionEnd', () => {
 
       /** A stopped Codex in an Orca terminal; `outcomes` is what typing there returns, attempt by attempt. */
       async function orcaTerminal(outcomes: Array<'sent' | 'held' | 'not-sent' | 'unknown'>, options: { off?: boolean } = {}) {
-        const attempts: Array<{ handle: string; stop: unknown }> = []
+        const attempts: Array<{ handle: string; stop: unknown; enterAfter: unknown }> = []
         const removed: string[] = []
         let shift = 0
         const clock = { monotonic: () => performance.now() + shift, wall: () => Date.now() + shift }
@@ -1536,7 +1592,7 @@ describe('hub and Codex SessionEnd', () => {
           pausedWake: { owned: async () => false, start: async () => 'unreachable', remove: async (_thread, _env, _cwd, id) => { removed.push(id); return 'deleted' } },
           interruptWake: { settleMs: 0, stopScreenDelayMs: 0, stopScreen: async () => ({ above: ['■ Conversation interrupted'], composer: 'Ask Codex to do anything' }),
             orcaTerminal: async (input) => {
-              attempts.push({ handle: input.terminal.handle, stop: input.stopScreen })
+              attempts.push({ handle: input.terminal.handle, stop: input.stopScreen, enterAfter: input.enterAfter })
               return outcomes[Math.min(attempts.length - 1, outcomes.length - 1)]!
             } } })
         const setOff = (off: boolean) => {
@@ -1557,7 +1613,8 @@ describe('hub and Codex SessionEnd', () => {
           for (let round = 0; round < 4 && t.attempts.length === 0; round += 1) await t.run.deliverNote(2)
           await until(() => t.attempts.length > 0)
           await t.run.deliverNote(3)
-          expect(t.attempts).toEqual([{ handle: 'term_scratch', stop: { above: ['■ Conversation interrupted'], composer: 'Ask Codex to do anything' } }])
+          // Enter 50 ms after the paste shows exactly the wake.
+          expect(t.attempts).toEqual([{ handle: 'term_scratch', stop: { above: ['■ Conversation interrupted'], composer: 'Ask Codex to do anything' }, enterAfter: 50 }])
           expect(readSessionState(SESSION, t.run.env).interrupt_wake).toMatchObject({ turn: 'turn-2', route: 'orca-terminal', outcome: 'started' })
           expect(t.r.queued).toEqual([])
         } finally { await t.run.stop() }
