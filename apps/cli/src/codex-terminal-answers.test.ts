@@ -78,6 +78,8 @@ function fixture(confirmed = true) {
   const deps: CommandDeps = { cwd: root, env,
     store: { load: () => ({ baseUrl: service.base_url, machineId: service.machine_id, secret: 'isolated-test', machineName: 'test' }) } as CommandDeps['store'],
     spawnQuestionSettlement: spawn, clientFactory: () => client as unknown as ApiClient,
+    // An app's own app-server runs these hooks (Orca's chat, T3 Code, an app Notifai cannot name).
+    codexHostKind: () => 'app-server',
     io: { out: text => output.push(text), err: text => output.push(text), confirm: async () => false, openUrl: () => {} },
   }
   const logger = createLogger({ env })

@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "behavior_digest": "sha256:c752a9c875f28df1fa1d3ae9c7fd54a6ce6af28912621cfa74b4c32b6214418b",
+  "behavior_digest": "sha256:e4a4ad77c7d1cabc7172f8c3e4ec1eaec7a53f37f334c785615f35ded9742fb4",
   "outcome": "guidance-updated",
   "surfaces_reviewed": [
     "lifecycle-hooks",
@@ -9,5 +9,5 @@
     "cli-readiness",
     "domain-terms"
   ],
-  "reason": "Reviewed lifecycle hooks, the Notifai skill, harness setup, CLI readiness and domain terms. The hub now starts a Codex wake that waits behind an interrupted turn on the shared server (thread/queue/start by its recorded queued id) and removes one that could only run as an extra turn after the User's next prompt (thread/queue/delete through the shared server, or a private stdio app-server that never loads the thread). No agent-facing instruction changes: the wake text and the prompt hook's handling are unchanged. A guidance change note tells running sessions. No command, approval or setting is added. In an Orca chat on this machine the hub also sends a turn's card answers, once every card is answered, as one message in Orca's own answer format through Orca's runtime (agentSession.send, capability-gated); the prompt hook that sees it adds only the acknowledgement commands. The Codex reference says such an answer can arrive as that message with its acknowledgement command beside it."
+  "reason": "Reviewed lifecycle hooks, the Notifai skill, harness setup, CLI readiness and domain terms. In an Orca chat on this machine the hub now reads Orca's chat while a turn runs and mirrors Codex's pausing request_user_input to the devices as one question (capability-gated on agent-session.question-answers.v1). A device choice answers Orca's own question item (agentSession.respondToQuestion); typed text is sent as the User's message (agentSession.send), as typing in Orca's chat does. PostToolUse of that tool adds only the acknowledgement command, once, and no longer adds the not-carried notice for a mirrored call; the prompt hook that sees a typed answer adds it if PostToolUse did not. An answer given in Orca withdraws the device question silently. The Codex reference now says request_user_input also reaches the devices in an Orca chat. Route detection now ranks the Codex process kind above inherited environment, so a terminal started from an Orca chat or T3 shell keeps terminal behaviour, and the T3 originator 'T3' is recognised. No command, approval, hook matcher or setting is added. A guidance change note tells running sessions."
 }

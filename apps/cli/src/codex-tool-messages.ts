@@ -13,6 +13,7 @@ import { observeCodexQuestions } from './codex-question-bindings.js'
 import { codexAnswerPresentation } from './codex-answer-presentation.js'
 import { closeDismissedCodexCards } from './codex-card-dismissal.js'
 import { isDeepStrictEqual } from 'node:util'
+import { hookCodexRouteProfile } from './codex-surface.js'
 
 /** Missing, disabled, changed or untrusted hooks retain ordinary queue delivery. */
 function toolHookFingerprint(deps: Pick<CommandDeps, 'env' | 'hookAdapterHome' | 'hookPlatform'>): string | null {
@@ -98,7 +99,9 @@ export async function deliverCodexToolMessage(
     return mayObserve() && current?.incarnation === lease.incarnation && current.generation === lease.generation
   }
   // A card of this turn whose question the User dismissed on a device closes, saying so.
-  await closeDismissedCodexCards({ sessionId, env: deps.env, ownerKey: incarnation.key, turnId: envelope.turn_id,
+  // Only the shared Codex server can close a card from outside, and only for a thread it runs.
+  const steers = hookCodexRouteProfile(deps.env, deps.codexHostKind).steersCards
+  if (steers) await closeDismissedCodexCards({ sessionId, env: deps.env, ownerKey: incarnation.key, turnId: envelope.turn_id,
     deadline: performance.now() + 2_000, mayWrite, logger })
   if (!hasSessionInputs(sessionId, deps.env, lease) || !mayWrite()) return
   const credential = deps.store.load()
@@ -113,11 +116,12 @@ export async function deliverCodexToolMessage(
   await drainSessionInputs({
     lease,
     mayWrite: mayDeliver,
-    nativeAnswers: codexAnswerPresentation({ sessionId, env: deps.env, lease, ownerKey: incarnation.key,
+    // Elsewhere a card's answer is handed in as context, with no server probe first.
+    ...(!steers ? {} : { nativeAnswers: codexAnswerPresentation({ sessionId, env: deps.env, lease, ownerKey: incarnation.key,
       turnId: envelope.turn_id, transcriptPath: envelope.transcript_path,
       service: { base_url: credential.baseUrl, machine_id: credential.machineId },
       deadline: performance.now() + 2_000, mayWrite: mayDeliver,
-      serviceCurrent: () => isDeepStrictEqual(deps.store.load(), credential) }),
+      serviceCurrent: () => isDeepStrictEqual(deps.store.load(), credential) }) }),
     sequencer: {
       sessionId, env: deps.env, client, writer, log: logger,
       monotonic: () => performance.now(), wall: now,

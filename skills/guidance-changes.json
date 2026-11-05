@@ -1,5 +1,5 @@
 {
-  "current": "407a596d007525629f4fa5f809a190135333c7259702a83c8c8e8722dcf2f830",
+  "current": "9eddac93f9be5fc59c94dfff3ecba1db40892e2a5ab0f0aa08aa6487cd6c87be",
   "releases": [
     {
       "digest": "3e47b01bc6bbfb43e910c660b9964fab6459d75148c3c02dcbcd0be64cfb2963",
@@ -344,6 +344,10 @@
     {
       "digest": "407a596d007525629f4fa5f809a190135333c7259702a83c8c8e8722dcf2f830",
       "note": "After the User interrupts a Codex turn, an answer or note from their devices now wakes the session where Codex's shared server can start the waiting wake; elsewhere it still arrives with the User's next prompt, and no extra wake turn runs after that prompt. In an app whose question cards are answered by a message, a device answer to a card can now arrive as that message, with its acknowledgement command beside it; acknowledge it as usual."
+    },
+    {
+      "digest": "9eddac93f9be5fc59c94dfff3ecba1db40892e2a5ab0f0aa08aa6487cd6c87be",
+      "note": "In an Orca chat, Codex's pausing question (`request_user_input`) now also appears on the User's devices. A device choice answers it in Orca as picking it there would, and typed text arrives as the User's own message once the question is answered in Orca, exactly as typing in Orca's chat does; the acknowledgement command comes with the next hook that shows the answer. An answer given in Orca closes the device question. Nothing changes in terminals, T3 Code or the Codex app, and a T3 session is no longer mistaken for the Codex app."
     }
   ]
 }

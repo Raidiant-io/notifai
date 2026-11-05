@@ -125,7 +125,7 @@ export interface CommandDeps {
   codexReview?: CodexReviewSeams
   /** Test seam for Codex's own `hooks/list` (trust and current hashes). */
   codexHooksList?: ListCodexHooks
-  /** Test seam: what kind of Codex process hosts the active session. */
+  /** Test seam: what kind of Codex process hosts the active session, or runs a hook (`codexRouteProfile`). */
   codexHostKind?: typeof codexHostKind
   /** Test seam for doctor's `codex execpolicy check` of the Notifai rules file. */
   codexRuleCheck?: CheckCodexCommandRules

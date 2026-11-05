@@ -1589,6 +1589,46 @@ describe('hub and Codex SessionEnd', () => {
       } finally { await run.stop() }
     })
 
+    it('in an Orca chat, answers Codex\'s pausing question in Orca\'s own item instead of a queued wake', async () => {
+      const queued: string[] = []
+      const responses: Array<Record<string, unknown>> = []
+      const item = 'orca:codex-prompt%3A' + SESSION + '%3Acall_b%3Acolor'
+      const runtime: OrcaRuntime = { call: async (method, params) => {
+        if (method === 'status.get') return { ok: true, result: { capabilities: ['agent-session.structured.v1', 'agent-session.question-answers.v1', 'agent-session.accepted-send.v1'] } }
+        if (method === 'agentSession.history') return { ok: true, result: { page: { fence: 3, submissions: [], actionablePromptIds: responses.length === 0 ? [item] : [],
+          items: [{ itemId: item, revision: 1, body: { kind: 'question', question: 'Which color?', options: [{ id: 'color:Red', label: 'Red' }, { id: 'color:Blue', label: 'Blue' }],
+            resolution: { state: responses.length === 0 ? 'pending' : 'resolved' } } }] } } }
+        if (method === 'agentSession.respondToQuestion') { responses.push(params as Record<string, unknown>); return { ok: true, result: { ok: true } } }
+        return { ok: false, code: 'method_not_found' }
+      } }
+      const run = await sharedServer({ state: () => ({ state: 'attached', confirmed: true, reason: 'terminal-live+joined' }), hostKind: () => 'app-server',
+        wake: { available: () => true, queue: async (threadId) => { queued.push(threadId); return 'qs_1' } }, orcaRuntime: runtime })
+      try {
+        const key = readSessionIncarnation(SESSION, run.env)!.key
+        const service = { base_url: 'https://example.invalid', machine_id: 'mch_test' }
+        const reply = { reply_id: 'rpl_1', seq: 1, delivery_id: null, device_id: 'dev', device_name: 'iPhone', text: '',
+          answers: [{ question_id: 'which-color', choice_ids: ['blue'], text: null }], source: null, created_at: '2026-11-05T00:00:00Z' }
+        const pending = { question_id: 'qb', request_id: 'req_qb', collapse_key: 'ck_qb', device_ids: ['dev'], question: '', summary: '', service_identity: service }
+        updateSessionState(SESSION, run.env, (state) => ({ ...state, orca_chat: { key, session_id: 'codex_orca_chat' }, pending: [pending],
+          orca_blocking: [{ question_id: 'qb', owner_key: key, orca_session_id: 'codex_orca_chat', call_id: 'call_b', service_identity: service,
+            items: [{ item_id: item, codex_question_id: 'color', question_id: 'which-color', title: 'Which color?', options: { red: 'color:Red', blue: 'color:Blue' } }] }],
+          waiting_answers: [{ pending, reply, replies: [reply], delivery_claim: true }],
+          acknowledgement_due: [{ request_id: 'req_qb', recorded_at: 1, text_required: true }] }))
+        for (let round = 0; round < 4; round += 1) {
+          run.service.release()
+          run.hub.inputStaged(SESSION)
+          await new Promise((resolve) => setTimeout(resolve, 150))
+        }
+        await until(() => responses.length > 0)
+        expect(responses).toHaveLength(1)
+        expect(responses[0]).toMatchObject({ itemId: item, expectedRevision: 1, answers: [{ questionId: 'q1', optionIds: ['color:Blue'] }],
+          envelope: { sessionId: 'codex_orca_chat', expectedRuntimeFence: 3 } })
+        expect(readSessionState(SESSION, run.env).waiting_answers ?? []).toEqual([])
+        expect(readSessionState(SESSION, run.env).orca_blocking![0]!.presented).toBe(true)
+        expect(queued).toEqual([])
+      } finally { await run.stop() }
+    })
+
     it('never lets a turn it saw start hold a note past the bound, whether or not that turn ever ended', async () => {
       const run = await sharedServer({
         state: () => ({ state: 'attached', confirmed: true, reason: 'terminal-live+joined' }),

@@ -26,7 +26,8 @@ import { isDeepStrictEqual } from 'node:util'
 import { acknowledgementContext } from './hook-acknowledgements.js'
 import { CodexControlNotSent } from './codex-native-control.js'
 import type { CodexQuestionRegistration } from './codex-question-bindings.js'
-import { codexHost } from './codex-surface.js'
+import { hookCodexRouteProfile, type CodexRouteProfile } from './codex-surface.js'
+import type { CodexHostKind } from './session-place.js'
 import type { ServiceIdentity } from './credentials.js'
 import { pendingList, readSessionState, updateSessionState } from './hook-session-state.js'
 import type { AnsweredPending, SessionState } from './hook-types.js'
@@ -51,18 +52,20 @@ function underWsl(platform: NodeJS.Platform): boolean {
  * it; null anywhere else. A session on a paired or remote Orca host
  * (`ORCA_ENVIRONMENT`, `ORCA_REMOTE_PAIRING`) is not reachable here.
  */
-export function orcaChatSessionOf(env: NodeJS.ProcessEnv, platform: NodeJS.Platform = process.platform): { session_id: string; user_data?: string } | null {
-  if (codexHost(env) !== 'orca') return null
+export function orcaChatSessionOf(env: NodeJS.ProcessEnv, platform: NodeJS.Platform = process.platform,
+  profile: CodexRouteProfile = hookCodexRouteProfile(env, undefined, platform)): { session_id: string; user_data?: string } | null {
+  // Only Orca's own chat app-server: a Codex terminal started from an Orca chat's shell inherits these variables.
+  if (!profile.orcaChat || underWsl(platform)) return null
   const id = env['ORCA_AGENT_SESSION_ID']?.trim() ?? ''
   if (!SESSION_ID.test(id)) return null
-  if ((env['ORCA_ENVIRONMENT']?.trim() ?? '') !== '' || (env['ORCA_REMOTE_PAIRING']?.trim() ?? '') !== '' || underWsl(platform)) return null
   const userData = env['ORCA_USER_DATA_PATH']?.trim()
   return { session_id: id, ...(userData === undefined || userData === '' ? {} : { user_data: userData }) }
 }
 
 /** Remember the Orca chat for the owner that runs in it; the hub sends from there. */
-export function recordOrcaChatSession(sessionId: string, env: NodeJS.ProcessEnv, ownerKey: string): void {
-  const chat = orcaChatSessionOf(env)
+export function recordOrcaChatSession(sessionId: string, env: NodeJS.ProcessEnv, ownerKey: string,
+  hostKind?: (pid: number) => CodexHostKind): void {
+  const chat = orcaChatSessionOf(env, process.platform, hookCodexRouteProfile(env, hostKind))
   if (chat === null) return
   const current = readSessionState(sessionId, env).orca_chat
   if (current?.key === ownerKey && current.session_id === chat.session_id && current.user_data === chat.user_data) return

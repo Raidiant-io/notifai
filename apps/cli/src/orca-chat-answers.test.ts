@@ -17,6 +17,8 @@ import type { AnsweredPending, SessionState } from './hook-types.js'
 import {
   isOrcaChatSentPrompt, orcaAnswerText, orcaCardGroup, orcaChatPresentation, orcaChatSessionOf, orcaChatShowsCards, takeOrcaChatSentContext,
 } from './orca-chat-answers.js'
+import { codexRouteProfile } from './codex-surface.js'
+import type { CodexHostKind } from './session-place.js'
 import { orcaPayloadFingerprint, orcaRuntime, orcaUserDataPath, type OrcaRpcResult, type OrcaRuntime } from './orca-runtime.js'
 
 const roots: string[] = []
@@ -59,13 +61,17 @@ function state(extra: Partial<SessionState> = {}): SessionState {
 
 describe('which Orca chat a hook runs in', () => {
   const base = { ORCA_STRUCTURED_SESSION: '1', ORCA_AGENT_SESSION_ID: ORCA, ORCA_USER_DATA_PATH: '/Users/x/Library/Application Support/orca' }
-  it('is named by Orca\'s own environment, on this machine only', () => {
-    expect(orcaChatSessionOf(base, 'darwin')).toEqual({ session_id: ORCA, user_data: base.ORCA_USER_DATA_PATH })
-    expect(orcaChatSessionOf({ ...base, ORCA_ENVIRONMENT: 'ssh:dev' }, 'darwin')).toBeNull()
-    expect(orcaChatSessionOf({ ...base, ORCA_REMOTE_PAIRING: '1' }, 'darwin')).toBeNull()
-    expect(orcaChatSessionOf({ ...base, ORCA_STRUCTURED_SESSION: '' }, 'darwin')).toBeNull()
-    expect(orcaChatSessionOf({ ...base, CODEX_INTERNAL_ORIGINATOR_OVERRIDE: 'T3' }, 'darwin')).toBeNull()
-    expect(orcaChatSessionOf({ ...base, ORCA_AGENT_SESSION_ID: 'bad id;rm' }, 'darwin')).toBeNull()
+  it('is named by Orca\'s own environment, on this machine only, and only in Orca\'s own app-server', () => {
+    const chat = (env: NodeJS.ProcessEnv, kind: CodexHostKind = 'app-server') => orcaChatSessionOf(env, 'darwin', codexRouteProfile(env, kind, 'darwin'))
+    expect(chat(base)).toEqual({ session_id: ORCA, user_data: base.ORCA_USER_DATA_PATH })
+    expect(chat({ ...base, ORCA_ENVIRONMENT: 'ssh:dev' })).toBeNull()
+    expect(chat({ ...base, ORCA_REMOTE_PAIRING: '1' })).toBeNull()
+    expect(chat({ ...base, ORCA_STRUCTURED_SESSION: '' })).toBeNull()
+    expect(chat({ ...base, CODEX_INTERNAL_ORIGINATOR_OVERRIDE: 'T3' })).toBeNull()
+    expect(chat({ ...base, ORCA_AGENT_SESSION_ID: 'bad id;rm' })).toBeNull()
+    // A Codex terminal started from an Orca chat's shell inherits the chat's variables.
+    expect(chat(base, 'other')).toBeNull()
+    expect(chat(base, 'shared-server')).toBeNull()
   })
 
   it('finds Orca\'s userData the way its own CLI does', () => {

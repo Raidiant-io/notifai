@@ -151,6 +151,7 @@ import {
 import { compareVersions } from './version.js'
 import { codexThreadOnSharedServer, removeQueuedCodexWake, startPausedCodexWake } from './codex-paused-wake.js'
 import { orcaCardGroup, orcaChatPresentation } from './orca-chat-answers.js'
+import { orcaBlockingAnswerWaits, orcaBlockingPresentation, reconcileOrcaBlocking } from './orca-blocking-questions.js'
 import type { OrcaRuntime } from './orca-runtime.js'
 import type { SessionState } from './hook-types.js'
 import { QUESTION_WAITER_CEILING_SECONDS } from './question-timing.js'
@@ -189,6 +190,8 @@ export const HUB_CRASH_LIMIT = 3
 export const HUB_CRASH_WINDOW_MS = 10 * 60_000
 /** A Claude wake accepted but still not shown after this long idle is treated as lost. */
 const IDLE_BEFORE_WAKE_REPLACEMENT_MS = 30_000
+/** How often the hub looks at an Orca chat for Codex's pausing question while its turn runs. */
+const ORCA_BLOCKING_WATCH_MS = 4_000
 /** One Orca chat send, claims to receipt. */
 const ORCA_CHAT_DEADLINE_MS = 15_000
 /** After the Orca chat route could not send, the ordinary route has this long before it is offered again. */
@@ -304,6 +307,8 @@ export interface HubOptions {
   codexHostKind?: typeof codexHostKind
   /** Test seam: the Orca runtime an Orca chat route talks to (see `orca-chat-answers.ts`). */
   orcaRuntime?: OrcaRuntime | null
+  /** Test seam: how often an Orca chat is looked at for Codex's pausing question. */
+  orcaWatchMs?: number
   /** Test seams for a Codex wake behind an interrupted turn (see `codex-paused-wake.ts`). */
   pausedWake?: {
     owned?: typeof codexThreadOnSharedServer
@@ -1366,6 +1371,8 @@ export class Hub {
     this.safetyTimer.unref?.()
     this.attachWatchTimer = setInterval(() => this.watchCodexAttach(), this.options.codexAttach?.watchMs ?? CODEX_ATTACH_WATCH_MS)
     this.attachWatchTimer.unref?.()
+    this.orcaWatchTimer = setInterval(() => this.watchOrcaBlocking(), this.options.orcaWatchMs ?? ORCA_BLOCKING_WATCH_MS)
+    this.orcaWatchTimer.unref?.()
     this.scheduleAutomaticUpdate(this.options.automaticUpdate?.firstDelayMs ?? AUTOMATIC_UPDATE_FIRST_MS)
     // An exit asked for during startup (a signal, `stop`) must not be lost.
     if (!this.exiting) await new Promise<void>((resolve) => { this.exitResolve = resolve })
@@ -1605,6 +1612,7 @@ export class Hub {
     if (this.safetyTimer !== null) clearInterval(this.safetyTimer)
     if (this.watchdogTimer !== null) clearInterval(this.watchdogTimer)
     if (this.attachWatchTimer !== null) clearInterval(this.attachWatchTimer)
+    if (this.orcaWatchTimer !== null) clearInterval(this.orcaWatchTimer)
     if (this.updateTimer !== null) clearTimeout(this.updateTimer)
     this.driver.stop()
     await this.setupIssues.stop()
@@ -3511,6 +3519,7 @@ export class Hub {
   private readonly codexBuildFailures = new Map<string, number>()
   private readonly codexBuildRetryAt = new Map<string, number>()
   private attachWatchTimer: ReturnType<typeof setInterval> | null = null
+  private orcaWatchTimer: ReturnType<typeof setInterval> | null = null
 
   /** Whether the session's Codex host is the shared server (asked once per host process). */
   codexSharedServer(session: HubSession): boolean {
@@ -3670,7 +3679,8 @@ export class Hub {
     const credential = this.credential
     if (credential === undefined || credential === null) return false
     const service = { base_url: credential.baseUrl, machine_id: credential.machineId }
-    return (state.waiting_answers ?? []).some((answer) => orcaCardGroup(state, session.record.key, service, answer) !== null)
+    return orcaBlockingAnswerWaits(state, session.record.key, service) ||
+      (state.waiting_answers ?? []).some((answer) => orcaCardGroup(state, session.record.key, service, answer) !== null)
   }
 
   /**
@@ -3694,14 +3704,20 @@ export class Hub {
     try {
       const deadline = this.clock.monotonic() + ORCA_CHAT_DEADLINE_MS
       const mayWrite = (): boolean => this.clock.monotonic() < deadline && session.mayWrite()
+      const presentation = {
+        sessionId: session.id, env: session.env, lease, ownerKey: session.record.key,
+        service: { base_url: credential.baseUrl, machine_id: credential.machineId },
+        serviceCurrent: () => this.credential === credential, wall: () => this.clock.wall(),
+        // The claims and their reports take part of the deadline too.
+        remainingMs: () => deadline - this.clock.monotonic() - 1_500,
+        ...(this.options.orcaRuntime === undefined ? {} : { runtime: this.options.orcaRuntime }),
+      }
+      const state = readSessionState(session.id, session.env)
+      // A device answer to a pausing question goes back to its own items first.
+      const blocking = orcaBlockingAnswerWaits(state, session.record.key, presentation.service)
       presented = await drainSessionInputs({
         lease, mayWrite, nativeOnly: true,
-        nativeAnswers: orcaChatPresentation({ sessionId: session.id, env: session.env, lease, ownerKey: session.record.key,
-          service: { base_url: credential.baseUrl, machine_id: credential.machineId },
-          serviceCurrent: () => this.credential === credential, wall: () => this.clock.wall(),
-          // The claims and their reports take part of the deadline too.
-          remainingMs: () => deadline - this.clock.monotonic() - 1_500,
-          ...(this.options.orcaRuntime === undefined ? {} : { runtime: this.options.orcaRuntime }) }),
+        nativeAnswers: blocking ? orcaBlockingPresentation(presentation) : orcaChatPresentation(presentation),
         sequencer: { sessionId: session.id, env: session.env, client, writer, log: this.logger,
           monotonic: () => this.clock.monotonic(), wall: () => this.clock.wall(), recoveryDeadline: this.clock.monotonic() + 500,
           sleep: async (ms) => { await new Promise((resolve) => setTimeout(resolve, Math.max(0, Math.min(ms, deadline - this.clock.monotonic())))) } },
@@ -3717,6 +3733,49 @@ export class Hub {
     this.logger.info('delivery.handoff', { route: 'orca-chat', stage: presented ? 'sent' : 'not-sent', session: session.id })
     if (!presented) session.orcaChatRetryAt = this.clock.monotonic() + ORCA_CHAT_RETRY_MS
     if (this.pausedWakeSettable(session)) session.checkInput()
+  }
+
+  private readonly orcaLooking = new Set<string>()
+  private readonly orcaSkipped = new Map<string, Set<string>>()
+
+  /**
+   * Codex's pausing question in an Orca chat runs no Notifai hook while it
+   * waits, so the hub looks at Orca's chat itself, every few seconds and only
+   * while an Orca chat turn runs or one of its questions is still on the
+   * devices (`orca-blocking-questions.ts`). Nowhere else.
+   */
+  private watchOrcaBlocking(): void {
+    if (this.handingOver || this.exiting) return
+    for (const session of this.sessions.values()) {
+      if (!this.pausedWakeSettable(session) || this.orcaLooking.has(session.id)) continue
+      const state = readSessionState(session.id, session.env)
+      if (state.orca_chat?.key !== session.record.key) continue
+      const open = state.orca_blocking?.some((entry) => entry.owner_key === session.record.key && entry.ended !== true && entry.presented !== true) === true
+      if (!open && observedCodexTurnActivity(session.id, session.env, session.record.key) !== 'working') continue
+      void this.lookAtOrcaChat(session)
+    }
+  }
+
+  private async lookAtOrcaChat(session: HubSession): Promise<void> {
+    if (this.client() === null) return
+    this.orcaLooking.add(session.id)
+    try {
+      const skip = this.orcaSkipped.get(session.id) ?? new Set<string>()
+      this.orcaSkipped.set(session.id, skip)
+      // The hub's single credential read, never another store helper run.
+      const result = await reconcileOrcaBlocking({ ...this.deps, store: this.cachedStore() }, { sessionId: session.id, env: session.env,
+        cwd: session.registration.cwd ?? process.cwd(), ownerKey: session.record.key,
+        ...(session.registration.transcriptPath === null || session.registration.transcriptPath === undefined ? {} : { transcriptPath: session.registration.transcriptPath }),
+        ...(this.options.orcaRuntime === undefined ? {} : { runtime: this.options.orcaRuntime }),
+        now: this.clock.wall(), skip })
+      for (const id of result.registered) this.logger.info('ask.registered', { session: session.id, question_id: id, origin: 'orca-blocking' })
+      for (const id of result.withdrawn) this.logger.info('hook.answer', { stage: 'orca-blocking-withdrawn', question_id: id, session: session.id })
+      if (result.registered.length > 0) session.checkInput()
+    } catch (err) {
+      this.logger.error('hub.session', { event: 'orca-blocking-failed', session: session.id, message: err instanceof Error ? err.message : String(err) })
+    } finally {
+      this.orcaLooking.delete(session.id)
+    }
   }
 
   // -- Codex: a wake behind an interrupted turn -----------------------------------

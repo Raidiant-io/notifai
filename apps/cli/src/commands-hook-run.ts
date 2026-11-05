@@ -3,6 +3,7 @@ import { recordOpenclawNativeSession } from './openclaw-native-session.js'
 import { stopAnswerOutput } from './hook-acknowledgements.js'
 import { observeCodexTerminalAnswers, reportCodexTerminalAnswers, takeCodexTerminalConflictContext } from './codex-terminal-answers.js'
 import { isOrcaChatSentPrompt, recordOrcaChatSession, takeOrcaChatSentContext } from './orca-chat-answers.js'
+import { orcaBlockingPostToolUse, takeOrcaBlockingTypedAck } from './orca-blocking-questions.js'
 import { observeLoadedIntegration } from './integration-revision.js'
 /** Fail-open CLI adapter from harness input to hook lifecycle handlers. */
 import { pendingAgentUpdateNotice } from './agent-update-notice.js'
@@ -703,7 +704,9 @@ export async function hookRunCommand(
         const faultNotice = enabled ? cachedIntegrationFaultNotice({ ...deps, cwd }, harness) : undefined
         // A busy turn learns of changed guidance at its next tool boundary.
         const changed = enabled ? guidanceChangeFor(deps, harness, envelope, cwd) : undefined
-        const notice = [cardContext, unlinkedQuestionFormContext(deps, envelope, harness, cwd),
+        // Codex's pausing question in an Orca chat is on the devices: its device answer's acknowledgement, or nothing.
+        const blocking = orcaBlockingPostToolUse(deps, envelope)
+        const notice = [cardContext, blocking.context, blocking.carried ? undefined : unlinkedQuestionFormContext(deps, envelope, harness, cwd),
           takeCodexTerminalConflictContext(deps, envelope), faultNotice, changed].filter(Boolean).join('\n\n') || undefined
         let wrote = false
         const io = { ...deps.io, out: (line: string) => {
@@ -1248,14 +1251,21 @@ export async function hookRunCommand(
       // A card answer Notifai sent through Orca's chat is the agent's input
       // already: it gets that answer's acknowledgement, never a second record.
       let orcaSent: string | null = null
+      let blockingTyped = false
       if (harness === 'codex' && !elsewhere && envelope.session_id !== undefined && envelope.agent_id === undefined) {
         const owner = readSessionIncarnation(envelope.session_id, deps.env)
         if (owner?.harness_process?.pid === Number(deps.env['NOTIFAI_HOOK_SOURCE_PID'])) {
-          try { recordOrcaChatSession(envelope.session_id, deps.env, owner.key) } catch { /* A busy lock: the next hook records it. */ }
+          try { recordOrcaChatSession(envelope.session_id, deps.env, owner.key, deps.codexHostKind) } catch { /* A busy lock: the next hook records it. */ }
         }
         orcaSent = takeOrcaChatSentContext(envelope.session_id, deps.env, envelope.prompt)
+        if (orcaSent === null) {
+          // A typed device answer to Codex's pausing question, sent through Orca.
+          const typed = takeOrcaBlockingTypedAck(envelope.session_id, deps.env, envelope.prompt)
+          orcaSent = typed.context
+          blockingTyped = typed.typed
+        }
       }
-      if (harness === 'codex' && !elsewhere && orcaSent === null && !isOrcaChatSentPrompt(envelope.session_id ?? '', deps.env, envelope.prompt)) {
+      if (harness === 'codex' && !elsewhere && orcaSent === null && !blockingTyped && !isOrcaChatSentPrompt(envelope.session_id ?? '', deps.env, envelope.prompt)) {
         observeCodexTerminalAnswers(deps, envelope, logger)
       }
       // Claude wakes carry a token; Codex prompts with one keep their own path.

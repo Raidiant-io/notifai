@@ -188,8 +188,10 @@ export function markCodexOrdinaryPresentation(state: SessionState, questionIds: 
  * the same transaction as the question, so no answer can arrive before it.
  */
 export function nativeFormMayAnswer(state: SessionState, questionId: string | undefined): boolean {
-  return questionId !== undefined && state.codex_question_bindings?.some(item =>
-    item.question_id === questionId && item.ordinary_only !== true && item.terminated !== true) === true
+  return questionId !== undefined && (state.codex_question_bindings?.some(item =>
+    item.question_id === questionId && item.ordinary_only !== true && item.terminated !== true) === true ||
+    // Codex's pausing question in an Orca chat takes its answer through Orca.
+    state.orca_blocking?.some(item => item.question_id === questionId && item.ended !== true) === true)
 }
 
 /** The User dismissed these questions on a device. Written before they retire, so a waiting form sees why. */

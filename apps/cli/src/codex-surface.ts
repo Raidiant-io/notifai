@@ -27,6 +27,9 @@ export type CodexHost = 't3' | 'orca'
 /** Originators of the ChatGPT desktop app's Codex besides `Codex Desktop…`. */
 const APP_ORIGINATORS: ReadonlySet<string> = new Set(['codex_work_desktop', 'codex_chatgpt_desktop'])
 
+import { codexHostKind } from './codex-session-end.js'
+import type { CodexHostKind } from './session-place.js'
+
 /** The Codex surface this command runs in, from its environment; null when not known. */
 export function codexSurface(env: NodeJS.ProcessEnv): CodexSurface | null {
   const override = env['CODEX_INTERNAL_ORIGINATOR_OVERRIDE']?.trim()
@@ -48,6 +51,51 @@ export function codexHost(env: NodeJS.ProcessEnv): CodexHost | null {
   const override = env['CODEX_INTERNAL_ORIGINATOR_OVERRIDE']?.trim() ?? ''
   if (override === 'T3' || override.startsWith('T3 ')) return 't3'
   return override === '' && env['ORCA_STRUCTURED_SESSION'] === '1' ? 'orca' : null
+}
+
+/**
+ * Which Notifai logic a Codex session gets, from where it runs. Each route
+ * runs only where it can work, so no surface pays for a probe, a send or a
+ * wait it cannot use, and none falls back to a weaker route than its own.
+ *
+ * Signals: the environment Codex gives its hooks (`codexSurface`,
+ * `codexHost`), and what kind of Codex process runs them (`hostKind`, from
+ * its command line). The process kind outranks an inherited variable: a
+ * Codex terminal started from a shell inside an Orca chat or T3 Code carries
+ * that app's variables, yet it is a terminal.
+ */
+export interface CodexRouteProfile {
+  surface: CodexSurface | null
+  /** The app around Codex's app-server, when this process is one. */
+  host: CodexHost | null
+  hostKind: CodexHostKind
+  /**
+   * A device answer may close a question card by steering the shared Codex
+   * server: only a thread that server runs (its hooks run in it), or where
+   * that cannot be told. Never on Windows, whose socket transport fails.
+   */
+  steersCards: boolean
+  /** Plain-text card answers read at the prompt: an app's own format, choice labels only, or none. */
+  textAnswers: CodexHost | 'labels' | 'none'
+  /** Orca's own chat routes (card answers by message, mirrored pausing questions). */
+  orcaChat: boolean
+}
+
+export function codexRouteProfile(env: NodeJS.ProcessEnv, hostKind: CodexHostKind,
+  platform: NodeJS.Platform = process.platform): CodexRouteProfile {
+  const surface = codexSurface(env)
+  const appServer = hostKind === 'app-server'
+  // An app is only ever around its own app-server; anywhere else its variables were inherited.
+  const host = appServer || hostKind === 'unknown' ? codexHost(env) : null
+  const local = (env['ORCA_ENVIRONMENT']?.trim() ?? '') === '' && (env['ORCA_REMOTE_PAIRING']?.trim() ?? '') === ''
+  return {
+    surface, host, hostKind,
+    steersCards: platform !== 'win32' && (hostKind === 'shared-server' || hostKind === 'unknown'),
+    // A terminal, the Codex app and the IDE extension answer cards with Codex's envelope only.
+    textAnswers: host !== null ? host
+      : surface !== null || !(appServer || hostKind === 'unknown') ? 'none' : 'labels',
+    orcaChat: host === 'orca' && appServer && local && (env['ORCA_AGENT_SESSION_ID']?.trim() ?? '') !== '',
+  }
 }
 
 /** Where Codex runs, beyond its surface: what picks the approval step. */
@@ -172,4 +220,23 @@ export function codexOnHomeCommand(home: string, platform: NodeJS.Platform | 'po
   if (platform === 'win32') return `$env:CODEX_HOME='${home.replace(/'/g, "''")}'; ${command}; Remove-Item Env:CODEX_HOME`
   const quoted = /^[\w@%+=:,./-]+$/.test(home) ? home : `'${home.replace(/'/g, `'\\''`)}'`
   return `CODEX_HOME=${quoted} ${command}`
+}
+
+const hookHostKinds = new Map<string, CodexHostKind>()
+
+/**
+ * The route profile of the Codex process that runs this hook
+ * (`NOTIFAI_HOOK_SOURCE_PID`). Its kind is read once per process: a process's
+ * command line is fixed for its life. `hostKind` is a test seam.
+ */
+export function hookCodexRouteProfile(env: NodeJS.ProcessEnv, hostKind?: (pid: number) => CodexHostKind,
+  platform: NodeJS.Platform = process.platform): CodexRouteProfile {
+  const pid = Number(env['NOTIFAI_HOOK_SOURCE_PID'])
+  let kind: CodexHostKind = 'unknown'
+  if (Number.isSafeInteger(pid) && pid > 0) {
+    const key = `${pid}`
+    kind = hookHostKinds.get(key) ?? (hostKind ?? codexHostKind)(pid)
+    if (hostKind === undefined && kind !== 'unknown') hookHostKinds.set(key, kind)
+  }
+  return codexRouteProfile(env, kind, platform)
 }

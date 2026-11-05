@@ -16,7 +16,7 @@ import {
   resolveNativeAnswerOperation,
 } from './native-answer-operation.js'
 import { processIdentityLiveness } from './process-identity.js'
-import { codexHost, type CodexHost } from './codex-surface.js'
+import { hookCodexRouteProfile, type CodexHost, type CodexRouteProfile } from './codex-surface.js'
 import { spawnQuestionSettlement } from './question-settlement-process.js'
 import type { Logger } from './logging.js'
 
@@ -145,6 +145,17 @@ function parseBlocks(text: string, questions: Array<{ question: CodexOpenCardQue
 }
 
 /**
+ * Plain-text card answers only where an app sends them: its own format in
+ * Orca's chat or T3 Code, choice labels only around an app-server Notifai
+ * cannot name, and none in a terminal, the Codex app or the IDE extension,
+ * which answer with Codex's envelope.
+ */
+export function textRepliesFor(prompt: unknown, open: readonly CodexOpenCardQuestion[], profile: Pick<CodexRouteProfile, 'textAnswers'>): CodexTerminalReply[] {
+  if (profile.textAnswers === 'none') return []
+  return parseCodexTextReplies(prompt, open, profile.textAnswers === 'labels' ? null : profile.textAnswers)
+}
+
+/**
  * This owner's card questions still waiting for an answer: registered and
  * pending, with no answer from a device (waiting, accepted or delivered) and
  * none recorded from the terminal for that item. A settled question is never
@@ -183,7 +194,7 @@ export function observeCodexTerminalAnswers(deps: CommandDeps, envelope: HookEnv
   const owner = hookOwner(deps, envelope)
   if (owner === null) return
   const replies = enveloped.length > 0 ? enveloped
-    : parseCodexTextReplies(envelope.prompt, openCardQuestions(readSessionState(sessionId, deps.env), owner.key), codexHost(deps.env))
+    : textRepliesFor(envelope.prompt, openCardQuestions(readSessionState(sessionId, deps.env), owner.key), hookCodexRouteProfile(deps.env, deps.codexHostKind))
   if (replies.length === 0) return
   const snapshot = readNativeInputSnapshot(envelope.transcript_path, sessionId, deps.env)
   if (snapshot === null) return

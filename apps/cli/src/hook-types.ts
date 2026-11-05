@@ -1,3 +1,4 @@
+import type { OrcaBlockingRegistration } from './orca-blocking-questions.js'
 import type { CodexTerminalObservation, CodexTerminalConflict } from './codex-terminal-answers.js'
 import type { RuntimeBuildReference } from './launch-self.js'
 import type { NativeAnswerOperation } from './native-answer-operation.js'
@@ -254,6 +255,8 @@ export interface SessionState {
    * by the prompt's digest when that message reaches Codex. Never answer text.
    */
   orca_chat_sent?: Array<{ digest: string; operation_id: string; context: string; at: number; shown?: true }>
+  /** Codex's pausing questions in an Orca chat, mirrored to the devices (`orca-blocking-questions.ts`). */
+  orca_blocking?: OrcaBlockingRegistration[]
   /** A content-free native wake is outstanding for this incarnation. */
   input_wake?: {
     incarnation: string; token: string; queued: boolean; writer: ProcessIdentity

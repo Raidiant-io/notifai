@@ -73,7 +73,7 @@ export type CodexHostKind = 'app-server' | 'shared-server' | 'exec' | 'other' | 
 
 export interface CodexPlaceSignals {
   hostKind: CodexHostKind
-  /** `CODEX_INTERNAL_ORIGINATOR_OVERRIDE`: T3 Code sets `T3 Code` on the app-server it starts. */
+  /** `CODEX_INTERNAL_ORIGINATOR_OVERRIDE`: T3 Code sets `T3` (earlier `T3 Code`) on the app-server it starts. */
   originatorOverride?: string | null | undefined
   /** `ORCA_STRUCTURED_SESSION=1`: an Orca chat tab drives this app-server. */
   orcaStructured?: boolean | undefined
@@ -86,8 +86,13 @@ export interface CodexPlaceSignals {
 }
 
 export function codexPlaceOf(signals: CodexPlaceSignals): CodexPlace {
-  if (signals.originatorOverride === 'T3 Code') return 't3'
-  if (signals.orcaStructured === true) return 'orca-chat'
+  // An app hosts only its own app-server: the same variables inherited by a
+  // terminal or a scripted run started from inside that app say nothing.
+  const app = signals.hostKind === 'app-server' || signals.hostKind === 'unknown'
+  // T3 Code sets `T3`; earlier builds spelled it `T3 Code`.
+  const override = signals.originatorOverride?.trim() ?? ''
+  if (app && (override === 'T3' || override.startsWith('T3 '))) return 't3'
+  if (app && signals.orcaStructured === true && override === '') return 'orca-chat'
   switch (signals.hostKind) {
     case 'exec': return 'headless'
     case 'app-server': return signals.originator === 'codex_vscode' ? 'codex-ide' : 'codex-app'
