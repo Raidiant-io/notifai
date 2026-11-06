@@ -8,6 +8,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 This project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 and [Conventional Commits](https://www.conventionalcommits.org/en/v1.0.0/).
 
+## [14.6.0-beta.1](https://github.com/Raidiant-io/notifai/compare/v14.5.2...v14.6.0-beta.1) (2026-11-06)
+
+### Features
+
+* Answers and notes now wake a Codex agent you stopped, without waiting for your next message, wherever the app around Codex can start its next turn: the Codex app (including a conversation no window has open, which runs in the background with your hooks intact), an Orca chat, an Orca terminal (typed only into an empty composer, never over a draft) and T3 Code. Each app has its own on/off setting: `wake.orca_terminal`, `wake.codex_app_background` and `wake.t3`, all on by default.
+* In an Orca chat, answering all of a Codex turn's question cards on your phone or desktop now answers them in Orca too, and a question that pauses Codex in an Orca chat reaches your devices with its options; an answer given in Orca withdraws it from your devices.
+* New `notifai session status` shows the name this computer gave the Agent Session you are in and where the name came from, so an agent can rename it when the name no longer fits its job.
+* Setup now approves every `notifai` command at once in Claude Code and Codex, so agents are no longer stopped by an approval prompt for a command the earlier list missed. An unchanged earlier Notifai approval is upgraded automatically; one you edited is left for you.
+
+### Bug Fixes
+
+* Codex question cards now reach your devices in every app, and your answer from a device reaches the agent even where it cannot close the card on screen. A card answer typed in Orca's chat or T3 Code closes the question on your devices.
+* An answer that arrives after you press Esc on a Codex turn now reaches the agent with nobody typing, or is handed in with your next prompt, and no longer runs an extra turn afterwards.
+* When Orca restarts a Codex conversation under another account, answers and notes now follow it to its new Codex home instead of waiting where nothing runs them, and wakes left behind in the old home are cleaned up; `notifai doctor` reports what was removed.
+* When you move a Claude Code conversation to the background, its open questions, answers and notes follow it to the background session instead of waiting on the old one.
+
 ## [14.5.2](https://github.com/Raidiant-io/notifai/compare/v14.5.1...v14.5.2) (2026-11-04)
 
 ### Bug Fixes
