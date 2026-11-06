@@ -637,6 +637,8 @@ class HubSession implements AttendedSession {
   lastActivity: number
   /** Later hooks at which a fork's parent is looked for again; 0 when not a fork. */
   forkChecks = 0
+  /** A move found before the hub knew what the service offers; decided once it does. */
+  deferredMove: { to: string; from: string } | null = null
   /** The last `continuedIn` read, kept while the transcript stays unchanged. */
   private continuation: { size: number; mtimeMs: number; record: { successor: string; at: number | null } | null } | null = null
   /** It was stopped when it ended (its Codex wake is only detached then). */
@@ -1457,6 +1459,8 @@ export class Hub {
         signal.addEventListener('abort', () => { clearTimeout(timer); resolve() }, { once: true })
       }),
       progressed: () => this.beat(),
+      discovered: () => this.decideDeferredMoves(),
+      awaitsDiscovery: () => [...this.sessions.values()].some((session) => session.deferredMove !== null && session.ending === null),
     })
     this.heartbeatFile = hubHeartbeatPath(this.env)
   }
@@ -2446,6 +2450,17 @@ export class Hub {
    * held answers and notes; otherwise they expire as for a close.
    */
   private moveConversation(session: HubSession, successorId: string, from: string): void {
+    // Whether it follows depends on what the service offers: a hub that has not
+    // heard yet (it just started) decides once it has, never as a close by default.
+    if (!this.driver.featuresKnown && this.client() !== null) {
+      if (session.deferredMove?.to !== successorId) {
+        this.logger.info('hub.session', { event: 'move-deferred', session: session.id, to: successorId, from_state: from, reason: 'service-features-unknown' })
+      }
+      session.deferredMove = { to: successorId, from }
+      this.driver.poke()
+      return
+    }
+    session.deferredMove = null
     const successor = this.sessions.get(successorId)
     const known = successor === undefined ? sessionNotified(successorId, session.env) : successor.notified
     const continued = this.driver.offers('session_stopped_hold') && (this.driver.offers('session_continued_successor') || known)
@@ -2465,6 +2480,15 @@ export class Hub {
     if (successor === null) return false
     this.moveConversation(session, successor, from)
     return true
+  }
+
+  /** The service said what it offers: decide the moves that waited for it. */
+  private decideDeferredMoves(): void {
+    for (const session of [...this.sessions.values()]) {
+      const move = session.deferredMove
+      if (move === null || session.ending !== null) continue
+      this.moveConversation(session, move.to, move.from)
+    }
   }
 
   /**

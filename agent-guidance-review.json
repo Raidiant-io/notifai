@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "behavior_digest": "sha256:96a8a3b5f9d852d29577caf4b9d29eb24008f53065b8c6c8ea58c6dca7f2a94c",
+  "behavior_digest": "sha256:b6699a3102a74905b5fa2f9a3d0d7c0a2692d2453028a8d037022bbb9d13445c",
   "outcome": "reviewed-no-impact",
   "surfaces_reviewed": [
     "lifecycle-hooks",
@@ -9,5 +9,5 @@
     "cli-readiness",
     "domain-terms"
   ],
-  "reason": "Reviewed lifecycle hooks, the Notifai skill, harness setup, CLI readiness and domain terms. The hub now finds a Codex thread's current home by which Codex process holds its writer lock (after an Orca account restart moves it), never while the recorded process still holds it, follows the session there instead of ending it, writes wakes there, and removes Notifai's own content-free wake left in the old home through a quiet private app-server (no credential refresh, no plugin sync). Once after the update it sweeps leftover Notifai wakes from other Codex homes the same way; notifai doctor reports what it removed and what it left. Agents see the same wake text and hooks as before; no instruction, command, approval or setting changes. A guidance change note tells running sessions."
+  "reason": "Reviewed lifecycle hooks, the Notifai skill, harness setup, CLI readiness and domain terms. The \"Not delivered yet\" notification the User gets about an answer or note that has not reached the agent is now corrected when its session ends or the answer's window passes: it is taken down where the input went on with a continued conversation, and otherwise replaced in place by a plain notification saying the input never reached the agent and was dropped; a queue in the state directory carries that correction past the session's end. Separately, a hub that has just started now waits for the service's features before deciding that a conversation moved, so a backgrounded or forked conversation's questions, answers and notes still follow it. Both are User-facing notifications and hub decisions; agents see the same hook output, wake text, skill and commands as before, and no setting, approval or term changes. Guidance change notes tell running sessions."
 }

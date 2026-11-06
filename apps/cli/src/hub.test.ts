@@ -122,6 +122,8 @@ function fakeService(options: {
   upgrade?: (body: { session_id: string; label: string }) => Promise<unknown>
   /** True: this exchange never settles, abort or not (a wedged transport). */
   stall?: () => boolean
+  /** Resolves when the service answers its compatibility request (a slow start). */
+  compatibilityAnswered?: Promise<void>
 } = {}): FakeService {
   const batches: FakeService['batches'] = []
   const claimed = new Set<string>()
@@ -158,7 +160,7 @@ function fakeService(options: {
       }
       if (property === 'reportDeliveryAttempt') return async (id: string, body: { outcome: string }) => ({ attempt_id: id, ...body, replayed: false })
       if (property === 'compatibility') {
-        return async (): Promise<CompatibilityResponse> => ({ cli: {} as CompatibilityResponse['cli'], platforms: [],
+        return async (): Promise<CompatibilityResponse> => (await options.compatibilityAnswered, { cli: {} as CompatibilityResponse['cli'], platforms: [],
           server_capabilities: (options.capabilities ?? ['session_attendance', 'session_attendance_batch']) as CompatibilityResponse['server_capabilities'] })
       }
       if (property === 'attendBatch') {
@@ -2933,6 +2935,39 @@ describe('hub: Codex conversations stopped by their app or the machine, Orca pan
       child.socket.destroy()
       await stopHub(hub, service, done)
     }
+  })
+
+  // A hub that started (after an update) found a backgrounded conversation
+  // before it had heard what the service offers, and ended it as a close: what
+  // waited for it never went on to its continuation.
+  it('decides a move found at start only once it knows what the service offers, so the conversation still follows', async () => {
+    const env = hubEnv()
+    recordSessionNotified(SESSION, env, Date.now())
+    let answer = (): void => undefined
+    const service = fakeService({ capabilities: ['session_attendance', 'session_attendance_batch', 'session_stopped_hold', 'session_continued_successor'],
+      compatibilityAnswered: new Promise<void>((resolve) => { answer = resolve }) })
+    const peers = new Map<number, PeerCredentials>()
+    const { hub, done } = startHub(env, service, peers, memoryStore(), 100, { endConfirmMs: 150 },
+      { powerWatch: false, claudeDesktop: null, runHook: noHook })
+    await hubListening(env)
+    const host = await standIn()
+    describeHost(env, host)
+    // Backgrounded while the hub restarted: the old process sits parked on the
+    // continuation, and its child comes back to the new hub with its own start.
+    const transcript = claudeTranscript(env, SESSION, [prompt, reply, ...backgroundRecords(new Date(Date.now() - 60_000))])
+    park(env, host, OTHER.slice(0, 8))
+    question(env)
+    const child = await claudeChild(env, peers, 900752, host, { transcript_path: transcript, stamp_wall: Date.now() - 120_000 })
+    expect(child.frames[0]).toEqual({ type: 'registered', session_id: SESSION })
+    await new Promise((resolve) => setTimeout(resolve, 300))
+    expect(hub.sessions.get(SESSION)?.ending ?? null).toBeNull()
+    answer()
+    await until(() => { service.release(); return ended(service) }, 5_000)
+    expect(endsOf(service)[0]).toMatchObject({ end_reason: 'continued', successor_session_id: OTHER })
+    await until(() => { service.release(); return readSessionEndMarker(SESSION, env) !== null }, 5_000)
+    expect(readSessionState(OTHER, env).pending?.map((entry) => entry.request_id)).toEqual(['req_1111'])
+    child.socket.destroy()
+    await stopHub(hub, service, done)
   })
 
   it('keeps a Claude Code conversation whose old process still runs it, and closes one resumed after its continuation', async () => {

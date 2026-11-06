@@ -75,6 +75,10 @@ export interface ExchangeHost {
   sleep(ms: number, signal: AbortSignal): Promise<void>
   /** The exchange loop moved on (the hub's heartbeat). */
   progressed?(): void
+  /** What the service offers is known now (`offers` answers for it). */
+  discovered?(): void
+  /** A decision waits on what the service offers: discover it even with nothing to exchange. */
+  awaitsDiscovery?(): boolean
 }
 
 type Mode = 'unknown' | 'batch' | 'per-session' | 'unsupported'
@@ -138,6 +142,11 @@ export class ExchangeDriver {
 
   get transport(): Mode {
     return this.mode
+  }
+
+  /** Whether the service said what it offers; until then `offers` knows nothing either way. */
+  get featuresKnown(): boolean {
+    return this.mode !== 'unknown'
   }
 
   /** Whether the service, as last discovered, offers `capability`; false before discovery. */
@@ -265,7 +274,10 @@ export class ExchangeDriver {
     }
     if (this.mode === 'unknown' || this.mode === 'unsupported') {
       const pokes = this.pokes
-      if (!this.work(now).some(Boolean)) { await this.nextChange(undefined, pokes); return }
+      if (!this.work(now).some(Boolean) && !(this.mode === 'unknown' && this.host.awaitsDiscovery?.() === true)) {
+        await this.nextChange(undefined, pokes)
+        return
+      }
       await this.discover(client)
       return
     }
@@ -321,6 +333,7 @@ export class ExchangeDriver {
         }
       }
       this.host.logger.info('hub.exchange', { event: 'transport', mode: this.mode })
+      this.host.discovered?.()
     } catch (err) {
       if (this.isUnauthorized(err)) return
       await this.pause(this.backoff)
