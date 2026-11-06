@@ -1627,7 +1627,7 @@ describe('hub and Codex SessionEnd', () => {
         const r = rig()
         const run = await sharedServer({ state: attached, wake: r.wake, hostKind: () => 'other', clock,
           pausedWake: { owned: async () => false, start: async () => 'unreachable', remove: async (_thread, _env, _cwd, id) => { removed.push(id); return 'deleted' } },
-          interruptWake: { settleMs: 0, stopScreenDelayMs: 0, stopScreen: async () => ({ above: ['■ Conversation interrupted'], composer: 'Ask Codex to do anything' }),
+          interruptWake: { settleMs: 0, stopScreenDelayMs: 0, stopScreen: async () => { await new Promise((resolve) => setTimeout(resolve, 25)); return { above: ['■ Conversation interrupted'], composer: 'Ask Codex to do anything' } },
             orcaTerminal: async (input) => {
               attempts.push({ handle: input.terminal.handle, stop: input.stopScreen, enterAfter: input.enterAfter })
               return outcomes[Math.min(attempts.length - 1, outcomes.length - 1)]!
@@ -1641,6 +1641,8 @@ describe('hub and Codex SessionEnd', () => {
         updateSessionState(SESSION, run.env, (state) => ({ ...state, orca_terminal: { key, handle: 'term_scratch' } }))
         recordTurnStart(SESSION, run.env, key, 'turn-2')
         await interrupt(run.env, 'turn-2')
+        // The hub reads the stopped screen on its own timer; a wake typed before that read would find none.
+        if (options.off !== true) await until(() => readSessionState(SESSION, run.env).interrupt_wake?.stop_screen !== undefined)
         return { run, attempts, removed, r, setOff, advance: (ms: number) => { shift += ms } }
       }
 
