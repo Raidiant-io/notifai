@@ -27,7 +27,7 @@ import { claudeDescriptorDir, claudeMinInboxVersion, CLAUDE_PEER_PROTOCOL, claud
 import { claudePickerHolds } from './claude-question-hooks.js'
 import { createClient, type ApiClient } from './client.js'
 import { codexInputObserver, type CodexWakeHold } from './codex-input-lifecycle.js'
-import { checkInputOverdue, trackInputWaiting } from './input-overdue.js'
+import { checkInputOverdue, queueInputNoticeAtEnd, trackInputWaiting } from './input-overdue.js'
 import { codexAttachVerified, codexThreadAttachState, codexAttachResultFor, hostBinaryIdentity, type CodexAttachInput, type CodexAttachState } from './codex-attach-signal.js'
 import { CODEX_ATTACH_RETRY_MS, checkCodexServerBuild, codexAttachRetryMs } from './codex-attach-canary.js'
 import {
@@ -2477,6 +2477,13 @@ export class Hub {
     const moved = moveQuestionsToSuccessor(session.id, successorId, session.env)
     this.logger.info('hub.session', { event: 'continued', session: session.id, to: successorId, questions: moved.questions.length,
       answers: moved.answers.length })
+    // What waited went on with the conversation: its "not delivered yet" notice comes down.
+    try {
+      updateSessionState(session.id, session.env, (state) => queueInputNoticeAtEnd(session.env, session.id, state, this.clock.wall(),
+        { cwd: session.registration.cwd, end: 'followed' }))
+    } catch (err) {
+      this.logger.error('hub.session', { event: 'notice-unqueued', session: session.id, message: err instanceof Error ? err.message : String(err) })
+    }
     this.endLocally(session)
     this.forget(session, 'reported-continued')
     // The service holds the successor's questions and notes now: it is

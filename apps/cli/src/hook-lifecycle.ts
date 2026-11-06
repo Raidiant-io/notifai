@@ -130,7 +130,7 @@ import {
   QUESTION_SUBMISSION_COMPLETION_HEADROOM_SECONDS,
   QUESTION_WAITER_CEILING_SECONDS,
 } from './question-timing.js'
-import { reportInputDropped } from './input-overdue.js'
+import { drainInputNoticeEnds, queueInputNoticeAtEnd, reportInputDropped } from './input-overdue.js'
 import { bootstrapLogger } from './logging.js'
 import { buildDraft, UNTITLED_FORM_TITLE } from './send.js'
 import { questionPushOverflow } from './question-push-budget.js'
@@ -1078,6 +1078,7 @@ async function answerPrompt(
   const retired = await drainRetirements(ctx, sessionId, ctx.env)
   const orphaned = await drainOrphanRetirements(ctx, ctx.env, ctx.now())
   await sweepDeliveryJournalsFor(ctx)
+  await drainEndedSessionNotices(ctx)
   const swept = [...retired, ...orphaned]
   if (swept.length > 0) {
     notes.push(`retired question${swept.length > 1 ? 's' : ''} ${swept.join(', ')}`)
@@ -1366,6 +1367,7 @@ export async function runEscalationWaiter(
         ...(await drainOrphanRetirements(ctx, ctx.env, ctx.now())),
       ]
       await sweepDeliveryJournalsFor(ctx)
+      await drainEndedSessionNotices(ctx)
       if (swept.length > 0) {
         notes.push(`retired question${swept.length > 1 ? 's' : ''} ${swept.join(', ')}`)
       }
@@ -1759,7 +1761,13 @@ function unclaimedSelectedAnswers(
 export async function drainClosedSessionRetirements(ctx: HookContext): Promise<string[]> {
   const retired = await drainOrphanRetirements(ctx, ctx.env, ctx.now())
   await sweepDeliveryJournalsFor(ctx)
+  await drainEndedSessionNotices(ctx)
   return retired
+}
+
+/** Correct the "not delivered yet" notices of sessions that ended. */
+async function drainEndedSessionNotices(ctx: HookContext): Promise<void> {
+  await drainInputNoticeEnds({ env: ctx.env, client: ctx.client, logger: ctx.log ?? bootstrapLogger({ env: ctx.env }), now: ctx.now() })
 }
 
 async function sweepDeliveryJournalsFor(ctx: HookContext): Promise<void> {
@@ -2737,8 +2745,9 @@ export function handleSessionEnd(
       return { notes, log: { outcome: 'preserved', reason: 'session-resumed-during-cleanup' } }
     }
     // Re-read under the lock: a receipt committed after the end marker
-    // belongs to this close too.
-    const state = readSessionState(sessionId, env)
+    // belongs to this close too. A "not delivered yet" notice outlives the
+    // session's records: what it still owes the User is queued.
+    const state = queueInputNoticeAtEnd(env, sessionId, readSessionState(sessionId, env), now, { cwd: envelope.cwd ?? null })
     const history = stateWithHistory.question_history
     const dropped = unreadAnswerRequestIds(state)
     if (dropped.length > 0) {

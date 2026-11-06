@@ -26,6 +26,7 @@ import { Hub,HUB_IDLE_EXIT_MS,type HubOptions,type PeerCredentials } from './hub
 import { checkCodexHooksTrust } from './hub-setup-issues.js'
 import { recordClaudeSessionTitle } from './harness-session-title.js'
 import { resolveSessionLabel } from './session-labels.js'
+import { drainInputNoticeEnds } from './input-overdue.js'
 import { nullLogger,type Logger } from './logging.js'
 import { pidExists,processStartTime } from './process-identity.js'
 import { CODEX_WAKE_DELAY_MS } from './codex-input-lifecycle.js'
@@ -3002,6 +3003,11 @@ describe('hub: Codex conversations stopped by their app or the machine, Orca pan
       child.socket.destroy()
       await until(() => hub.sessions.get(SESSION)?.stopped?.cause === 'app', 5_000)
       await until(() => service.batches.some((batch) => batch.body.sessions.some((entry) => entry.state === 'stopped')), 5_000)
+      // The User was told a note had not reached it yet (and the question was pushed, so a close can retire it).
+      updateSessionState(SESSION, env, (state) => ({ ...state,
+        pending: state.pending?.map((entry) => ({ ...entry, collapse_key: 'ck_1111', device_ids: ['dev_1111'] })),
+        input_overdue_notice: { request_id: 'req_told', collapse_key: 'notifai-overdue-told',
+        told_at: Date.now(), cwd: null, harness: 'codex', answers: 0, messages: 1 } }))
       const forkHost = await standIn()
       const fork = await codexChild(env, peers, 900731, forkHost, rollout(env, OTHER, 'codex-tui', SESSION), { source: 'startup' }, undefined, OTHER)
       expect(fork.frames[0]).toEqual({ type: 'registered', session_id: OTHER })
@@ -3020,6 +3026,22 @@ describe('hub: Codex conversations stopped by their app or the machine, Orca pan
           entry.session_id === SESSION && entry.state === 'ended' && !('end_reason' in entry)).length === 1, 5_000)
         await until(() => readSessionEndMarker(SESSION, env) !== null, 5_000)
         expect(readSessionState(OTHER, env).pending ?? []).toEqual([])
+      }
+      // The notice never stays telling the User to type in a session that is gone: it comes
+      // down where the note went on with the conversation, and says the note was dropped where it did not.
+      const submit = vi.fn(async () => ({ request_id: 'req_end' }))
+      await until(() => readSessionState(SESSION, env).input_overdue_notice === undefined, 5_000)
+      await drainInputNoticeEnds({ env, client: { submit } as unknown as ApiClient, logger: nullLogger(), now: Date.now() })
+      const sent = (submit.mock.calls as unknown as Array<[{ draft: { lifecycle?: unknown; presentation: { title: string; summary: string }; delivery: { collapse_key: string } } }]>)
+        .map((call) => call[0].draft)
+      expect(sent).toHaveLength(1)
+      expect(sent[0]!.delivery.collapse_key).toBe('notifai-overdue-told')
+      if (variant === 'moved') {
+        expect(sent[0]!.lifecycle).toEqual({ tier: 'done', retires_request_id: 'req_told' })
+      } else {
+        expect(sent[0]!.lifecycle).toBeUndefined()
+        expect(sent[0]!.presentation.title).toBe('Not delivered')
+        expect(sent[0]!.presentation.summary).toBe('Your note never reached the agent, so it was dropped.')
       }
       fork.socket.destroy()
       await stopHub(hub, service, done)

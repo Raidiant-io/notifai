@@ -14,6 +14,7 @@
  */
 import { readSessionState, updateSessionState } from './hook-session-state.js'
 import type { AnsweredPending, SessionState } from './hook-types.js'
+import { noticeInputDropped } from './input-overdue.js'
 import { readDeliveryJournal } from './session-delivery.js'
 
 const requestOf = (answer: AnsweredPending): string | undefined => answer.pending.request_id ?? answer.pending.submission?.request_id
@@ -44,7 +45,8 @@ export function dropExpiredHeldAnswers(sessionId: string, env: NodeJS.ProcessEnv
     const accepted = unreadAccepted(state)
     const acceptedLeft = accepted?.answers.filter((answer) => !drop(answer))
     if (dropped.size === 0) return state
-    const next: SessionState = { ...state }
+    // The User was told it is on its way: what tells them now must say it was dropped.
+    const next: SessionState = { ...noticeInputDropped(state, now) }
     if (waiting.length > 0) next.waiting_answers = waiting
     else delete next.waiting_answers
     if (accepted !== undefined) {

@@ -330,8 +330,15 @@ export interface SessionState {
    * (absent while it works). Absent while nothing waits.
    */
   input_waiting?: { since: number; checked_at?: number; notified_at?: number; free_since?: number }
-  /** The "not delivered yet" notice the User was sent, retired once nothing waits. */
-  input_overdue_notice?: { request_id: string; collapse_key: string; told_at: number }
+  /**
+   * The "not delivered yet" notice the User was sent, retired once nothing
+   * waits, or replaced by one saying the input was dropped. `cleared_at`: a
+   * watched check found nothing waiting. `dropped_at`: Notifai gave up on input
+   * it named (its window ended). The rest is what it named, and where, so it
+   * can be corrected after the session ended.
+   */
+  input_overdue_notice?: { request_id: string; collapse_key: string; told_at: number; cleared_at?: number; dropped_at?: number
+    cwd?: string | null; harness?: string; answers?: number; messages?: number }
   /**
    * Native-queue writes that committed, retained per request until the agent
    * acknowledges them. They never occupy the in-flight delivery slot or block

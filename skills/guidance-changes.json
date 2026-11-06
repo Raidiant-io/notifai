@@ -1,5 +1,5 @@
 {
-  "current": "aa78ceba578ce5a77b349ceec44e9620b865caa79eccdd35066b153dbc54050f",
+  "current": "9c16bb070e6aea653d3bbd34498360e29ffa33c18de0dbdeecd2338996c23ee7",
   "releases": [
     {
       "digest": "3e47b01bc6bbfb43e910c660b9964fab6459d75148c3c02dcbcd0be64cfb2963",
@@ -368,6 +368,10 @@
     {
       "digest": "aa78ceba578ce5a77b349ceec44e9620b865caa79eccdd35066b153dbc54050f",
       "note": "A Codex conversation that Orca restarted on another account is now followed there: Notifai finds the thread by its writer lock in the new account's Codex home, wakes it there, and removes the wake it left behind in the old home. Once after this update, the hub also removes Notifai's own leftover wake-ups from other Codex homes; `notifai doctor` reports what it removed and anything else it found queued there, which it leaves alone. Nothing changes in how you follow a wake."
+    },
+    {
+      "digest": "9c16bb070e6aea653d3bbd34498360e29ffa33c18de0dbdeecd2338996c23ee7",
+      "note": "Notifai now corrects its \"Not delivered yet\" notification when the session it named ends or the waiting answer's window passes: the notification comes down where the input went on with a continued conversation, and otherwise is replaced in place by one saying the answer or note never reached the agent and was dropped. Nothing changes in what you do."
     }
   ]
 }

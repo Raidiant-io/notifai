@@ -3,9 +3,13 @@ import os from 'node:os'
 import path from 'node:path'
 import { afterEach, expect, it, vi } from 'vitest'
 import type { ApiClient } from './client.js'
-import { readSessionState, writeSessionState } from './hook-session-state.js'
+import { readSessionState, updateSessionState, writeSessionState } from './hook-session-state.js'
+import type { AnsweredPending } from './hook-types.js'
+import { drainClosedSessionRetirements, handleSessionEnd } from './hook-lifecycle.js'
+import type { HookContext } from './hook-types.js'
 import { checkInputOverdue, INPUT_OVERDUE_BUSY_MS, INPUT_OVERDUE_MS, inputOverdueSummary } from './input-overdue.js'
 import { bootstrapLogger } from './logging.js'
+import { dropExpiredHeldAnswers } from './stopped-hold.js'
 
 const roots: string[] = []
 afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }) })
@@ -26,7 +30,10 @@ function setup() {
       serviceMessages: options.messages ?? 1, reason: () => 'test', now,
       client: options.client === undefined ? client : options.client, logger })
   const settled = () => new Promise(resolve => setTimeout(resolve, 20))
-  return { env, submit, check, settled, root }
+  // What the hub runs once it learns a session ended (`hook retirement`).
+  const drainEnded = (now: number) => drainClosedSessionRetirements({ env, client, now: () => now, log: logger,
+    answerClaims: { writer: { pid: process.pid, start: 'test' } } } as unknown as HookContext)
+  return { env, submit, check, settled, root, drainEnded }
 }
 
 /** Check every 30 s from `from` to `to`, as a watching loop does. */
@@ -129,6 +136,65 @@ it('takes the notice down on every device once the input is no longer waiting, o
   walk((now) => h.check(now, { messages: 0 }), INPUT_OVERDUE_MS + 3_000, INPUT_OVERDUE_MS + 120_000)
   await h.settled()
   expect(h.submit).toHaveBeenCalledTimes(3)
+})
+
+type Submission = { idempotency_key: string; draft: { kind: string; lifecycle?: unknown; presentation: { title: string; summary: string }; delivery: { collapse_key: string } } }
+const submissions = (submit: ReturnType<typeof vi.fn>) => (submit.mock.calls as unknown as Array<[Submission]>).map(call => call[0])
+
+// A note waited a day in a session the User then moved on from: the session
+// ended without it, and the notice kept telling them to type in a session
+// that no longer existed.
+it('replaces the notice in place once its session ends with the input still waiting, once, even after a failed send', async () => {
+  const h = setup()
+  walk(h.check, 0, INPUT_OVERDUE_MS)
+  await h.settled()
+  const told = submissions(h.submit)[0]!
+  const end = INPUT_OVERDUE_MS + 60_000
+  handleSessionEnd(h.env, { session_id: SESSION, cwd: h.root }, end)
+  h.submit.mockRejectedValueOnce(new Error('offline'))
+  await h.drainEnded(end)
+  await h.drainEnded(end + 1_000)
+  await h.drainEnded(end + 2_000)
+  const [failed, dropped, ...rest] = submissions(h.submit).slice(1)
+  expect(rest).toEqual([])
+  expect(dropped!.idempotency_key).toBe(failed!.idempotency_key)
+  expect(dropped!.draft.delivery.collapse_key).toBe(told.draft.delivery.collapse_key)
+  expect(dropped!.draft.presentation.title).toBe('Not delivered')
+  expect(dropped!.draft.presentation.summary).toBe('Your note never reached the agent, so it was dropped.')
+  expect(dropped!.draft.presentation.summary).not.toMatch(/session/)
+})
+
+it('only takes the notice down when its session ends after the input went in', async () => {
+  const h = setup()
+  walk(h.check, 0, INPUT_OVERDUE_MS)
+  await h.settled()
+  // Handed in, then the session ended before the retirement could be sent.
+  h.submit.mockRejectedValueOnce(new Error('offline'))
+  h.check(INPUT_OVERDUE_MS + 1_000, { messages: 0 })
+  await h.settled()
+  handleSessionEnd(h.env, { session_id: SESSION, cwd: h.root }, INPUT_OVERDUE_MS + 2_000)
+  await h.drainEnded(INPUT_OVERDUE_MS + 3_000)
+  const [failed, retired] = submissions(h.submit).slice(1)
+  expect(retired!.draft.lifecycle).toEqual({ tier: 'done', retires_request_id: 'req_x' })
+  expect(retired!.idempotency_key).toBe(failed!.idempotency_key)
+})
+
+it('says an answer was dropped when its window ends before it went in', async () => {
+  const h = setup()
+  const answer = { pending: { question: 'Deploy?', request_id: 'req_a', reply_deadline_at: INPUT_OVERDUE_MS + 30_000 },
+    reply: { seq: 1, text: 'yes' }, replies: [{ seq: 1, text: 'yes' }] } as unknown as AnsweredPending
+  updateSessionState(SESSION, h.env, state => ({ ...state, waiting_answers: [answer], acknowledgement_due: [{ request_id: 'req_a' } as never] }))
+  walk(now => h.check(now, { messages: 0 }), 0, INPUT_OVERDUE_MS)
+  await h.settled()
+  expect(submissions(h.submit)[0]!.draft.presentation.summary).toBe("Your answer hasn't reached the agent yet. Type anything in its session to deliver it.")
+  expect(dropExpiredHeldAnswers(SESSION, h.env, INPUT_OVERDUE_MS + 30_000)).toEqual(['req_a'])
+  h.check(INPUT_OVERDUE_MS + 31_000, { messages: 0 })
+  await h.settled()
+  const replaced = submissions(h.submit)[1]!
+  expect(replaced.draft.lifecycle).toBeUndefined()
+  expect(replaced.draft.delivery.collapse_key).toBe(submissions(h.submit)[0]!.draft.delivery.collapse_key)
+  expect(replaced.draft.presentation.summary).toBe('Your answer never reached the agent, so it was dropped.')
+  expect(readSessionState(SESSION, h.env).input_overdue_notice).toBeUndefined()
 })
 
 it('does not count time the machine slept', async () => {
