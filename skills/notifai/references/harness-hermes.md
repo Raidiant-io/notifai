@@ -22,8 +22,9 @@ same session guidance other harnesses receive, in two system prompt sections:
 the activation and notices, then the trust text, terms and topics. If the
 second is missing, the first says to run `notifai guidance`. Notifai
 reads exact `HERMES_SESSION_ID` for Source Context and takes git branch and
-worktree from the directory each command runs in. Nested inherited harness
-markers fail closed.
+worktree from the directory each command runs in. With inherited markers from
+another agent app, the one whose process is nearest owns the command; where
+the process tree cannot tell, they fail closed.
 
 Only local classic CLI sessions are supported. TUI, gateway, API, ACP, remote
 terminal backends and Windows are not.

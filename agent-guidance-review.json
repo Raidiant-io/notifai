@@ -1,7 +1,7 @@
 {
   "version": 1,
-  "behavior_digest": "sha256:b6699a3102a74905b5fa2f9a3d0d7c0a2692d2453028a8d037022bbb9d13445c",
-  "outcome": "reviewed-no-impact",
+  "behavior_digest": "sha256:04272fb76ce213942b5bd36ac3fdc3479202f4589c8c342058c7d77731ad299f",
+  "outcome": "guidance-updated",
   "surfaces_reviewed": [
     "lifecycle-hooks",
     "notifai-skill",
@@ -9,5 +9,5 @@
     "cli-readiness",
     "domain-terms"
   ],
-  "reason": "Reviewed lifecycle hooks, the Notifai skill, harness setup, CLI readiness and domain terms. The \"Not delivered yet\" notification the User gets about an answer or note that has not reached the agent is now corrected when its session ends or the answer's window passes: it is taken down where the input went on with a continued conversation, and otherwise replaced in place by a plain notification saying the input never reached the agent and was dropped; a queue in the state directory carries that correction past the session's end. Separately, a hub that has just started now waits for the service's features before deciding that a conversation moved, so a backgrounded or forked conversation's questions, answers and notes still follow it. Both are User-facing notifications and hub decisions; agents see the same hook output, wake text, skill and commands as before, and no setting, approval or term changes. Guidance change notes tell running sessions."
+  "reason": "Reviewed lifecycle hooks, the Notifai skill, harness setup, CLI readiness and domain terms. An agent app started from another agent app's shell inherits that app's harness markers; the CLI now gives the command to the agent app whose process is nearest in the process tree (Claude Code's declared process, a host Notifai recorded for the session, or the Codex or Cursor agent executable), for any pair of supported agent apps, so send, ask, session status and receive use that Agent Session instead of reporting the shell as ambiguous. Where the tree cannot place every agent app (Windows, or Grok, which names and records no process) the shell stays ambiguous and ask refuses or holds as before; harness setup's ask --wait remedy and the Grok reference stay accurate. The Hermes reference no longer says nested markers always fail closed. Hooks keep their own identity paths and lifecycle output, and no setting, approval or term changes. A guidance change note tells running sessions."
 }

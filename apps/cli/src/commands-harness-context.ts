@@ -6,8 +6,9 @@ import {
 } from './harnesses.js'
 import { codexSubagentRoot } from './codex-subagent.js'
 import { readSessionIncarnation } from './hook-session-state.js'
-import { OPENCODE_2_SHELL_MARKER, trustedOpencodeShellSession } from './opencode-shell-session.js'
+import { OPENCODE_2_SHELL_MARKER, recordedOpencodeHost, trustedOpencodeShellSession } from './opencode-shell-session.js'
 import { processAncestry, type AncestorProcess } from './process-ancestry.js'
+import { processIdentityLiveness, type ProcessIdentity } from './process-identity.js'
 
 /**
  * Exact evidence that this shell command is running inside one supported
@@ -53,7 +54,7 @@ export interface ActiveHarnessSession {
  * Order is only for diagnostic display. A harness exports its markers
  * into every process it starts, so a nested harness inherits its parent's
  * markers alongside its own and the environment alone cannot say which of them
- * owns this shell; `resolveActiveHarness` preserves that ambiguity.
+ * owns this shell; only the process tree can (`innermostHost`).
  */
 function harnessEnvCandidates(env: NodeJS.ProcessEnv): ActiveHarnessSession[] {
   const candidates: ActiveHarnessSession[] = []
@@ -166,6 +167,76 @@ export function markerInsideItsHost(
   return true
 }
 
+/**
+ * Executable names that identify a harness's own process where nothing
+ * recorded it: Codex (as `markerInsideItsHost`) and the Cursor agent CLI (as
+ * `cursor-attendant.ts`). Other harnesses are placed only by a recorded or
+ * declared process; their executables (Node, Python) name no harness.
+ */
+const HOST_EXECUTABLE: Partial<Record<SourceContextHarness, (name: string) => boolean>> = {
+  codex: (name) => name.toLowerCase().startsWith('codex'),
+  cursor: (name) => name === 'cursor-agent',
+}
+
+/**
+ * How many processes above this one a marker's harness host sits, nearest
+ * first; undefined where the tree does not place it.
+ *
+ * The host is, in order: the process Claude Code names for itself
+ * (`CLAUDE_PID`); the process Notifai recorded hosting the marker's session
+ * (an attendant's or plugin's record) while that same process still runs;
+ * or, for a session nothing recorded, the nearest process of the harness's own
+ * executable. A declared or recorded host outside the tree, or one that has
+ * exited, places nothing: a process found by name instead may belong to
+ * another session, and a reused pid to anything.
+ */
+function hostDepth(
+  candidate: ActiveHarnessSession,
+  env: NodeJS.ProcessEnv,
+  chain: readonly AncestorProcess[],
+  recordedHost: (candidate: ActiveHarnessSession) => ProcessIdentity | undefined,
+): number | undefined {
+  const at = (pid: number): number | undefined => {
+    const depth = chain.findIndex((ancestor) => ancestor.pid === pid)
+    return depth < 0 ? undefined : depth
+  }
+  if (candidate.harness === 'claude-code') {
+    const declared = Number(env['CLAUDE_PID'])
+    if (Number.isInteger(declared) && declared > 0) return at(declared)
+  }
+  const recorded = recordedHost(candidate)
+  if (recorded !== undefined) return processIdentityLiveness(recorded) === 'alive' ? at(recorded.pid) : undefined
+  const named = HOST_EXECUTABLE[candidate.harness]
+  if (named === undefined) return undefined
+  const depth = chain.findIndex((ancestor) => named(ancestor.name))
+  return depth < 0 ? undefined : depth
+}
+
+/**
+ * The harness that runs this command when one was started from another's
+ * shell: the one whose host is nearest in the process tree.
+ *
+ * A harness started from an agent's shell inherits that agent's markers, so,
+ * for example, a Codex run from Claude Code carries both. Both hosts are
+ * ancestors, but every process the inner one starts is its own, so the nearer
+ * host owns the command, whichever harnesses they are. When any marker has no
+ * place in the tree, or two share one, nothing proves an order and the
+ * markers stay contested.
+ */
+export function innermostHost(
+  candidates: readonly ActiveHarnessSession[],
+  env: NodeJS.ProcessEnv,
+  chain: readonly AncestorProcess[] | null,
+  recordedHost: (candidate: ActiveHarnessSession) => ProcessIdentity | undefined,
+): ActiveHarnessSession | null {
+  if (chain === null || candidates.length < 2) return null
+  const placed = candidates.map((candidate) => ({ candidate, depth: hostDepth(candidate, env, chain, recordedHost) }))
+  if (placed.some(({ depth }) => depth === undefined)) return null
+  const depths = placed.map(({ depth }) => depth!)
+  if (new Set(depths).size !== depths.length) return null
+  return placed.reduce((nearest, next) => (next.depth! < nearest.depth! ? next : nearest)).candidate
+}
+
 let callerChain: AncestorProcess[] | null | undefined
 
 function recordedHarnessHost(env: NodeJS.ProcessEnv): (sessionId: string) => number | undefined {
@@ -178,13 +249,32 @@ function recordedHarnessHost(env: NodeJS.ProcessEnv): (sessionId: string) => num
   }
 }
 
-/** The markers whose session this process really runs inside. */
+/** The process Notifai recorded hosting a marker's session, if any. */
+function recordedSessionHost(env: NodeJS.ProcessEnv): (candidate: ActiveHarnessSession) => ProcessIdentity | undefined {
+  return (candidate) => {
+    if (candidate.sessionId === undefined) return undefined
+    try {
+      return (candidate.harness === 'opencode' ? recordedOpencodeHost(env, candidate.sessionId) : undefined) ??
+        readSessionIncarnation(candidate.sessionId, env)?.harness_process
+    } catch {
+      return undefined
+    }
+  }
+}
+
+/**
+ * The markers whose session this process really runs inside; only the
+ * innermost when the process tree orders several.
+ */
 function verifiedCandidates(env: NodeJS.ProcessEnv): ActiveHarnessSession[] {
   const candidates = harnessEnvCandidates(env)
-  if (!candidates.some((candidate) => candidate.harness === 'claude-code' || candidate.harness === 'codex')) return candidates
+  if (candidates.length < 2 && !candidates.some((candidate) => candidate.harness === 'claude-code' || candidate.harness === 'codex')) {
+    return candidates
+  }
   callerChain ??= processAncestry()
-  const host = recordedHarnessHost(env)
-  return candidates.filter((candidate) => markerInsideItsHost(candidate, env, callerChain ?? null, host))
+  const inside = candidates.filter((candidate) => markerInsideItsHost(candidate, env, callerChain ?? null, recordedHarnessHost(env)))
+  const innermost = innermostHost(inside, env, callerChain ?? null, recordedSessionHost(env))
+  return innermost === null ? inside : [innermost]
 }
 
 interface ActiveHarnessResolution {
@@ -201,7 +291,9 @@ interface ActiveHarnessResolution {
  * inherited markers, neither lifecycle timestamps nor a directory pointer
  * proves which process owns this shell: a parent may resume while its child
  * still works, and activity can come from another concurrent invocation.
- * Keep that concrete ambiguity visible instead of routing to the latest writer.
+ * Only the process tree can say, when it places every marker's host
+ * (`innermostHost`); otherwise keep that concrete ambiguity visible instead of
+ * routing to the latest writer.
  */
 export function resolveActiveHarness(
   env: NodeJS.ProcessEnv,

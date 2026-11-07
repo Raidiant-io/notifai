@@ -162,6 +162,13 @@ export function trustedOpencodeShellSession(
   }
 }
 
+/** The OpenCode process recorded as hosting this session, if any; not checked for liveness. */
+export function recordedOpencodeHost(env: NodeJS.ProcessEnv, sessionId: string): ProcessIdentity | undefined {
+  if (!SESSION_ID.test(sessionId)) return undefined
+  const record = readRecord(recordFile(env, sessionId))
+  return record?.session_id === sessionId ? record.host : undefined
+}
+
 /** `notifai hook opencode-session`. It never fails the plugin: a session it cannot record just stays unidentified in shells. */
 export function opencodeSessionCommand(deps: CommandDeps, input: string): number {
   let envelope: unknown = null
