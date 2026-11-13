@@ -119,7 +119,7 @@ describe('machine-local folder Projects', () => {
     expect(projectEnablementState(projectBinding(f.child, f.env))).toBe('disabled')
     expect(personalProjectConfigPath(f.child, f.env)).toBe(configFile)
     expect(projectStatusCommand(f.deps, true)).toBe(0)
-    expect(JSON.parse(f.out.at(-1)!)).toEqual({ project: 'custom', enabled: false, disabled: true })
+    expect(JSON.parse(f.out.at(-1)!)).toEqual({ project: 'custom', enabled: false, disabled: true, lifecycle_guidance: false })
   })
 
   it('passes only the chosen name into drafts and preserves explicit, configured and Projectless precedence', () => {

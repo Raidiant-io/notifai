@@ -53,8 +53,7 @@ CLI's confirmation once the User approved the value and layer:
 notifai guidance set when-to-notify 'Only when you'"'"'re blocked' --local --yes
 ```
 
-A new topic name adds to the shipped guidance and outranks it where they
-conflict.
+A new topic name adds to the shipped guidance and outranks it on conflict.
 
 ## Send
 
@@ -182,10 +181,15 @@ switching it ends the question.
 
 `--json` returns `question_id` and the choice ids; read the whole output.
 `registered: true` proves local registration, not submission or Provider
-Acceptance; report sending or delivery only from
-`notifai status <question_id> --json`, which adds a `request_id` once
-submitted. Keep both IDs, and inspect `status` and
-`notifai replies <request_id> --json` instead of asking again. If the User
+Acceptance; report sending or delivery only from status, which adds a
+`request_id` once submitted:
+
+```bash
+notifai status <question_id> --json
+```
+
+Keep both IDs; inspect `status` and `notifai replies <request_id> --json`
+instead of asking again. If the User
 answers another way (in the conversation, elsewhere, or by doing it) or the
 question stops being relevant (its work is done, superseded or cancelled, or a
 newer question replaces it), close it with `notifai close <question_id>`;
