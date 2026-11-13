@@ -1,4 +1,6 @@
-import { existsSync, mkdirSync, rmSync, writeFileSync } from 'node:fs'
+import { spawnSync } from 'node:child_process'
+import os from 'node:os'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import path from 'node:path'
 import { EXIT, type CommandDeps } from './commands-core.js'
 import { GUIDANCE_TRUST_PREAMBLE, SHIPPED_GUIDANCE, shippedGuidanceTopic } from './guidance-content.js'
@@ -7,6 +9,7 @@ import {
   GUIDANCE_TOPIC_PATTERN,
   globalGuidanceDir,
   personalProjectGuidanceDir,
+  resolveGuidance,
 } from './guidance.js'
 import { renderGuidance } from './guidance-render.js'
 import { projectBinding, projectEnablementState } from './project-enablement.js'
@@ -18,7 +21,7 @@ import { conversationToken, guidanceChangedNotice, guidanceRead, installedSkill,
 import { commandGuidanceChanges, commandGuidanceOwner, prepareCommandGuidanceRead, recordCommandGuidanceRead } from './command-guidance.js'
 
 // ---------------------------------------------------------------------------
-// guidance show / set / unset
+// guidance show / edit / set / unset
 // ---------------------------------------------------------------------------
 
 /** Full notes are release-authored bundle content, never local receipts. */
@@ -101,7 +104,7 @@ async function guidanceMutationTarget(
   deps: CommandDeps,
   topic: string,
   flags: GuidanceMutationFlags,
-): Promise<{ path: string } | null> {
+): Promise<{ path: string; local: boolean } | null> {
   if (!GUIDANCE_TOPIC_PATTERN.test(topic)) {
     deps.io.err(
       `"${topic}" is not a topic name. Use lowercase letters, digits, "-" and "_", e.g. ${SHIPPED_GUIDANCE.map((t) => t.name).join(', ')}.`,
@@ -125,7 +128,7 @@ async function guidanceMutationTarget(
     }
     layer = selected === 'local' ? 'local' : 'global'
   }
-  return { path: path.join(guidanceLayerDir(deps, layer), `${topic}.md`) }
+  return { path: path.join(guidanceLayerDir(deps, layer), `${topic}.md`), local: layer === 'local' }
 }
 
 /**
@@ -194,4 +197,70 @@ export async function guidanceUnsetCommand(
   rmSync(target.path, { force: true })
   deps.io.out(`Removed ${target.path}; the inherited guidance now applies.`)
   return EXIT.ok
+}
+
+/** Editing requires a human terminal; scripts use the explicit set path. */
+export async function guidanceEditCommand(
+  deps: CommandDeps,
+  topic: string | undefined,
+  flags: GuidanceMutationFlags,
+): Promise<number> {
+  if (deps.io.interactive !== true) {
+    deps.io.err('Guidance edit needs a human terminal. Use `notifai guidance set <topic> --file <path> --yes` when the User asked for the change.')
+    return EXIT.usage
+  }
+  const pickTopic = topic === undefined
+  if (pickTopic) {
+    if (deps.io.select === undefined || deps.io.text === undefined) return EXIT.usage
+    const topics = resolveGuidance({ cwd: deps.cwd, env: deps.env })
+    const selected = await deps.io.select('Which guidance topic?', [
+      ...topics.map(entry => ({ value: entry.name, label: `${entry.name} [${entry.source === 'default'
+        ? 'shipped default' : entry.source.startsWith('global:') ? 'this machine' : 'this Project'}]` })),
+      { value: '', label: 'New topic — add your own guidance' },
+    ])
+    if (selected === null) return EXIT.ok
+    if (selected === '') {
+      const name = await deps.io.text('Topic name')
+      if (name === null) return EXIT.ok
+      topic = name.trim()
+      if (topics.some(entry => entry.name === topic)) {
+        deps.io.err(`Topic "${topic}" already exists. Select it from the topic picker to edit it.`)
+        return EXIT.usage
+      }
+    } else topic = selected
+  }
+  if (topic === undefined) return EXIT.usage
+  const target = await guidanceMutationTarget(deps, topic, { ...flags, yes: !pickTopic })
+  if (target === null) return EXIT.usage
+  const editor = deps.env['VISUAL']?.trim() || deps.env['EDITOR']?.trim()
+  if (!editor) {
+    deps.io.out(`No $VISUAL or $EDITOR is set. Edit ${target.path}`)
+    return EXIT.ok
+  }
+  const seed = resolveGuidance({ cwd: deps.cwd, env: deps.env, local: target.local })
+    .find(entry => entry.name === topic)?.content ?? ''
+  const scratch = mkdtempSync(path.join(os.tmpdir(), 'notifai-guidance-edit-'))
+  const file = path.join(scratch, `${topic}.md`)
+  try {
+    writeFileSync(file, seed, { mode: 0o600 })
+    const argument = process.platform === 'win32' ? '"%NOTIFAI_GUIDANCE_EDIT_FILE%"' : '"$NOTIFAI_GUIDANCE_EDIT_FILE"'
+    const result = spawnSync(`${editor} ${argument}`, { shell: true, stdio: 'inherit', cwd: deps.cwd,
+      env: { ...deps.env, NOTIFAI_GUIDANCE_EDIT_FILE: file } })
+    if (result.error !== undefined || result.status !== 0) {
+      deps.io.err('The editor did not finish successfully; guidance was not changed.')
+      return EXIT.failed
+    }
+    const text = readFileSync(file, 'utf8')
+    if (text === seed) {
+      deps.io.out('Guidance unchanged.')
+      return EXIT.ok
+    }
+    if (text.trim() === '') {
+      if (!await deps.io.confirm(`Empty guidance. Remove ${target.path} and use inherited guidance?`)) return EXIT.ok
+      return await guidanceUnsetCommand(deps, topic, { local: target.local, yes: true })
+    }
+    return await guidanceSetCommand(deps, topic, text, { local: target.local, yes: true })
+  } finally {
+    rmSync(scratch, { recursive: true, force: true })
+  }
 }

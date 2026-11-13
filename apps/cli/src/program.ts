@@ -23,6 +23,7 @@ import {
   devicesCommand,
   doctorCommand,
   doctorCodexCommand,
+  guidanceEditCommand,
   guidanceSetCommand,
   guidanceShowCommand,
   guidanceChangesCommand,
@@ -100,6 +101,8 @@ function version(): string {
  */
 const INTERNAL_COMMANDS = new Set(['hook', 'hub', 'activation-plan', 'attendant-resume'])
 
+const ADDITIVE_GUIDANCE_HELP = 'A new topic name adds to shipped guidance without replacing it and outranks it where they conflict.'
+
 /** `--project` is accepted on the layer commands only to refuse it; nothing is written. */
 const removedProjectOption = (): Option => new Option('--project').hideHelp()
 function refusedProjectLayer(deps: CommandDeps, project: boolean | undefined): boolean {
@@ -167,6 +170,7 @@ const defaultRunners = {
   guidanceShow: guidanceShowCommand,
   guidanceChanges: guidanceChangesCommand,
   guidanceCheck: guidanceCheckCommand,
+  guidanceEdit: guidanceEditCommand,
   guidanceSet: guidanceSetCommand,
   guidanceUnset: guidanceUnsetCommand,
   /**
@@ -1186,6 +1190,7 @@ export function buildProgram(deps: CommandDeps, options: BuildProgramOptions = {
     .command('guidance')
     .description('How notifications are written: the shipped guidance and your overrides, per topic')
     .summary('Show or change how notifications are written')
+    .addHelpText('after', `\n${ADDITIVE_GUIDANCE_HELP}`)
     .helpGroup(GROUP.daily)
   guidance.command('changes')
     .description('Print the complete release-authored guidance change notes in order')
@@ -1202,11 +1207,21 @@ export function buildProgram(deps: CommandDeps, options: BuildProgramOptions = {
       exit(await runners.guidanceShow(deps, opts))
     })
   guidance
+    .command('edit [topic]')
+    .description('Edit a guidance topic in $VISUAL or $EDITOR (human terminal only)')
+    .option('--local', 'write a personal project preference on this machine (not in the repo)')
+    .addOption(removedProjectOption())
+    .action(async (topic: string | undefined, opts: { local?: boolean; project?: boolean }) => {
+      if (refusedProjectLayer(deps, opts.project)) { exit(2); return }
+      exit(await runners.guidanceEdit(deps, topic, opts))
+    })
+  guidance
     .command('set <topic> [text]')
     .description(
       'Write one guidance topic in your words; it replaces the shipped topic of the same name for that scope ' +
         '(choose a layer interactively; unattended defaults machine-global and requires --yes)',
     )
+    .addHelpText('after', `\n${ADDITIVE_GUIDANCE_HELP}`)
     .option('--file <path>', 'read the guidance text from a file (use - for stdin)')
     .option('--local', 'write a personal project preference on this machine (not in the repo)')
     .option('--yes', 'skip the confirmation gate, only when the User asked for this change directly')

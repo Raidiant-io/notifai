@@ -44,6 +44,7 @@ export {
   configUnsetCommand,
 } from './commands-config.js'
 export {
+  guidanceEditCommand,
   guidanceSetCommand,
   guidanceShowCommand, guidanceChangesCommand,
   guidanceCheckCommand,

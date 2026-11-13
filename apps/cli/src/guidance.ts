@@ -136,6 +136,8 @@ function readTopicFile(filePath: string): string | null {
 export function resolveGuidance(options: {
   cwd?: string
   env?: NodeJS.ProcessEnv
+  /** Omit the Project layer when editing machine guidance. */
+  local?: boolean
 }): ResolvedGuidanceTopic[] {
   const env = options.env ?? process.env
   const cwd = options.cwd ?? process.cwd()
@@ -148,6 +150,7 @@ export function resolveGuidance(options: {
 
   const winners = new Map<string, { source: GuidanceSource; content: string }>()
   for (const layer of layers) {
+    if (options.local === false && layer.label === 'project-local') continue
     for (const [name, filePath] of topicsInDir(layer.dir)) {
       const content = readTopicFile(filePath)
       if (content === null) continue
