@@ -484,6 +484,8 @@ export interface QuestionAsker {
 }
 
 export interface PendingQuestion {
+  /** Explicit CLI ask, rather than a question registered by a native form. Local only. */
+  registered_via_ask?: true
   /** Credential metadata frozen at registration; never contains the secret. */
   service_identity?: ServiceIdentity
   /** Set when a subagent asked this for its root Agent Session. */

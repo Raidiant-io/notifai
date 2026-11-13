@@ -57,9 +57,9 @@ export function releaseCodexCardHandbacks(sessionId: string, env: NodeJS.Process
  * Decide and bind under the same lock that publishes an ordinary answer.
  *
  * Only a card whose input is exactly a hand-back of this turn is that
- * question. A card that differs is never refused: it is reported as
- * `mismatch` and registers as a card of its own (the duplicate guard still
- * links it to an equal open question). A settled hand-back refuses only its
+ * question. A card that differs is reported as `mismatch`: the caller applies
+ * the bounded ask-then-form guard before treating it as a card of its own
+ * (the duplicate guard still links it to an equal open question). A settled hand-back refuses only its
  * own exact card, which would ask the User again what is already answered or
  * expired. A hand-back released to ordinary delivery while its question is
  * still unanswered links again when its exact card opens later in the turn.

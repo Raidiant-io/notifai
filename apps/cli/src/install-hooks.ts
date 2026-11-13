@@ -380,7 +380,7 @@ export function hookStatusMessage(
     // Codex's Interrupt copy only records that the turn ended.
     case 'attend': return documentEvent === 'Interrupt' ? 'Recording the interrupt for Notifai' : 'Keeping Notifai connected'
     case 'stop': return 'Sending questions and answers through Notifai'
-    case 'pre-tool-use': return 'Sending this question to Notifai'
+    case 'pre-tool-use': return harness === 'claude-code' ? 'Checking this question with Notifai' : 'Sending this question to Notifai'
     case 'post-tool-use':
       return harness === 'claude-code' ? 'Recording your answer for Notifai' : 'Checking Notifai for notes and answers'
     case 'permission-request': return 'Waiting for your answer in Notifai'
@@ -406,8 +406,8 @@ export function buildHookConfig(options: BuildOptions): HookConfig {
   for (const row of HOOK_EVENT_TABLE) {
     if (row.document === null) continue
     if (row.notifai === 'pre-tool-use') {
-      if (options.harness !== 'grok' && options.harness !== 'codex') continue
-      hooks[row.document] = [{ matcher: options.harness === 'codex' ? 'request_user_input_async' : '.*', hooks: [{
+      if (options.harness !== 'grok' && options.harness !== 'codex' && !installsClaudePickerHooks(options.harness)) continue
+      hooks[row.document] = [{ matcher: options.harness === 'codex' ? 'request_user_input_async' : options.harness === 'claude-code' ? CLAUDE_PICKER_MATCHER : '.*', hooks: [{
         type: 'command', ...hookCommandFields(adapterPath, row.notifai, options.harness, commandOptions), timeout: row.timeoutSeconds,
       }] }]
       continue

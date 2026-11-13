@@ -580,7 +580,7 @@ describe('the picker `ask --wait` hands back', () => {
   }
   /** What `ask --wait` does on Claude Code: register at once, then hand back the picker that asks it. */
   function handBack(h: ReturnType<typeof setup>): { questionId: string; input: ClaudePickerInput } {
-    const asked = registerQuestion(SESSION, h.env, { question: REWORDED, title: 'Deploy target', summary: REWORDED, body: 'Why it matters.',
+    const asked = registerQuestion(SESSION, h.env, { question: REWORDED, title: 'Deploy target', summary: REWORDED, body: 'Why it matters.', registered_via_ask: true,
       service_identity: SERVICE, questions: [QUESTION] })
     h.confirm(asked.question_id)
     updateSessionState(SESSION, h.env, state => recordHandBack(state, asked.question_id, Date.now()))
@@ -591,6 +591,8 @@ describe('the picker `ask --wait` hands back', () => {
   it('binds the picker to the registration `ask` made and returns the device answer as the picker result', async () => {
     const h = setup()
     const { questionId, input } = handBack(h)
+    await hookRunCommand(h.deps, 'pre-tool-use', async () => JSON.stringify(h.envelope(input)), 'claude-code')
+    expect(h.output).toEqual([])
     const outcome = await claudePermissionRequest(h.deps, h.envelope(input), h.logger, {
       sleep: async () => {
         if (h.state().waiting_answers?.length) return
@@ -628,6 +630,62 @@ describe('the picker `ask --wait` hands back', () => {
 
 describe('Claude Code picker hook entry points', () => {
   const stdin = (payload: unknown) => async () => JSON.stringify(payload)
+
+  it('refuses a reworded self-opened picker four seconds after an ordinary ask before it opens', async () => {
+    const h = setup()
+    const now = Date.now()
+    const asked = registerQuestion(SESSION, h.env, { question: 'Where should this deploy go?', title: 'Deploy target',
+      summary: 'Where should this deploy go?', service_identity: SERVICE,
+      registered_via_ask: true,
+      questions: [{ id: 'target', text: 'Where should this deploy go?', choices: [{ id: 'staging', label: 'Staging' }, { id: 'production', label: 'Production' }] }],
+    }, now)
+    h.deps.now = () => now + 4_000
+    await hookRunCommand(h.deps, 'pre-tool-use', stdin({ ...h.envelope(), hook_event_name: 'PreToolUse' }), 'claude-code')
+    const pre = h.output.map(line => JSON.parse(line)).find(item => item.hookSpecificOutput?.permissionDecision === 'deny')
+    // If pre-tool admission lets it through, the real permission hook registers a second question today.
+    let registered = h.state().pending?.map(entry => entry.question_id)
+    if (pre === undefined) await claudePermissionRequest(h.deps, h.envelope(), h.logger, {
+      sleep: async () => { registered = h.state().pending?.map(entry => entry.question_id); closeClaudePicker(h.deps, SESSION, h.logger) },
+    })
+    expect(registered).toEqual([asked.question_id])
+    expect(pre?.hookSpecificOutput.permissionDecisionReason).toContain(asked.question_id)
+    expect(pre?.hookSpecificOutput.permissionDecisionReason).toContain('Deploy target')
+    expect(h.state().claude_picker).toBeUndefined()
+  })
+
+  it.each([59_999, 60_000])('bounds the ordinary ask guard at 60 seconds (age %s ms)', async age => {
+    const h = setup()
+    const now = Date.now()
+    const asked = registerQuestion(SESSION, h.env, { question: 'Earlier?', title: 'Earlier decision', summary: 'Earlier?',
+      service_identity: SERVICE, registered_via_ask: true }, now)
+    h.deps.now = () => now + age
+    await hookRunCommand(h.deps, 'pre-tool-use', stdin(h.envelope()), 'claude-code')
+    const denied = h.output.some(line => JSON.parse(line).hookSpecificOutput?.permissionDecision === 'deny')
+    expect(denied).toBe(age < 60_000)
+    // The fallback handler enforces the same boundary on older installations.
+    expect(await claudePermissionRequest(h.deps, h.envelope(), h.logger, {
+      sleep: async () => { closeClaudePicker(h.deps, SESSION, h.logger) },
+    })).toBe(age < 60_000 ? 'refused' : 'left-to-terminal')
+    expect(h.pendingOf(asked.question_id)).toBeDefined()
+  })
+
+  it.each(['new prompt', 'closed', 'different service', 'native question', 'worker question'])('leaves a later or unrelated picker usable (%s)', async kind => {
+    const h = setup()
+    const now = Date.now()
+    registerQuestion(SESSION, h.env, { question: 'Earlier?', summary: 'Earlier?', registered_via_ask: true,
+      service_identity: SERVICE }, now)
+    updateSessionState(SESSION, h.env, state => ({ ...state,
+      ...(kind === 'new prompt' ? { last_prompt_at: now + 1 } : {}),
+      pending: kind === 'closed' ? [] : state.pending!.map(entry => ({ ...entry,
+        ...(kind === 'different service' ? { service_identity: { ...SERVICE, machine_id: 'other' } } : {}),
+        ...(kind === 'native question' ? { registered_via_ask: undefined } : {}),
+        ...(kind === 'worker question' ? { asked_by: { agent_id: 'worker' } } : {}),
+      })),
+    }))
+    h.deps.now = () => now + 4_000
+    await hookRunCommand(h.deps, 'pre-tool-use', stdin(h.envelope()), 'claude-code')
+    expect(h.output.some(line => JSON.parse(line).hookSpecificOutput?.permissionDecision === 'deny')).toBe(false)
+  })
 
   it('answers a picker from the device, confirms it, and withdraws a picker the turn left behind', async () => {
     const h = setup()

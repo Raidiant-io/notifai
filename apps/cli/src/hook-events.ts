@@ -15,7 +15,7 @@ import { type HookInstallableHarness } from './harnesses.js'
  */
 export const HOOK_EVENT_TABLE = [
   {
-    // Codex async question cards: registration before the card is displayed.
+    // Question-form admission before a Claude Code picker or Codex card opens.
     notifai: 'pre-tool-use',
     document: 'PreToolUse',
     cursor: null,
@@ -154,12 +154,13 @@ export function installsSessionAttendant(harness: HookInstallableHarness | undef
   return harness === 'claude-code' || harness === 'codex'
 }
 
-/** The one tool both Claude Code picker handlers are matched to. */
+/** The one tool all Claude Code picker handlers are matched to. */
 export const CLAUDE_PICKER_MATCHER = 'AskUserQuestion'
 
 /**
- * Whether this build installs the two handlers that link a registered
- * question to Claude Code's question picker: `PermissionRequest`, which runs
+ * Whether this build installs the handlers that admit and link a registered
+ * question to Claude Code's picker: `PreToolUse` checks for a recent ask,
+ * `PermissionRequest` runs
  * while the picker is on screen, and `PostToolUse`, which runs once it has an
  * answer. Every platform: on Windows the picker's process is the one Claude
  * Code names for itself (`claudeHookSourcePid`), as for the attendant.
@@ -173,7 +174,7 @@ export function requiredHookEvents(harness: HookInstallableHarness): readonly Ho
   if (harness === 'opencode' || harness === 'openclaw' || harness === 'hermes') return []
   return HOOK_EVENT_TABLE.filter((row) =>
     row.notifai === 'pre-tool-use'
-      ? harness === 'grok' || harness === 'codex'
+      ? harness === 'grok' || harness === 'codex' || installsClaudePickerHooks(harness)
       : row.notifai === 'post-compact'
       ? harness === 'grok'
       : row.notifai === 'subagent-start' && harness === 'grok'

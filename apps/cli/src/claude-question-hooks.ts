@@ -1,7 +1,9 @@
 /**
  * The Claude Code hooks that make a question picker a device question.
  *
- * `PermissionRequest` runs while the picker is on screen. The handler links a
+ * `PreToolUse` refuses a self-opened picker just after an explicit ask, except
+ * an exact hand-back. Older installations repeat that check at
+ * `PermissionRequest`, which runs while the picker is on screen. The handler links a
  * picker `notifai ask --wait` handed back to the question `ask` registered, or
  * refuses one that is not exactly it (`claude-picker-handback.ts`). Otherwise
  * it registers the picker's own questions for the User's devices, or links the
@@ -92,6 +94,7 @@ import {
   type NativeOperationOwner,
 } from './native-answer-operation.js'
 import { currentProcessIdentity, processIdentityLiveness, processStartTime, type ProcessIdentity } from './process-identity.js'
+import { recentAskQuestion, recentAskRefusal } from './question-guard.js'
 import { spawnQuestionSettlement } from './question-settlement-process.js'
 import { readAttendantLease } from './session-attendant-state.js'
 import type { DeliveryLease } from './session-delivery.js'
@@ -568,6 +571,27 @@ function pickerHost(deps: CommandDeps, sessionHost: ProcessIdentity): ProcessIde
   return start === null ? null : { pid, start }
 }
 
+/** Refuse a second form before Claude Code opens it; hand-backs keep their own admission. */
+export function claudePreToolUse(deps: CommandDeps, envelope: HookEnvelope, logger: Logger): void {
+  const sessionId = envelope.session_id
+  if (envelope.tool_name !== CLAUDE_QUESTION_TOOL || sessionId === undefined || envelope.agent_id !== undefined) return
+  const config = loadConfig({ cwd: envelope.cwd ?? deps.cwd, env: deps.env, sessionId })
+  if (!config.ask_notifications.value || projectDisabled(projectBinding(envelope.cwd ?? deps.cwd, deps.env, config.project.value))) return
+  const credential = deps.store.load()
+  const owner = readSessionIncarnation(sessionId, deps.env)
+  if (credential === null || owner?.harness_process === undefined || sessionHasEnded(sessionId, deps.env) ||
+      pickerHost(deps, owner.harness_process) === null || processIdentityLiveness(owner.harness_process) !== 'alive') return
+  const state = readSessionState(sessionId, deps.env)
+  if (state.harness !== 'claude-code') return
+  const handback = decideHandBack(state, envelope.tool_input, pickerQuestions(envelope.tool_input) ?? [])
+  if (handback.kind === 'link') return
+  const recent = recentAskQuestion(state, { base_url: credential.baseUrl, machine_id: credential.machineId }, (deps.now ?? Date.now)())
+  if (recent === undefined) return
+  deps.io.out(JSON.stringify({ hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'deny',
+    permissionDecisionReason: recentAskRefusal(recent) } }))
+  logger.info('hook.gate', { hook: 'pre-tool-use', reason: 'refused', stage: 'form-refused-recent-ask', question_ids: [recent.question_id] })
+}
+
 export interface ClaudePickerSeams {
   sleep?: (milliseconds: number) => Promise<void>
   /** Monotonic milliseconds. */
@@ -628,6 +652,19 @@ export async function claudePermissionRequest(
   const digest = pickerDigest(envelope.tool_input)
   const handedBack = linkHandedBackPicker(deps, envelope, sessionId, incarnation.key, picker ?? [], logger)
   if (handedBack === 'refused') return 'refused'
+  // Older installations may not call PreToolUse for pickers. Guard here too,
+  // before registration, while keeping an exact waiting hand-back unchanged.
+  if (handedBack === null) {
+    const credential = deps.store.load()
+    if (credential === null) return terminalOnly('not-signed-in')
+    const recent = recentAskQuestion(readSessionState(sessionId, deps.env),
+      { base_url: credential.baseUrl, machine_id: credential.machineId }, (deps.now ?? Date.now)())
+    if (recent !== undefined) {
+      deps.io.out(pickerDeniedDecision(recentAskRefusal(recent)))
+      logger.info('hook.gate', { hook: 'permission-request', reason: 'refused', stage: 'form-refused-recent-ask', question_ids: [recent.question_id] })
+      return 'refused'
+    }
+  }
   const shape = picker === null ? null : pickerForm(picker)
   if (picker === null || digest === null || shape === null || 'error' in shape) {
     deps.io.out(pickerDeniedDecision(shape !== null && 'error' in shape ? pickerRefusal(shape.error)

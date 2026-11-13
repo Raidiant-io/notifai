@@ -72,6 +72,7 @@ describe('hook config', () => {
       'Interrupt attend: Recording the interrupt for Notifai',
     ]
     const claude = [...shared,
+      'PreToolUse pre-tool-use: Checking this question with Notifai',
       'PermissionRequest permission-request: Waiting for your answer in Notifai',
       'PostToolUse post-tool-use: Recording your answer for Notifai',
     ]

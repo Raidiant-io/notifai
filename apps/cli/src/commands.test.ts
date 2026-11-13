@@ -1738,8 +1738,10 @@ describe('asking before the hooks have ever run', () => {
     writeProjectSession(cwd, env, 'claude-concurrent', 43, 'claude-code')
     io.outLines = []
 
-    expect(askCommand(deps, 'Ship it?', { title: 'Decision' })).toBe(EXIT.ok)
+    expect(askCommand(deps, 'Ship it?', { title: 'Decision', choice: ['Ship', 'Wait'] })).toBe(EXIT.ok)
     expect(io.outLines.some((line) => line.startsWith('Question registered (q_'))).toBe(true)
+    expect(io.outLines[0]).toBe(`Read this whole output. ${readSessionState('codex-current-thread', env).pending![0]!.question_id} is registered for the User's devices; do not open a question form for it.`)
+    expect(readSessionState('codex-current-thread', env).pending?.[0]?.registered_via_ask).toBe(true)
     expect(readSessionState('codex-current-thread', env).pending?.[0]?.source).toMatchObject({
       session_id: 'codex-current-thread',
       harness: 'codex',

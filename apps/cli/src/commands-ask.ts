@@ -619,6 +619,14 @@ function workerNext(questionId: string, nextStep?: string) {
   }
 }
 
+/** Keep the registration and its next action visible even in a first-line preview. */
+function askFirstLine(questionId: string, handedBack: boolean, worker: boolean): string {
+  if (!worker && !handedBack) return `Read this whole output. ${questionId} is registered for the User's devices; do not open a question form for it.`
+  const next = worker ? 'tell your parent and keep the root Agent Session open'
+    : 'state what each answer changes, then open only the exact form below'
+  return `Read this whole output. ${questionId} is registered; ${next}.`
+}
+
 /** The human form of `workerNext`. */
 function printWorkerNext(deps: CommandDeps, built: BuiltQuestions, questionId: string): void {
   deps.io.out(WORKER_KEEP_ROOT_OPEN)
@@ -738,6 +746,7 @@ function reportAlreadyOpen(
     }, null, 2))
     return EXIT.ok
   }
+  deps.io.out(askFirstLine(questionId, handBack !== null, worker))
   deps.io.out(message)
   if (worker) {
     deps.io.out(`Inspect \`notifai status ${questionId}\` for submission evidence; never register a replacement to check this question.`)
@@ -783,6 +792,7 @@ function persistRegisteredQuestion(
       sessionId,
       deps.env,
       {
+        registered_via_ask: true,
         question: built.questions[0]!.text,
         title: draft.presentation.title,
         ...(built.headers !== undefined ? { headers: built.headers } : {}),
@@ -905,6 +915,7 @@ function persistRegisteredQuestion(
     )
     return EXIT.ok
   }
+  deps.io.out(askFirstLine(questionId, handBack !== null || openForm !== undefined, worker))
   for (const [index, entry] of built.questions.entries()) {
     const prefix = built.questions.length > 1 ? `${index + 1}. ` : ''
     if (entry.choices !== undefined) {
