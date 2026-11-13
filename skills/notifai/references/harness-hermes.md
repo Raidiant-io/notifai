@@ -17,7 +17,7 @@ installs it when the User picks Hermes among the agent apps to connect, and
 `notifai init --skills --skills-scope global --skills-harness hermes --json`
 installs it otherwise.
 
-The plugin checks Project Enablement and gives root or worker guidance, the
+The plugin checks whether lifecycle guidance is on and gives root or worker guidance, the
 same session guidance other harnesses receive, in two system prompt sections:
 the activation and notices, then the trust text, terms and topics. If the
 second is missing, the first says to run `notifai guidance`. Notifai

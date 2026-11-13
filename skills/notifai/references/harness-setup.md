@@ -218,6 +218,8 @@ If a companion device is missing, ask the user to open a supported companion
 build, sign in, and grant notification permission. Do not emulate that, and do
 not treat Provider Acceptance as Companion Receipt proof.
 
+Lifecycle guidance is on by default except in a Project the User disabled. The machine setting `guidance.require_project_enablement`, when on, requires explicit Project Enablement; sessions without a Project still receive guidance. Change it only when the User asks.
+
 To turn Notifai off in one project while leaving other projects wired, run
 `notifai project disable`: nothing from that project reaches the User's
 devices until `notifai project enable`.

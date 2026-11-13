@@ -1011,6 +1011,11 @@ export async function initCommand(deps: CommandDeps, flags: InitFlags): Promise<
     writeFileSync(configPath, `${stringifyToml(existing)}\n`)
   }
 
+  // Setup is an explicit request even when default-on guidance is already ready.
+  const projectConfig = loadLoggedConfig(workingDeps, { cwd: workingDeps.cwd, env: workingDeps.env })
+  const binding = projectBinding(workingDeps.cwd, workingDeps.env, projectConfig.project.value)
+  if (binding !== null && enableProjectNoting(binding).first) workingDeps.io.out(projectNameNudge(binding.project))
+
   // Which agent apps to connect is the one question setup asks. Apps already
   // connected are the answer on a later run. An agent that passes the older
   // per-piece flags keeps the behavior those flags always had.

@@ -37,7 +37,7 @@ export type ConfigKind = 'string' | 'url' | 'integer' | 'boolean' | 'enum' | 'li
  * Which surface a key belongs to. Grouping is the difference between a flat
  * list of keys and a few short ones a reader can hold in their head.
  */
-export type ConfigGroup = 'questions' | 'delivery' | 'project' | 'trust' | 'updates' | 'reopen' | 'wake' | 'diagnostics'
+export type ConfigGroup = 'questions' | 'delivery' | 'project' | 'trust' | 'updates' | 'reopen' | 'wake' | 'guidance' | 'diagnostics'
 
 export const CONFIG_GROUPS: { id: ConfigGroup; title: string; blurb: string }[] = [
   {
@@ -59,6 +59,11 @@ export const CONFIG_GROUPS: { id: ConfigGroup; title: string; blurb: string }[] 
     id: 'trust',
     title: 'Network trust',
     blurb: 'Origins this machine may fetch from or open beyond the safe defaults. Only you can widen these — a repository cannot.',
+  },
+  {
+    id: 'guidance',
+    title: 'Lifecycle guidance',
+    blurb: 'When agents receive Notifai guidance. This setting applies to the whole machine.',
   },
   {
     id: 'updates',
@@ -254,6 +259,16 @@ const INFO: Record<ConfigKey, Omit<ConfigKeyInfo, 'key'>> = {
     unsetMeans: 'the Notifai dashboard, the pairing origin, and loopback',
     example: 'https://dash.selfhost.example',
     advanced: true,
+  },
+  'guidance.require_project_enablement': {
+    label: 'Require Project Enablement',
+    group: 'guidance',
+    kind: 'boolean',
+    machineOnly: true,
+    summary: 'Require explicit Project Enablement before lifecycle guidance',
+    detail: 'Off (the default), installed hooks give agents Notifai guidance unless the User disabled their Project. On, agents in a Project receive guidance only after the User enables it. Sessions without a Project still receive guidance. A disabled Project stays disabled. This setting applies only to this machine; Project and Agent Session overrides cannot change it. To restore the default, run `notifai config unset guidance.require_project_enablement --yes`. Agents change it only when the User asks.',
+    unsetMeans: 'off: guidance is on by default',
+    example: 'true',
   },
   'updates.automatic': {
     label: 'Automatic updates',

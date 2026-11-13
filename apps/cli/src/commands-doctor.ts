@@ -337,8 +337,10 @@ function projectEnablementReadiness(deps: CommandDeps, config: CliConfig): Readi
     return {
       id: 'project-enablement',
       title: 'Project enablement',
-      status: 'optional-gap',
-      detail: 'no Project is available here; lifecycle hooks stay silent',
+      status: 'ready',
+      detail: config.project.value === null
+        ? 'lifecycle guidance is on here; use --projectless with send and ask'
+        : `lifecycle guidance is on for configured Project "${config.project.value}"`,
     }
   }
   const decision = projectEnablementState(binding)
@@ -365,11 +367,19 @@ function projectEnablementReadiness(deps: CommandDeps, config: CliConfig): Readi
       },
     }
   }
+  if (!config['guidance.require_project_enablement'].value) {
+    return {
+      id: 'project-enablement',
+      title: 'Project enablement',
+      status: 'ready',
+      detail: `lifecycle guidance is on by default for Project "${binding.project}"; no explicit Enablement is recorded`,
+    }
+  }
   return {
     id: 'project-enablement',
     title: 'Project enablement',
     status: 'optional-gap',
-    detail: `not enabled for Project "${binding.project}"; installed lifecycle hooks emit no model guidance until a send, ask or setup here enables it`,
+    detail: `guidance.require_project_enablement is on; lifecycle guidance waits for the User to enable Project "${binding.project}"`,
     remedy: {
       by: 'cli',
       summary: 'enable Notifai for this Project',

@@ -78,7 +78,7 @@ import {
   readOpenclawGeneration,
   writeOpenclawGeneration,
 } from './openclaw-generation.js'
-import { projectBinding, projectEnabled } from './project-enablement.js'
+import { projectBinding, lifecycleGuidanceEnabled } from './project-enablement.js'
 import { workspaceExclusion } from './workspace-eligibility.js'
 import { releaseCodexCardHandbacks } from './codex-card-handback.js'
 import { codexCardPostToolUse, codexPreToolUse } from './codex-question-hooks.js'
@@ -556,7 +556,7 @@ export async function hookRunCommand(
     try {
       const activationConfig = loadConfig({ cwd, env: deps.env, sessionId: envelope.session_id })
       logger.bind({ project: activationConfig.project.value })
-      return projectEnabled(projectBinding(cwd, deps.env, activationConfig.project.value))
+      return lifecycleGuidanceEnabled(projectBinding(cwd, deps.env, activationConfig.project.value), activationConfig['guidance.require_project_enablement'].value)
     } catch (err) {
       logger.error('hook.end', { hook: event, outcome: 'enablement-unavailable', ...failureData(err) })
       return false

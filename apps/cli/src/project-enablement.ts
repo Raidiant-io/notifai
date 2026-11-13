@@ -84,6 +84,13 @@ export function projectEnabled(binding: ProjectBinding | null): boolean {
   return projectEnablementState(binding) === 'enabled'
 }
 
+/** Lifecycle guidance defaults on; the machine may require a recorded decision for Projects. */
+export function lifecycleGuidanceEnabled(binding: ProjectBinding | null, requireExplicit: boolean): boolean {
+  if (binding === null) return true
+  const state = projectEnablementState(binding)
+  return state === 'enabled' || (state === 'unset' && !requireExplicit)
+}
+
 /** The User switched Notifai off here: nothing from this Project reaches their devices. */
 export function projectDisabled(binding: ProjectBinding | null): boolean {
   return projectEnablementState(binding) === 'disabled'

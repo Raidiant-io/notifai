@@ -1,3 +1,5 @@
+import { loadConfig } from './config.js'
+import { projectBinding } from './project-enablement.js'
 import { guidanceSessionNeedsToken } from './command-guidance.js'
 import type { ResolvedGuidanceTopic } from './guidance.js'
 import type { GuidanceSnapshot } from './guidance-currency.js'
@@ -14,27 +16,33 @@ export const ROOT_ACTIVATION_MARK = 'You own Notification Requests unless your a
  * The root activation. `skillFile` is the bundled skill, a pointer that works
  * where the harness has no copy installed; the digest uses the text without it.
  */
-function rootOwnership(skillFile: string | null, request = false): string {
-  return `${request ? 'Notifai guidance for this Notification Request.' : 'Notifai is enabled for this Project.'} ${ROOT_ACTIVATION_MARK} ` +
+function rootOwnership(skillFile: string | null, request = false, projectless = false): string {
+  return `${request ? 'Notifai guidance for this Notification Request.' : projectless ? 'Notifai is available in this Agent Session.' : 'Notifai is enabled for this Project.'} ${ROOT_ACTIVATION_MARK} ` +
     'If another agent started this Agent Session with a task brief, that agent owns them unless the brief delegates them to you: report Agent Events to it and send none yourself. ' +
     `${skillFile === null ? 'Repair the Notifai skill with \`notifai init --skills\`, then load its verified copy' : `Read the Notifai skill at \`${skillFile}\``} before your first Notification Request; when your overall job changes, load it again and rename this Agent Session. ` +
     'The guidance below governs; unless it says otherwise, when work you own or coordinate needs a User decision, approval, sign-in, credential setup or physical action, register it with `notifai ask` in the same turn you ask it in the conversation: conversation alone misses an away User. ' +
     'When you brief an agent in its own Agent Session, name the Notification Request owner; delegating them delegates the work their answers unblock. Ask the User yourself when you will act on the answer. ' +
     'If you ask, do the work the answer unblocks before you report back, even when a brief says to end after asking. ' +
-    'Ask for readiness, never for a credential. Harness permission prompts stay in the harness.'
+    'Ask for readiness, never for a credential. Harness permission prompts stay in the harness.' +
+    (projectless ? ' Use `--projectless` with `notifai send` and `notifai ask`.' : '')
 }
 
-const rootOwnershipText = (cwd: string, env: NodeJS.ProcessEnv, request = false): string => rootOwnership(installedSkill(cwd, env).file, request)
+const rootOwnershipText = (cwd: string, env: NodeJS.ProcessEnv, request = false): string => rootOwnership(installedSkill(cwd, env).file, request, withoutProject(cwd, env))
+
+function withoutProject(cwd: string, env: NodeJS.ProcessEnv): boolean {
+  const config = loadConfig({ cwd, env })
+  return config.project.value === null && projectBinding(cwd, env) === null
+}
 
 /** The digest of what a root Agent Session is given here (`guidance-currency.ts`). */
 export function rootGuidanceDigest(cwd: string, env: NodeJS.ProcessEnv, snapshot?: GuidanceSnapshot): string {
-  return guidanceDigest({ cwd, env, activation: [rootOwnership(null), WORKER_ACTIVATION_CONTEXT,
+  return guidanceDigest({ cwd, env, activation: [rootOwnership(null, false, withoutProject(cwd, env)), WORKER_ACTIVATION_CONTEXT,
     lifecycleGuidance({ cwd, env }).content].join('\n\n'), ...(snapshot === undefined ? {} : { snapshot }) })
 }
 
 /** Fresh effective text; never persisted in a receipt. */
 export function rootGuidanceText(cwd: string, env: NodeJS.ProcessEnv, topics?: readonly ResolvedGuidanceTopic[]) {
-  return guidanceText({ cwd, env, activation: rootOwnership(null) + '\n\n' + WORKER_ACTIVATION_CONTEXT }, topics)
+  return guidanceText({ cwd, env, activation: rootOwnership(null, false, withoutProject(cwd, env)) + '\n\n' + WORKER_ACTIVATION_CONTEXT }, topics)
 }
 
 /** Delivery data shared by every lifecycle carrier. */
@@ -53,7 +61,7 @@ function workerActivationContext(_currency?: string): string {
 }
 
 export const MISSING_LIFECYCLE_GUIDANCE_CONTEXT =
-  'Notifai lifecycle guidance could not be loaded, so Project Enablement is unverified. Run `notifai doctor --json` to check setup, then `notifai guidance` before deciding whether or how to notify.'
+  'Notifai lifecycle guidance could not be loaded. Run `notifai doctor --json` to check setup, then `notifai guidance` before deciding whether or how to notify.'
 
 const bytes = (text: string): number => Buffer.byteLength(text, 'utf8')
 

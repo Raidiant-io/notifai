@@ -10,6 +10,7 @@ import {
   inferredProjectName,
   projectBinding,
   projectEnablementState,
+  lifecycleGuidanceEnabled,
   projectNameNudge,
 } from './project-enablement.js'
 import { PROJECT_ICON_GROUPS, isProjectIconId } from './project-icons.js'
@@ -78,19 +79,25 @@ export function projectDisableCommand(deps: CommandDeps): number {
 export function projectStatusCommand(deps: CommandDeps, json = false): number {
   const binding = bindingFor(deps)
   const decision = projectEnablementState(binding)
+  const config = loadLoggedConfig(deps, { cwd: deps.cwd, env: deps.env })
+  const guidance = lifecycleGuidanceEnabled(binding, config['guidance.require_project_enablement'].value)
   if (json) {
-    deps.io.out(JSON.stringify({ project: binding?.project ?? null, enabled: decision === 'enabled', disabled: decision === 'disabled' }))
+    deps.io.out(JSON.stringify({ project: binding?.project ?? null, enabled: decision === 'enabled', disabled: decision === 'disabled', lifecycle_guidance: guidance }))
   } else if (binding === null) {
-    deps.io.out('No Project can be inferred here; lifecycle behavior is off.')
+    deps.io.out(config.project.value === null
+      ? 'Lifecycle guidance is on here; use --projectless with send and ask.'
+      : `Lifecycle guidance is on for configured Project "${config.project.value}".`)
   } else if (decision === 'disabled') {
     deps.io.out(
       `Project "${binding.project}": lifecycle behavior disabled. The User disabled Notifai here: nothing from it reaches the User's devices.`,
     )
   } else if (decision === 'enabled') {
     deps.io.out(`Project "${binding.project}": lifecycle behavior enabled.`)
+  } else if (guidance) {
+    deps.io.out(`Project "${binding.project}": lifecycle guidance is on by default; no explicit Enablement is recorded.`)
   } else {
     deps.io.out(
-      `Project "${binding.project}": lifecycle behavior off; the User has neither enabled nor disabled Notifai here. When they ask for Notifai here, run \`notifai project enable\`.`,
+      `Project "${binding.project}": lifecycle guidance is off because guidance.require_project_enablement is on. When the User asks for Notifai here, run \`notifai project enable\`.`,
     )
   }
   return EXIT.ok

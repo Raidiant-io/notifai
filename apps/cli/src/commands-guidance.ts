@@ -12,7 +12,7 @@ import {
   resolveGuidance,
 } from './guidance.js'
 import { renderGuidance } from './guidance-render.js'
-import { projectBinding, projectEnablementState } from './project-enablement.js'
+import { projectBinding, projectEnablementState, lifecycleGuidanceEnabled } from './project-enablement.js'
 import { loadConfig } from './config.js'
 import { rootGuidanceDigest, requestGuidanceContext } from './session-activation.js'
 import { shippedSkillSourceRoot, verifySkillBundle } from './skill-integrity.js'
@@ -37,8 +37,9 @@ export function guidanceChangesCommand(deps: CommandDeps): number {
  * no exact session identity to tools. Never guesses an identity from cwd. */
 export function guidanceCheckCommand(deps: CommandDeps, seen?: string): number {
   const config = loadConfig({ cwd: deps.cwd, env: deps.env })
-  const state = projectEnablementState(projectBinding(deps.cwd, deps.env, config.project.value))
-  const enabled = state === 'enabled'
+  const binding = projectBinding(deps.cwd, deps.env, config.project.value)
+  const state = projectEnablementState(binding)
+  const enabled = lifecycleGuidanceEnabled(binding, config['guidance.require_project_enablement'].value)
   if (state === 'disabled') {
     deps.io.out(JSON.stringify({ enabled: false, disabled: true }))
     return EXIT.ok
@@ -47,7 +48,9 @@ export function guidanceCheckCommand(deps: CommandDeps, seen?: string): number {
   const token = conversationToken(deps.env, seen, commandGuidanceOwner(deps)) ?? conversationToken(deps.env, undefined, commandGuidanceOwner(deps))
   if (token === null) { deps.io.err('Could not store the local guidance token.'); return EXIT.failed }
   const changed = guidanceRead(`conversation/${token}`, deps.env) !== digest
-  const output = changed ? requestGuidanceContext(deps.cwd, deps.env, seen === undefined ? undefined : guidanceChangedNotice(installedSkill(deps.cwd, deps.env), commandGuidanceChanges(deps, token), true)) : undefined
+  // A lifecycle check withholds context under the machine's policy, while
+  // retaining the explicit read path a User-requested send needs for currency.
+  const output = changed && enabled ? requestGuidanceContext(deps.cwd, deps.env, seen === undefined ? undefined : guidanceChangedNotice(installedSkill(deps.cwd, deps.env), commandGuidanceChanges(deps, token), true)) : undefined
   deps.io.out(JSON.stringify({ enabled, token, read_command: `notifai guidance --session-token ${token}`, request_flag: `--guidance-token ${token}`, skill_file: installedSkill(deps.cwd, deps.env).file,
     ...(output === undefined ? {} : { context: output }) }))
   return EXIT.ok

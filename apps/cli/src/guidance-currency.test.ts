@@ -5,6 +5,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { afterEach,describe,expect,it,vi } from 'vitest'
+import { globalConfigPath } from './config.js'
 import { currentCommandGuidance } from './command-guidance.js'
 import type { CommandDeps } from './commands-core.js'
 import { guidanceShowCommand } from './commands-guidance.js'
@@ -103,8 +104,10 @@ it('advertises only verified global skill bytes or the verified bundle, never re
 
 
 it.each(['cursor', 'claude-code'] as const)('recovers through the public CLI parser in %s with enablement unset', harness => {
-  for (const projectless of [false, true]) {
+  for (const explicit of [false, true]) for (const projectless of [false, true]) {
     const { cwd, env } = setup()
+    mkdirSync(path.dirname(globalConfigPath(env)), { recursive: true })
+    writeFileSync(globalConfigPath(env), `[guidance]\nrequire_project_enablement = ${explicit}\n`)
     if (harness === 'cursor') env.CURSOR_AGENT = '1'
     else {
       env.CLAUDECODE = '1'
@@ -124,9 +127,10 @@ it.each(['cursor', 'claude-code'] as const)('recovers through the public CLI par
     const check = cli('guidance', 'check')
     expect(check.status).toBe(0)
     const receipt = JSON.parse(check.stdout) as { read_command: string; request_flag: string; token: string; enabled: boolean; disabled?: boolean; context: string }
-    expect(receipt.enabled).toBe(false)
+    expect(receipt.enabled).toBe(!explicit)
     expect(receipt.disabled).not.toBe(true)
-    expect(receipt.context).not.toContain('Notifai is enabled for this Project.')
+    if (explicit) expect(receipt.context).toBeUndefined()
+    else expect(receipt.context).not.toContain('Notifai is enabled for this Project.')
     expect(receipt.token).toMatch(/^[a-f0-9]{48}$/)
     expect(cli(...receipt.read_command.split(' ').slice(1)).status).toBe(0)
     const recovered = cli(...request, ...receipt.request_flag.split(' '))

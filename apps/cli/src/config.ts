@@ -116,6 +116,8 @@ export interface CliConfig {
    * `MACHINE_ONLY_CONFIG_KEYS`), because the runtime belongs to the machine.
    */
   'updates.automatic': ResolvedValue<boolean>
+  /** Require a recorded Project Enablement before lifecycle guidance, on this machine only. */
+  'guidance.require_project_enablement': ResolvedValue<boolean>
   /**
    * Reopening a conversation that its app or the machine stopped, when an
    * answer or note arrives for it (see `session-reopen.ts`). Machine-wide,
@@ -177,6 +179,7 @@ export const CONFIG_KEYS = [
   'media_origins',
   'approve_origins',
   'updates.automatic',
+  'guidance.require_project_enablement',
   'reopen.automatic',
   'reopen.terminal',
   'reopen.codex_app',
@@ -198,7 +201,7 @@ export type ConfigKey = (typeof CONFIG_KEYS)[number]
  * Project on the machine, so no single Project or conversation may decide what
  * runs on it.
  */
-export const MACHINE_ONLY_CONFIG_KEYS: readonly ConfigKey[] = ['updates.automatic', 'reopen.automatic', 'reopen.terminal', 'reopen.codex_app',
+export const MACHINE_ONLY_CONFIG_KEYS: readonly ConfigKey[] = ['guidance.require_project_enablement', 'updates.automatic', 'reopen.automatic', 'reopen.terminal', 'reopen.codex_app',
   'reopen.t3', 'reopen.terminal_app', 'reopen.terminal_command', 'reopen.focus', 'reopen.permission_mode', 'wake.orca_terminal', 'wake.codex_app_background', 'wake.t3']
 
 /** The apps around an agent that settings concern, and the keys concerning each one (for per-app views). */
@@ -214,10 +217,10 @@ export const INTEGRATION_CONFIG_KEYS: Readonly<Record<IntegrationId, readonly Co
 export const ORIGIN_LIST_CONFIG_KEYS: readonly ConfigKey[] = ['media_origins', 'approve_origins']
 
 /** Keys whose TOML value must parse as a boolean; used by `config set`. */
-export const BOOLEAN_CONFIG_KEYS: readonly ConfigKey[] = ['ask_notifications', 'updates.automatic', 'reopen.automatic', 'wake.orca_terminal', 'wake.codex_app_background', 'wake.t3']
+export const BOOLEAN_CONFIG_KEYS: readonly ConfigKey[] = ['ask_notifications', 'guidance.require_project_enablement', 'updates.automatic', 'reopen.automatic', 'wake.orca_terminal', 'wake.codex_app_background', 'wake.t3']
 
 /** Machine-wide switches that also read naturally as `on` and `off`. */
-export const ON_OFF_CONFIG_KEYS: readonly ConfigKey[] = ['updates.automatic', 'reopen.automatic', 'wake.orca_terminal', 'wake.codex_app_background', 'wake.t3']
+export const ON_OFF_CONFIG_KEYS: readonly ConfigKey[] = ['guidance.require_project_enablement', 'updates.automatic', 'reopen.automatic', 'wake.orca_terminal', 'wake.codex_app_background', 'wake.t3']
 
 /** Keys whose TOML value must parse as an integer within its configured bounds. */
 export const NUMERIC_CONFIG_KEYS: readonly ConfigKey[] = [
@@ -282,6 +285,7 @@ const DEFAULTS = {
   // On by default ("Fully automatic, toggleable", 2026-10-19). The
   // hub installs a newer build on the saved channel unless it would change hooks.
   'updates.automatic': true,
+  'guidance.require_project_enablement': false,
   // Reopen in place by default (2026-10-20): a terminal the machine took down
   // comes back in a new window, in the background, in the mode it last ran in.
   'reopen.automatic': true,
@@ -766,6 +770,7 @@ export function loadConfig(options: {
     media_origins: resolve('media_origins'),
     approve_origins: resolve('approve_origins'),
     'updates.automatic': resolve('updates.automatic'),
+    'guidance.require_project_enablement': resolve('guidance.require_project_enablement'),
     'reopen.automatic': resolve('reopen.automatic'),
     'reopen.terminal': resolve('reopen.terminal'),
     'reopen.codex_app': resolve('reopen.codex_app'),

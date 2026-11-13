@@ -7,7 +7,7 @@ import { describe, expect, it } from 'vitest'
 import { installHookAdapter } from './hook-adapter.js'
 import { opencodePluginSource } from './opencode-plugin.js'
 import { openclawPluginSource } from './openclaw-plugin.js'
-import { enableProject, projectBinding } from './project-enablement.js'
+import { disableProject, enableProject, projectBinding } from './project-enablement.js'
 import { readOpenclawGeneration } from './openclaw-generation.js'
 import { readSessionIncarnation } from './hook-session-state.js'
 
@@ -34,6 +34,7 @@ describe('generated activation through the real isolated CLI', () => {
       directory: cwd,
       client: { session: { get: async () => ({ data: { id: 'activation-owner' } }) } },
     })
+    disableProject(projectBinding(cwd, process.env)!)
     const input = { sessionID: 'activation-owner' }
     const disabled = { system: ['existing harness instructions'] }
     await plugin['experimental.chat.system.transform'](input, disabled)
@@ -77,6 +78,7 @@ describe('generated activation through the real isolated CLI', () => {
     const handlers = new Map<string, Handler>()
     generated.default.register({ on: (name, handler) => { handlers.set(name, handler) } })
     const activate = handlers.get('before_prompt_build')!
+    disableProject(projectBinding(cwd, process.env)!)
     const ctx = { sessionKey: 'agent:main:activation-owner', workspaceDir: cwd }
     expect(await activate({}, ctx)).toBeUndefined()
     // Recorded, so its questions and answers route; nothing printed.

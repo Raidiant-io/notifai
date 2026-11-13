@@ -33,6 +33,7 @@ type CommandDeps,
 type CommandIo
 } from './commands.js'
 import {
+globalConfigPath,
 loadConfig,
 sanitizeSessionId,
 stateDir,
@@ -398,6 +399,36 @@ function askCommand(...args: Parameters<typeof askWithCurrency>) {
   void readCurrentGuidance({ ...args[0], io: { ...args[0].io, out: () => undefined } }, {})
   return askWithCurrency(...args)
 }
+
+describe('lifecycle guidance policy', () => {
+  it.each([
+    [false, 'unset', true], [false, 'enabled', true], [false, 'disabled', false],
+    [true, 'unset', false], [true, 'enabled', true], [true, 'disabled', false],
+    [false, 'projectless', true], [true, 'projectless', true],
+  ] as const)('explicit=%s, decision=%s activates=%s', async (explicit, decision, active) => {
+    const h = harness()
+    const binding = projectBinding(h.deps.cwd, h.env)!
+    rmSync(binding.markerPath, { force: true })
+    if (decision === 'enabled') enableProject(binding)
+    if (decision === 'disabled') disableProject(binding)
+    const config = globalConfigPath(h.env)
+    mkdirSync(path.dirname(config), { recursive: true })
+    writeFileSync(config, `[guidance]\nrequire_project_enablement = ${explicit}\n`)
+    const cwd = decision === 'projectless' ? mkdtempSync(path.join(os.tmpdir(), 'notifai-no-identity-')) : h.deps.cwd
+    try {
+      await hookRunCommand({ ...h.deps, cwd }, 'session-start', stdin({ session_id: 'policy-owner', cwd }), 'claude-code')
+      const output = h.io.outLines.join('\n')
+      expect(output.includes('You own Notification Requests')).toBe(active)
+      expect(existsSync(binding.markerPath)).toBe(decision === 'enabled' || decision === 'disabled')
+      if (decision === 'projectless') {
+        expect(output).toContain('--projectless')
+        expect(output).not.toMatch(/\bproject\b/i)
+      }
+    } finally {
+      if (decision === 'projectless') rmSync(cwd, { recursive: true, force: true })
+    }
+  })
+})
 
 describe('registered folder lifecycle', () => {
   it('uses the folder-root Enablement decision for SessionStart in a descendant', async () => {

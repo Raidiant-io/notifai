@@ -24,8 +24,7 @@ notify. When the plugin cannot tell, it treats the session as a worker. A
 worker explicitly delegated Notification Requests in its prompt loads the skill
 and guidance as their owner.
 
-In an enabled Project every model request carries the guidance resolved at the
-latest User prompt, including after compaction. A disabled Project adds no
+When lifecycle guidance is on, every model request carries the guidance resolved at the latest User prompt, including after compaction. A disabled Project adds no
 context; enabling one takes effect from the next User prompt in the same Agent
 Session.
 

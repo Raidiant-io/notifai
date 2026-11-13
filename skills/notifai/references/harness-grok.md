@@ -6,7 +6,7 @@ Read with [Harness setup and recovery](harness-setup.md).
 
 `notifai hooks install --harness grok` owns one native file under
 `GROK_HOME/hooks/notifai.json` (default `~/.grok/hooks/notifai.json`). Start a
-fresh Agent Session after installation. On an enabled Project, the first tool
+fresh Agent Session after installation. When lifecycle guidance is on, the first tool
 result carries session guidance and any due update or integration notice;
 failed tools also carry it. A later integration notice arrives on a later tool
 result. A turn without

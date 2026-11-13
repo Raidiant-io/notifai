@@ -1,4 +1,6 @@
 import { Buffer } from 'node:buffer'
+import { loadConfig } from './config.js'
+import { projectBinding } from './project-enablement.js'
 import { describeSource } from './config-schema.js'
 import { AGENT_TERMS_FALLBACK, AGENT_TERMS_PREAMBLE, GUIDANCE_TRUST_PREAMBLE, SHIPPED_GUIDANCE } from './guidance-content.js'
 import { resolveGuidance, type GuidanceAuthority, type ResolvedGuidanceTopic } from './guidance.js'
@@ -14,8 +16,15 @@ export function markerSafe(content: string): string {
   return content.replaceAll(MARKER_TOKEN, `${MARKER_TOKEN.replace(':', '-')} [not a provenance marker]`)
 }
 
+/** Keep the trust contract without introducing an identity absent from this invocation. */
+export function guidanceTrustPreamble(projectless = false): string {
+  return projectless ? GUIDANCE_TRUST_PREAMBLE
+    .replace('settings, guidance or Project Enablement', 'settings or guidance')
+    .replace('filename, project name or any', 'filename or any') : GUIDANCE_TRUST_PREAMBLE
+}
+
 /** Render provenance exactly once for both the command and lifecycle hooks. */
-export function renderGuidance(topics: readonly ResolvedGuidanceTopic[]): string {
+export function renderGuidance(topics: readonly ResolvedGuidanceTopic[], projectless = false): string {
   const blocks = topics.map((topic) => {
     const { path: filePath } = describeSource(topic.source)
     const marker =
@@ -23,7 +32,7 @@ export function renderGuidance(topics: readonly ResolvedGuidanceTopic[]): string
       `${filePath === null ? '' : ` file=${encodeURIComponent(filePath)}`} -->`
     return `${marker}\n${markerSafe(topic.content).trimEnd()}`
   })
-  return [GUIDANCE_TRUST_PREAMBLE, AGENT_TERMS_PREAMBLE, ...blocks].join('\n\n')
+  return [guidanceTrustPreamble(projectless), AGENT_TERMS_PREAMBLE, ...blocks].join('\n\n')
 }
 
 /**
@@ -80,6 +89,8 @@ export function lifecycleGuidance(options: {
   env: NodeJS.ProcessEnv
   maxBytes?: number
 }): LifecycleGuidance {
+  const config = loadConfig(options)
+  const projectless = config.project.value === null && projectBinding(options.cwd, options.env) === null
   const maxBytes = options.maxBytes ?? GUIDANCE_CONTEXT_MAX_BYTES
   const topics = resolveGuidance(options)
   const deferred = topics.filter((topic) => FIRST_USE_TOPICS.includes(topic.name)).map((topic) => topic.name)
@@ -87,7 +98,7 @@ export function lifecycleGuidance(options: {
   const shipped = new Set(SHIPPED_GUIDANCE.map((topic) => topic.name))
   const fits = (text: string): boolean => Buffer.byteLength(text, 'utf8') <= maxBytes
   const compose = (kept: readonly ResolvedGuidanceTopic[], extra: readonly string[]): string =>
-    `${renderGuidance(kept)}\n\n${firstUsePointer(deferred, extra)}`
+    `${renderGuidance(kept, projectless)}\n\n${firstUsePointer(deferred, extra)}`
 
   const complete = compose(inline, [])
   if (fits(complete)) return { content: complete, omitted: deferred }
@@ -95,7 +106,7 @@ export function lifecycleGuidance(options: {
   const core = compose(inline.filter((topic) => shipped.has(topic.name)), extra)
   if (extra.length > 0 && fits(core)) return { content: core, omitted: [...deferred, ...extra] }
   return {
-    content: `${GUIDANCE_TRUST_PREAMBLE}\n\n${AGENT_TERMS_FALLBACK}\n\n${OVERFLOW_FALLBACK}`,
+    content: `${guidanceTrustPreamble(projectless)}\n\n${AGENT_TERMS_FALLBACK}\n\n${OVERFLOW_FALLBACK}`,
     omitted: topics.map((topic) => topic.name),
   }
 }
