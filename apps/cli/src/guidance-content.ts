@@ -41,19 +41,17 @@ Notify the User when:
 
 - Substantial work finished or failed: several meaningful steps of
   investigation, editing, building, testing, deploying or coordination. A
-  requested audit or diagnosis that settled a question through several checks
-  counts, even when it found nothing.
-- Work you own or coordinate needs a User response. Ask through Notifai,
-  even while other work continues or the User was recently active: the
-  question itself is the Notification Request, and conversation alone does
-  not reach an away User. Use a one-way \`blocked\` notification only when
-  no User reply would resume the work.
+  requested audit or diagnosis settled through several checks counts, even
+  when it found nothing.
+- Work you own or coordinate needs a User response: ask through Notifai
+  (the question is the notification), even during other work or right after
+  the User was active. Conversation alone misses an away User. Send a one-way
+  \`blocked\` notification only when no reply would resume the work.
 - Work is stalled on something outside your control, such as a provider
   outage, and will resume on its own.
 - You found something that needs their attention soon.
 - They asked for something through Notifai: send the answer, result or
-  artifact back through Notifai, even for a small task, usable away from this
-  machine.
+  artifact back through Notifai, even for a small task.
 
 Skip routine progress and problems you fixed yourself; finished substantial
 work is an outcome, not progress. One notification per event; replace stale
@@ -93,10 +91,17 @@ Bad:
 
 const CONTENT = `# Content
 
-Keep every notification short, simple and clear. The Summary is one plain
-sentence for a banner, understandable without having followed the work. Add a
-Body only when the User needs more; it replaces the Summary in the focused
-view, so it stands alone.
+The User may read a notification or question only on their phone or another
+device, away from the conversation, the terminal and this machine. Each one
+carries what they need to understand it and act on it: the critical facts
+themselves, and enough context to make sense of them. Never point elsewhere
+for them ("details in the conversation", "see the terminal", "as discussed
+above"); if it matters, say it here.
+
+Keep it short, simple and clear. The Summary is one plain sentence for a
+banner, understandable without having followed the work. Add a Body only when
+the User needs more; it replaces the Summary in the focused view, so it stands
+alone.
 
 Say what changed for the User and what, if anything, they need to do. Leave
 out what changes nothing for them: test counts, step timings, internal stages,
@@ -109,8 +114,20 @@ notice, *italics* for a term or an aside, a list for steps or options
 plain sentences where structure adds nothing. Keep the wording
 channel-neutral: no device names, no gestures.
 
-Bad: a work log instead of the result, an unexplained internal name, "see
-terminal for details".
+Good:
+
+- \`Staging deploy failed: the database migration timed out. Production is
+  untouched.\` — what broke and what it means, readable on a phone
+- \`Should the export include archived orders? That adds about 4,000 rows.\`
+  — the decision and what it costs
+
+Bad:
+
+- \`Done; details in the conversation\` / \`See terminal for details\` —
+  the details are where the User may not be
+- \`Should I go with option 2?\` — option 2 exists only in the conversation
+- \`The fix is ready\` — leaves out which fix and what it changes
+- a work log instead of the result, or an unexplained internal name
 `
 
 const QUESTIONS = `# Questions
@@ -119,15 +136,11 @@ Make each question answerable from the notification alone. The Summary asks
 one question; a Body, when needed, adds the reasoning and stakes. Prefer
 closed choices that each say what choosing them does: describe a choice with
 \`--choice-description\` when its label alone cannot, and mark the one you
-recommend with \`--recommended '<label>'\`; never put "recommended" in a label. In a form of several
-questions, keep each question's text to the question and put its own reasoning
-in that question's \`"detail"\`, not in the text or the form's Body. For a sign-in or a physical action, ask whether it is done;
-the reply is what resumes the work.
-
-Good:
-
-- \`Is the test device unlocked and ready for the install?\` with
-  \`Ready — install now\` / \`Not yet — wait\`
+recommend with \`--recommended '<label>'\`, never "recommended" in a label.
+In a form, put each question's own reasoning in its \`"detail"\`, not in its
+text or the form's Body. For a sign-in or a physical action, ask whether it
+is done (\`Is the test device ready?\` with \`Ready — install now\` /
+\`Not yet — wait\`); the reply is what resumes the work.
 
 Bad:
 
