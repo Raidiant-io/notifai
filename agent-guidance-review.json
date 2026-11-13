@@ -1,7 +1,7 @@
 {
   "version": 1,
-  "behavior_digest": "sha256:04272fb76ce213942b5bd36ac3fdc3479202f4589c8c342058c7d77731ad299f",
-  "outcome": "guidance-updated",
+  "behavior_digest": "sha256:126f7f8e93641b828074326e67b1fcb540a7509f2675914b0e4e73060455ece4",
+  "outcome": "reviewed-no-impact",
   "surfaces_reviewed": [
     "lifecycle-hooks",
     "notifai-skill",
@@ -9,5 +9,5 @@
     "cli-readiness",
     "domain-terms"
   ],
-  "reason": "Reviewed lifecycle hooks, the Notifai skill, harness setup, CLI readiness and domain terms. An agent app started from another agent app's shell inherits that app's harness markers; the CLI now gives the command to the agent app whose process is nearest in the process tree (Claude Code's declared process, a host Notifai recorded for the session, or the Codex or Cursor agent executable), for any pair of supported agent apps, so send, ask, session status and receive use that Agent Session instead of reporting the shell as ambiguous. Where the tree cannot place every agent app (Windows, or Grok, which names and records no process) the shell stays ambiguous and ask refuses or holds as before; harness setup's ask --wait remedy and the Grok reference stay accurate. The Hermes reference no longer says nested markers always fail closed. Hooks keep their own identity paths and lifecycle output, and no setting, approval or term changes. A guidance change note tells running sessions."
+  "reason": "Reviewed lifecycle hooks, the Notifai skill, harness setup, CLI readiness and domain terms. Prompt-time context is no longer formatted for harnesses whose prompt hook never reaches the model: Cursor's beforeSubmitPrompt accepts only continue and user_message, OpenClaw's message_received discards hook output, and Grok's and Hermes's prompt hooks are passive, so anything such a hook carried stays due instead of being spent unseen. Claude Code and Codex are unchanged; OpenCode keeps plain text because its OpenCode 2 adapter adds it to the next model request. No skill, reference, setup text, readiness state or term describes prompt-time delivery on Cursor or OpenClaw, so no guidance text changes."
 }

@@ -85,7 +85,7 @@ import { codexCardPostToolUse, codexPreToolUse } from './codex-question-hooks.js
 import { grokQuestionFormGate, unlinkedQuestionFormContext } from './unlinked-question-forms.js'
 import { spawnQuestionSettlement } from './question-settlement-process.js'
 import { QUESTION_WAITER_CEILING_SECONDS } from './question-timing.js'
-import { rootGuidanceDigest, rootGuidanceDelivery, sessionActivationOutput, userPromptContextOutput } from './session-activation.js'
+import { PROMPT_CONTEXT_REACHES_MODEL, rootGuidanceDigest, rootGuidanceDelivery, sessionActivationOutput, userPromptContextOutput } from './session-activation.js'
 import { GUIDANCE_NOT_GIVEN, claimGuidanceChange, invalidateGuidanceRead, guidanceSessionKey, recordGuidanceGiven, startingCurrency } from './guidance-currency.js'
 import { currentProcessIdentity } from './process-identity.js'
 import { attendantSupport } from './session-attendant-probe.js'
@@ -153,19 +153,11 @@ function lazyClient(resolve: () => ApiClient): ApiClient {
   })
 }
 
-/**
- * Harnesses whose prompt-time hook output reaches the model. Cursor's
- * `beforeSubmitPrompt` accepts only `continue` and `user_message`; OpenCode's
- * `chat.message` and OpenClaw's `message_received` discard what the hook
- * prints; Grok's prompt hook is passive. A notice claimed there would be
- * spent unseen, so it stays due for the next activation that is shown.
- */
-const PROMPT_CONTEXT_REACHES_MODEL: ReadonlySet<HookHarness> = new Set(['claude-code', 'codex'])
-
 /** Keep diagnostic context in the same document as an answer or Session Note. */
 function appendIntegrationContext(output: string | undefined, notice: string | undefined,
   harness: HookHarness | undefined, event: 'UserPromptSubmit' | 'PreToolUse' | 'PostToolUse'): string {
   if (notice === undefined) return output ?? ''
+  if (event === 'UserPromptSubmit' && userPromptContextOutput(harness, notice) === undefined) return output ?? ''
   if (harness === 'opencode' || harness === 'openclaw') return [output, notice].filter(Boolean).join('\n\n')
   if (output === undefined) {
     return event === 'UserPromptSubmit' ? userPromptContextOutput(harness, notice) ?? ''

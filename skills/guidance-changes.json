@@ -1,5 +1,5 @@
 {
-  "current": "4054f7c5f632b15044104f14d613c54f3e3a5d5d9c0378e3705bfed5ae482183",
+  "current": "ab5a9190c996760efab324d4bd6f11d94f370f775c5c2285a6f32e87f59a4cb9",
   "releases": [
     {
       "digest": "3e47b01bc6bbfb43e910c660b9964fab6459d75148c3c02dcbcd0be64cfb2963",
@@ -380,6 +380,10 @@
     {
       "digest": "4054f7c5f632b15044104f14d613c54f3e3a5d5d9c0378e3705bfed5ae482183",
       "note": "An agent app started from another agent app's shell, such as Codex run from Claude Code or Claude Code run from Codex, now owns the commands it runs: its `send`, `ask`, `session status` and other commands use its own Agent Session instead of reporting that several agent apps could own the shell. Notifai picks the agent app whose process is nearest in the process tree, for any pair of supported agent apps. Where the process tree cannot place every agent app (Windows, or an app that names and records no process of its own, such as Grok), the shell stays ambiguous as before: follow the admission remedy and never strip inherited markers."
+    },
+    {
+      "digest": "ab5a9190c996760efab324d4bd6f11d94f370f775c5c2285a6f32e87f59a4cb9",
+      "note": "Notifai no longer prints prompt-time context in Cursor and OpenClaw, whose prompt hooks never show it to the agent; anything it carried now stays due for a turn where it is shown. Nothing changes in what you do."
     }
   ]
 }

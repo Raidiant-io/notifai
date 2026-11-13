@@ -186,20 +186,33 @@ export function sessionActivationOutput(
   return undefined
 }
 
-/** Inject a journaled device answer into the User's new turn. */
+/**
+ * Harnesses whose prompt-time hook output always reaches the model, so a
+ * one-time notice may be spent there. OpenCode is not one: its OpenCode 2
+ * adapter adds the output to the next model request, but OpenCode 1's
+ * `chat.message` discards it.
+ */
+export const PROMPT_CONTEXT_REACHES_MODEL: ReadonlySet<HookHarness> = new Set(['claude-code', 'codex'])
+
+/**
+ * Inject context into the User's new turn where a model can see it, or return
+ * nothing. Cursor's `beforeSubmitPrompt` accepts only `continue` and
+ * `user_message`, OpenClaw's `message_received` discards what the hook prints,
+ * and Grok's and Hermes's prompt hooks are passive, so nothing is formatted for
+ * them and whatever it carried stays due. OpenCode gets plain text for its
+ * OpenCode 2 adapter; only context that stays due until acted on, such as an
+ * owed acknowledgement, may rely on it.
+ */
 export function userPromptContextOutput(
   harness: HookHarness | undefined,
   context: string,
 ): string | undefined {
-  if (harness === 'opencode' || harness === 'openclaw') return context
-  if (harness === 'cursor') return JSON.stringify({ additional_context: context })
-  if (harness === 'claude-code' || harness === 'codex') {
-    return JSON.stringify({
-      hookSpecificOutput: {
-        hookEventName: 'UserPromptSubmit',
-        additionalContext: context,
-      },
-    })
-  }
-  return undefined
+  if (harness === 'opencode') return context
+  if (harness === undefined || !PROMPT_CONTEXT_REACHES_MODEL.has(harness)) return undefined
+  return JSON.stringify({
+    hookSpecificOutput: {
+      hookEventName: 'UserPromptSubmit',
+      additionalContext: context,
+    },
+  })
 }
