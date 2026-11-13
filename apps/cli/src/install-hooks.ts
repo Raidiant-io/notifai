@@ -453,6 +453,12 @@ export function buildHookConfig(options: BuildOptions): HookConfig {
       hooks[alias] = structuredClone(hooks[event]!)
     }
   }
+  if (options.harness === 'claude-code') {
+    // No child Stop handler existed. Reuse the same command synchronously:
+    // SubagentStop's block reason reaches the child, never the parent.
+    hooks['SubagentStop'] = [{ hooks: [{ type: 'command',
+      ...hookCommandFields(adapterPath, 'stop', options.harness, commandOptions), timeout: 5 }] }]
+  }
   if (installsSessionAttendant(options.harness)) {
     // A second handler in the same group, never folded into the first. The
     // harness waits for the synchronous handler, so the resident must be an

@@ -113,6 +113,8 @@ export interface HookEnvelope {
 }
 
 export interface SessionState {
+  /** Once per question/recipient; synthetic reminder turns never reset this. */
+  pending_question_reminders?: Array<{ question_id: string; root?: boolean; worker?: boolean }>
   /** Grok's model-visible guidance, re-armed on resume and compaction. */
   grok_activation_context?: string
   /** Grok compacted this session since its activation was last sent. */

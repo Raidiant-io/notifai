@@ -427,6 +427,96 @@ describe('lifecycle guidance policy', () => {
     } finally {
       if (decision === 'projectless') rmSync(cwd, { recursive: true, force: true })
     }
+describe('pending-question turn-end reminder', () => {
+  it('queues a root reminder once even when the wake ends with a new native turn id', async () => {
+    const h = harness()
+    const session = '12345678-1234-1234-1234-123456789abc'
+    // A submitted question whose original owner has ended; Stop may reconcile
+    // it, but must not start another full-window wait.
+    registerQuestion(session, h.env, { question: 'Which colour?', title: 'Choose a colour', request_id: 'req_colour', reply_deadline_at: NOW + 60_000 }, NOW)
+    const queued: string[] = []
+    const deps = { ...h.deps, codexWake: { queue: async (_id: string, _cwd: string, text: string) => { queued.push(text) } } }
+    await hookRunCommand(deps, 'stop', stdin({ session_id: session, turn_id: 'recursive', stop_hook_active: true, cwd: h.deps.cwd }), 'codex')
+    expect(queued).toEqual([])
+    const queuedAtPoll: number[] = []
+    h.recorder.beforeReplies = async () => { queuedAtPoll.push(queued.length) }
+    await hookRunCommand(deps, 'stop', stdin({ session_id: session, turn_id: 'first', cwd: h.deps.cwd }), 'codex')
+    delete h.recorder.beforeReplies
+    expect(queuedAtPoll[0]).toBe(1)
+    expect(queued).toHaveLength(1)
+    expect(queued[0]).toContain('Choose a colour')
+    expect(queued[0]).toMatch(/not finished/)
+    await hookRunCommand(deps, 'stop', stdin({ session_id: session, turn_id: 'wake', cwd: h.deps.cwd }), 'codex')
+    expect(queued).toHaveLength(1)
+    registerQuestion(session, h.env, { question: 'Which shade?', title: 'Choose a shade', request_id: 'req_shade' }, NOW)
+    await hookRunCommand(deps, 'stop', stdin({ session_id: session, turn_id: 'later', cwd: h.deps.cwd }), 'codex')
+    expect(queued).toHaveLength(2)
+    expect(queued[1]).toContain('Choose a shade')
+    expect(queued[1]).not.toContain('Choose a colour')
+  })
+
+  it('is silent after the registered question is closed', async () => {
+    const h = harness()
+    registerQuestion('parent', h.env, { question: 'Which colour?', asked_by: { agent_id: 'child' } }, NOW)
+    const questionId = readSessionState('parent', h.env).pending![0]!.question_id!
+    await closeCommand(h.deps, questionId, {})
+    h.io.outLines.length = 0
+    await hookRunCommand(h.deps, 'stop', stdin({ session_id: 'parent', agent_id: 'child', hook_event_name: 'SubagentStop' }), 'claude-code')
+    expect(h.io.outLines).toEqual([])
+  })
+
+  it('does not spend a reminder on a recursive stop or another worker', async () => {
+    const h = harness()
+    registerQuestion('parent', h.env, { question: 'Which colour?', asked_by: { agent_id: 'child' } }, NOW)
+    const event = { session_id: 'parent', agent_id: 'child', hook_event_name: 'SubagentStop' }
+    for (const extra of [{ stop_hook_active: true }, { loop_count: 1 }, { agent_id: 'sibling' }]) {
+      await hookRunCommand(h.deps, 'stop', stdin({ ...event, ...extra }), 'claude-code')
+      expect(h.io.outLines).toEqual([])
+    }
+    await hookRunCommand(h.deps, 'stop', stdin(event), 'claude-code')
+    expect(JSON.parse(h.io.outLines[0]!).decision).toBe('block')
+  })
+
+  it.each(['none', 'expired', 'delivered'] as const)('is silent for %s questions', async (status) => {
+    const h = harness()
+    const pending = { question_id: 'q_colour', question: 'Which colour?', summary: 'Which colour?',
+      asked_by: { agent_id: 'child' }, request_id: 'req_colour', reply_deadline_at: NOW - 1 }
+    writeSessionState('parent', h.env, status === 'none' ? {}
+      : status === 'expired' ? { pending: [pending] }
+      : status === 'delivered' ? { pending: [ { ...pending, reply_deadline_at: NOW + 60_000 } ],
+          accepted: { answers: [{ pending, reply: reply(), replies: [reply()] }], remaining: 0, recorded_at: NOW, delivered_at: NOW } }
+      : {})
+    await hookRunCommand(h.deps, 'stop', stdin({ session_id: 'parent', agent_id: 'child', hook_event_name: 'SubagentStop' }), 'claude-code')
+    expect(h.io.outLines).toEqual([])
+  })
+
+  it('ignores a Codex worker stop without touching the root lifecycle', async () => {
+    const h = harness()
+    registerQuestion('parent', h.env, {
+      question: 'Which colour?', asked_by: { agent_id: 'child' },
+    }, NOW)
+    const before = readSessionState('parent', h.env)
+    await hookRunCommand(h.deps, 'stop', stdin({ session_id: 'parent', agent_id: 'child', hook_event_name: 'SubagentStop' }), 'codex')
+    expect(h.io.outLines).toEqual([])
+    expect(readSessionState('parent', h.env)).toEqual(before)
+  })
+
+  it('reminds the asking Claude Code worker once, without touching the parent lifecycle', async () => {
+    const h = harness()
+    registerQuestion('parent', h.env, {
+      question: 'Which colour?', title: 'Choose a colour', asked_by: { agent_id: 'child' },
+    }, NOW)
+    const event = { session_id: 'parent', agent_id: 'child', hook_event_name: 'SubagentStop', cwd: h.deps.cwd }
+    expect(await hookRunCommand(h.deps, 'stop', stdin(event), 'claude-code')).toBe(0)
+    const reminder = JSON.parse(h.io.outLines.join(''))
+    expect(reminder.decision).toBe('block')
+    expect(reminder.reason).toContain('Choose a colour')
+    expect(reminder.reason).toMatch(/not finished|incomplete/)
+    expect(reminder.reason).toMatch(/parent.*waiting/i)
+    expect(readSessionState('parent', h.env).last_stop_at).toBeUndefined()
+    h.io.outLines.length = 0
+    await hookRunCommand(h.deps, 'stop', stdin(event), 'claude-code')
+    expect(h.io.outLines).toEqual([])
   })
 })
 
@@ -1134,6 +1224,19 @@ describe('Claude Code Stop wake route', () => {
     }
   }
 
+
+  it('posts a pending-question reminder into the exact Claude inbox once', async () => {
+    const h = harness()
+    registerQuestion('claude-route', h.env, { question: 'Which colour?', title: 'Choose a colour', request_id: 'req_colour' }, NOW)
+    const wake = claudeWake()
+    const deps = { ...h.deps, claudeWake: wake, claudeSourcePid: 12345 }
+    for (let turn = 0; turn < 2; turn += 1) {
+      await hookRunCommand(deps, 'stop', stdin({ session_id: 'claude-route', cwd: h.deps.cwd }), 'claude-code')
+    }
+    expect(wake.sent).toHaveLength(1)
+    expect(wake.sent[0]).toContain('Choose a colour')
+    expect(wake.sent[0]).toContain('not finished')
+  })
 
   /**
    * A live attendant for `claude-route` holding `generation`, as the answer

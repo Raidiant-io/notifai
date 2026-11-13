@@ -73,6 +73,7 @@ describe('hook config', () => {
     ]
     const claude = [...shared,
       'PreToolUse pre-tool-use: Checking this question with Notifai',
+      'SubagentStop stop: Sending questions and answers through Notifai',
       'PermissionRequest permission-request: Waiting for your answer in Notifai',
       'PostToolUse post-tool-use: Recording your answer for Notifai',
     ]
@@ -84,6 +85,15 @@ describe('hook config', () => {
     expect(JSON.stringify(buildHookConfig({ adapterPath: ADAPTER, harness: 'grok', platform: 'darwin' }))).not.toContain('statusMessage')
   })
 
+  it('installs the Claude Code worker reminder synchronously on the existing Stop command', () => {
+    const hooks = buildHookConfig({ adapterPath: ADAPTER, harness: 'claude-code' })
+    const child = hooks['SubagentStop']![0]!.hooks[0]!
+    const root = hooks['Stop']![0]!.hooks[0]!
+    expect(handlerCommandLine(child)).toBe(handlerCommandLine(root))
+    expect(child.async).not.toBe(true)
+    expect(child.timeout).toBeLessThanOrEqual(5)
+  })
+
   it('pins the Codex definition: Codex skips every changed handler until the User approves it again', () => {
     // A deliberate Codex hook change regenerates this fixture; review it as a
     // change every Codex User must approve in /hooks.
@@ -91,7 +101,8 @@ describe('hook config', () => {
     for (const platform of ['darwin', 'linux', 'win32'] as const) {
       const adapterPath = platform === 'win32' ? 'C:\\Users\\Example User\\.notifai\\bin\\notifai.exe' : '/home/example user/.notifai/bin/notifai'
       for (const scope of ['', 'codex:/home/example user/.codex']) {
-        expect(JSON.stringify(buildHookConfig({ adapterPath, harness: 'codex', platform, integrationScope: scope }), null, 2), `${platform} ${scope}`)
+        const definition = buildHookConfig({ adapterPath, harness: 'codex', platform, integrationScope: scope })
+        expect(JSON.stringify(definition, null, 2), `${platform} ${scope}`)
           .toBe(golden[`${platform}|${scope}`])
       }
     }

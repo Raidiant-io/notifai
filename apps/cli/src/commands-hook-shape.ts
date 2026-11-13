@@ -26,7 +26,7 @@ import {
 export function stopShapeProblems(installation: Installation): string[] {
   const problems: string[] = []
   for (const handler of installation.handlers.filter(
-    (entry) => handlerEvent(entry.command) === 'stop',
+    (entry) => entry.event !== 'SubagentStop' && handlerEvent(entry.command) === 'stop',
   )) {
     if (stopHandlerIsDetached(installation.harness)) {
       const route = installation.harness === 'codex' ? 'session-queue' : 'inbox'

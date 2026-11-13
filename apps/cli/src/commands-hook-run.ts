@@ -1,4 +1,5 @@
 import { attendCursorStop } from './cursor-attendant.js'
+import { pendingQuestionReminder } from './hook-pending-reminder.js'
 import { recordOpenclawNativeSession } from './openclaw-native-session.js'
 import { stopAnswerOutput } from './hook-acknowledgements.js'
 import { observeCodexTerminalAnswers, reportCodexTerminalAnswers, takeCodexTerminalConflictContext } from './codex-terminal-answers.js'
@@ -350,6 +351,15 @@ export async function hookRunCommand(
   }
 
   let envelope = parseHookInput(raw)
+  // A child Stop must only speak to that child, never run the parent's
+  // question waiter, record its turn as ended, or consume its answers.
+  if (event === 'stop' && harness === 'claude-code' && envelope.hook_event_name === 'SubagentStop') {
+    try {
+      const reminder = pendingQuestionReminder(deps.env, envelope, deps.now ?? Date.now)
+      if (reminder?.claim()) deps.io.out(stopAnswerOutput(reminder.context))
+    } catch { /* A reminder must never prevent a worker from stopping. */ }
+    return EXIT.ok
+  }
   // Codex subagents share the root session_id and harness process, while
   // turn_id belongs to the child. They must never own the root's lifecycle
   // or consume its input. SubagentStart only teaches worker ownership and
@@ -1320,6 +1330,10 @@ export async function hookRunCommand(
       // A scripted run's turn end collects no answer meant for the place the conversation is in.
       const elsewhereStage = event === 'stop' && envelope.session_id !== undefined ? runElsewhereStage(deps, harness, envelope.session_id) : null
       const scriptedElsewhere = elsewhereStage !== null
+      // This hint must precede any full-window wait when no attendant owns it.
+      if (event === 'stop' && !scriptedElsewhere && (harness === 'claude-code' || harness === 'codex')) {
+        await remindAtNativeStop(deps, harness, envelope, cwd)
+      }
       const terminalConflict = event === 'stop' && harness === 'codex' && !scriptedElsewhere
         ? takeCodexTerminalConflictContext(deps, envelope) : null
       outcome = terminalConflict !== null ? { notes: [], stdout: stopAnswerOutput(terminalConflict), decided: true }
@@ -1488,6 +1502,36 @@ async function stopWakeRoute(
     }), log(deps), 'attendant', { scope: codexHome(deps.env) }, deps.onSessionInputStaged)
   }
   return undefined
+}
+
+/**
+ * Stop is installed async in these harnesses. Its block decision cannot reach
+ * the model, so use the existing exact-session transport for this local hint.
+ * Unlike an answer, a reminder needs no delivery journal or service receipt.
+ */
+async function remindAtNativeStop(
+  deps: CommandDeps,
+  harness: 'claude-code' | 'codex',
+  envelope: HookEnvelope,
+  cwd: string,
+): Promise<void> {
+  try {
+    const reminder = pendingQuestionReminder(deps.env, envelope, deps.now ?? Date.now)
+    if (reminder === null) return
+    const sessionId = envelope.session_id!
+    const route = harness === 'codex'
+      ? codexWakeRoute({ threadId: sessionId, cwd, env: deps.env,
+          ...(deps.codexWake === undefined ? {} : { adapters: deps.codexWake }) })
+      : claudeWakeRoute({ sessionId, env: deps.env,
+          sourcePid: deps.claudeSourcePid ?? claudeHookSourcePid(deps.env, deps.hookPlatform ?? process.platform) ??
+            declaredHookSourcePid(deps) ?? claudeSessionPid(deps.env),
+          ...(deps.claudeWake === undefined ? {} : { adapters: deps.claudeWake }),
+          ...(deps.hookPlatform === undefined ? {} : { platform: deps.hookPlatform }) })
+    await route.deliver({ context: reminder.context, answers: 0, remaining: 0, request_ids: [],
+      journal_recorded_at: (deps.now ?? Date.now)(), commitDelivery: reminder.claim })
+  } catch {
+    // Failure to write this hint never disrupts the question's answer owner.
+  }
 }
 
 /**
