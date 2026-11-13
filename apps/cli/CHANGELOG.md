@@ -8,6 +8,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 This project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 and [Conventional Commits](https://www.conventionalcommits.org/en/v1.0.0/).
 
+## [14.6.1-beta.1](https://github.com/Raidiant-io/notifai/compare/v14.6.0...v14.6.1-beta.1) (2026-11-13)
+
+### Bug Fixes
+
+* The "Not delivered yet" notification is now corrected when the session it named ends or the waiting answer expires. Input that went on with a continued conversation takes the notification down; input that never reached the agent replaces it with a plain note that it was dropped, instead of asking you to type in a session that no longer exists.
+* When Notifai has just started or updated, a conversation you move to the background now keeps its open questions, answers and notes. Before, Notifai could decide the move before it knew what the service offers and end the conversation as closed.
+* An agent app started from another agent app's shell, such as Codex run from Claude Code, now owns its own `notifai` commands. Before, both apps claimed them and sends went out without an Agent Session.
+
 ## [14.6.0](https://github.com/Raidiant-io/notifai/compare/v14.5.2...v14.6.0) (2026-11-13)
 
 ### Features
