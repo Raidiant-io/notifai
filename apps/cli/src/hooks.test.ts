@@ -427,6 +427,9 @@ describe('lifecycle guidance policy', () => {
     } finally {
       if (decision === 'projectless') rmSync(cwd, { recursive: true, force: true })
     }
+  })
+})
+
 describe('pending-question turn-end reminder', () => {
   it('queues a root reminder once even when the wake ends with a new native turn id', async () => {
     const h = harness()

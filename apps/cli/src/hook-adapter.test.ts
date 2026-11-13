@@ -20,7 +20,7 @@ inspectHookAdapter,
 installHookAdapter,
 resolveHookAdapterHome
 } from './hook-adapter.js'
-import { enableProject,projectBinding } from './project-enablement.js'
+import { disableProject, enableProject,projectBinding } from './project-enablement.js'
 
 function isolated(): { root: string; homeDir: string } {
   const root = mkdtempSync(path.join(os.tmpdir(), 'notifai-hook-adapter-'))
@@ -28,7 +28,7 @@ function isolated(): { root: string; homeDir: string } {
 }
 
 describe('stable hook adapter', () => {
-  it('keeps the installed adapter silent until the Project is enabled', () => {
+  it('keeps the installed adapter silent in a disabled Project until the User enables it', () => {
     const { root, homeDir } = isolated()
     execFileSync('git', ['init', '-q', root])
     const env = {
@@ -39,6 +39,9 @@ describe('stable hook adapter', () => {
     }
     const scriptPath = fileURLToPath(new URL('../dist/main.js', import.meta.url))
     const installed = installHookAdapter({ execPath: process.execPath, scriptPath }, homeDir)
+    const binding = projectBinding(root, env)
+    if (binding === null) throw new Error('test Project binding unavailable')
+    disableProject(binding)
     const disabled = spawnSync(
       installed.path,
       ['hook', 'session-start', '--owner', 'notifai', '--harness', 'codex'],
@@ -53,8 +56,6 @@ describe('stable hook adapter', () => {
     expect(disabled.stderr).toBe('')
     expect(disabled.stdout).toBe('')
 
-    const binding = projectBinding(root, env)
-    if (binding === null) throw new Error('test Project binding unavailable')
     enableProject(binding)
     const run = spawnSync(
       installed.path,
