@@ -2,7 +2,7 @@ import type * as Fs from 'node:fs'
 import { mkdtempSync, rmSync } from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import { afterEach, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 import { acquireClaimFile, readClaimFile, releaseClaimFile } from './hook-question-lock.js'
 import { handOffSessionMessages } from './session-message-handoff.js'
 import { updateSessionState } from './hook-session-state.js'
@@ -31,7 +31,18 @@ vi.mock('node:fs', async original => {
   }
 })
 const roots: string[] = []
-afterEach(() => { vi.useRealTimers(); disk.armed = false; disk.full = false; disk.failAt = 0; disk.writes = 0; disk.operation = 'writeFileSync'; for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }) })
+// Every fault can leave a release retry pending. Keep those retries on one
+// controlled clock, including cases that do not advance it themselves.
+beforeEach(() => { vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] }) })
+afterEach(async () => {
+  disk.armed = false; disk.full = false; disk.failAt = 0; disk.writes = 0; disk.operation = 'writeFileSync'
+  for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true })
+  try {
+    // Let the retry observe the removed fixture and forget its module-owned
+    // timer before restoring real timers or starting another case.
+    await vi.runOnlyPendingTimersAsync()
+  } finally { vi.useRealTimers() }
+})
 
 const cases = ['note', 'answer', 'unclaimed'].flatMap(kind =>
   ['writeFileSync', 'fsyncSync', 'renameSync'].flatMap(operation =>
@@ -135,7 +146,6 @@ it('retries direct message handoff after the disk fills between saving debt and 
 })
 
 it('retries a failed release without waiting for a new prompt or another acquisition', async () => {
-  vi.useFakeTimers()
   const root = mkdtempSync(path.join(os.tmpdir(), 'notifai-release-retry-')); roots.push(root)
   const file = path.join(root, 'claim')
   const token = acquireClaimFile(file, {})!
