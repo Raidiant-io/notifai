@@ -170,7 +170,7 @@ import { orcaBlockingAnswerWaits, orcaBlockingPresentation, reconcileOrcaBlockin
 import type { OrcaRuntime } from './orca-runtime.js'
 import type { SessionState } from './hook-types.js'
 import { QUESTION_WAITER_CEILING_SECONDS } from './question-timing.js'
-import { claudeHostName, claudePlaceOf, codexPlaceOf, orcaTerminalHostOf, parentProcessOf, placeReceives, type SessionPlace } from './session-place.js'
+import { claudeHostName, claudePlaceDecision, codexPlaceOf, orcaTerminalHostOf, parentProcessOf, placeReceives, placeReceiveRefusal, type ClaudePlaceDecision, type SessionPlace } from './session-place.js'
 import { readReopenLaunch } from './reopen-terminal.js'
 import {
   exactProcessArguments,
@@ -532,6 +532,7 @@ interface Registration {
   harnessTicks: string | null
   /** Where the conversation runs (see `session-place.ts`). */
   place: SessionPlace
+  placeEvidence?: ClaudePlaceDecision
   /** The process that started the harness (the desktop app's main process, T3 Code's server, Orca's supervisor), when known. */
   hostApp: ProcessIdentity | null
   /** An Orca pane's terminal host, when the harness runs in one. */
@@ -1945,8 +1946,11 @@ export class Hub {
     let ingressStarted = false
     let ingressGo: ((go: boolean) => void) | null = null
     const helloTimer = setTimeout(() => { if (role === null) socket.destroy() }, 5_000)
-    const refuse = (reason: string): void => {
-      this.logger.info('hub.session', { event: 'refused', role, reason })
+    const refuse = (reason: string, registration?: Record<string, unknown>): void => {
+      this.logger.info('hub.session', { event: 'refused', role, reason, retry: PASSING_REFUSALS.has(reason),
+        ...(typeof registration?.['session_id'] === 'string' && registration['session_id'].length <= 512
+          ? { session: registration['session_id'] } : {}),
+        ...(typeof registration?.['harness_pid'] === 'number' ? { harness_pid: registration['harness_pid'] } : {}) })
       try { socket.end(encodeFrame({ type: 'refused', reason, retry: PASSING_REFUSALS.has(reason) })) } catch { socket.destroy() }
     }
     socket.on('error', () => undefined)
@@ -1997,7 +2001,7 @@ export class Hub {
           if (role === 'child' && link !== null) {
             if (frame['type'] === 'register' && session === null) {
               const result = await this.register(link, frame, socket)
-              if (typeof result === 'string') { refuse(result); return }
+              if (typeof result === 'string') { refuse(result, frame); return }
               const registration = this.parseRegistration(frame)
               if (registration?.harness === 'codex') this.setupIssues.hooked(this.sessionEnv(registration))
               session = result
@@ -2211,12 +2215,8 @@ export class Hub {
       cwd: absolute('cwd'), transcriptPath: absolute('transcript_path'), inboxSocket: absolute('inbox_socket'),
       inboxToken: frame['inbox_token'] === 'present', claudeConfigDir: absolute('claude_config_dir'), codexHome: absolute('codex_home'),
       harnessTicks: /^\d{1,30}$/.test(text('harness_ticks', 32) ?? '') ? text('harness_ticks', 32) : null,
-      // A child from an earlier build reports no entrypoint: interactive, as before.
-      // A Codex thread's place depends on its host, read once the peer is verified.
-      place: harness === 'claude-code'
-        ? claudePlaceOf({ entrypoint: text('entrypoint', 64), sessionKind: text('session_kind', 32),
-          orcaStructured: frame['orca_structured'] === '1' })
-        : 'unreported',
+      // Classification happens only after peer and harness identity verification.
+      place: 'unreported',
       hostApp: null,
       terminalHost: null,
       launch: null,
@@ -2263,7 +2263,6 @@ export class Hub {
     if (owner === peer.parent && peer.grandparent !== undefined && peer.grandparent !== null) {
       registration.hostApp = { pid: peer.grandparent.pid, start: peer.grandparent.start }
     }
-    this.placeOf(registration, frame, owner.pid)
     const env = this.sessionEnv(registration)
     if (registration.harness === 'claude-code') {
       // Claude Code publishes its descriptor before it has every field (a
@@ -2281,6 +2280,7 @@ export class Hub {
       if (descriptor.pid !== owner.pid || descriptor.sessionId !== registration.sessionId ||
           !descriptorStartMatches(descriptor.procStart, owner, owner.ticks ?? registration.harnessTicks)) return 'descriptor-mismatch'
     }
+    this.placeOf(registration, frame, owner.pid)
     const existing = this.sessions.get(registration.sessionId)
     if (existing !== undefined) {
       // The earlier incarnation still owes its `ended` report and holds the
@@ -2321,7 +2321,7 @@ export class Hub {
         return existing
       }
       // A scripted run of the same conversation never becomes a place it is in.
-      if (!placeReceives(registration.place)) return 'place-receives-nothing'
+      if (!placeReceives(registration.place)) return placeReceiveRefusal(registration.place)!
       // Another process hosts this same conversation: a second place it is
       // open in, or the place it continues in after a handoff.
       this.addWriter(existing, { child: link, harnessProcess: registration.harnessProcess, registration, env })
@@ -2331,7 +2331,7 @@ export class Hub {
     // per session id, so the child comes back once that report has gone.
     if (this.ended.has(registration.sessionId)) return 'session-ending'
     // A stopped conversation this hub has not taken back yet: never into a scripted run.
-    if (!placeReceives(registration.place) && stoppedOnDisk(registration.sessionId, env)) return 'place-receives-nothing'
+    if (!placeReceives(registration.place) && stoppedOnDisk(registration.sessionId, env)) return placeReceiveRefusal(registration.place)!
     const starting = registration.hookEvent === 'SessionStart' || registration.source !== null
     let record: SessionIncarnation
     try {
@@ -2377,9 +2377,17 @@ export class Hub {
    * terminal host.
    */
   private placeOf(registration: Registration, frame: Record<string, unknown>, harnessPid: number): void {
-    if (registration.harness === 'claude-code' && (registration.place === 'headless' || registration.place === 'unknown')) {
-      registration.place = claudePlaceOf({ entrypoint: typeof frame['entrypoint'] === 'string' ? frame['entrypoint'] : null,
+    if (registration.harness === 'claude-code') {
+      const bounded = (key: string, max: number): string | null =>
+        typeof frame[key] === 'string' && frame[key].length <= max ? frame[key] : null
+      registration.placeEvidence = claudePlaceDecision({ entrypoint: bounded('entrypoint', 64),
+        sessionKind: bounded('session_kind', 32), orcaStructured: frame['orca_structured'] === '1',
         hostName: (this.options.claudeHostName ?? claudeHostName)(harnessPid) })
+      registration.place = registration.placeEvidence.place
+      this.logger.info('hub.session', { event: 'place-classified', session: registration.sessionId,
+        harness_pid: registration.harnessProcess.pid, harness_start: registration.harnessProcess.start,
+        ...registration.placeEvidence, orca_structured: frame['orca_structured'] === '1',
+        transfer_refusal: placeReceiveRefusal(registration.place) })
     }
     if (registration.harness === 'codex') {
       const override = frame['originator_override']
@@ -2555,7 +2563,7 @@ export class Hub {
    * its queue. A scripted run receives nothing.
    */
   private resumeStopped(session: HubSession, writer: Writer): HubSession | string {
-    if (!placeReceives(writer.registration.place)) return 'place-receives-nothing'
+    if (!placeReceives(writer.registration.place)) return placeReceiveRefusal(writer.registration.place)!
     const from = session.stopped!
     // An answer whose window ended while it was stopped is never handed in.
     session.dropExpiredAnswers()

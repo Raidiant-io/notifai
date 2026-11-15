@@ -1,3 +1,4 @@
+import { claudePlaceCheck } from './claude-place-diagnostics.js'
 import { agentAppsReport } from './agent-apps.js'
 import { readOrphanSweepReport } from './codex-orphan-sweep.js'
 import { localStorageReadiness } from './storage-readiness.js'
@@ -1635,6 +1636,10 @@ function hookChecks(deps: CommandDeps, codexTrust: CodexTrust): HookCheck[] {
     }
   }
 
+  if (active?.harness === 'claude-code' && active.sessionId !== undefined && (deps.hookPlatform ?? process.platform) !== 'win32') {
+    const place = claudePlaceCheck(deps.env, active.sessionId, deps.claudeSourcePid ?? claudeSessionPid(deps.env))
+    if (place !== null) checks.push(place)
+  }
   const attendants = sessionAttendantCheck(deps, active)
   if (attendants !== null) checks.push(attendants)
   const hub = sessionHubCheck(deps)
@@ -2313,7 +2318,7 @@ function sessionAttendantCheck(
           ? `this session: ${describe(own)}`
           : active.harness === 'openclaw'
             ? `this session's attendant stopped (${describe(own)}); the local Gateway service starts another while the generation remains current`
-            : `this session's attendant stopped (${describe(own)}); its next prompt starts another`,
+            : `this session's attendant stopped (${describe(own)}); its next turn end or prompt starts another`,
     )
   }
   parts.push(`${live.length} running on this machine`)

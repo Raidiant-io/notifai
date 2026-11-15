@@ -1,7 +1,7 @@
 {
   "version": 1,
-  "behavior_digest": "sha256:126f7f8e93641b828074326e67b1fcb540a7509f2675914b0e4e73060455ece4",
-  "outcome": "reviewed-no-impact",
+  "behavior_digest": "sha256:9e741b89d66ed2d9126f9219468847a7d1461a69b9abaf992a4c7ced1f5be7b5",
+  "outcome": "guidance-updated",
   "surfaces_reviewed": [
     "lifecycle-hooks",
     "notifai-skill",
@@ -9,5 +9,5 @@
     "cli-readiness",
     "domain-terms"
   ],
-  "reason": "Reviewed lifecycle hooks, the Notifai skill, harness setup, CLI readiness and domain terms. Prompt-time context is no longer formatted for harnesses whose prompt hook never reaches the model: Cursor's beforeSubmitPrompt accepts only continue and user_message, OpenClaw's message_received discards hook output, and Grok's and Hermes's prompt hooks are passive, so anything such a hook carried stays due instead of being spent unseen. Claude Code and Codex are unchanged; OpenCode keeps plain text because its OpenCode 2 adapter adds it to the next model request. No skill, reference, setup text, readiness state or term describes prompt-time delivery on Cursor or OpenClaw, so no guidance text changes."
+  "reason": "Reviewed lifecycle hooks, the Notifai skill, harness setup, CLI readiness and domain terms for host-based Claude Code place classification. The diagnostic reference now distinguishes an unproven interactive host from a scripted resume and explains Session Child recovery at the existing turn-end, prompt and resume hooks, including the already-idle limitation. Doctor reports exact-session host evidence and a missing child without claiming another harness failed. Lifecycle instructions, setup and domain meanings otherwise remain unchanged; no new hook definition, setting, credential or approval is needed. Focused stopped-owner, legacy-registration and inherited-marker tests plus an isolated real-Claude answer-and-note recovery exercise support the behavior. Reconciled with prompt-context routing: the existing harness-specific model-output guards remain intact; host classification only changes ownership admission and diagnostics."
 }

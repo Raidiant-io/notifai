@@ -57,6 +57,7 @@ These doctor lines and log events explain what it did:
 
 | Doctor line or log event | What it tells you | What to do |
 | --- | --- | --- |
+| Doctor's session place check; `hub.session` records `place-classified` and `refused` | Whether the exact Claude Code process has a proven interactive host and a connected Session Child. `place-unproven` means missing host evidence, not a known script. Refusals include the session for `--session` filtering | A recognized chat with no Session Child reconnects at its next turn end, prompt or resume. An already-idle chat needs a prompt; never clear or restart it to repair attendance. A scripted resume cannot take over another process's held input |
 | Doctor's hub line | Whether the hub runs and what it attends; whether an older hub is still handing over, or has stopped restarting after three crashes in ten minutes | Not running is normal with no session open. A handover needs nothing; never end sessions for it |
 | `--event hub.session`, `--event hub.exchange` | Sessions registering and ending, and the hub's service traffic | Read before concluding a session was lost; a restarted hub takes its sessions back |
 | `--event hub.handover` | An older hub handing over to the current build, or the one thing it finishes first | Nothing |

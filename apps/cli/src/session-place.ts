@@ -40,18 +40,30 @@ export interface ClaudePlaceSignals {
   hostName?: string | null | undefined
 }
 
-export function claudePlaceOf(signals: ClaudePlaceSignals): ClaudePlace {
+export interface ClaudePlaceDecision {
+  place: ClaudePlace
+  reason: 'direct-orca-host' | 'direct-t3-host' | 'known-entrypoint' | 'legacy-unreported' | 'scripted-host' | 'host-unavailable' | 'unrecognized-entrypoint'
+}
+
+/** Resolve once with the exact harness's direct host, never an inherited ancestor. */
+export function claudePlaceDecision(signals: ClaudePlaceSignals): ClaudePlaceDecision {
+  if (/^Orca(?:\.exe)?$/.test(signals.hostName ?? '')) return { place: 'orca-chat', reason: 'direct-orca-host' }
+  if (/^T3 Code(?: \(Nightly\))?(?:\.exe)?$/.test(signals.hostName ?? '')) return { place: 't3', reason: 'direct-t3-host' }
   const entrypoint = signals.entrypoint
-  if (entrypoint === undefined || entrypoint === null || entrypoint === '') return 'unreported'
-  if (entrypoint === 'claude-desktop' || entrypoint === 'claude-desktop-3p') return 'claude-desktop'
-  if (entrypoint === 'claude-vscode') return 'claude-ide'
-  if (entrypoint === 'cli') return signals.sessionKind === 'bg' ? 'claude-background' : 'terminal'
-  if (entrypoint.startsWith('sdk-') && /^T3 Code(?: \(Nightly\))?(?:\.exe)?$/.test(signals.hostName ?? '')) return 't3'
-  if (entrypoint.startsWith('sdk-')) {
-    if (signals.orcaStructured === true) return 'orca-chat'
-    return signals.hostName == null ? 'unknown' : 'headless'
-  }
-  return 'unknown'
+  if (entrypoint === undefined || entrypoint === null || entrypoint === '') return { place: 'unreported', reason: 'legacy-unreported' }
+  if (entrypoint === 'claude-desktop' || entrypoint === 'claude-desktop-3p') return { place: 'claude-desktop', reason: 'known-entrypoint' }
+  if (entrypoint === 'claude-vscode') return { place: 'claude-ide', reason: 'known-entrypoint' }
+  if (entrypoint === 'cli') return { place: signals.sessionKind === 'bg' ? 'claude-background' : 'terminal', reason: 'known-entrypoint' }
+  // ORCA_STRUCTURED_SESSION can be inherited by scripts launched through a
+  // chat's shell. It cannot authorize taking over that chat's held inputs.
+  if (entrypoint.startsWith('sdk-')) return signals.hostName == null
+    ? { place: 'unknown', reason: 'host-unavailable' }
+    : { place: 'headless', reason: 'scripted-host' }
+  return { place: 'unknown', reason: 'unrecognized-entrypoint' }
+}
+
+export function claudePlaceOf(signals: ClaudePlaceSignals): ClaudePlace {
+  return claudePlaceDecision(signals).place
 }
 
 /** Where a Codex thread runs. A terminal includes the shared background server plain `codex` terminals join. */
@@ -101,9 +113,15 @@ export function codexPlaceOf(signals: CodexPlaceSignals): CodexPlace {
   }
 }
 
-/** Whether a held answer or note may be handed to a conversation in this place. */
+/** Whether another process may take over a conversation and its held input.
+ * Fresh owners still service their own questions under the ordinary transport proofs. */
 export function placeReceives(place: SessionPlace): boolean {
-  return place !== 'headless' && place !== 'unknown'
+  return placeReceiveRefusal(place) === null
+}
+
+/** Unknown is missing evidence, not a positive scripted-run verdict. */
+export function placeReceiveRefusal(place: SessionPlace): 'place-unproven' | 'place-receives-nothing' | null {
+  return place === 'unknown' ? 'place-unproven' : place === 'headless' ? 'place-receives-nothing' : null
 }
 
 /** The place signals in a hook's (or session child's) environment. */

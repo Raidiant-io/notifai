@@ -1,5 +1,5 @@
 {
-  "current": "ab5a9190c996760efab324d4bd6f11d94f370f775c5c2285a6f32e87f59a4cb9",
+  "current": "c84173e18d8709db950866c1da3b3e461e023e6c3011ad87fc142c24267a2c13",
   "releases": [
     {
       "digest": "3e47b01bc6bbfb43e910c660b9964fab6459d75148c3c02dcbcd0be64cfb2963",
@@ -384,6 +384,10 @@
     {
       "digest": "ab5a9190c996760efab324d4bd6f11d94f370f775c5c2285a6f32e87f59a4cb9",
       "note": "Notifai no longer prints prompt-time context in Cursor and OpenClaw, whose prompt hooks never show it to the agent; anything it carried now stays due for a turn where it is shown. Nothing changes in what you do."
+    },
+    {
+      "digest": "c84173e18d8709db950866c1da3b3e461e023e6c3011ad87fc142c24267a2c13",
+      "note": "Orca-hosted Claude Code conversations are recognized from their direct host independently of launch-label changes. Doctor distinguishes an unproven host from a scripted resume and reports when a running chat needs its Session Child to reconnect. Existing turn-end, prompt and resume hooks recover attendance; do not clear or restart conversations to repair it."
     }
   ]
 }

@@ -30,7 +30,7 @@ import {
   type CommandDeps,
 } from './commands-core.js'
 import { claudeHookSourcePid, claudeSessionPid } from './commands-harness-context.js'
-import { claudePlaceOf, claudePlaceSignals, placeReceives } from './session-place.js'
+import { claudeHostName, claudePlaceOf, claudePlaceSignals, placeReceiveRefusal } from './session-place.js'
 import { codexHostKind } from './codex-session-end.js'
 import { attendHook, recordCodexTurnEnd, recordCodexTurnStart, reportCodexSessionEnded } from './commands-hook-attend.js'
 import { hubSupported } from './hub-ipc.js'
@@ -1259,7 +1259,8 @@ export async function hookRunCommand(
       const notice = enabled ? cachedIntegrationFaultNotice({ ...deps, cwd }, harness) : undefined
       // A scripted run (`claude -p`, an SDK script, `codex exec`) of a conversation
       // another process hosts is not where the User is: nothing held for it is handed in here.
-      const elsewhere = envelope.session_id !== undefined && scriptedRunElsewhere(deps, harness, envelope.session_id)
+      const elsewhereStage = envelope.session_id === undefined ? null : runElsewhereStage(deps, harness, envelope.session_id)
+      const elsewhere = elsewhereStage !== null
       runElsewhere = elsewhere
       // A card answer Notifai sent through Orca's chat is the agent's input
       // already: it gets that answer's acknowledgement, never a second record.
@@ -1285,7 +1286,7 @@ export async function hookRunCommand(
         observeCodexTerminalAnswers(deps, envelope, logger)
       }
       // Claude wakes carry a token; Codex prompts with one keep their own path.
-      outcome = elsewhere ? { notes: [], log: { stage: 'scripted-run-receives-nothing' } }
+      outcome = elsewhere ? { notes: [], log: { stage: elsewhereStage } }
         : envelope.session_id !== undefined && (envelope.prompt === sessionInputWake() ||
           (harness === 'claude-code' && inputWakeToken(envelope.prompt) !== null))
           ? { notes: [], log: { stage: 'input-wake-observed' } }
@@ -1315,11 +1316,12 @@ export async function hookRunCommand(
         await sweepAbandonedOpencodeForms(deps, { timeoutMs: budgets.serviceRequestMs, limit: 2 })
       }
       // A scripted run's turn end collects no answer meant for the place the conversation is in.
-      const scriptedElsewhere = event === 'stop' && envelope.session_id !== undefined && scriptedRunElsewhere(deps, harness, envelope.session_id)
+      const elsewhereStage = event === 'stop' && envelope.session_id !== undefined ? runElsewhereStage(deps, harness, envelope.session_id) : null
+      const scriptedElsewhere = elsewhereStage !== null
       const terminalConflict = event === 'stop' && harness === 'codex' && !scriptedElsewhere
         ? takeCodexTerminalConflictContext(deps, envelope) : null
       outcome = terminalConflict !== null ? { notes: [], stdout: stopAnswerOutput(terminalConflict), decided: true }
-        : scriptedElsewhere ? { notes: [], log: { stage: 'scripted-run-receives-nothing' } } : await handleStop(
+        : scriptedElsewhere ? { notes: [], log: { stage: elsewhereStage } } : await handleStop(
         ctx,
         envelope,
         processDeadlineAt,
@@ -1535,9 +1537,15 @@ function codexWakeHasInput(deps: CommandDeps, sessionId: string): boolean {
  * place the conversation is in.
  */
 export function claudeRunElsewhere(sessionId: string, env: NodeJS.ProcessEnv, sourcePid: number | undefined): boolean {
-  if (placeReceives(claudePlaceOf(claudePlaceSignals(env, sourcePid)))) return false
+  return claudeRunElsewhereReason(sessionId, env, sourcePid) !== null
+}
+
+export function claudeRunElsewhereReason(sessionId: string, env: NodeJS.ProcessEnv, sourcePid: number | undefined,
+  hostName: (pid: number) => string | null = claudeHostName): 'place-unproven' | 'place-receives-nothing' | null {
   const host = readSessionIncarnation(sessionId, env)?.harness_process
-  return host !== undefined && host.pid !== sourcePid
+  if (host === undefined || host.pid === sourcePid) return null
+  return placeReceiveRefusal(claudePlaceOf({ ...claudePlaceSignals(env),
+    hostName: sourcePid === undefined ? null : hostName(sourcePid) }))
 }
 
 /**
@@ -1552,9 +1560,12 @@ export function codexRunElsewhere(sessionId: string, env: NodeJS.ProcessEnv, sou
   return hostKind(sourcePid) === 'exec'
 }
 
-function scriptedRunElsewhere(deps: CommandDeps, harness: string | undefined, sessionId: string): boolean {
-  if (harness === 'claude-code') return claudeRunElsewhere(sessionId, deps.env, claudeHookSourcePid(deps.env, deps.hookPlatform ?? process.platform))
-  return harness === 'codex' && codexRunElsewhere(sessionId, deps.env, declaredHookSourcePid(deps))
+function runElsewhereStage(deps: CommandDeps, harness: string | undefined, sessionId: string): string | null {
+  if (harness === 'claude-code') {
+    const reason = claudeRunElsewhereReason(sessionId, deps.env, claudeHookSourcePid(deps.env, deps.hookPlatform ?? process.platform))
+    return reason === null ? null : reason === 'place-unproven' ? 'place-unproven' : 'scripted-run-receives-nothing'
+  }
+  return harness === 'codex' && codexRunElsewhere(sessionId, deps.env, declaredHookSourcePid(deps)) ? 'scripted-run-receives-nothing' : null
 }
 
 /**

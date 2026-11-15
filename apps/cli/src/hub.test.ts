@@ -2405,6 +2405,62 @@ describe('hub: conversations stopped by their app or the machine', () => {
     while (!exited) { service.release(); await new Promise((resolve) => setTimeout(resolve, 20)) }
   }
 
+  it.each([[false, true], [true, true], [true, false]])('recovers an unknown stopped owner in a verified Orca chat (Hub restart: %s, child metadata: %s)', async (restart, metadata) => {
+    const env = hubEnv()
+    recordSessionNotified(SESSION, env, Date.now())
+    const host = await standIn()
+    describeHost(env, host)
+    const service = fakeService()
+    const peers = new Map<number, PeerCredentials>()
+    const names = new Map<number, string>()
+    const logs: Record<string, unknown>[] = []
+    const logger = { ...nullLogger(), info: (_event: string, data?: Record<string, unknown>) => { if (data !== undefined) logs.push(data) } }
+    const options = { logger, claudeHostName: (pid: number) => names.get(pid) ?? null, powerWatch: false as const, claudeDesktop: null, runHook: noHook }
+    let run = startHub(env, service, peers, memoryStore(), 100, {}, options)
+    await hubListening(env)
+    const first = await writerChild(env, peers, 900480, host, { entrypoint: 'orca', orca_structured: '1', transcript_path: transcript(env) })
+    await until(() => renewals(service) >= 1)
+    question(env)
+    await end(env, first, host)
+    await until(() => run.hub.sessions.get(SESSION)?.stopped?.cause === 'app', 5_000)
+    expect(status(env)).toMatchObject({ adoption: { place: 'unknown' }, reason: 'stopped' })
+    answered(env)
+    first.socket.destroy()
+    if (restart) {
+      await stopHub(run.hub, service, run.done)
+      run = startHub(env, service, peers, memoryStore(), 100, {}, options)
+      await hubListening(env)
+    }
+    const resumed = await standIn()
+    describeHost(env, resumed)
+    names.set(resumed.pid, 'Orca')
+    let second: (FakeChild & { writes: number }) | undefined
+    try {
+      names.delete(resumed.pid)
+      const refused = await writerChild(env, peers, 900482, resumed, { entrypoint: 'future-host', source: 'resume' })
+      expect(refused.frames[0]).toMatchObject({ type: 'refused', reason: 'place-unproven', retry: false })
+      expect(refused.writes).toBe(0)
+      expect(logs).toContainEqual(expect.objectContaining({ event: 'refused', session: SESSION, harness_pid: resumed.pid, reason: 'place-unproven' }))
+      refused.socket.destroy()
+      names.set(resumed.pid, 'Orca')
+      second = await writerChild(env, peers, 900481, resumed, { entrypoint: metadata ? 'orca' : undefined,
+        orca_structured: metadata ? '1' : undefined, source: metadata ? 'resume' : null, hook_event: metadata ? 'SessionStart' : 'Stop' })
+      expect(second.frames[0]).toEqual({ type: 'registered', session_id: SESSION })
+      await until(() => second!.writes === 1, 5_000)
+      expect(readSessionIncarnation(SESSION, env)?.harness_process?.pid).toBe(resumed.pid)
+      expect(status(env)).toMatchObject({ adoption: { place: 'orca-chat' } })
+      expect(readSessionState(SESSION, env).acknowledgement_due).toMatchObject([{ request_id: 'req_r2' }])
+      run.hub.inputStaged(SESSION)
+      service.release()
+      await until(() => run.hub.sessions.get(SESSION)?.lease.phase === 'attending')
+      expect(second.writes).toBe(1)
+      expect(ended(service)).toBe(false)
+    } finally {
+      second?.socket.destroy()
+      await stopHub(run.hub, service, run.done)
+    }
+  })
+
   it('keeps a conversation the desktop app paused, renews nothing, and hands the answer in where the app reopens it', async () => {
     const env = hubEnv()
     recordSessionNotified(SESSION, env, Date.now())
@@ -2626,7 +2682,7 @@ describe('hub: conversations stopped by their app or the machine', () => {
     // `claude -p --resume <id>`: refused for good, and nothing is written into it.
     const scripted = await standIn()
     describeHost(env, scripted)
-    const run = await writerChild(env, peers, 900471, scripted, { entrypoint: 'sdk-cli', source: 'resume' })
+    const run = await writerChild(env, peers, 900471, scripted, { entrypoint: 'sdk-cli', orca_structured: '1', source: 'resume' })
     expect(run.frames[0]).toMatchObject({ type: 'refused', reason: 'place-receives-nothing', retry: false })
     expect(await requestHub(env, { type: 'session-end-candidate', session_id: SESSION, harness_pid: scripted.pid })).toEqual({ type: 'ok', held: true })
     expect(hub.sessions.get(SESSION)?.stopped?.cause).toBe('app')
