@@ -8,7 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 This project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 and [Conventional Commits](https://www.conventionalcommits.org/en/v1.0.0/).
 
-## [14.6.1-beta.2](https://github.com/Raidiant-io/notifai/compare/v14.6.0...v14.6.1-beta.2) (2026-11-15)
+## [14.6.1](https://github.com/Raidiant-io/notifai/compare/v14.6.0...v14.6.1) (2026-11-15)
 
 ### Bug Fixes
 
