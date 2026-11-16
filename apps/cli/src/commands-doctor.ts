@@ -60,6 +60,7 @@ import {
   findLegacyProjectInstallations,
   findObsoleteNotifaiPluginWiring,
   handlerEvent,
+  missingDocumentHandlers,
   type Installation,
 } from './install-hooks.js'
 import type { SkillScope } from './native-skills.js'
@@ -1678,7 +1679,7 @@ function hookChecks(deps: CommandDeps, codexTrust: CodexTrust): HookCheck[] {
         .map((handler) => handlerEvent(handler.command))
         .filter((event): event is string => event !== null),
     )
-    const absent = required.filter((event) => !installed.has(event))
+    const absent = [...required.filter((event) => !installed.has(event)), ...missingDocumentHandlers(installation)]
     if (absent.length === 0) return []
     staleHarnesses.add(installation.harness)
     return [`${installation.file} is missing ${absent.join(', ')}`]

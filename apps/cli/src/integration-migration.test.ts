@@ -9,9 +9,9 @@ import { installHookAdapter } from './hook-adapter.js'
 import * as codexToolMessages from './codex-tool-messages.js'
 import { doctorCommand } from './commands-doctor.js'
 import { hookRunCommand } from './commands-hook-run.js'
-import { buildHookConfig,codexHookIdentityHash,codexTrustFindings,codexTrustKey,findInstallations,installedHookRevision } from './install-hooks.js'
+import { buildHookConfig,codexHookIdentityHash,codexTrustFindings,codexTrustKey,findInstallations,handlerEvent,installedHookRevision } from './install-hooks.js'
 import { readSessionState,writeSessionState } from './hook-session-state.js'
-import { localIntegrationAssessment } from './integration-health.js'
+import { installationFaults, localIntegrationAssessment } from './integration-health.js'
 import * as nativeInstallation from './native-installation.js'
 import { nativeSkills } from './native-skills.js'
 import { packageVersion } from './release.js'
@@ -296,4 +296,23 @@ it('stamps no revision into a new Codex install, and keeps it for every other ha
   const options = { adapterPath: '/x/notifai', integrationScope: '/x/hooks.json', platform: 'darwin' as const }
   expect(JSON.stringify(buildHookConfig({ ...options, harness: 'codex' }))).not.toContain('--integration-revision')
   expect(JSON.stringify(buildHookConfig({ ...options, harness: 'claude-code', claudeForm: 'shell' }))).toContain('--integration-revision')
+})
+
+it('repairs a Claude Code installation that predates the subagent turn-end reminder', async () => {
+  // An update rewrites hooks only for a fault it finds, so a handler this
+  // build adds must count as missing in an older installation, or updated
+  // machines never receive it while doctor reports the hooks ready.
+  const f = fixture()
+  expect(hooksInstallCommand(f.deps, { harness: 'claude-code', narrate: false })).toBe(0)
+  const claude = () => findInstallations(f.deps.env, f.home, f.deps.hookPlatform).find(entry => entry.harness === 'claude-code')!
+  const subagentStop = () => claude().handlers.some(handler => handler.event === 'SubagentStop' && handlerEvent(handler.command) === 'stop')
+  expect(subagentStop()).toBe(true)
+  const doc = JSON.parse(readFileSync(claude().file, 'utf8'))
+  delete doc.hooks.SubagentStop
+  writeFileSync(claude().file, JSON.stringify(doc))
+  expect(installationFaults(claude(), f.deps.hookPlatform)).toContain('missing SubagentStop stop')
+  expect(localIntegrationAssessment(f.deps).faults.map(fault => fault.code)).toContain('hooks-drift')
+  await updateResumeCommand(f.deps, { json: true })
+  expect(subagentStop()).toBe(true)
+  expect(installationFaults(claude(), f.deps.hookPlatform)).not.toContain('missing SubagentStop stop')
 })

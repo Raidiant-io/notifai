@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "behavior_digest": "sha256:d7ae01604ae5a6800f516115aa0aab284f411ca2c72a3b2af1f28175fcaf07e1",
+  "behavior_digest": "sha256:9f3a681328f82bb99259f18954c786245538df3dfef44d512752d18dfd4b06c7",
   "outcome": "guidance-updated",
   "surfaces_reviewed": [
     "lifecycle-hooks",
@@ -9,5 +9,5 @@
     "cli-readiness",
     "domain-terms"
   ],
-  "reason": "Reviewed lifecycle hooks, the Notifai skill, harness setup, CLI readiness and domain terms. The refusal of a self-opened Claude Code picker or Codex card right after notifai ask is reverted at the User's request, pending a more careful design: the Claude Code PreToolUse(AskUserQuestion) hook entry is no longer installed, ask's human output returns to its previous order, and the exact-content duplicate guard remains. The SubagentStop reminder entry stays, so Claude Code hook definitions still change in this release. The combined change note no longer announces the refusal, and a short note tells beta sessions it is withdrawn. No skill, reference or topic text described the refusal."
+  "reason": "Reviewed lifecycle hooks, the Notifai skill, harness setup, CLI readiness and domain terms. Claude Code's synchronous SubagentStop handler (the subagent pending-question reminder) is now a required handler: the integration health check and doctor's hook check report it missing on installations that predate it, so an update's integration resume adds it and doctor no longer reports such hooks ready. Hook definitions for a fresh install are unchanged; Codex is unaffected. As updates.md already says, an update that rewrites Claude Code hook definitions stays staged until an agent offers it. A guidance change note tells running sessions."
 }

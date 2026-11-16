@@ -1,5 +1,5 @@
 {
-  "current": "7063b6a0d8002f8b82d9e70d9775da98d5e5d25a9ec5eacb192910ec7c32c76a",
+  "current": "56b0e753614e959493fe78cd37c8ceaecaa9c4078a9241bbdd925a2b45a6b704",
   "releases": [
     {
       "digest": "3e47b01bc6bbfb43e910c660b9964fab6459d75148c3c02dcbcd0be64cfb2963",
@@ -400,6 +400,10 @@
     {
       "digest": "7063b6a0d8002f8b82d9e70d9775da98d5e5d25a9ec5eacb192910ec7c32c76a",
       "note": "The refusal of a question form you open yourself right after `notifai ask`, which a beta added, is withdrawn while it gets a more careful design. Nothing else changes in what you do."
+    },
+    {
+      "digest": "56b0e753614e959493fe78cd37c8ceaecaa9c4078a9241bbdd925a2b45a6b704",
+      "note": "Updating now adds the Claude Code hook that reminds a subagent of its open question before it reports, on machines set up before that hook existed; `notifai doctor` reports it when it is missing. Nothing changes in what you do."
     }
   ]
 }
