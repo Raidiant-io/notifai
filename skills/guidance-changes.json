@@ -1,5 +1,5 @@
 {
-  "current": "4cff98949f32657005068bd9d084bbe9a05abf1517c9f56a81ccb092f26cfd6a",
+  "current": "7063b6a0d8002f8b82d9e70d9775da98d5e5d25a9ec5eacb192910ec7c32c76a",
   "releases": [
     {
       "digest": "3e47b01bc6bbfb43e910c660b9964fab6459d75148c3c02dcbcd0be64cfb2963",
@@ -391,11 +391,15 @@
     },
     {
       "digest": "c04cd722a755af8d15987f3c9899f54e12212795feea7b5ad0a61c0664cd0f56",
-      "note": "Notifai's guidance changed:\n\n- Every notification and question must stand alone: the User may read it only on another device, so it carries the critical facts and context itself and never points to the conversation or the terminal. Run `notifai guidance` before your next Notification Request to read the updated `content` topic.\n- Lifecycle guidance is now on by default in every Project the User has not disabled, and in sessions without a Project; there, send and ask with `--projectless`. A User can require explicit Project Enablement with the machine setting `guidance.require_project_enablement`; change it only when the User asks.\n- After `notifai ask` registers a question, a question form you open yourself in Claude Code or Codex is refused for a minute or until the User's next prompt, unless it is the exact form `ask` handed back. Read the whole `ask` output, and use `notifai ask` for a separate question.\n- At turn end, Notifai reminds you once about a question still waiting for its answer, and reminds a Claude Code subagent before it reports. The work that answer unblocks is not finished: say which answer you are waiting for, and do not ask again.\n- Users can edit guidance with `notifai guidance edit` in a terminal; agents keep using `notifai guidance set` with the User's words. A new topic name adds to the shipped guidance and outranks it where they conflict."
+      "note": "Notifai's guidance changed:\n\n- Every notification and question must stand alone: the User may read it only on another device, so it carries the critical facts and context itself and never points to the conversation or the terminal. Run `notifai guidance` before your next Notification Request to read the updated `content` topic.\n- Lifecycle guidance is now on by default in every Project the User has not disabled, and in sessions without a Project; there, send and ask with `--projectless`. A User can require explicit Project Enablement with the machine setting `guidance.require_project_enablement`; change it only when the User asks.\n- At turn end, Notifai reminds you once about a question still waiting for its answer, and reminds a Claude Code subagent before it reports. The work that answer unblocks is not finished: say which answer you are waiting for, and do not ask again.\n- Users can edit guidance with `notifai guidance edit` in a terminal; agents keep using `notifai guidance set` with the User's words. A new topic name adds to the shipped guidance and outranks it where they conflict."
     },
     {
       "digest": "4cff98949f32657005068bd9d084bbe9a05abf1517c9f56a81ccb092f26cfd6a",
       "note": "The `content` guidance now says each notification or question carries the information the User needs to understand it and, for a question, to answer it, instead of \"the critical facts\": include what they need, not only what seems most important."
+    },
+    {
+      "digest": "7063b6a0d8002f8b82d9e70d9775da98d5e5d25a9ec5eacb192910ec7c32c76a",
+      "note": "The refusal of a question form you open yourself right after `notifai ask`, which a beta added, is withdrawn while it gets a more careful design. Nothing else changes in what you do."
     }
   ]
 }

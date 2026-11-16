@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "behavior_digest": "sha256:9eb8514176a47dd674cda366e107a3898395fc3895f061f2edae5837d5913586",
+  "behavior_digest": "sha256:d7ae01604ae5a6800f516115aa0aab284f411ca2c72a3b2af1f28175fcaf07e1",
   "outcome": "guidance-updated",
   "surfaces_reviewed": [
     "lifecycle-hooks",
@@ -9,5 +9,5 @@
     "cli-readiness",
     "domain-terms"
   ],
-  "reason": "Reviewed lifecycle hooks, the Notifai skill, harness setup, CLI readiness and domain terms. The content topic's stand-alone rule now says each notification or question carries the information the User needs to understand it and, for a question, to answer it, replacing 'the critical facts', which the User found vague and open to misreading. No other surface states the rule, so nothing else changes; a guidance change note tells running sessions."
+  "reason": "Reviewed lifecycle hooks, the Notifai skill, harness setup, CLI readiness and domain terms. The refusal of a self-opened Claude Code picker or Codex card right after notifai ask is reverted at the User's request, pending a more careful design: the Claude Code PreToolUse(AskUserQuestion) hook entry is no longer installed, ask's human output returns to its previous order, and the exact-content duplicate guard remains. The SubagentStop reminder entry stays, so Claude Code hook definitions still change in this release. The combined change note no longer announces the refusal, and a short note tells beta sessions it is withdrawn. No skill, reference or topic text described the refusal."
 }
