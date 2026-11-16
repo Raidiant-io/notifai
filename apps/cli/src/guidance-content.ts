@@ -93,10 +93,9 @@ const CONTENT = `# Content
 
 The User may read a notification or question only on their phone or another
 device, away from the conversation, the terminal and this machine. Each one
-carries what they need to understand it and act on it: the critical facts
-themselves, and enough context to make sense of them. Never point elsewhere
-for them ("details in the conversation", "see the terminal", "as discussed
-above"); if it matters, say it here.
+carries the information they need to understand it and, for a question, to
+answer it. Never point elsewhere for that ("details in the conversation", "see
+the terminal", "as discussed above"); if they need it, say it here.
 
 Keep it short, simple and clear. The Summary is one plain sentence for a
 banner, understandable without having followed the work. Add a Body only when
