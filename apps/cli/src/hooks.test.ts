@@ -431,31 +431,17 @@ describe('lifecycle guidance policy', () => {
 })
 
 describe('pending-question turn-end reminder', () => {
-  it('queues a root reminder once even when the wake ends with a new native turn id', async () => {
+  it('never wakes a root session to remind it of its own open question', async () => {
+    // A reminder pushed through the wake channel starts an extra turn that
+    // looks like a message from another session. Only answers and notes wake
+    // an Agent Session; the asking worker is held by its own SubagentStop.
     const h = harness()
     const session = '12345678-1234-1234-1234-123456789abc'
-    // A submitted question whose original owner has ended; Stop may reconcile
-    // it, but must not start another full-window wait.
     registerQuestion(session, h.env, { question: 'Which colour?', title: 'Choose a colour', request_id: 'req_colour', reply_deadline_at: NOW + 60_000 }, NOW)
     const queued: string[] = []
     const deps = { ...h.deps, codexWake: { queue: async (_id: string, _cwd: string, text: string) => { queued.push(text) } } }
-    await hookRunCommand(deps, 'stop', stdin({ session_id: session, turn_id: 'recursive', stop_hook_active: true, cwd: h.deps.cwd }), 'codex')
-    expect(queued).toEqual([])
-    const queuedAtPoll: number[] = []
-    h.recorder.beforeReplies = async () => { queuedAtPoll.push(queued.length) }
     await hookRunCommand(deps, 'stop', stdin({ session_id: session, turn_id: 'first', cwd: h.deps.cwd }), 'codex')
-    delete h.recorder.beforeReplies
-    expect(queuedAtPoll[0]).toBe(1)
-    expect(queued).toHaveLength(1)
-    expect(queued[0]).toContain('Choose a colour')
-    expect(queued[0]).toMatch(/not finished/)
-    await hookRunCommand(deps, 'stop', stdin({ session_id: session, turn_id: 'wake', cwd: h.deps.cwd }), 'codex')
-    expect(queued).toHaveLength(1)
-    registerQuestion(session, h.env, { question: 'Which shade?', title: 'Choose a shade', request_id: 'req_shade' }, NOW)
-    await hookRunCommand(deps, 'stop', stdin({ session_id: session, turn_id: 'later', cwd: h.deps.cwd }), 'codex')
-    expect(queued).toHaveLength(2)
-    expect(queued[1]).toContain('Choose a shade')
-    expect(queued[1]).not.toContain('Choose a colour')
+    expect(queued).toEqual([])
   })
 
   it('is silent after the registered question is closed', async () => {
@@ -1228,17 +1214,13 @@ describe('Claude Code Stop wake route', () => {
   }
 
 
-  it('posts a pending-question reminder into the exact Claude inbox once', async () => {
+  it('posts nothing into the Claude inbox for an open question of that session', async () => {
     const h = harness()
     registerQuestion('claude-route', h.env, { question: 'Which colour?', title: 'Choose a colour', request_id: 'req_colour' }, NOW)
     const wake = claudeWake()
     const deps = { ...h.deps, claudeWake: wake, claudeSourcePid: 12345 }
-    for (let turn = 0; turn < 2; turn += 1) {
-      await hookRunCommand(deps, 'stop', stdin({ session_id: 'claude-route', cwd: h.deps.cwd }), 'claude-code')
-    }
-    expect(wake.sent).toHaveLength(1)
-    expect(wake.sent[0]).toContain('Choose a colour')
-    expect(wake.sent[0]).toContain('not finished')
+    await hookRunCommand(deps, 'stop', stdin({ session_id: 'claude-route', cwd: h.deps.cwd }), 'claude-code')
+    expect(wake.sent).toEqual([])
   })
 
   /**

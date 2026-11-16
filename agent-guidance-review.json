@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "behavior_digest": "sha256:9f3a681328f82bb99259f18954c786245538df3dfef44d512752d18dfd4b06c7",
+  "behavior_digest": "sha256:31d0687639e212bd7d58acc4cff60bafe3891721b458ac04fab9a863894fb234",
   "outcome": "guidance-updated",
   "surfaces_reviewed": [
     "lifecycle-hooks",
@@ -9,5 +9,5 @@
     "cli-readiness",
     "domain-terms"
   ],
-  "reason": "Reviewed lifecycle hooks, the Notifai skill, harness setup, CLI readiness and domain terms. Claude Code's synchronous SubagentStop handler (the subagent pending-question reminder) is now a required handler: the integration health check and doctor's hook check report it missing on installations that predate it, so an update's integration resume adds it and doctor no longer reports such hooks ready. Hook definitions for a fresh install are unchanged; Codex is unaffected. As updates.md already says, an update that rewrites Claude Code hook definitions stays staged until an agent offers it. A guidance change note tells running sessions."
+  "reason": "Reviewed lifecycle hooks, the Notifai skill, harness setup, CLI readiness and domain terms. The root pending-question reminder is removed: Claude Code and Codex Stop no longer push a reminder through the wake channel (Claude Code inbox, Codex queue), which started an extra turn per open question presented as a message from another session. The synchronous Claude Code SubagentStop hold for the asking worker stays, and hook definitions are unchanged. The skill, topics and ask output still say asking work stays unfinished while its question is open. A guidance change note tells running sessions."
 }

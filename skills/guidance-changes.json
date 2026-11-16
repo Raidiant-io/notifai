@@ -1,5 +1,5 @@
 {
-  "current": "56b0e753614e959493fe78cd37c8ceaecaa9c4078a9241bbdd925a2b45a6b704",
+  "current": "b3dcec99ab7608d3c8c7ada6cd8ecd6425bacc67b15a581278da1395f06ee5ab",
   "releases": [
     {
       "digest": "3e47b01bc6bbfb43e910c660b9964fab6459d75148c3c02dcbcd0be64cfb2963",
@@ -404,6 +404,10 @@
     {
       "digest": "56b0e753614e959493fe78cd37c8ceaecaa9c4078a9241bbdd925a2b45a6b704",
       "note": "Updating now adds the Claude Code hook that reminds a subagent of its open question before it reports, on machines set up before that hook existed; `notifai doctor` reports it when it is missing. Nothing changes in what you do."
+    },
+    {
+      "digest": "b3dcec99ab7608d3c8c7ada6cd8ecd6425bacc67b15a581278da1395f06ee5ab",
+      "note": "Notifai no longer wakes you with a reminder about your own open question after your turn ends; that reminder arrived as an extra turn that looked like a message from another session. Your open question still keeps the work it unblocks unfinished, and a Claude Code subagent that asked is still held once before it reports."
     }
   ]
 }
