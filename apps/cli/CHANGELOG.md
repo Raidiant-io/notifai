@@ -8,6 +8,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 This project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 and [Conventional Commits](https://www.conventionalcommits.org/en/v1.0.0/).
 
+## [14.7.0-beta.2](https://github.com/Raidiant-io/notifai/compare/v14.6.1...v14.7.0-beta.2) (2026-11-16)
+
+### Features
+
+* Agents write notifications and questions you can understand and answer from your phone alone, and Hermes agents get the full Notifai guidance again.
+* Notifai guidance is on by default in every Project you haven't disabled and outside Projects, a machine setting can require enabling each Project instead, and `notifai guidance edit` opens a topic in your editor.
+
+### Bug Fixes
+
+* Agents are reminded when a question they asked is still waiting, so they don't report that work as done; this adds a Claude Code hook, so the automatic update waits until you approve it once.
+
 ## [14.6.1](https://github.com/Raidiant-io/notifai/compare/v14.6.0...v14.6.1) (2026-11-15)
 
 ### Bug Fixes
