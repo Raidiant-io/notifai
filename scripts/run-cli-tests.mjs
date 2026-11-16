@@ -1,9 +1,40 @@
 import { spawn } from 'node:child_process'
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs'
+import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync } from 'node:fs'
 import {createRequire} from 'node:module'
 import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
+
+/**
+ * The first skill file whose bytes differ between skills/notifai and the
+ * bundle a build copies into apps/cli/dist, or null when they match. Init and
+ * migration tests install that bundle; a stale one fails them with a
+ * misleading skill gap instead of naming the missing build.
+ */
+function staleSkillBundle(repository) {
+  const source = path.join(repository, 'skills', 'notifai')
+  if (!existsSync(source)) return null
+  const bundle = path.join(repository, 'apps', 'cli', 'dist', 'skill-source', 'notifai')
+  const files = (dir) => readdirSync(dir, { recursive: true, withFileTypes: true })
+    .filter((entry) => entry.isFile())
+    .map((entry) => path.relative(dir, path.join(entry.parentPath, entry.name)))
+    .sort()
+  if (!existsSync(bundle)) return 'skills/notifai'
+  const wanted = files(source)
+  const built = files(bundle)
+  const extra = built.find((file) => !wanted.includes(file))
+  if (extra !== undefined) return path.join('skills/notifai', extra)
+  return wanted.map((file) => path.join('skills/notifai', file)).find((file, index) =>
+    !existsSync(path.join(bundle, wanted[index])) ||
+    !readFileSync(path.join(source, wanted[index])).equals(readFileSync(path.join(bundle, wanted[index])))) ?? null
+}
+
+const stale = staleSkillBundle(fileURLToPath(new URL('..', import.meta.url)))
+if (stale !== null) {
+  console.error(`apps/cli/dist holds an older skill bundle than ${stale}. ` +
+    'Build first with `pnpm --filter @raidiant/notifai build`, or run `pnpm --filter @raidiant/notifai test`, which builds.')
+  process.exit(2)
+}
 
 const root = mkdtempSync(path.join(os.tmpdir(), 'notifai-cli-tests-'))
 const home = path.join(root, 'home')

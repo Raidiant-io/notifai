@@ -30,3 +30,37 @@ test('CLI test runner resolves Vitest from the CLI package that owns it', () => 
     rmSync(fixture, {recursive: true, force: true})
   }
 })
+
+test('CLI test runner refuses a build whose skill bundle is older than the skill source', () => {
+  // Init and migration tests install the bundle a build copies into dist. A
+  // stale one fails them with a misleading skill gap instead of naming the cause.
+  const fixture = mkdtempSync(path.join(os.tmpdir(), 'notifai-cli-test-runner-'))
+  const scripts = path.join(fixture, 'scripts')
+  const cli = path.join(fixture, 'apps', 'cli')
+  const vitest = path.join(cli, 'node_modules', 'vitest')
+  const source = path.join(fixture, 'skills', 'notifai')
+  const bundle = path.join(cli, 'dist', 'skill-source', 'notifai')
+  try {
+    for (const dir of [scripts, vitest, source, bundle]) mkdirSync(dir, {recursive: true})
+    copyFileSync('scripts/run-cli-tests.mjs', path.join(scripts, 'run-cli-tests.mjs'))
+    writeFileSync(path.join(cli, 'package.json'), '{"type":"module"}\n')
+    writeFileSync(
+      path.join(vitest, 'package.json'),
+      '{"name":"vitest","type":"module","exports":{"./package.json":"./package.json"},"bin":{"vitest":"./vitest.mjs"}}\n',
+    )
+    writeFileSync(path.join(vitest, 'vitest.mjs'), 'process.exitCode = 0\n')
+    writeFileSync(path.join(source, 'SKILL.md'), 'new\n')
+    writeFileSync(path.join(bundle, 'SKILL.md'), 'old\n')
+    const run = () => spawnSync(process.execPath, [path.join(scripts, 'run-cli-tests.mjs')], {cwd: fixture, encoding: 'utf8'})
+
+    const stale = run()
+    assert.equal(stale.status, 2)
+    assert.match(stale.stderr, /SKILL\.md/)
+    assert.match(stale.stderr, /pnpm --filter @raidiant\/notifai build/)
+
+    writeFileSync(path.join(bundle, 'SKILL.md'), 'new\n')
+    assert.equal(run().status, 0)
+  } finally {
+    rmSync(fixture, {recursive: true, force: true})
+  }
+})
