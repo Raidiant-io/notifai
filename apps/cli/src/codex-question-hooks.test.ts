@@ -190,25 +190,6 @@ it('registers each of several cards in one turn as its own question', async () =
   expect(new Set(state.codex_question_bindings!.map(item => item.question_id)).size).toBe(2)
 })
 
-it.each([4_000, 59_999, 60_000])('guards a reworded card after an ordinary ask for a bounded window (%s ms)', async age => {
-  const h = setup()
-  const now = Date.now()
-  const asked = registerQuestion(SESSION, h.env, { question: 'Where should this deploy go?', title: 'Deploy target',
-    summary: 'Where should this deploy go?', registered_via_ask: true,
-    service_identity: { base_url: 'https://test.notifai.invalid', machine_id: 'mac_test' },
-    questions: [{ id: 'target', text: 'Where should this deploy go?' }] }, now)
-  h.deps.now = () => now + age
-  await hookRunCommand(h.deps, 'pre-tool-use', async () => JSON.stringify(h.envelope), 'codex')
-  const decision = JSON.parse(h.output.join('')).hookSpecificOutput
-  expect(decision.permissionDecision).toBe(age < 60_000 ? 'deny' : undefined)
-  if (age < 60_000) {
-    expect(decision.permissionDecisionReason).toContain(asked.question_id)
-    expect(decision.permissionDecisionReason).toContain('Deploy target')
-    expect(h.launch).not.toHaveBeenCalled()
-    expect(readSessionState(SESSION, h.env).pending).toHaveLength(1)
-  }
-})
-
 it('links a card that follows an ordinary ask of the same question instead of asking twice', async () => {
   const h = setup()
   const service = { base_url: 'https://test.notifai.invalid', machine_id: 'mac_test' }
@@ -265,8 +246,8 @@ function handBack(h: ReturnType<typeof setup>, labels: Record<string, string> = 
   const owner = readSessionIncarnation(SESSION, h.env)!
   recordTurnStart(SESSION, h.env, owner.key, TURN)
   const choices = Object.entries(labels).map(([id, label]) => ({ id, label }))
-  return registerQuestion(SESSION, h.env, { question: 'Which environment?', title: 'Deploy target', summary: 'Which environment?',
-    registered_via_ask: true, service_identity: service, questions: [{ id: 'environment', text: 'Which environment?', choices }],
+  return registerQuestion(SESSION, h.env, { question: 'Which environment?', summary: 'Which environment?',
+    service_identity: service, questions: [{ id: 'environment', text: 'Which environment?', choices }],
   }, Date.now(), { owner_key: owner.key, turn_id: TURN, service,
     handback: [{ title: 'Which environment?', labels }],
   }).question_id
@@ -280,37 +261,40 @@ it.each([false, true])('does not claim an unsubmitted ask hand-back reached devi
   const envelope = mismatch ? { ...h.envelope, tool_input: { questions: [{ title: 'Something else?' }] } } : h.envelope
   await hookRunCommand(h.deps, 'pre-tool-use', async () => JSON.stringify(envelope), 'codex')
   const decision = JSON.parse(h.output.join('\n')).hookSpecificOutput
-  expect(decision.permissionDecision).toBe(mismatch ? 'deny' : undefined)
-  expect(h.output.join('')).toContain(mismatch ? 'Wait for its answer' : 'Device delivery is not confirmed yet')
+  // A card that differs from the hand-back is never refused.
+  expect(decision.permissionDecision).toBeUndefined()
+  expect(h.output.join('')).toContain(mismatch ? 'registers this card' : 'Device delivery is not confirmed yet')
   if (!mismatch) expect(h.output.join('')).not.toContain("on the User's devices")
   expect(readSessionState(SESSION, h.env).pending!.map(question => question.question_id)).toEqual([asked])
 })
 
-it('refuses a reworded hand-back without disturbing the exact card or registering a second question', async () => {
+it('registers a card that differs from the hand-back as its own question and names the hand-back', async () => {
   const h = setup()
   const asked = handBack(h)
   const other = { ...h.envelope, tool_input: { questions: [{ title: 'Something else?' }] } }
   await hookRunCommand(h.deps, 'pre-tool-use', async () => JSON.stringify(other), 'codex')
-  expect(JSON.parse(h.output.join('')).hookSpecificOutput).toMatchObject({ permissionDecision: 'deny',
-    permissionDecisionReason: expect.stringContaining(asked) })
-  expect(readSessionState(SESSION, h.env).pending).toHaveLength(1)
-  expect(h.launch).not.toHaveBeenCalled()
+  h.output.length = 0
+  await hookRunCommand(h.deps, 'post-tool-use', async () => JSON.stringify({ ...other,
+    hook_event_name: 'PostToolUse', tool_response: { accepted: true } }), 'codex')
+  const state = readSessionState(SESSION, h.env)
+  expect(state.pending).toHaveLength(2)
+  expect(h.output.join('')).toContain(`It is not the card notifai ask handed back for ${asked}`)
+  expect(h.output.join('')).toContain(`notifai close ${asked}`)
+  // The hand-back stays linkable: its exact card still joins it later in the turn.
   const exact = { ...h.envelope, tool_use_id: 'call_exact' }
   h.output.length = 0
   await hookRunCommand(h.deps, 'pre-tool-use', async () => JSON.stringify(exact), 'codex')
-  expect(h.output.join('')).not.toContain('permissionDecision')
   await hookRunCommand(h.deps, 'post-tool-use', async () => JSON.stringify({ ...exact,
     hook_event_name: 'PostToolUse', tool_response: { accepted: true } }), 'codex')
-  expect(readSessionState(SESSION, h.env).pending).toHaveLength(1)
   expect(readSessionState(SESSION, h.env).codex_question_bindings!.find(item => item.question_id === asked))
     .toMatchObject({ card_call_id: 'call_exact', questions: [expect.objectContaining({ verified: true })] })
+  expect(readSessionState(SESSION, h.env).pending).toHaveLength(2)
 })
 
 it('links a card equal to a hand-back question even when its options are not in hand-back order', async () => {
   const h = setup()
   // A recommended choice is handed back first; a card in the ask's own order is the same question.
   const asked = handBack(h, { production: 'Production', staging: 'Staging' })
-  h.deps.now = () => readSessionState(SESSION, h.env).pending![0]!.asked_at! + 60_000
   const reordered = { ...h.envelope, tool_input: { questions: [{ title: 'Which environment?', options: ['Production', 'Staging'] }] } }
   const service = { base_url: 'https://test.notifai.invalid', machine_id: 'mac_test' }
   const state = readSessionState(SESSION, h.env)
@@ -373,7 +357,6 @@ it('hands back the card from ask without a route that closes it, and links that 
   const code = await askCommand(h.deps, 'Which environment?', { title: 'Deploy target', choice: ['Staging', 'Production'], json: true })
   expect(code).toBe(0)
   const result = JSON.parse(h.output.filter(line => line.trimStart().startsWith('{')).join('\n'))
-  expect(readSessionState(SESSION, h.env).pending![0]!.registered_via_ask).toBe(true)
   expect(result.native_question_unavailable).toBeUndefined()
   expect(result.open_form).toEqual({ tool: 'request_user_input_async', input: CARD })
   h.output.length = 0

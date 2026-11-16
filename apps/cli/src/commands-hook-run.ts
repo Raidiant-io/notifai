@@ -112,7 +112,6 @@ import { recordClaudeSessionTitle, recordClaudeTranscriptPath } from './harness-
 import { recordClaudePermissionMode } from './claude-command-approval.js'
 import { recordReopenLaunch } from './reopen-terminal.js'
 import {
-  claudePreToolUse,
   claudePermissionRequest,
   claudePostToolUse,
   closeClaudePicker,
@@ -585,7 +584,6 @@ export async function hookRunCommand(
         wrote = true
         deps.io.out(appendIntegrationContext(line, changed, harness, 'PreToolUse'))
       } }
-      if (harness === 'claude-code') claudePreToolUse({ ...deps, io }, envelope, logger)
       if (harness === 'codex') await codexPreToolUse({ ...deps, io }, envelope, logger)
       if (!wrote && changed !== undefined) deps.io.out(appendIntegrationContext(undefined, changed, harness, 'PreToolUse'))
       logger.info('hook.end', { hook: event, outcome: 'checked', decided: false })

@@ -13,7 +13,6 @@ import type { HookEnvelope } from './hook-types.js'
 import type { Logger } from './logging.js'
 import { processIdentityLiveness } from './process-identity.js'
 import { projectBinding, projectDisabled } from './project-enablement.js'
-import { recentAskQuestion, recentAskRefusal } from './question-guard.js'
 import { spawnQuestionSettlement } from './question-settlement-process.js'
 import { currentCodexTurn, recordTurnStart } from './session-attendant-state.js'
 
@@ -45,8 +44,8 @@ async function routeCard(deps: CommandDeps, envelope: HookEnvelope, logger: Logg
   recordTurnStart(sessionId, deps.env, owner.key, envelope.turn_id)
   const service = { machine_id: credential.machineId, base_url: credential.baseUrl }
   const handback = matchCodexCardHandback(sessionId, deps.env, envelope, owner.key, service, accepted, (deps.now ?? Date.now)())
-  // Exact hand-backs keep their existing route; a different form immediately
-  // after an explicit ask is checked below before Codex opens it.
+  // A card that is not a hand-back of this turn is a card of its own. It is
+  // never refused; ask's still-open registration stays on the devices.
   const unmatched = handback?.reason === 'mismatch' ? handback.registration.question_id : undefined
   if (handback !== null && unmatched === undefined) {
     const id = handback.registration.question_id
@@ -66,15 +65,6 @@ async function routeCard(deps: CommandDeps, envelope: HookEnvelope, logger: Logg
     if (accepted) return context
     deps.io.out(JSON.stringify({ hookSpecificOutput: { hookEventName: 'PreToolUse', additionalContext: context } }))
     return null
-  }
-  if (!accepted) {
-    const recent = recentAskQuestion(readSessionState(sessionId, deps.env), service, (deps.now ?? Date.now)())
-    if (recent !== undefined) {
-      deps.io.out(JSON.stringify({ hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'deny',
-        permissionDecisionReason: recentAskRefusal(recent) } }))
-      logger.info('hook.gate', { hook: 'pre-tool-use', reason: 'refused', stage: 'form-refused-recent-ask', question_ids: [recent.question_id] })
-      return null
-    }
   }
   const unsupported = (detail?: string) => {
     logger.info('hook.gate', { stage: 'form-terminal-only', form: 'codex-card', reason: 'unsupported-shape', session: sessionId,

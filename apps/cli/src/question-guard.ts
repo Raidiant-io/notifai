@@ -15,9 +15,7 @@
  * flag. Title, Summary, Body, images, descriptions and the recommended mark
  * are not part of it. Nothing is normalised or guessed.
  */
-import { isDeepStrictEqual } from 'node:util'
 import type { QuestionT } from '@raidiant/notifai-protocol'
-import type { ServiceIdentity } from './credentials.js'
 import { pendingList } from './hook-session-state.js'
 import type { PendingQuestion, SessionState } from './hook-types.js'
 
@@ -56,24 +54,4 @@ export function captureCandidates(state: SessionState): PendingQuestion[] {
 export function findOpenEqualQuestion(state: SessionState, questions: readonly QuestionT[] | undefined): PendingQuestion | undefined {
   if (questions === undefined) return undefined
   return captureCandidates(state).find((pending) => sameQuestions(pending.questions, questions))
-}
-
-/**
- * Catch the immediate ask-then-form mistake without guessing whether two texts
- * mean the same thing. Claude Code has no stable turn id: use a 60-second
- * window, ending sooner at a new User prompt. Even a long unanswered question
- * cannot bar a later form indefinitely. Only explicit `ask` registrations
- * qualify; native forms remain free to ask several independent questions.
- */
-export function recentAskQuestion(state: SessionState, service: ServiceIdentity, now: number): PendingQuestion | undefined {
-  return captureCandidates(state).filter(pending => pending.registered_via_ask === true &&
-    pending.asked_by === undefined && pending.asked_at !== undefined &&
-    now >= pending.asked_at && now - pending.asked_at < 60_000 &&
-    (state.last_prompt_at ?? 0) <= pending.asked_at && isDeepStrictEqual(pending.service_identity, service))
-    .sort((a, b) => b.asked_at! - a.asked_at!)[0]
-}
-
-export function recentAskRefusal(pending: PendingQuestion): string {
-  return `Question ${pending.question_id} (${JSON.stringify(pending.title ?? pending.summary)}) is already registered for the User's devices. ` +
-    'Wait for its answer; do not open another form for it. For a separate question, run `notifai ask`.'
 }
