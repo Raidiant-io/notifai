@@ -8,6 +8,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 This project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 and [Conventional Commits](https://www.conventionalcommits.org/en/v1.0.0/).
 
+## [14.7.1](https://github.com/Raidiant-io/notifai/compare/v14.7.0...v14.7.1) (2026-11-16)
+
+### Bug Fixes
+
+* Agents are no longer woken after their turn with a reminder about their own open question, which arrived looking like a message from another session.
+
 ## [14.7.0](https://github.com/Raidiant-io/notifai/compare/v14.6.1...v14.7.0) (2026-11-16)
 
 ### Features
