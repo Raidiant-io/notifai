@@ -8,7 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 This project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 and [Conventional Commits](https://www.conventionalcommits.org/en/v1.0.0/).
 
-## [14.7.0-beta.3](https://github.com/Raidiant-io/notifai/compare/v14.6.1...v14.7.0-beta.3) (2026-11-16)
+## [14.7.0](https://github.com/Raidiant-io/notifai/compare/v14.6.1...v14.7.0) (2026-11-16)
 
 ### Features
 
@@ -17,7 +17,7 @@ and [Conventional Commits](https://www.conventionalcommits.org/en/v1.0.0/).
 
 ### Bug Fixes
 
-* Agents are reminded when a question they asked is still waiting, so they don't report that work as done; the update adds a Claude Code hook for this, so it waits until you approve it once.
+* Agents, including Claude Code subagents, are reminded when a question they asked is still waiting, so they don't report that work as done.
 
 ## [14.6.1](https://github.com/Raidiant-io/notifai/compare/v14.6.0...v14.6.1) (2026-11-15)
 
