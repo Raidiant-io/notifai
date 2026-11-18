@@ -1044,7 +1044,7 @@ describe('user-prompt-submit hook', () => {
       const context = promptContext(h)
       expect(context).toContain('q_palette: "Which palette should the banner use?" (Blue / Red). Close: `notifai close q_palette`')
       expect(context).toContain('q_release: "Ship the release notes today?" (Ship today / Wait). Close: `notifai close q_release`')
-      expect(context).toContain('Close only those. Leave every other question open')
+      expect(context).toContain('Close nothing else: every other question stays open')
       expect(readSessionState('open-listed', h.env).pending?.map((entry) => entry.question_id)).toEqual(['q_palette', 'q_release'])
       expect(h.recorder.closed).toEqual([])
     })
@@ -1463,6 +1463,46 @@ describe('escalation waiter delivery seam', () => {
       harness: 'codex' as const,
     }
   }
+
+  it('keeps an independent question answerable when another one is closed during the wait', async () => {
+    // The agent closes the question the User answered in the conversation.
+    // Its window ending early is no reason to expire the other question.
+    const h = harness([])
+    const question = (id: string, text: string, dueIn: number): PendingQuestion => ({
+      question: text, question_id: `q_${id}`, request_id: `req_${id}`, collapse_key: `c_${id}`, device_ids: ['dev_test'], reply_deadline_at: NOW + dueIn, owner_deadline_at: NOW + 2 * 86_400_000,
+    })
+    registerQuestion('two-open', h.env, question('banner', 'Banner colour?', 86_400_000), NOW)
+    registerQuestion('two-open', h.env, question('font', 'Heading font?', 86_401_000), NOW)
+    let bannerPolls = 0
+    let fontPolls = 0
+    const deferred = vi.fn(async () => undefined)
+    const outcome = await runEscalationWaiter({
+      ...waiterContext(h),
+      harness: 'claude-code',
+      waitForFirstReply: async (requestId: string) => {
+        if (requestId === 'req_font') {
+          // The first poll is the owner's recovery check; the close lands in its wait.
+          if (++fontPolls === 1) return { replies: [], timedOut: true }
+          const state = readSessionState('two-open', h.env)
+          writeSessionState('two-open', h.env, { ...state, pending: state.pending!.filter((entry) => entry.request_id !== 'req_font') })
+          return { replies: [], timedOut: false, closed: true }
+        }
+        bannerPolls += 1
+        return bannerPolls <= 2
+          ? { replies: [], timedOut: true }
+          : { replies: [reply({ text: 'Blue' })], timedOut: false }
+      },
+    }, {
+      sessionId: 'two-open', envelope: { session_id: 'two-open' },
+      route: { kind: 'inbox-socket', deliver: vi.fn(), defer: deferred }, recordStop: false,
+      processDeadlineAt: NOW + 2 * 86_400_000,
+    })
+    expect(outcome.notes.join('\n')).not.toContain('expired')
+    expect(deferred).toHaveBeenCalledTimes(1)
+    expect(deferred.mock.calls[0]?.[0]).toMatchObject({
+      answers: [expect.objectContaining({ pending: expect.objectContaining({ request_id: 'req_banner' }), reply: expect.objectContaining({ text: 'Blue' }) })],
+    })
+  })
 
   it('observes a fresh answer without spending invisible acknowledgement reminders', async () => {
     const h = harness([reply({ text: 'New answer' })])

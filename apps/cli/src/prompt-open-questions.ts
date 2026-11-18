@@ -14,6 +14,7 @@
  * question; it records no answer.
  */
 
+import type { QuestionT } from '@raidiant/notifai-protocol'
 import type { PendingQuestion, SessionState } from './hook-types.js'
 import { questionsAwaitingAnswer } from './native-answer-operation.js'
 
@@ -39,14 +40,19 @@ function shortened(text: string): string {
   return flat.length <= TEXT_AT_MOST ? flat : `${flat.slice(0, TEXT_AT_MOST - 1)}…`
 }
 
+function line(text: string, choices: QuestionT['choices']): string {
+  return `${JSON.stringify(shortened(text))}${choices === undefined ? '' : ` (${choices.map((choice) => choice.label).join(' / ')})`}`
+}
+
 function describe(entry: PendingQuestion): string {
   const questions = entry.questions ?? []
-  const first = questions[0]
-  const text = shortened(first?.text ?? entry.question)
-  const choices = first?.choices === undefined ? '' : ` (${first.choices.map((choice) => choice.label).join(' / ')})`
-  const more = questions.length > 1 ? ` and ${questions.length - 1} more question${questions.length > 2 ? 's' : ''} in the same form` : ''
   const asker = entry.asked_by === undefined ? '' : ', asked by a subagent'
-  return `- ${entry.question_id}${asker}: ${JSON.stringify(text)}${choices}${more}. Close: \`notifai close ${entry.question_id}\``
+  const close = `Close: \`notifai close ${entry.question_id}\``
+  if (questions.length <= 1) return `- ${entry.question_id}${asker}: ${line(questions[0]?.text ?? entry.question, questions[0]?.choices)}. ${close}`
+  return [
+    `- ${entry.question_id}${asker}, one form of ${questions.length} questions that closes as a whole. ${close}`,
+    ...questions.map((question) => `  - ${line(question.text, question.choices)}`),
+  ].join('\n')
 }
 
 /** The context for one genuine User prompt, or null when nothing is open. */
@@ -60,6 +66,6 @@ export function promptOpenQuestionsContext(state: SessionState): string | null {
     ...listed.map(describe),
     ...(rest > 0 ? [`- ${rest} more: \`notifai replies --pending --json\` lists them.`] : []),
     'If the User\'s message answers one of them, or makes it unnecessary, run that question\'s close command before the work it unblocks, then act on the answer as given. ' +
-      'Close only those. Leave every other question open: its answer still comes back here.',
+      'Close a form only when the message settles every question in it. Close nothing else: every other question stays open, and its answer still comes back here.',
   ].join('\n')
 }

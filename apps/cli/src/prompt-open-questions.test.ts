@@ -34,7 +34,7 @@ describe('promptOpenQuestions', () => {
       ...['3', '4', '5', '6', '7'].map((n) => question(`q_${n}`, `Question ${n}?`)),
     ]
     const context = promptOpenQuestionsContext({ pending } as SessionState)!
-    expect(context).toContain('- q_form: "First?" and 2 more questions in the same form. Close: `notifai close q_form`')
+    expect(context).toContain('- q_form, one form of 3 questions that closes as a whole. Close: `notifai close q_form`\n  - "First?"\n  - "Second?"\n  - "Third?"')
     expect(context).toContain('- q_child, asked by a subagent: "Child?"')
     expect(context).toContain('q_5')
     expect(context).not.toContain('q_6')

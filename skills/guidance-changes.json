@@ -1,5 +1,5 @@
 {
-  "current": "de8b47d99daba886b1e2ea409cf4be6f9901f5255962676ffc9b24012e0bf768",
+  "current": "f0045d4d8d3996c4c19a0cba961ca652008ccbd32869a1fc22ed4ae9ea15a085",
   "releases": [
     {
       "digest": "3e47b01bc6bbfb43e910c660b9964fab6459d75148c3c02dcbcd0be64cfb2963",
@@ -418,8 +418,8 @@
       "note": "No change to what agents must do. Claude Code inbox delivery reconnects the session's own child after Claude restarts in place, using its fresh inbox token; waiting answers and notes remain available to the same Agent Session. A notice about input that has not arrived now identifies its question and Agent Session, with its Project. Existing acknowledgements and the User's inbound-message settings still apply."
     },
     {
-      "digest": "de8b47d99daba886b1e2ea409cf4be6f9901f5255962676ffc9b24012e0bf768",
-      "note": "Asking a question changed in three ways.\n\n- Use one asking action per question: open one question form that Notifai links, or run `notifai ask`, never both. When `ask` hands back no form, it says how to show the question in the conversation; show it once. In Claude Code, a question you keep working on is shown as ordinary conversation text, never as an `AskUserQuestion` picker.\n- Open a handed-back form with its text exactly as returned. What each answer will make you do goes in your message, never in the form: a reworded form is a second question on the User's devices.\n- In Claude Code, a prompt the User types now lists your questions still open on their devices, each with its `notifai close` command. Close exactly the ones that message answers or makes unnecessary, before the work it unblocks; leave the others open."
+      "digest": "f0045d4d8d3996c4c19a0cba961ca652008ccbd32869a1fc22ed4ae9ea15a085",
+      "note": "Asking a question changed in three ways.\n\n- Use one asking action per question: open one question form that Notifai links, or run `notifai ask`, never both. When `ask` hands back no form, it says how to show the question in the conversation; show it once. In Claude Code, a question you keep working on is shown as ordinary conversation text, never as an `AskUserQuestion` picker.\n- Open a handed-back form with its text exactly as returned. What each answer will make you do goes in your message, never in the form: a reworded form is a second question on the User's devices.\n- In Claude Code, a prompt the User types now lists your questions still open on their devices, each with its `notifai close` command. Close exactly the ones that message answers or makes unnecessary, before the work it unblocks; leave the others open.\n- Closing one question no longer ends your other open questions: each stays answerable for its own answer window."
     }
   ]
 }
