@@ -8,6 +8,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 This project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 and [Conventional Commits](https://www.conventionalcommits.org/en/v1.0.0/).
 
+## [14.7.2](https://github.com/Raidiant-io/notifai/compare/v14.7.1...v14.7.2) (2026-11-18)
+
+### Bug Fixes
+
+* When an agent reads Notifai's guidance in one folder and sends from another, a refusal now names both folders and the one command that fixes it, so the agent is no longer stuck being refused.
+* When the CLI prints anything after a notification went out, the first line now says Sent with its id, so agents no longer mistake advice for a failure and send it twice.
+* Agents are asked to name a Project only when it has no name yet, with a command that works from any folder.
+
 ## [14.7.1](https://github.com/Raidiant-io/notifai/compare/v14.7.0...v14.7.1) (2026-11-16)
 
 ### Bug Fixes
