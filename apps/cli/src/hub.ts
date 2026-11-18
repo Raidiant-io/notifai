@@ -1054,8 +1054,8 @@ class HubSession implements AttendedSession {
       const hold = !waiting ? null : this.codexObserver === null ? 'session-gone' : this.codexObserver.hold()
       this.noteWakeHold(hasInput ? hold : null)
       pending = waiting && hold === null
-      // In an Orca chat, card answers go as the User's own answer message once
-      // every card of their turn is answered; that message is also the wake.
+      // In an Orca chat, a card's device answer goes through Orca as soon as it
+      // waits, even while another card stays open; that message is also the wake.
       if (hasInput && this.hub.orcaChatReady(this, state)) {
         void this.hub.orcaChatAnswers(this)
         pending = false
@@ -4176,7 +4176,7 @@ export class Hub {
 
   private readonly orcaSending = new Set<string>()
 
-  /** Whether waiting input includes a complete set of card answers for this session's Orca chat. */
+  /** Whether waiting input includes a card answer this session's Orca chat can take now. */
   orcaChatReady(session: HubSession, state: SessionState): boolean {
     if (session.harness !== 'codex' || state.orca_chat?.key !== session.record.key ||
         this.clock.monotonic() < session.orcaChatRetryAt) return false

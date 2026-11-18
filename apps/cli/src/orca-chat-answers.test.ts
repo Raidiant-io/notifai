@@ -12,12 +12,13 @@ import { attendantClaimPath, writeAttendantStatus } from './session-attendant-st
 import { drainSessionInputs, hasSessionInputs } from './session-inputs.js'
 import { CodexControlNotSent } from './codex-native-control.js'
 import type { CodexQuestionRegistration } from './codex-question-bindings.js'
-import { readSessionState, writeSessionState } from './hook-session-state.js'
+import { readSessionState, updateSessionState, writeSessionState } from './hook-session-state.js'
 import type { AnsweredPending, SessionState } from './hook-types.js'
 import {
-  isOrcaChatSentPrompt, orcaAnswerText, orcaCardGroup, orcaChatPresentation, orcaChatSessionOf, orcaChatShowsCards, recordOrcaChatSession, sendOrcaChatWake, takeOrcaChatSentContext,
+  isOrcaChatSentPrompt, orcaAnswerText, orcaCardGroup, orcaCardsLeftOpen, orcaChatPresentation, orcaChatSessionOf, orcaChatShowsCards, recordOrcaChatSession, sendOrcaChatWake, takeOrcaChatSentContext,
 } from './orca-chat-answers.js'
 import { codexRouteProfile } from './codex-surface.js'
+import { parseCodexTerminalReplies } from './codex-terminal-answers.js'
 import type { CodexHostKind } from './session-place.js'
 import { orcaPayloadFingerprint, orcaRuntime, orcaUserDataPath, type OrcaRpcResult, type OrcaRuntime } from './orca-runtime.js'
 
@@ -98,13 +99,25 @@ describe('which Orca chat a hook runs in', () => {
 })
 
 describe('a turn\'s card answers', () => {
-  it('wait until every card of the turn has a device answer', () => {
-    expect(orcaCardGroup(state({ waiting_answers: [answer('qa', ['blue'])] }), OWNER, SERVICE, answer('qa', ['blue']))).toBeNull()
+  it('go at once: a card answered on a device is ready while another card of the turn still waits', () => {
+    const one = orcaCardGroup(state({ waiting_answers: [answer('qa', ['blue'])] }), OWNER, SERVICE, answer('qa', ['blue']))!
+    expect(one.map((entry) => entry.registration.question_id)).toEqual(['qa'])
+    // The card left open is the one Orca's chat loses and the devices keep.
+    expect(orcaCardsLeftOpen(state({ waiting_answers: [answer('qa', ['blue'])] }), OWNER, one).map((item) => item.question_id)).toEqual(['qb'])
     const both = state({ waiting_answers: [answer('qa', ['blue']), answer('qb', [], 'the larger one, please')] })
     const group = orcaCardGroup(both, OWNER, SERVICE, answer('qa', ['blue']))!
     expect(group.map((entry) => entry.registration.question_id)).toEqual(['qa', 'qb'])
     // Exactly what Orca's own card sends.
     expect(orcaAnswerText(group)).toBe('> Card A: which color?\n\nBlue\n\n> Card B: which size?\n\nthe larger one, please')
+  })
+
+  it('leave out an answer this route cannot present whole, and a card a sent message already cleared from Orca', () => {
+    const corrected = { ...answer('qb', ['small']), replies: [answer('qb', ['small']).reply, { ...answer('qb', ['large']).reply, seq: 2 }] }
+    const mixed = state({ waiting_answers: [answer('qa', ['blue']), corrected] })
+    expect(orcaCardGroup(mixed, OWNER, SERVICE, answer('qa', ['blue']))!.map((entry) => entry.registration.question_id)).toEqual(['qa'])
+    expect(orcaCardGroup(mixed, OWNER, SERVICE, corrected)).toBeNull()
+    const cleared = state({ codex_question_bindings: [cardA, { ...cardB, orca_card_cleared: true }], waiting_answers: [answer('qb', ['large'])] })
+    expect(orcaCardGroup(cleared, OWNER, SERVICE, answer('qb', ['large']))).toBeNull()
   })
 
   it('leave out a card of another turn, and one already handed in', () => {
@@ -151,13 +164,15 @@ function presentation(env: NodeJS.ProcessEnv, runtime: OrcaRuntime, remainingMs?
     serviceCurrent: () => true, wall: () => 1_793_832_381_560, runtime, ...(remainingMs === undefined ? {} : { remainingMs }) })
 }
 
-function home() {
+function home(answers = [answer('qa', ['blue']), answer('qb', ['large'])]) {
   const root = mkdtempSync(path.join(os.tmpdir(), 'notifai-orca-chat-')); roots.push(root)
   const env = { HOME: root, XDG_STATE_HOME: path.join(root, 'state'), XDG_CONFIG_HOME: path.join(root, 'config') }
-  const answers = [answer('qa', ['blue']), answer('qb', ['large'])]
   writeSessionState(SESSION, env, state({ waiting_answers: answers }))
   return { env, answers }
 }
+
+const sentText = (orca: ReturnType<typeof fakeOrca>): string =>
+  ((orca.calls.find((call) => call.method === 'agentSession.send')!.params['body'] as { blocks: Array<{ text: string }> }).blocks[0]!.text)
 
 describe('sending the answers through Orca', () => {
   it('sends one message in Orca\'s own answer format, with the fence it just read and Orca\'s fingerprint', async () => {
@@ -181,6 +196,43 @@ describe('sending the answers through Orca', () => {
     expect(context).not.toContain('Large')
     expect(takeOrcaChatSentContext(SESSION, h.env, prompt)).toBeNull()
     expect(isOrcaChatSentPrompt(SESSION, h.env, 'something else')).toBe(false)
+  })
+
+  it('sends a card answered while another waits as Codex\'s reply envelope naming only that card, and says which card stays on the devices', async () => {
+    const h = home([answer('qa', ['blue'])])
+    const orca = fakeOrca()
+    const prepared = (await presentation(h.env, orca.runtime).prepareGroup!(h.answers, readSessionState(SESSION, h.env), 0))!
+    expect(prepared.presentation).toMatchObject({ kind: 'orca-chat-answers', answers: [{ request_id: 'req_qa' }] })
+    await prepared.write(() => true)
+    const text = sentText(orca)
+    expect(text.startsWith('<send_user_message_question_reply>\n')).toBe(true)
+    const items = JSON.parse(text.slice('<send_user_message_question_reply>\n'.length, -'\n</send_user_message_question_reply>'.length)) as
+      Array<{ questionItemId: string; question: string; answer: string; notifai: { request_id: string; instruction: string } }>
+    expect(items).toHaveLength(1)
+    expect(items[0]).toMatchObject({ questionItemId: '["request_user_input_async","call_a",0]', question: 'Card A: which color?', answer: 'Blue',
+      notifai: { origin: 'companion', request_id: 'req_qa', question_id: 'qa-q' } })
+    expect(items[0]!.notifai.instruction).toContain('Card B: which size?')
+    expect(items[0]!.notifai.instruction).toContain('still open on the User\'s devices')
+    // A device answer is never read back as one given in the agent session.
+    expect(parseCodexTerminalReplies(text)).toEqual([])
+    expect(isOrcaChatSentPrompt(SESSION, h.env, text)).toBe(true)
+    // Orca's chat no longer shows card B; its device question stays open.
+    const after = readSessionState(SESSION, h.env)
+    expect(after.codex_question_bindings!.find((item) => item.question_id === 'qb')!.orca_card_cleared).toBe(true)
+    expect(after.codex_question_bindings!.find((item) => item.question_id === 'qa')!.orca_card_cleared).toBeUndefined()
+    expect(after.pending!.map((item) => item.question_id)).toContain('qb')
+  })
+
+  it.each([
+    ['the chat shows a card Notifai never put on the devices', { cards: ['call_a', 'call_x', 'call_b'] }],
+    ['Orca refuses the message', { send: { ok: false, code: 'agent_session_fence_stale' } as OrcaRpcResult }],
+  ])('sends nothing and keeps the waiting card routable when %s', async (_name, options) => {
+    const h = home([answer('qa', ['blue'])])
+    const prepared = (await presentation(h.env, fakeOrca(options).runtime).prepareGroup!(h.answers, readSessionState(SESSION, h.env), 0))!
+    await expect(prepared.write(() => true)).rejects.toBeInstanceOf(CodexControlNotSent)
+    const after = readSessionState(SESSION, h.env)
+    expect(after.orca_chat_sent ?? []).toEqual([])
+    expect(after.codex_question_bindings!.some((item) => item.orca_card_cleared === true)).toBe(false)
   })
 
   it('offers nothing to send without Orca\'s capabilities, so the ordinary route keeps the answers', async () => {
@@ -357,14 +409,14 @@ describe('the Orca runtime client', () => {
 })
 
 describe('the Orca route as a presentation', () => {
-  async function drained(send?: OrcaRpcResult) {
+  async function drained(send?: OrcaRpcResult, answered: string[] = ['qa', 'qb']) {
     const root = mkdtempSync(path.join(os.tmpdir(), 'notifai-orca-drain-')); roots.push(root)
     const env: NodeJS.ProcessEnv = { HOME: root, XDG_STATE_HOME: path.join(root, 'state'), XDG_CONFIG_HOME: path.join(root, 'config') }
     const incarnation = beginSessionIncarnation(SESSION, env, { stamp: lifecycleStamp(), harnessProcess: currentProcessIdentity()! })
     const lease = { incarnation: incarnation.incarnation, generation: 1 }
     acquireClaimFile(attendantClaimPath(SESSION, env), { incarnation: lease.incarnation }, Date.now())
     writeAttendantStatus(SESSION, env, { ...lease, phase: 'attending', activity: 'idle', reason: null, accepts_messages: true, updated_at: Date.now() })
-    const answers = [answer('qa', ['blue']), answer('qb', ['large'])]
+    const answers = [answer('qa', ['blue']), answer('qb', ['large'])].filter((entry) => answered.includes(entry.pending.question_id!))
     const bindings = [cardA, cardB].map((item) => ({ ...item, owner_key: incarnation.key }))
     writeSessionState(SESSION, env, { ...state({ waiting_answers: answers, codex_question_bindings: bindings }),
       orca_chat: { key: incarnation.key, session_id: ORCA },
@@ -382,6 +434,12 @@ describe('the Orca route as a presentation', () => {
       reportDeliveryAttempt: async (id: string, body: { outcome: string }) => ({ attempt_id: id, ...body, replayed: false }),
     }
     const orca = fakeOrca(send === undefined ? {} : { send })
+    const written: string[] = []
+    const ordinary = () => drainSessionInputs({
+      lease, mayWrite: () => true, write: (text) => { written.push(text) },
+      sequencer: { sessionId: SESSION, env, client: client as unknown as ApiClient, writer: currentProcessIdentity()!,
+        monotonic: () => performance.now(), wall: Date.now, sleep: async () => undefined, recoveryDeadline: performance.now() + 500 },
+    })
     const drain = () => drainSessionInputs({
       lease, mayWrite: () => true, nativeOnly: true, write: () => { throw new Error('an ordinary write') },
       nativeAnswers: orcaChatPresentation({ sessionId: SESSION, env, lease, ownerKey: incarnation.key, service: SERVICE,
@@ -389,8 +447,33 @@ describe('the Orca route as a presentation', () => {
       sequencer: { sessionId: SESSION, env, client: client as unknown as ApiClient, writer: currentProcessIdentity()!,
         monotonic: () => performance.now(), wall: Date.now, sleep: async () => undefined, recoveryDeadline: performance.now() + 500 },
     })
-    return { env, lease, claims, orca, drain }
+    return { env, lease, claims, orca, drain, ordinary, written }
   }
+
+  it('sends a card\'s device answer at once while another card is open, and the other\'s later answer still reaches the agent', async () => {
+    const h = await drained(undefined, ['qa'])
+    expect(await h.drain()).toBe(true)
+    expect(h.claims).toEqual(['req_qa'])
+    const sends = () => h.orca.calls.filter((call) => call.method === 'agentSession.send')
+    expect(sends()).toHaveLength(1)
+    expect(sentText(h.orca)).toContain('call_a')
+    expect(sentText(h.orca)).not.toContain('call_b')
+    // B stays a question on the devices; the User answers it there later.
+    const later = answer('qb', ['large'])
+    updateSessionState(SESSION, h.env, (latest) => ({ ...latest, waiting_answers: [...(latest.waiting_answers ?? []), later],
+      acknowledgement_due: [...(latest.acknowledgement_due ?? []), { request_id: 'req_qb', recorded_at: 2, text_required: true }] }))
+    expect(readSessionState(SESSION, h.env).pending!.map((item) => item.question_id)).toContain('qb')
+    // Orca's chat no longer shows B, so the Orca route offers nothing for it, without asking Orca …
+    const asked = h.orca.calls.length
+    expect(await h.drain()).toBe(false)
+    expect(h.orca.calls).toHaveLength(asked)
+    // … and the ordinary route hands it in.
+    expect(await h.ordinary()).toBe(true)
+    expect(h.claims).toEqual(['req_qa', 'req_qb'])
+    expect(h.written.join('\n')).toContain('notifai acknowledge req_qb')
+    expect(sends()).toHaveLength(1)
+    expect(hasSessionInputs(SESSION, h.env, h.lease)).toBe(false)
+  })
 
   it('claims both answers, sends them once through Orca, and hands in nothing else', async () => {
     const h = await drained()

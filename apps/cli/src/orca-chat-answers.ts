@@ -4,12 +4,17 @@
  * Orca's chat shows a Codex turn's `request_user_input_async` cards as one
  * card and clears all of them on any delivered user message. Its own answer
  * form sends one message quoting each question: `> question\n\nanswer`
- * blocks joined by a blank line. Once every card question of a turn has an
- * answer from the User's device, Notifai sends that same message through
- * Orca's runtime (`agentSession.send`), exactly as the User answering Orca's
- * card would: mid-turn Orca steers it into the running turn, and after a
- * stop it starts a new turn, so it is also the wake. Until then, and wherever
- * this route is unavailable, answers take Notifai's ordinary route.
+ * blocks joined by a blank line. As soon as a card has an answer from the
+ * User's device, Notifai sends it through Orca's runtime (`agentSession.send`),
+ * as the User answering Orca's card would: mid-turn Orca steers it into the
+ * running turn, and after a stop it starts a new turn, so it is also the wake.
+ * When those are all the cards Orca shows, the message is Orca's own answer
+ * format. When another card stays unanswered (a product decision: "Send at
+ * once"), it is Codex's reply envelope naming only the answered cards, and it
+ * tells the agent which cards stay open on the User's devices: Orca clears
+ * those too, exactly as answering one card in Orca does, while their device
+ * questions stay open and their answers later take the ordinary route.
+ * Wherever this route is unavailable, answers take Notifai's ordinary route.
  *
  * The send is the answers' presentation, claimed and journaled like any
  * other, so an answer reaches the agent once: never also as hook context.
@@ -25,7 +30,7 @@ import { readFileSync } from 'node:fs'
 import { isDeepStrictEqual } from 'node:util'
 import { acknowledgementContext } from './hook-acknowledgements.js'
 import { CodexControlNotSent } from './codex-native-control.js'
-import type { CodexQuestionRegistration } from './codex-question-bindings.js'
+import { nativeQuestionTitle, type CodexQuestionRegistration } from './codex-question-bindings.js'
 import { hookCodexRouteProfile, type CodexRouteProfile } from './codex-surface.js'
 import type { CodexHostKind } from './session-place.js'
 import type { ServiceIdentity } from './credentials.js'
@@ -83,6 +88,7 @@ export function recordOrcaChatSession(sessionId: string, env: NodeJS.ProcessEnv,
 function cardRegistration(state: SessionState, ownerKey: string, questionId: string | undefined): CodexQuestionRegistration | undefined {
   return state.codex_question_bindings?.find((item) => item.question_id === questionId && item.owner_key === ownerKey &&
     item.card_call_id !== undefined && item.terminated !== true && item.dismissed !== true && item.terminal_answered !== true &&
+    item.orca_card_cleared !== true &&
     item.questions.length > 0 && item.questions.every((binding) => binding.verified === true && binding.native !== undefined &&
       binding.card !== undefined && binding.ambiguous !== true))
 }
@@ -93,32 +99,49 @@ function wholeAnswer(answer: AnsweredPending, service: ServiceIdentity): boolean
     answer.pending.request_id !== undefined && isDeepStrictEqual(answer.pending.service_identity, service)
 }
 
+type CardAnswer = { registration: CodexQuestionRegistration; answer: AnsweredPending }
+
 /**
- * The cards of the answer's turn, each with its device answer, in the order
- * they were opened; null while any card question of that turn still waits
- * for an answer (sending now would clear a card nobody answered).
+ * The cards of the answer's turn that have a whole device answer waiting, in
+ * the order they were opened; null when the answer itself is not one of them.
+ * A card still waiting for its answer is no reason to hold the others
+ * (a product decision, "Send at once"): it is left out, and `orcaCardsLeftOpen`
+ * names it.
  */
 export function orcaCardGroup(state: SessionState, ownerKey: string, service: ServiceIdentity, answer: AnsweredPending):
-  Array<{ registration: CodexQuestionRegistration; answer: AnsweredPending }> | null {
+  CardAnswer[] | null {
   const first = cardRegistration(state, ownerKey, answer.pending.question_id)
   if (first === undefined) return null
   const waiting = state.waiting_answers ?? []
-  const pending = new Set(pendingList(state).map((question) => question.question_id))
-  const group: Array<{ registration: CodexQuestionRegistration; answer: AnsweredPending }> = []
+  const group: CardAnswer[] = []
   for (const registration of state.codex_question_bindings ?? []) {
     if (registration.registration_turn_id !== first.registration_turn_id ||
         cardRegistration(state, ownerKey, registration.question_id) !== registration) continue
     const answers = waiting.filter((entry) => entry.pending.question_id === registration.question_id)
-    // Already handed in, or answered in Orca: nothing of it waits.
-    if (answers.length === 0 && !pending.has(registration.question_id)) continue
-    if (answers.length !== 1 || !wholeAnswer(answers[0]!, service)) return null
+    // Unanswered, or an answer only the ordinary route presents (a correction, an unclaimed answer).
+    if (answers.length !== 1 || !wholeAnswer(answers[0]!, service)) continue
     group.push({ registration, answer: answers[0]! })
   }
-  return group.length === 0 ? null : group
+  return group.some((entry) => entry.registration === first && isDeepStrictEqual(entry.answer, answer)) ? group : null
+}
+
+/**
+ * The other cards of the group's turn whose question this message does not
+ * hand in: still open on the devices, or answered there and waiting for the
+ * ordinary route. Orca's chat stops showing them once the message is
+ * delivered; their device questions stay open.
+ */
+export function orcaCardsLeftOpen(state: SessionState, ownerKey: string, group: readonly CardAnswer[]): CodexQuestionRegistration[] {
+  const turn = group[0]?.registration.registration_turn_id
+  const open = new Set([...pendingList(state).map((question) => question.question_id),
+    ...(state.waiting_answers ?? []).map((entry) => entry.pending.question_id)])
+  return (state.codex_question_bindings ?? []).filter((item) => turn !== undefined && item.registration_turn_id === turn &&
+    item.owner_key === ownerKey && item.card_call_id !== undefined && item.terminated !== true && item.orca_card_cleared !== true &&
+    open.has(item.question_id) && !group.some((entry) => entry.registration.question_id === item.question_id))
 }
 
 /** Orca's own answer message for these cards: one `> question` block per answered question. */
-export function orcaAnswerText(group: Array<{ registration: CodexQuestionRegistration; answer: AnsweredPending }>): string {
+export function orcaAnswerText(group: readonly CardAnswer[]): string {
   const blocks: string[] = []
   for (const { registration, answer } of group) {
     for (const binding of registration.questions) {
@@ -132,6 +155,33 @@ export function orcaAnswerText(group: Array<{ registration: CodexQuestionRegistr
     }
   }
   return blocks.join('\n\n').trimEnd()
+}
+
+/**
+ * Codex's own reply envelope naming only these cards' questions, for when
+ * other cards stay open: the agent learns those are still open on the User's
+ * devices and that their answers come separately, so it neither asks again
+ * nor takes their absence for an answer.
+ */
+export function orcaEnvelopeText(group: readonly CardAnswer[], leftOpen: readonly CodexQuestionRegistration[]): string {
+  const titles = leftOpen.flatMap((item) => item.questions.map((binding) => `"${nativeQuestionTitle(binding).replace(/[\r\n]+/gu, ' ')}"`))
+  const note = titles.length === 0 ? '' : ` Your other question${titles.length === 1 ? '' : 's'} ${titles.join(', ')} ` +
+    `${titles.length === 1 ? 'is' : 'are'} still open on the User's devices, though Orca's chat no longer shows ` +
+    `${titles.length === 1 ? 'its card' : 'their cards'}. Do not ask again: an answer reaches you separately when the User gives it.`
+  const items = group.flatMap(({ registration, answer }) => registration.questions.flatMap((binding) => {
+    const part = answer.reply.answers.find((entry) => entry.question_id === binding.question.id)
+    if (part === undefined) return []
+    const labels = part.choice_ids.map((id) => binding.card?.labels[id] ?? binding.question.choices?.find((choice) => choice.id === id)?.label ?? '')
+      .filter((label) => label !== '')
+    const typed = part.text?.trim() ?? ''
+    const text = [...labels, ...(typed === '' ? [] : [typed])].join('\n')
+    if (text === '') return []
+    return [{ questionItemId: JSON.stringify(['request_user_input_async', binding.native!.call_id, binding.native!.index]),
+      question: nativeQuestionTitle(binding), answer: text,
+      notifai: { origin: 'companion', request_id: answer.pending.request_id, question_id: part.question_id,
+        reply_id: answer.reply.reply_id, reply_seq: answer.reply.seq, instruction: `This answer came from the User's device.${note}` } }]
+  }))
+  return items.length === 0 ? '' : `<send_user_message_question_reply>\n${JSON.stringify(items)}\n</send_user_message_question_reply>`
 }
 
 const sha256 = (text: string): string => createHash('sha256').update(text).digest('hex')
@@ -157,18 +207,18 @@ const quotes = (text: string, title: string): boolean => {
 }
 
 /**
- * Whether Orca's chat still shows exactly these cards unanswered, from one
- * history page. Orca shows every card since the last delivered user message
- * as one card and clears them all at the next one, so the send is refused
- * when that span holds a card Notifai has no answer for (`settled` are the
- * call ids of cards whose questions are already handed in), when a card of
- * the group is missing, or when the User already answered one in Orca: a
- * delivered or queued message quoting its question. Orca 1.4.248 records a
- * card as a `tool-call` block of an assistant message; a `tool-call` item
- * counts too.
+ * Whether Orca's chat still shows these cards unanswered, from one history
+ * page. Orca shows every card since the last delivered user message as one
+ * card and clears them all at the next one, so the send is refused when that
+ * span holds a card outside `clearable` (the call ids of Notifai's cards
+ * whose questions are handed in, or stay open on the User's devices), so a
+ * card that exists only in Orca is never wiped; when a card of the group is
+ * missing; or when the User already answered one in Orca: a delivered or
+ * queued message quoting its question. Orca 1.4.248 records a card as a
+ * `tool-call` block of an assistant message; a `tool-call` item counts too.
  */
 export function orcaChatShowsCards(page: Record<string, unknown>, group: ReadonlyArray<{ callId: string; titles: readonly string[] }>,
-  settled: ReadonlySet<string>): boolean {
+  clearable: ReadonlySet<string>): boolean {
   const items = Array.isArray(page['items']) ? page['items'] as Array<{ body?: HistoryBody }> : []
   const lastUser = items.reduce((at, item, index) => deliveredUserMessage(item?.body) ? index : at, -1)
   const shown = new Set<string>()
@@ -179,7 +229,7 @@ export function orcaChatShowsCards(page: Record<string, unknown>, group: Readonl
     }
   }
   const wanted = new Set(group.map((card) => card.callId))
-  if ([...wanted].some((id) => !shown.has(id)) || [...shown].some((id) => !wanted.has(id) && !settled.has(id))) return false
+  if ([...wanted].some((id) => !shown.has(id)) || [...shown].some((id) => !wanted.has(id) && !clearable.has(id))) return false
   const titles = group.flatMap((card) => card.titles)
   const answered = (text: string) => titles.some((title) => quotes(text, title))
   // Answered in Orca after the cards appeared, or waiting in Orca's queue (after a stop, or while a turn runs).
@@ -229,8 +279,19 @@ export function orcaChatPresentation(input: {
       const members = selected.length === 0 ? null : group(selected[0]!, state)
       if (session === undefined || members === null || members.length !== selected.length ||
           !members.every((member) => selected.some((entry) => isDeepStrictEqual(entry, member.answer)))) return null
-      const text = orcaAnswerText(members)
+      // Orca clears these with the message; their device questions stay open.
+      const leftOpen = orcaCardsLeftOpen(state, input.ownerKey, members)
+      const text = leftOpen.length === 0 ? orcaAnswerText(members) : orcaEnvelopeText(members, leftOpen)
       if (text === '') return null
+      const leftIds = new Set(leftOpen.map((item) => item.question_id))
+      const marked = (latest: SessionState, cleared: boolean): SessionState => leftIds.size === 0 ? latest : { ...latest,
+        codex_question_bindings: (latest.codex_question_bindings ?? []).map((item) => {
+          if (!leftIds.has(item.question_id) || item.owner_key !== input.ownerKey) return item
+          if (cleared) return { ...item, orca_card_cleared: true as const }
+          const next = { ...item }
+          delete next.orca_card_cleared
+          return next
+        }) }
       const runtime = input.runtime !== undefined ? input.runtime
         : orcaRuntime({ ...input.env, ...(session.user_data === undefined ? {} : { ORCA_USER_DATA_PATH: session.user_data }) })
       if (runtime === null) return null
@@ -246,7 +307,7 @@ export function orcaChatPresentation(input: {
         `${members.length === 1 ? '' : 's'}, sent for them through Orca; it is final.` +
         acknowledgementContext(members.map((entry) => entry.answer))
       const sent = { digest: promptDigest(text), operation_id: operationId, context, at: input.wall() }
-      const forget = () => updateSessionState(input.sessionId, input.env, (latest) => ({ ...latest,
+      const forget = () => updateSessionState(input.sessionId, input.env, (latest) => ({ ...marked(latest, false),
         orca_chat_sent: (latest.orca_chat_sent ?? []).filter((entry) => entry.operation_id !== operationId) }))
       return {
         presentation: {
@@ -260,17 +321,19 @@ export function orcaChatPresentation(input: {
         validate,
         write: async (mayWrite) => {
           if (!input.serviceCurrent()) throw new CodexControlNotSent('The Approved Machine changed before the Orca answer was sent')
-          // Read the fence and confirm the chat shows exactly these cards, unanswered, just before the send.
+          // Read the fence and confirm the chat shows these cards unanswered, and no card it may not clear, just before the send.
           const read = await history(runtime, session.session_id, budget(3_000))
           const latest = readSessionState(input.sessionId, input.env)
           const open = new Set(pendingList(latest).map((question) => question.question_id))
-          const settled = new Set((latest.codex_question_bindings ?? []).flatMap((item) =>
-            item.owner_key === input.ownerKey && item.card_call_id !== undefined && !open.has(item.question_id) &&
+          // Handed in, already cleared by an earlier send, or named open in this message: never a card only Orca has.
+          const clearable = new Set((latest.codex_question_bindings ?? []).flatMap((item) =>
+            item.owner_key === input.ownerKey && item.card_call_id !== undefined &&
+              (!open.has(item.question_id) || item.orca_card_cleared === true || leftIds.has(item.question_id)) &&
               !members.some((member) => member.registration.question_id === item.question_id) ? [item.card_call_id] : []))
           const cards = members.map(({ registration }) => ({ callId: registration.card_call_id!,
             titles: registration.questions.map((binding) => binding.card!.title) }))
-          if (read === null || !orcaChatShowsCards(read.page, cards, settled)) {
-            throw new CodexControlNotSent('The Orca chat does not show exactly these cards unanswered')
+          if (read === null || !orcaChatShowsCards(read.page, cards, clearable)) {
+            throw new CodexControlNotSent('The Orca chat does not show these cards unanswered, or shows a card it may not clear')
           }
           // The send and the record of a lost reply must both fit the caller's deadline.
           if ((input.remainingMs?.() ?? Number.POSITIVE_INFINITY) < 2_500) throw new CodexControlNotSent('No time left to send through Orca')
@@ -278,7 +341,7 @@ export function orcaChatPresentation(input: {
           // Recorded before the send: the prompt hook may run before Orca replies.
           updateSessionState(input.sessionId, input.env, (latest) => {
             valid = validate(latest).valid && mayWrite()
-            return !valid ? latest : { ...latest, orca_chat_sent: [...(latest.orca_chat_sent ?? [])
+            return !valid ? latest : { ...marked(latest, true), orca_chat_sent: [...(latest.orca_chat_sent ?? [])
               .filter((entry) => input.wall() - entry.at < SENT_KEPT_MS), sent] }
           })
           if (!valid) throw new CodexControlNotSent('Answer authority changed before the Orca send')

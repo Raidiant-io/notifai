@@ -57,6 +57,12 @@ export interface CodexQuestionRegistration {
   dismissed?: true
   /** Its dismissal found no owning server to close the card through; never probed again for this card. */
   card_dismissal_unreachable?: true
+  /**
+   * Orca's chat stopped showing this card when Notifai sent another card's
+   * device answer there (Orca clears every open card on a delivered message);
+   * its device question stays open, and its answer takes the ordinary route.
+   */
+  orca_card_cleared?: true
 }
 
 /** The text the native form must show for this question. */

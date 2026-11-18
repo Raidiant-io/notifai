@@ -1842,7 +1842,7 @@ describe('hub and Codex SessionEnd', () => {
       })
     })
 
-    async function orcaChat(capabilities = ['agent-session.structured.v1', 'agent-session.accepted-send.v1']) {
+    async function orcaChat(capabilities = ['agent-session.structured.v1', 'agent-session.accepted-send.v1'], withCardB = false) {
       const queued: string[] = []
       const sends: Array<Record<string, unknown>> = []
       const asked: string[] = []
@@ -1850,7 +1850,8 @@ describe('hub and Codex SessionEnd', () => {
         asked.push(method)
         if (method === 'status.get') return { ok: true, result: { capabilities } }
         if (method === 'agentSession.history') return { ok: true, result: { page: { fence: 7, submissions: [], items: [{ body: { kind: 'message', role: 'assistant',
-          blocks: [{ type: 'tool-call', name: 'request_user_input_async', callId: 'call_a' }] } }] } } }
+          blocks: [{ type: 'tool-call', name: 'request_user_input_async', callId: 'call_a' },
+            ...(withCardB ? [{ type: 'tool-call', name: 'request_user_input_async', callId: 'call_b' }] : [])] } }] } } }
         if (method === 'agentSession.send') { sends.push(params as Record<string, unknown>); return { ok: true, result: { ok: true } } }
         return { ok: false, code: 'method_not_found' }
       } }
@@ -1862,11 +1863,16 @@ describe('hub and Codex SessionEnd', () => {
         const reply = { reply_id: 'rpl_1', seq: 1, delivery_id: null, device_id: 'dev', device_name: 'iPhone', text: '',
           answers: [{ question_id: 'qa-q', choice_ids: ['blue'], text: null }], source: null, created_at: '2026-11-04T00:00:00Z' }
         const pending = { question_id: 'qa', request_id: 'req_qa', collapse_key: 'ck_qa', device_ids: ['dev'], question: '', summary: '', service_identity: service }
-        updateSessionState(SESSION, run.env, (state) => ({ ...state, orca_chat: { key, session_id: 'codex_orca_chat' }, pending: [pending],
+        const pendingB = { ...pending, question_id: 'qb', request_id: 'req_qb', collapse_key: 'ck_qb' }
+        updateSessionState(SESSION, run.env, (state) => ({ ...state, orca_chat: { key, session_id: 'codex_orca_chat' }, pending: withCardB ? [pending, pendingB] : [pending],
           codex_question_bindings: [{ question_id: 'qa', owner_key: key, registration_turn_id: 'turn-1', transcript: { file: '', identity: 'codex-card-hook', registered_offset: 0 },
             service_identity: service, card_call_id: 'call_a', card_allowed: true, confirmed_request_id: 'req_qa',
             questions: [{ question: { id: 'qa-q', text: 'Card A: which color?', choices: [{ id: 'red', label: 'Red' }, { id: 'blue', label: 'Blue' }] },
-              card: { title: 'Card A: which color?', labels: { red: 'Red', blue: 'Blue' } }, native: { turn_id: 'turn-1', call_id: 'call_a', index: 0 }, verified: true }] }],
+              card: { title: 'Card A: which color?', labels: { red: 'Red', blue: 'Blue' } }, native: { turn_id: 'turn-1', call_id: 'call_a', index: 0 }, verified: true }] },
+          ...(withCardB ? [{ question_id: 'qb', owner_key: key, registration_turn_id: 'turn-1', transcript: { file: '', identity: 'codex-card-hook', registered_offset: 0 },
+            service_identity: service, card_call_id: 'call_b', card_allowed: true as const, confirmed_request_id: 'req_qb',
+            questions: [{ question: { id: 'qb-q', text: 'Card B: which size?', choices: [{ id: 'small', label: 'Small' }, { id: 'large', label: 'Large' }] },
+              card: { title: 'Card B: which size?', labels: { small: 'Small', large: 'Large' } }, native: { turn_id: 'turn-1', call_id: 'call_b', index: 0 }, verified: true }] }] : [])],
           waiting_answers: [{ pending, reply, replies: [reply], delivery_claim: true }],
           acknowledgement_due: [{ request_id: 'req_qa', recorded_at: 1, text_required: true }] }))
       }
@@ -1879,6 +1885,32 @@ describe('hub and Codex SessionEnd', () => {
       }
       return { run, queued, sends, asked, tick }
     }
+
+    it('in an Orca chat, sends one card\'s device answer at once while another card is open, and wakes for the other\'s later answer', async () => {
+      const { run, queued, sends, tick } = await orcaChat(undefined, true)
+      try {
+        await tick()
+        await until(() => sends.length > 0)
+        const text = (sends[0]!['body'] as { blocks: Array<{ text: string }> }).blocks[0]!.text
+        expect(text).toContain('["request_user_input_async","call_a",0]'.replace(/"/gu, '\\"'))
+        expect(text).not.toContain('call_b')
+        expect(text).toContain('still open on the User\'s devices')
+        expect(queued).toEqual([])
+        const state = readSessionState(SESSION, run.env)
+        expect(state.codex_question_bindings!.find((item) => item.question_id === 'qb')!.orca_card_cleared).toBe(true)
+        // The User answers B on a device later: Orca's chat no longer shows its card, so it takes the ordinary wake.
+        const reply = { reply_id: 'rpl_2', seq: 1, delivery_id: null, device_id: 'dev', device_name: 'iPhone', text: '',
+          answers: [{ question_id: 'qb-q', choice_ids: ['large'], text: null }], source: null, created_at: '2026-11-04T00:00:00Z' }
+        const pendingB = state.pending!.find((item) => item.question_id === 'qb')!
+        updateSessionState(SESSION, run.env, (latest) => ({ ...latest, waiting_answers: [...(latest.waiting_answers ?? []),
+          { pending: pendingB, reply, replies: [reply], delivery_claim: true }],
+          acknowledgement_due: [...(latest.acknowledgement_due ?? []), { request_id: 'req_qb', recorded_at: 2, text_required: true }] }))
+        await tick()
+        await until(() => queued.length > 0)
+        expect(sends).toHaveLength(1)
+        expect(queued).toEqual([SESSION])
+      } finally { await run.stop() }
+    })
 
     it('in an Orca chat, sends a turn\'s card answers once through Orca instead of a queued wake', async () => {
       const { run, queued, sends, tick } = await orcaChat()
