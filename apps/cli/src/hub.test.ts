@@ -1000,6 +1000,74 @@ describe('hub end confirmation and writers', () => {
     service.release()
     await done
   })
+
+  /**
+   * A queued wake Claude Code never showed: held as an unattested peer
+   * message, or written into an inbox Claude has since replaced. The hub
+   * restarted since, so it never watched that wake go out.
+   */
+  async function heldWakeSession(seed: (wall: number) => { prompt?: number; queued: number }, startedAt = Date.now() - 24 * 3_600_000) {
+    const env = env0 = hubEnv()
+    recordSessionNotified(SESSION, env, Date.now())
+    const host = await standIn()
+    describeHost(env, host)
+    // When Claude Code created the inbox it runs now.
+    const file = path.join(claudeDescriptorDir(env), `${host.pid}.json`)
+    writeFileSync(file, JSON.stringify({ ...JSON.parse(readFileSync(file, 'utf8')) as Record<string, unknown>, startedAt }))
+    let offset = 0
+    const service = noteService()
+    const peers = new Map<number, PeerCredentials>()
+    const { hub, done } = startHub(env, service, peers, memoryStore(), 100, {},
+      { clock: { monotonic: () => performance.now() + offset, wall: () => Date.now() } })
+    await hubListening(env)
+    const child = await writerChild(env, peers, 900260, host, { inbox_started_at: startedAt })
+    await until(() => service.batches.length >= 1)
+    const times = seed(Date.now())
+    updateSessionState(SESSION, env, (state) => ({
+      ...state,
+      input_wake: { incarnation: readSessionIncarnation(SESSION, env)!.incarnation, token: HELD_WAKE,
+        queued: true, replacement: true, writer: { pid: 1, start: 'gone' }, started_at: times.queued, queued_at: times.queued },
+      ...(times.prompt === undefined ? {} : { last_prompt_at: times.prompt, last_stop_at: times.prompt + 30_000 }),
+    }))
+    await until(() => hub.sessions.get(SESSION)?.idleSince != null)
+    // Idle long enough that a wake Claude Code accepted would have run by now.
+    offset += 31_000
+    service.note()
+    const finish = async (): Promise<void> => {
+      child.socket.destroy()
+      hub.requestExit('test')
+      service.release()
+      await done
+    }
+    return { env, child, finish }
+  }
+  const HELD_WAKE = '9614df71-1b21-449d-8f9f-362c38cc7ad3'
+
+  it('wakes for a later note when a turn ran since the wake Claude Code never showed', async () => {
+    const run = await heldWakeSession((wall) => ({ queued: wall - 6 * 3_600_000, prompt: wall - 30 * 60_000 }))
+    await until(() => run.child.writes === 1 && readSessionState(SESSION, run.env).input_wake?.queued === true, 10_000)
+    const wake = readSessionState(SESSION, run.env).input_wake
+    expect(wake?.token).not.toBe(HELD_WAKE)
+    // A fresh wake for fresh input keeps its own one replacement.
+    expect(wake?.replacement).toBeUndefined()
+    await run.finish()
+  })
+
+  it('wakes for a note when Claude Code replaced the inbox the earlier wake was written into', async () => {
+    const run = await heldWakeSession((wall) => ({ queued: wall - 60 * 60_000 }), Date.now() - 10 * 60_000)
+    await until(() => run.child.writes === 1, 10_000)
+    expect(readSessionState(SESSION, run.env).input_wake?.token).not.toBe(HELD_WAKE)
+    await run.finish()
+  })
+
+  it('sends no series of wakes into a session that took no turn since its replacement wake', async () => {
+    const run = await heldWakeSession((wall) => ({ queued: wall - 60 * 60_000, prompt: wall - 2 * 60 * 60_000 }))
+    await until(() => { const lease = readAttendantLease(SESSION, run.env); return lease !== null && hasSessionInputs(SESSION, run.env, lease) }, 5_000)
+    await new Promise((resolve) => setTimeout(resolve, 600))
+    expect(run.child.writes).toBe(0)
+    expect(readSessionState(SESSION, run.env).input_wake?.token).toBe(HELD_WAKE)
+    await run.finish()
+  })
 })
 
 // ---------------------------------------------------------------------------

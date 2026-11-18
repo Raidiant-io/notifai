@@ -44,6 +44,11 @@ export interface WakeOptions {
    * replacement is sent, never a series.
    */
   replaceLost?: () => boolean
+  /**
+   * Whether the harness will never show the queued wake
+   * (`queuedInputWakeAbandoned`). Input waiting now gets a wake of its own.
+   */
+  abandoned?: (state: SessionState) => boolean
   /** Wall clock, milliseconds. */
   now?: () => number
   /** Internal transport deadline; callers never hold a delivery loop indefinitely. */
@@ -59,6 +64,21 @@ export function inputWakeOverdue(state: SessionState, now: number): boolean {
   const wake = state.input_wake
   return wake !== undefined && wake.queued && wake.replacement !== true &&
     wake.queued_at !== undefined && now - wake.queued_at >= LOST_WAKE_MS
+}
+
+/**
+ * A queued Claude Code wake that will never be shown. One written before the
+ * current inbox was created went to an inbox that is gone. Claude Code runs an
+ * accepted wake at its next turn boundary, so one still queued after a later
+ * turn, with the session settled idle since, was held (an unattested peer
+ * message) or dropped. Either way it no longer stands for input that waits now.
+ * One wake per turn at most: a session that runs no turn gets no new wake.
+ */
+export function queuedInputWakeAbandoned(state: SessionState, inboxStartedAt: number | null, settledIdle: boolean): boolean {
+  const wake = state.input_wake
+  if (wake?.queued !== true || wake.queued_at === undefined) return false
+  if (inboxStartedAt !== null && inboxStartedAt > wake.queued_at) return true
+  return settledIdle && state.last_prompt_at !== undefined && state.last_prompt_at > wake.queued_at
 }
 
 /**
@@ -172,6 +192,7 @@ export async function wakeSessionInputs(
   const lease = readAttendantLease(sessionId, env)
   let elected = false
   let replacement = false
+  let abandoned: string | null = null
   let unanswered: SessionState['input_wake_unanswered']
   updateSessionState(sessionId, env, (state) => {
     // A refused lease needs fresh attendance, not another prompt to the agent.
@@ -181,10 +202,11 @@ export async function wakeSessionInputs(
     if (inputWakeRetryDeferred(state, now())) return state
     const moved = state.input_wake?.queued === true && !inputWakeStored(state, incarnation, options.scope)
     if (state.input_wake?.incarnation === incarnation && !moved) {
-      const lost = inputWakeOverdue(state, now()) && options.replaceLost?.() === true
+      abandoned = state.input_wake.queued && options.abandoned?.(state) === true ? state.input_wake.token : null
+      const lost = abandoned === null && inputWakeOverdue(state, now()) && options.replaceLost?.() === true
       const unfinished = !state.input_wake.queued && state.input_wake.started_at !== undefined &&
         now() - state.input_wake.started_at >= LOST_WAKE_MS
-      if (!lost && !unfinished && (state.input_wake.queued || processIdentityLiveness(state.input_wake.writer) !== 'gone')) return state
+      if (abandoned === null && !lost && !unfinished && (state.input_wake.queued || processIdentityLiveness(state.input_wake.writer) !== 'gone')) return state
       if (!state.input_wake.queued) state = withInputWakeFailure(state, 'transport', now())
       replacement = lost
     }
@@ -198,6 +220,8 @@ export async function wakeSessionInputs(
         retry_in_ms: unanswered.presented_at + inputWakeBackoffMs(unanswered.count) - now() }) })
     return
   }
+  // The harness never showed the earlier wake; it stays recorded here only.
+  if (abandoned !== null) log?.info('delivery.handoff', { route: 'input-wake', stage: 'abandoned', session: sessionId, token: abandoned })
   let sent: InputWakeSendResult = 'failed'
   const abort = new AbortController()
   let timer: ReturnType<typeof setTimeout> | undefined

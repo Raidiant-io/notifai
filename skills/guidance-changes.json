@@ -1,5 +1,5 @@
 {
-  "current": "1b675f5117679398a1cc9bd738014d27b56d36774fdfc8d5bc1938c5f7a14029",
+  "current": "29108b3ac8d3d93613c8f4f986e5a56f42cc9207ee492bfa5ea9bba85f1edc2e",
   "releases": [
     {
       "digest": "3e47b01bc6bbfb43e910c660b9964fab6459d75148c3c02dcbcd0be64cfb2963",
@@ -424,6 +424,10 @@
     {
       "digest": "1b675f5117679398a1cc9bd738014d27b56d36774fdfc8d5bc1938c5f7a14029",
       "note": "In an Orca chat, an answer the User gives on their device to one of your question cards now reaches you at once, even while another of your cards is still unanswered. Orca's chat then stops showing that other card, but its question stays open on the User's devices. The answer you receive names it as still open: do not ask it again; its answer reaches you separately when the User gives it."
+    },
+    {
+      "digest": "29108b3ac8d3d93613c8f4f986e5a56f42cc9207ee492bfa5ea9bba85f1edc2e",
+      "note": "No change to what agents must do. When Claude Code never showed an earlier Notifai wake (it held it, or restarted its inbox), answers and notes that arrive later now get a fresh wake while the session is idle, instead of waiting for the next prompt. Use any input supplied with a wake turn, or run `notifai receive` once if none was supplied, as before."
     }
   ]
 }

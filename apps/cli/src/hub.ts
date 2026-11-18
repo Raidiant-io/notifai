@@ -149,6 +149,7 @@ import {
   inputWakeRetryDeferred,
   recordInputWakeFailure,
   inputWakeOverdue,
+  queuedInputWakeAbandoned,
   stageSessionMessages,
   wakeSessionInputs,
   sessionInputWake,
@@ -880,6 +881,18 @@ class HubSession implements AttendedSession {
     return descriptor !== 'missing' && descriptor !== null && parkedOn(descriptor, successorId)
   }
 
+  /**
+   * The queued wake Claude Code will never show: its inbox is gone, or a turn
+   * ran past it. Read from durable state and Claude's own descriptor, so a hub
+   * that never watched the wake go out still sees it.
+   */
+  claudeWakeAbandoned(state: SessionState): boolean {
+    if (state.input_wake?.queued !== true) return false
+    const descriptor = this.descriptor()
+    const inbox = descriptor === 'missing' || descriptor === null || descriptor.sessionId !== this.id ? null : descriptor.startedAt
+    return queuedInputWakeAbandoned(state, inbox, this.settledIdle())
+  }
+
   descriptor(): ReturnType<typeof parseDescriptor> | 'missing' {
     let raw: unknown
     try {
@@ -1039,7 +1052,8 @@ class HubSession implements AttendedSession {
     if (inputWakeDeferred(state, this.hub.clock.wall()) || inputWakeRetryDeferred(state, this.hub.clock.wall())) return
     if (this.harness === 'claude-code') {
       pending = !claudePickerHolds(state) &&
-        (!state.input_wake?.queued || (this.settledIdle() && inputWakeOverdue(state, this.hub.clock.wall()))) &&
+        (!state.input_wake?.queued || (this.settledIdle() && inputWakeOverdue(state, this.hub.clock.wall())) ||
+          this.claudeWakeAbandoned(state)) &&
         hasSessionInputs(this.id, this.env, lease)
     } else {
       const stored = inputWakeStored(state, this.lease.incarnation, this.wakeScope())
@@ -1131,7 +1145,8 @@ class HubSession implements AttendedSession {
       const result = await this.writeClaude(text)
       return result === 'written' || result === 'failed' ? result : 'not-attempted'
     },
-      this.hub.logger, { unique: true, replaceLost: () => this.settledIdle(), now: () => this.hub.clock.wall() })
+      this.hub.logger, { unique: true, replaceLost: () => this.settledIdle(), abandoned: (state) => this.claudeWakeAbandoned(state),
+        now: () => this.hub.clock.wall() })
     return 'done'
   }
 

@@ -1,6 +1,6 @@
 import { releaseCodexCardHandbacks } from './codex-card-handback.js'
 import { nativeInstallationIdentity } from './native-installation-identity.js'
-import { WAKE_SEND_TIMEOUT_MS, hasSessionInputs, inputWakeDeferred, inputWakeOverdue, inputWakeStored, stageSessionMessages, wakeSessionInputs } from './session-inputs.js'
+import { WAKE_SEND_TIMEOUT_MS, hasSessionInputs, inputWakeDeferred, inputWakeOverdue, inputWakeStored, queuedInputWakeAbandoned, stageSessionMessages, wakeSessionInputs } from './session-inputs.js'
 /**
  * `notifai hook attend`: the asynchronous handler that becomes an Agent
  * Session's Session Attendant, or exits within milliseconds when a healthy
@@ -433,7 +433,8 @@ export async function attendHook(
           const state = readSessionState(sessionId, deps.env)
           // A picker handler that holds the only pending answer returns it itself.
           return !claudePickerHolds(state) && !inputWakeDeferred(state, clock.wall()) &&
-            (!state.input_wake?.queued || (settledIdle() && inputWakeOverdue(state, clock.wall()))) &&
+            (!state.input_wake?.queued || (settledIdle() && inputWakeOverdue(state, clock.wall())) ||
+              queuedInputWakeAbandoned(state, null, settledIdle())) &&
             hasSessionInputs(sessionId, deps.env, null)
         },
       } : {}),
@@ -592,7 +593,8 @@ async function sessionMessageWriter(input: {
         ...(deps.hookPlatform === undefined ? {} : { platform: deps.hookPlatform }),
       })
       return result.status === 'written' || result.status === 'failed' ? result.status : 'not-attempted'
-    }, logger, { unique: true, replaceLost: input.settledIdle, now: () => clock.wall() })
+    }, logger, { unique: true, replaceLost: input.settledIdle,
+      abandoned: (state) => queuedInputWakeAbandoned(state, null, input.settledIdle()), now: () => clock.wall() })
     return 'done'
   }
 }
