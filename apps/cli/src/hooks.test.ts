@@ -1018,6 +1018,64 @@ describe('user-prompt-submit hook', () => {
     await hookRunCommand(h.deps, 'user-prompt-submit', stdin({ session_id: sessionId, transcript_path: transcript }), 'claude-code')
     expect(readClaudeSessionTitle(h.env, sessionId)).toBe('Repair the parser')
   })
+
+  describe('questions still open beside a Claude Code prompt', () => {
+    const palette = {
+      question: 'Which palette should the banner use?', question_id: 'q_palette', request_id: 'req_palette', collapse_key: 'c_palette', device_ids: ['dev_1'],
+      questions: [{ id: 'q1', text: 'Which palette should the banner use?', choices: [{ id: 'blue', label: 'Blue' }, { id: 'red', label: 'Red' }] }],
+    }
+    const release = {
+      question: 'Ship the release notes today?', question_id: 'q_release', request_id: 'req_release', collapse_key: 'c_release', device_ids: ['dev_1'],
+      questions: [{ id: 'q1', text: 'Ship the release notes today?', choices: [{ id: 'yes', label: 'Ship today' }, { id: 'no', label: 'Wait' }] }],
+    }
+
+    function promptContext(h: Harness): string {
+      const last = h.io.outLines.at(-1)
+      return last === undefined ? '' : (JSON.parse(last) as { hookSpecificOutput?: { additionalContext?: string } }).hookSpecificOutput?.additionalContext ?? ''
+    }
+
+    it('lists every open question with its close command and closes none of them', async () => {
+      const h = harness([])
+      writeSessionState('open-listed', h.env, { pending: [palette, release] })
+
+      await hookRunCommand(h.deps, 'user-prompt-submit',
+        stdin({ session_id: 'open-listed', cwd: h.deps.cwd, prompt: 'Go with the cooler colour for the banner' }), 'claude-code')
+
+      const context = promptContext(h)
+      expect(context).toContain('q_palette: "Which palette should the banner use?" (Blue / Red). Close: `notifai close q_palette`')
+      expect(context).toContain('q_release: "Ship the release notes today?" (Ship today / Wait). Close: `notifai close q_release`')
+      expect(context).toContain('Close only those. Leave every other question open')
+      expect(readSessionState('open-listed', h.env).pending?.map((entry) => entry.question_id)).toEqual(['q_palette', 'q_release'])
+      expect(h.recorder.closed).toEqual([])
+    })
+
+    it('does not list a question the prompt already retired by its exact choice', async () => {
+      const h = harness([])
+      writeSessionState('open-matched', h.env, { pending: [palette, release] })
+
+      await hookRunCommand(h.deps, 'user-prompt-submit',
+        stdin({ session_id: 'open-matched', cwd: h.deps.cwd, prompt: 'Blue' }), 'claude-code')
+
+      const context = promptContext(h)
+      expect(context).not.toContain('q_palette')
+      expect(context).toContain('notifai close q_release')
+    })
+
+    it('adds nothing for a Notifai wake, a subagent prompt or another harness', async () => {
+      const h = harness([])
+      writeSessionState('open-quiet', h.env, { pending: [palette] })
+
+      await hookRunCommand(h.deps, 'user-prompt-submit',
+        stdin({ session_id: 'open-quiet', cwd: h.deps.cwd, prompt: sessionInputWake() }), 'claude-code')
+      await hookRunCommand(h.deps, 'user-prompt-submit',
+        stdin({ session_id: 'open-quiet', cwd: h.deps.cwd, prompt: 'Go with the cooler colour', agent_id: 'worker' }), 'claude-code')
+      await hookRunCommand(h.deps, 'user-prompt-submit',
+        stdin({ session_id: 'open-quiet', cwd: h.deps.cwd, prompt: 'Go with the cooler colour' }), 'codex')
+
+      expect(h.io.outLines.join('\n')).not.toContain('q_palette')
+      expect(readSessionState('open-quiet', h.env).pending?.map((entry) => entry.question_id)).toEqual(['q_palette'])
+    })
+  })
 })
 
 describe('session-end hook', () => {

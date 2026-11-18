@@ -119,6 +119,7 @@ import {
   settleCancelledClaudePicker,
   takeOwedClaudePickerAnswer,
 } from './claude-question-hooks.js'
+import { promptOpenQuestionsContext } from './prompt-open-questions.js'
 const INTERNAL_HOOK_EVENTS = [
   'question-submission', 'question-settlement', 'openclaw-lifecycle', 'openclaw-generation',
   'openclaw-turn-start', 'openclaw-turn-end', 'openclaw-list-pending',
@@ -1317,6 +1318,16 @@ export async function hookRunCommand(
       if (harness === 'claude-code' && envelope.session_id !== undefined && envelope.agent_id === undefined && !elsewhere) {
         const owed = takeOwedClaudePickerAnswer(envelope.session_id, deps.env)
         if (owed !== null) outcome.stdout = appendIntegrationContext(outcome.stdout, owed, harness, 'UserPromptSubmit')
+        // A prompt the User typed may answer a question shown in the
+        // conversation: list what is still open so the agent closes exactly
+        // the ones it answered. A Notifai wake is not the User typing.
+        if (outcome.log?.['stage'] !== 'input-wake-observed' && !sessionHasEnded(envelope.session_id, deps.env)) {
+          const open = promptOpenQuestionsContext(readSessionState(envelope.session_id, deps.env))
+          if (open !== null) {
+            outcome.stdout = appendIntegrationContext(outcome.stdout, open, harness, 'UserPromptSubmit')
+            outcome.log = { ...outcome.log, open_questions_listed: true }
+          }
+        }
       }
     } else {
       // An OpenCode question form whose command died with OpenCode left its

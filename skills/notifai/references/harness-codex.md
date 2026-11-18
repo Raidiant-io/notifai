@@ -54,9 +54,10 @@ include `request_user_input_async` and Notifai can link it, `ask` hands back
 the exact card to open: the question is already registered locally with your title,
 Body, images and choice descriptions, and Notifai matches the card by its exact
 text. Local registration does not confirm submission to devices; follow the
-status the tool reports. Open it unchanged. A card that differs is never
-refused: it becomes a question of its own, and its tool context names the
-handed-back question that stays open. Codex offers the card only with some
+status the tool reports. Open it unchanged: what each answer will make you
+do goes in your message, never in the card's text. A card that differs is
+never refused: it becomes a question of its own, and its tool context names
+the handed-back question that stays open. Codex offers the card only with some
 models, in the terminal and the apps alike.
 
 `request_user_input` (no `_async`) is not linked to Notifai: where Codex

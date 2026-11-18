@@ -57,15 +57,24 @@ only when the User asks.
 
 ## Questions
 
-Ask every question with `notifai ask` or `notifai ask --wait`, closed choices
-included.
-To wait, run `notifai ask --wait`. For a closed question of one to four
-questions with two to four choices each, it hands back `AskUserQuestion`
-picker input: open it unchanged, and the picker carries your title, Body and
-images to the devices. Until it opens, any other picker is refused before it
-shows, with an error that says what to do. For free text, more choices or more
-questions it tells you to end your turn instead, and the answer arrives as
-your next message.
+Use one asking action for each question:
+
+- **To keep working while the User decides**, run `notifai ask`, then show
+  the question once as ordinary conversation text. Never open an
+  `AskUserQuestion` picker for it: a picker stops your turn, and one worded
+  differently becomes a second question on the devices.
+- **To wait**, open an `AskUserQuestion` picker yourself once and never also
+  `ask` it, or run `notifai ask --wait` for a title, Body, images, free text
+  or more choices than a picker holds.
+
+For a closed question of one to four questions with two to four choices each,
+`ask --wait` hands back `AskUserQuestion` picker input: open it unchanged,
+and the picker carries your title, Body and images to the devices. What each
+answer will make you do goes in your message, never in the picker. Until the
+picker opens, any other picker is refused before it shows, with an error that
+says what to do. For free text, more choices or more questions `ask --wait`
+tells you to end your turn instead, and the answer arrives as your next
+message.
 
 An `AskUserQuestion` picker you open on your own also reaches the User's
 devices, after the terminal-first delay, with its questions, option labels and

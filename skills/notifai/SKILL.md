@@ -130,10 +130,13 @@ for avatars and other Projects see
 Ask for safe setup or readiness, never for credentials; harness permission
 prompts stay in the harness.
 
-Ask the way you would without Notifai:
+Ask as you would without Notifai, one asking action per question:
 
-- To keep working while the User decides, run `notifai ask`. The answer comes
-  back into this Agent Session whenever they reply, within the answer window.
+- A form of yours that Notifai links reaches the devices itself: never also
+  `ask` it.
+- To keep working while the User decides, or for richer content,
+  run `notifai ask`. Its answer comes back here whenever they reply within
+  the answer window.
 - To stop until they answer, run `notifai ask --wait` and do what it returns:
   open the question form it hands back, or end your turn; the answer arrives
   as your next message. Where no later answer can reach you, the command
@@ -163,19 +166,18 @@ the form's JSON for up to 10 questions decided together
 Name the work the answer unblocks, which this Agent Session does itself, in `--resumes`; Notifai replays it with the answer.
 Register independent questions separately; never register an open question again.
 
-When `ask` hands back a question form, open it unchanged: the question is
-already registered with your title, Body and images. A question form you open
-yourself carries only its own fields, and reaches the
-User's devices only where Notifai links it; when its tool context says Notifai
-registered it, never also `ask` it. Promise nothing about a form closing.
+Open a form `ask` hands back exactly as returned, with no consequences added:
+it is already registered with your title, Body and images, and a reworded
+form is a second question. A form you open yourself carries only its own
+fields. Promise nothing about a form closing.
 
 **Registering is not the end of the turn.** Say what each answer will make
 you do before you open a handed-back form or start a wait. A handed-back form
-is your question in the conversation: never also ask it in prose. Otherwise,
-ask in the conversation. Continue independent work; dependent work waits for
-the answer. When `ask --wait` says to end your turn, end it. **Never say where
-the answer must arrive** ("tell me here"): it comes back by whatever route
-the harness has.
+is your question in the conversation: never also ask it in prose. Otherwise
+show it once as `ask` says.
+Continue independent work; dependent work waits for the answer. When
+`ask --wait` says to end your turn, end it. **Never say where the answer must
+arrive** ("tell me here"): it comes back by whatever route the harness has.
 While a question waits, keep this Agent Session open: closing, clearing or
 switching it ends the question.
 
@@ -191,8 +193,8 @@ notifai status <question_id> --json
 Keep both IDs; inspect `status` and `notifai replies <request_id> --json`
 instead of asking again. If the User
 answers another way (in the conversation, elsewhere, or by doing it) or the
-question stops being relevant (its work is done, superseded or cancelled, or a
-newer question replaces it), close it with `notifai close <question_id>`;
+question stops being relevant (done, superseded, cancelled or replaced),
+close it with `notifai close <question_id>`;
 `notifai close --pending` retires all of this Agent Session's open questions.
 
 If `ask` reports a User-owned trust or permission gap, relay its exact
