@@ -85,16 +85,21 @@ describe('a wake left in the old home', () => {
 
 describe('who holds a thread', () => {
   it('counts only processes running Codex', async () => {
-    const { symlinkSync } = await import('node:fs')
+    const { copyFileSync, linkSync } = await import('node:fs')
     const { spawn } = await import('node:child_process')
+    const { once } = await import('node:events')
     const { codexProcessesAmong } = await import('./codex-session-end.js')
     const root = mkdtempSync(path.join(os.tmpdir(), 'notifai-holders-')); roots.push(root)
+    // An executable file named codex: Node's own binary. A link to /bin/sleep is no
+    // such process where sleep is a multicall binary that refuses another name
+    // (Ubuntu 26.04's Rust coreutils exits at once).
     const codex = path.join(root, 'codex')
-    symlinkSync('/bin/sleep', codex)
-    const runner = spawn(codex, ['30'], { stdio: 'ignore' })
-    const viewer = spawn('/bin/sleep', ['30'], { stdio: 'ignore' })
+    try { linkSync(process.execPath, codex) } catch { copyFileSync(process.execPath, codex) }
+    const wait = ['-e', 'setTimeout(() => {}, 30_000)']
+    const runner = spawn(codex, wait, { stdio: 'ignore' })
+    const viewer = spawn(process.execPath, wait, { stdio: 'ignore' })
     try {
-      await new Promise((resolve) => setTimeout(resolve, 200))
+      await Promise.all([once(runner, 'spawn'), once(viewer, 'spawn')])
       expect(await codexProcessesAmong([runner.pid!, viewer.pid!])).toEqual([runner.pid])
     } finally { runner.kill(); viewer.kill() }
   })
