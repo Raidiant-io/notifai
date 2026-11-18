@@ -2552,11 +2552,14 @@ async function escalate(
     // authoritative only when this owner reached that question's committed
     // server deadline; reaching the process ceiling first preserves the record.
     // A dismissed question closed early: it expires now, and only it does.
+    // A wait that ended early because another question left (the agent
+    // closed it) reached no deadline: the rest stay answerable.
     const closedEarly = waited.closed.size > 0
+    const reachedDeadline = ctx.now() >= waitDeadline
     const expired = activeWaiting.filter(
       (entry) =>
         waited.closed.has(entry.request_id!) ||
-        (!closedEarly && (entry.reply_deadline_at === undefined || entry.reply_deadline_at <= waitDeadline)) ||
+        (!closedEarly && reachedDeadline && (entry.reply_deadline_at === undefined || entry.reply_deadline_at <= waitDeadline)) ||
         waited.permanentFailures.has(entry.request_id!),
     )
     const stillAnswerable = activeWaiting.filter((entry) => !expired.includes(entry))
@@ -2586,7 +2589,7 @@ async function escalate(
       for (const answer of finalAnswers) reportAnswer(ctx, notes, answer, false)
       return deliverAcceptedAnswers(ctx, sessionId, route, accepted, notes, envelope.cwd)
     }
-    if (stillAnswerable.length > 0 && (waitDeadline < ceilingAt || closedEarly)) {
+    if (stillAnswerable.length > 0 && (waitDeadline < ceilingAt || closedEarly || !reachedDeadline)) {
       activeWaiting = stillAnswerable
       continue
     }
