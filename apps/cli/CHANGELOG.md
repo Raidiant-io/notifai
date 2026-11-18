@@ -8,6 +8,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 This project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 and [Conventional Commits](https://www.conventionalcommits.org/en/v1.0.0/).
 
+## [14.7.3-beta.2](https://github.com/Raidiant-io/notifai/compare/v14.7.2...v14.7.3-beta.2) (2026-11-18)
+
+### Bug Fixes
+
+* After Claude Code restarts in place, answers and notes from your phone reach the restarted session instead of waiting unseen, and the notice about waiting input names its question and session.
+* Agents are told to ask each question one way: through a question form Notifai links, or with `notifai ask`, not both. When Notifai hands back a question form for a registered question, the agent opens it with the exact wording, so it stays the same question on your devices instead of becoming a second, reworded one.
+* In Codex, `notifai ask` can now hand back the first question as an exact card to open when the card tool is available, so that card is the same registered question.
+* When a User types a new message to a Claude Code agent, the agent is shown its questions still open on the User's devices, each with its close command. It is asked to close only the ones the message answers. Nothing is closed automatically.
+* Closing one question no longer ends an agent's other open questions. Each stays answerable for its own answer window.
+
 ## [14.7.2](https://github.com/Raidiant-io/notifai/compare/v14.7.1...v14.7.2) (2026-11-18)
 
 ### Bug Fixes
