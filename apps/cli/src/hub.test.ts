@@ -1017,11 +1017,9 @@ describe('hub end confirmation and writers', () => {
     // When Claude Code created the inbox it runs now.
     const file = path.join(claudeDescriptorDir(env), `${host.pid}.json`)
     writeFileSync(file, JSON.stringify({ ...JSON.parse(readFileSync(file, 'utf8')) as Record<string, unknown>, startedAt }))
-    let offset = 0
     const service = noteService()
     const peers = new Map<number, PeerCredentials>()
-    const { hub, done } = startHub(env, service, peers, memoryStore(), 100, {},
-      { clock: { monotonic: () => performance.now() + offset, wall: () => Date.now() } })
+    const { hub, done } = startHub(env, service, peers, memoryStore(), 100)
     await hubListening(env)
     const child = await writerChild(env, peers, 900260, host, { inbox_started_at: startedAt })
     await until(() => service.batches.length >= 1)
@@ -1034,8 +1032,16 @@ describe('hub end confirmation and writers', () => {
     }))
     await until(() => hub.sessions.get(SESSION)?.idleSince != null)
     // Idle long enough that a wake Claude Code accepted would have run by now.
-    offset += 31_000
+    // Backdated rather than by moving the hub's clock, which it reads as a jump.
+    hub.sessions.get(SESSION)!.idleSince = performance.now() - 31_000
     service.note()
+    // A release answers only an exchange already waiting: answer until the
+    // hub has fetched and staged the note.
+    await until(() => {
+      service.release()
+      const lease = readAttendantLease(SESSION, env)
+      return lease !== null && hasSessionInputs(SESSION, env, lease)
+    }, 10_000)
     const finish = async (): Promise<void> => {
       child.socket.destroy()
       hub.requestExit('test')
