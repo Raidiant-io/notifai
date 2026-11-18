@@ -17,7 +17,9 @@ import type { SessionState } from './hook-types.js'
 import type { Logger } from './logging.js'
 import { projectBinding, projectEnablementState } from './project-enablement.js'
 import { buildDraft } from './send.js'
-import { pendingInputCounts, recordInputWakeFailure } from './session-inputs.js'
+import { truncateContext } from './invocation-context.js'
+import { storedSessionLabel } from './session-labels.js'
+import { pendingSessionInputs, recordInputWakeFailure } from './session-inputs.js'
 import type { DeliveryLease } from './session-delivery.js'
 
 /** The session looks free, so nothing it is doing explains the wait. */
@@ -91,6 +93,7 @@ export interface InputOverdueNotice {
   cwd: string | null
   harness: string
   pending: { answers: number; messages: number }
+  identity?: { titles: string[]; session_label?: string; project?: string | null }
   /** Why it is waiting, for the log. Never shown to the User. */
   reason: string
   now: number
@@ -117,14 +120,25 @@ export async function reportInputOverdue(notice: InputOverdueNotice): Promise<vo
       // Input handed in while this was sending finds the record at the next check, which takes the notice down.
       if (sent !== null) {
         next.input_overdue_notice = { ...sent, told_at: now, cwd: notice.cwd, harness: notice.harness,
-          answers: notice.pending.answers, messages: notice.pending.messages }
+          answers: notice.pending.answers, messages: notice.pending.messages,
+          ...(notice.identity === undefined ? {} : { identity: notice.identity }) }
       }
       return next
     })
   }
   try {
     const collapseKey = `notifai-overdue-${randomBytes(8).toString('base64url')}`
-    const outcome = await sendNotice(notice, { summary: inputOverdueSummary(notice.pending), idempotencyKey: `overdue-${tracked.since}-${sessionId}`, collapseKey })
+    let summary = inputOverdueSummary(notice.pending)
+    const identity = notice.identity
+    if (identity?.titles.length === 1 && notice.pending.answers === 1) {
+      summary = summary.replace('Your answer', `Your answer to “${truncateContext(identity.titles[0]!, 64)}”`)
+    }
+    if (identity?.session_label) summary = summary.replace('the agent yet', `“${truncateContext(identity.session_label, 48)}” yet`)
+    const body = identity === undefined ? undefined : [summary,
+      ...identity.titles.map(title => `Question: ${title}`),
+      ...(identity.session_label ? [`Agent Session: ${identity.session_label}`] : [])].join('\n\n')
+    const outcome = await sendNotice(notice, { summary, ...(body === undefined ? {} : { body }),
+      ...(identity === undefined ? {} : { identity }), idempotencyKey: `overdue-${tracked.since}-${sessionId}`, collapseKey })
     if (outcome.kind !== 'no-service') mark(outcome.kind, outcome.kind === 'sent' ? { request_id: outcome.requestId, collapse_key: collapseKey } : null)
   } catch (err) {
     logger.info('delivery.overdue', { session: sessionId, stage: 'notice-failed', message: err instanceof Error ? err.message : String(err) })
@@ -136,18 +150,26 @@ type SentNotice = { request_id: string; collapse_key: string }
 type NoticeOutcome = { kind: 'sent'; requestId: string } | { kind: 'no-service' | 'project-disabled' | 'not-built' }
 
 async function sendNotice(notice: NoticeContext, options: { summary: string; idempotencyKey: string; collapseKey?: string;
-  lifecycle?: LifecycleT; title?: string; kind?: NotificationKind }): Promise<NoticeOutcome> {
+  lifecycle?: LifecycleT; title?: string; kind?: NotificationKind; body?: string; identity?: InputOverdueNotice['identity'] }): Promise<NoticeOutcome> {
   const { summary, idempotencyKey, lifecycle } = options
   const collapseKey = options.collapseKey ?? `notifai-overdue-${randomBytes(8).toString('base64url')}`
   const { sessionId, env } = notice
   const cwd = notice.cwd ?? process.cwd()
   const config = loadConfig({ cwd, env, sessionId })
   const binding = projectBinding(cwd, env, config.project.value)
+  const body = options.body ?? (options.identity === undefined ? undefined : [summary,
+    ...options.identity.titles.map(title => `Question: ${title}`),
+    ...(options.identity.session_label ? [`Agent Session: ${options.identity.session_label}`] : [])].join('\n\n'))
   // A retirement is not news: it only takes down what was already shown.
   if (lifecycle === undefined && binding !== null && projectEnablementState(binding) === 'disabled') return { kind: 'project-disabled' }
   if (notice.client === null) return { kind: 'no-service' }
   const build = buildDraft(config, { title: options.title ?? INPUT_OVERDUE_TITLE, summary, kind: options.kind ?? 'blocked', collapseKey,
-    ...(lifecycle === undefined ? {} : { lifecycle }) }, { source: { session_id: sessionId, harness: notice.harness } })
+    ...(body === undefined ? {} : { body }),
+    ...(options.identity?.project === null ? { projectless: true }
+      : options.identity?.project === undefined ? {} : { project: options.identity.project }),
+    ...(lifecycle === undefined ? {} : { lifecycle }) }, { inferredProject: binding?.project ?? null,
+      source: { session_id: sessionId, harness: notice.harness,
+        ...(options.identity?.session_label ? { session_label: options.identity.session_label } : {}) } })
   if (!build.ok) { notice.logger.error('delivery.overdue', { session: sessionId, stage: 'notice-not-built', message: build.error }); return { kind: 'not-built' } }
   const capabilities = CAPABILITIES_V1.describe(build.platform)
   if (capabilities === null || !validateDraft(build.draft, capabilities).ok) return { kind: 'not-built' }
@@ -182,11 +204,11 @@ export type InputNoticeEnd = 'delivered' | 'followed' | 'dropped'
 async function sendNoticeEnd(notice: NoticeContext, sent: NoticeRecord, end: InputNoticeEnd): Promise<NoticeOutcome> {
   if (end === 'dropped') {
     return sendNotice(notice, { summary: inputNeverDeliveredSummary(sent), idempotencyKey: `overdue-dropped-${sent.request_id}`,
-      collapseKey: sent.collapse_key, title: INPUT_NOT_DELIVERED_TITLE, kind: 'failed' })
+      collapseKey: sent.collapse_key, title: INPUT_NOT_DELIVERED_TITLE, kind: 'failed', identity: sent.identity })
   }
   return sendNotice(notice, { summary: end === 'followed' ? INPUT_FOLLOWED_SUMMARY : INPUT_DELIVERED_SUMMARY,
     idempotencyKey: `overdue-${end === 'followed' ? 'followed' : 'retire'}-${sent.request_id}`, collapseKey: sent.collapse_key,
-    lifecycle: { tier: 'done', retires_request_id: sent.request_id } })
+    lifecycle: { tier: 'done', retires_request_id: sent.request_id }, identity: sent.identity })
 }
 
 /**
@@ -329,12 +351,12 @@ export function checkInputOverdue(input: Omit<InputOverdueNotice, 'pending' | 'r
   serviceMessages?: number; heldAnswers?: boolean; excludeAnswers?: boolean; boundary?: boolean
 }): void {
   const { sessionId, env, now } = input
-  const local = pendingInputCounts(sessionId, env, input.lease)
+  const local = pendingSessionInputs(sessionId, env, input.lease)
   const state = readSessionState(sessionId, env)
   const held = input.heldAnswers === true && state.accepted !== undefined && state.accepted.delivered_at === undefined ? state.accepted.answers.length : 0
   const pending = {
-    answers: input.excludeAnswers === true ? 0 : Math.max(local.answers, held),
-    messages: Math.max(local.messages, input.serviceMessages ?? 0),
+    answers: input.excludeAnswers === true ? 0 : Math.max(local.answers.length, held),
+    messages: Math.max(local.messages.length, input.serviceMessages ?? 0),
   }
   const waiting = pending.answers + pending.messages > 0
   const tracked = trackInputWaiting(sessionId, env, waiting, now, input.busy)
@@ -351,6 +373,12 @@ export function checkInputOverdue(input: Omit<InputOverdueNotice, 'pending' | 'r
     return
   }
   if (tracked === undefined || input.boundary === true || !inputOverdue(tracked, input.busy, now)) return
+  const questions = input.excludeAnswers === true ? [] : (local.answers.length >= held ? local.answers : state.accepted?.answers ?? []).map(answer => answer.pending)
+  const titles = [...new Set(questions.map(question => question.title ?? question.question).filter(Boolean))]
+  const label = storedSessionLabel(sessionId, env)?.label ?? questions.find(question => question.source?.session_label)?.source?.session_label
+  const projects = [...new Set(questions.map(question => question.project ?? null))]
+  const identity = { titles, ...(label === undefined ? {} : { session_label: label }),
+    ...(projects.length === 1 ? { project: projects[0] } : {}) }
   reporting.add(sessionId)
-  void reportInputOverdue({ ...input, pending, reason: input.reason() }).finally(() => { reporting.delete(sessionId) })
+  void reportInputOverdue({ ...input, pending, identity, reason: input.reason() }).finally(() => { reporting.delete(sessionId) })
 }

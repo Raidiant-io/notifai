@@ -141,6 +141,28 @@ it('takes the notice down on every device once the input is no longer waiting, o
 type Submission = { idempotency_key: string; draft: { kind: string; lifecycle?: unknown; presentation: { title: string; summary: string }; delivery: { collapse_key: string } } }
 const submissions = (submit: ReturnType<typeof vi.fn>) => (submit.mock.calls as unknown as Array<[Submission]>).map(call => call[0])
 
+it.each([
+  ['Run save architecture', 'Split dungeon work'],
+  ['Questions '.repeat(12), 'S'.repeat(64)],
+])('identifies the waiting question and Agent Session, with the question\'s Project (%s)', async (title, label) => {
+  const h = setup()
+  const pending = { question: 'Which run data should be saved?', title, project: 'game',
+    source: { session_id: SESSION, session_label: label }, request_id: 'req_a', reply_deadline_at: INPUT_OVERDUE_MS + 60_000 }
+  const answer = { pending, reply: { seq: 1, text: 'Keep the extension data' }, replies: [{ seq: 1, text: 'Keep the extension data' }] } as unknown as AnsweredPending
+  updateSessionState(SESSION, h.env, state => ({ ...state, waiting_answers: [answer], acknowledgement_due: [{ request_id: 'req_a' } as never] }))
+  walk(now => h.check(now, { messages: 0 }), 0, INPUT_OVERDUE_MS)
+  await h.settled()
+  const [request] = h.submit.mock.calls[0] as unknown as [{ draft: { project?: string; source: { session_label?: string }; presentation: { summary: string; body?: string } } }]
+  expect(request.draft.project).toBe('game')
+  expect(request.draft.source.session_label).toBe(label)
+  expect(request.draft.presentation.summary).toContain(title.slice(0, 32))
+  expect(request.draft.presentation.summary).toContain(label.slice(0, 32))
+  expect(Array.from(request.draft.presentation.summary).length).toBeLessThanOrEqual(240)
+  expect(request.draft.presentation.body).toContain(title)
+  expect(request.draft.presentation.body).toContain(label)
+  expect(request.draft.presentation.body).not.toContain('Keep the extension data')
+})
+
 // A note waited a day in a session the User then moved on from: the session
 // ended without it, and the notice kept telling them to type in a session
 // that no longer existed.
@@ -186,7 +208,7 @@ it('says an answer was dropped when its window ends before it went in', async ()
   updateSessionState(SESSION, h.env, state => ({ ...state, waiting_answers: [answer], acknowledgement_due: [{ request_id: 'req_a' } as never] }))
   walk(now => h.check(now, { messages: 0 }), 0, INPUT_OVERDUE_MS)
   await h.settled()
-  expect(submissions(h.submit)[0]!.draft.presentation.summary).toBe("Your answer hasn't reached the agent yet. Type anything in its session to deliver it.")
+  expect(submissions(h.submit)[0]!.draft.presentation.summary).toBe("Your answer to “Deploy?” hasn't reached the agent yet. Type anything in its session to deliver it.")
   expect(dropExpiredHeldAnswers(SESSION, h.env, INPUT_OVERDUE_MS + 30_000)).toEqual(['req_a'])
   h.check(INPUT_OVERDUE_MS + 31_000, { messages: 0 })
   await h.settled()

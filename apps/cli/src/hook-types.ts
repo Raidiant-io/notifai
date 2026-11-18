@@ -340,7 +340,8 @@ export interface SessionState {
    * can be corrected after the session ended.
    */
   input_overdue_notice?: { request_id: string; collapse_key: string; told_at: number; cleared_at?: number; dropped_at?: number
-    cwd?: string | null; harness?: string; answers?: number; messages?: number }
+    cwd?: string | null; harness?: string; answers?: number; messages?: number
+    identity?: { titles: string[]; session_label?: string; project?: string | null } }
   /**
    * Native-queue writes that committed, retained per request until the agent
    * acknowledges them. They never occupy the in-flight delivery slot or block

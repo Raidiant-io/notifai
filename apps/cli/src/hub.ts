@@ -526,6 +526,8 @@ interface Registration {
   transcriptPath: string | null
   inboxSocket: string | null
   inboxToken: boolean
+  /** Claude's inbox birth changes across exec even when its PID does not. */
+  inboxStartedAt?: number
   claudeConfigDir: string | null
   codexHome: string | null
   /** Linux: the harness's start in kernel ticks, which Claude's descriptor carries and no clock step moves. */
@@ -1103,9 +1105,17 @@ class HubSession implements AttendedSession {
     }
     const descriptor = this.descriptor()
     if (descriptor === 'missing' || descriptor === null || descriptor.peerProtocol !== CLAUDE_PEER_PROTOCOL) return false
+    if (!this.claudeInboxCurrent(descriptor.startedAt)) return false
     const order = compareVersions(descriptor.version, claudeMinInboxVersion(process.platform))
     return order !== 'before' && order !== 'unparseable' &&
       (this.registration.inboxSocket === null || this.registration.inboxSocket === descriptor.messagingSocketPath)
+  }
+
+  /** Never write through a child that still carries the inbox's earlier token. */
+  private claudeInboxCurrent(startedAt: number): boolean {
+    return this.registration.inboxStartedAt === undefined
+      ? true
+      : startedAt === this.registration.inboxStartedAt
   }
 
   private async handClaude(messages: AttendanceMessage[]): Promise<'done' | 'retry-soon'> {
@@ -1129,6 +1139,7 @@ class HubSession implements AttendedSession {
   async writeClaude(text: string): Promise<'written' | 'unavailable' | 'cancelled' | 'failed'> {
     const descriptor = this.descriptor()
     if (descriptor === 'missing' || descriptor === null || descriptor.sessionId !== this.id ||
+        !this.claudeInboxCurrent(descriptor.startedAt) ||
         !descriptorStartMatches(descriptor.procStart, this.harnessProcess, this.registration.harnessTicks) ||
         descriptor.peerProtocol !== CLAUDE_PEER_PROTOCOL || !claudeStatusWakeable(descriptor.status)) return 'unavailable'
     if (this.child === null || !this.mayWrite()) return 'cancelled'
@@ -2214,6 +2225,8 @@ export class Hub {
       stamp: { wall, mono }, hookEvent: text('hook_event', 64) ?? '', source: text('source', 64),
       cwd: absolute('cwd'), transcriptPath: absolute('transcript_path'), inboxSocket: absolute('inbox_socket'),
       inboxToken: frame['inbox_token'] === 'present', claudeConfigDir: absolute('claude_config_dir'), codexHome: absolute('codex_home'),
+      ...(typeof frame['inbox_started_at'] === 'number' && Number.isSafeInteger(frame['inbox_started_at']) && frame['inbox_started_at'] > 0
+        ? { inboxStartedAt: frame['inbox_started_at'] } : {}),
       harnessTicks: /^\d{1,30}$/.test(text('harness_ticks', 32) ?? '') ? text('harness_ticks', 32) : null,
       // Classification happens only after peer and harness identity verification.
       place: 'unreported',
@@ -2279,6 +2292,9 @@ export class Hub {
       }
       if (descriptor.pid !== owner.pid || descriptor.sessionId !== registration.sessionId ||
           !descriptorStartMatches(descriptor.procStart, owner, owner.ticks ?? registration.harnessTicks)) return 'descriptor-mismatch'
+      // Older children report no inbox birth. Observe it now so later execs
+      // are fenced too; a hook timestamp describes ordering, not inbox birth.
+      registration.inboxStartedAt ??= descriptor.startedAt
     }
     this.placeOf(registration, frame, owner.pid)
     const existing = this.sessions.get(registration.sessionId)
@@ -2295,6 +2311,16 @@ export class Hub {
           : normalizeProcessStart(identity.start) === normalizeProcessStart(registration.harnessProcess.start))
       if (sameHarness(existing.harnessProcess, existing.registration.harnessTicks)) {
         if (existing.child !== null && !existing.child.closed && !existing.child.ended) return 'session-already-served'
+        if (registration.harness === 'claude-code' && registration.inboxStartedAt !== undefined &&
+            registration.inboxStartedAt !== existing.registration.inboxStartedAt) {
+          // A wake sent to the earlier inbox cannot stand for the fresh one.
+          // User input stays durable and is claimed only by its foreground drain.
+          updateSessionState(existing.id, existing.env, (state) => {
+            const next = { ...state }
+            delete next.input_wake
+            return next
+          })
+        }
         existing.child = link
         existing.registration = registration
         existing.reloadedAt = null

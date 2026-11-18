@@ -14,7 +14,7 @@ import { afterAll,afterEach,beforeAll,describe,expect,it } from 'vitest'
 import type { ApiClient } from './client.js'
 import type { CommandDeps } from './commands-core.js'
 import { recordSessionNotified } from './hook-session-state.js'
-import { childLockPath } from './hub-ipc.js'
+import { childLockPath, writerLockPath } from './hub-ipc.js'
 import { Hub,peerVerifierFor,type HubOptions } from './hub.js'
 import { nullLogger } from './logging.js'
 
@@ -84,7 +84,17 @@ server.listen(inbox, () => {
     process.stdout.write(JSON.stringify({ spawned: child.pid, event }) + '\\n')
   }
   attend('SessionStart')
-  process.stdin.on('data', (chunk) => { if (String(chunk).includes('prompt')) attend('UserPromptSubmit') })
+  process.stdin.on('data', (chunk) => {
+    if (String(chunk).includes('prompt')) attend('UserPromptSubmit')
+    if (String(chunk).includes('restart')) {
+      // An exec keeps the PID and kernel start, but Claude's inbox token is new.
+      env.CLAUDE_CODE_MESSAGING_TOKEN = 'rotated-' + session
+      const file = path.join(configDir, 'sessions', process.pid + '.json')
+      const descriptor = JSON.parse(readFileSync(file, 'utf8'))
+      writeFileSync(file, JSON.stringify({ ...descriptor, startedAt: Date.now() }))
+      attend('SessionStart')
+    }
+  })
   process.stdout.write(JSON.stringify({ ready: process.pid }) + '\\n')
 })
 `
@@ -192,6 +202,38 @@ function startHub(env: NodeJS.ProcessEnv, fake: Service, options: Partial<HubOpt
 }
 
 describe.skipIf(!supported)('native session child', () => {
+  it.each([[false, false], [true, false], [true, true]])('uses the new inbox token after a same-PID restart (earlier wake: %s, legacy lock: %s)', async (earlierWake, legacyLock) => {
+    const { root, env } = scratch()
+    recordSessionNotified(SESSION, env, Date.now())
+    const fake = service()
+    const { hub, stop } = startHub(env, fake)
+    const harness = await startHarness(root, env, 'direct')
+    await until(() => fake.batches.some(batch => batch.sessions.some(entry => entry.session_id === SESSION)))
+    if (legacyLock) {
+      for (const file of [childLockPath(env, SESSION), writerLockPath(env, SESSION, harness.pid)]) {
+        writeFileSync(file, readFileSync(file, 'utf8').trim().split(' ').slice(0, 2).join(' ') + '\n')
+      }
+      // Earlier residents held only the session-wide lock.
+      rmSync(writerLockPath(env, SESSION, harness.pid))
+    }
+    if (earlierWake) {
+      fake.notes.push({ body: 'before restart' })
+      await until(() => harness.lines.some(line => 'inbox' in line))
+    }
+    harness.process.stdin!.write('restart\n')
+    await until(() => harness.lines.filter(line => 'spawned' in line).length === 2)
+    // Input arriving during replacement must never be written with the old token.
+    fake.notes.push({ body: 'after restart' })
+    // Wait for the new attend process to register or exit as a hint.
+    const second = harness.lines.filter(line => 'spawned' in line)[1]!['spawned'] as number
+    await until(() => hub.sessions.get(SESSION)?.child?.pid === second || spawnSync('kill', ['-0', String(second)]).status !== 0)
+    await until(() => harness.lines.filter(line => 'inbox' in line).length === (earlierWake ? 2 : 1))
+    const first = String(harness.lines.filter(line => 'inbox' in line).at(-1)!['inbox']).trim().split('\n')[0]!
+    expect(JSON.parse(first)).toEqual({ type: 'auth', token: `rotated-${SESSION}` })
+    harness.process.kill('SIGKILL')
+    expect(await stop()).toBe(0)
+  }, 30_000)
+
   it('stays the harness\'s own child, registers under kernel peer checks, writes the inbox with the token, and reports the harness exit', async () => {
     const { root, env } = scratch()
     recordSessionNotified(SESSION, env, Date.now())

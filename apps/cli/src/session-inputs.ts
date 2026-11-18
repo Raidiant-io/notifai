@@ -393,7 +393,7 @@ function readSessionMessageCache(sessionId: string, env: NodeJS.ProcessEnv, leas
   } catch { return null }
 }
 
-function pendingSessionInputs(sessionId: string, env: NodeJS.ProcessEnv, lease: DeliveryLease | null, state = readSessionState(sessionId, env), cachedMessages?: AttendanceMessage[]) {
+export function pendingSessionInputs(sessionId: string, env: NodeJS.ProcessEnv, lease: DeliveryLease | null, state = readSessionState(sessionId, env), cachedMessages?: AttendanceMessage[]) {
   const written = new Set(readDeliveryJournal(sessionId, env)
     .filter((entry) => ['writing', 'written', 'failed'].includes(entry.stage))
     .map((entry) => entry.subject.type === 'answer' ? entry.subject.request_id : entry.subject.message_id))

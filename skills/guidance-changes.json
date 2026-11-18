@@ -1,5 +1,5 @@
 {
-  "current": "3fd30fc02cad04f1da92972735cd10434c0a0ca91ccd6cd4b7b54ad6c1a38f79",
+  "current": "98086aa1dbc29ce5ac5a5322bc6cecf1008cbd8421b6dadae87861301afd9d08",
   "releases": [
     {
       "digest": "3e47b01bc6bbfb43e910c660b9964fab6459d75148c3c02dcbcd0be64cfb2963",
@@ -412,6 +412,10 @@
     {
       "digest": "3fd30fc02cad04f1da92972735cd10434c0a0ca91ccd6cd4b7b54ad6c1a38f79",
       "note": "Three fixes to command output; nothing changes in what you do.\n\n- A guidance refusal now names the folder the command ran in and the folder where this session read guidance, and gives the one `cd … && notifai guidance` command that reads it there. Guidance you read in one folder still counts in another folder that shows the same guidance, and a read in each folder keeps counting when you switch between them.\n- When `notifai send` prints anything after the request went out, the first line is `Sent <request id>.`; what follows is advice, not a failure, so never send it again.\n- The Project naming request appears only for a Project with no display name, and its `notifai project set --project <id> …` command works from any folder."
+    },
+    {
+      "digest": "98086aa1dbc29ce5ac5a5322bc6cecf1008cbd8421b6dadae87861301afd9d08",
+      "note": "No change to what agents must do. Claude Code inbox delivery reconnects the session's own child after Claude restarts in place, using its fresh inbox token; waiting answers and notes remain available to the same Agent Session. A notice about input that has not arrived now identifies its question and Agent Session, with its Project. Existing acknowledgements and the User's inbound-message settings still apply."
     }
   ]
 }

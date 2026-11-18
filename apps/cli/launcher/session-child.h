@@ -314,6 +314,7 @@ typedef struct {
     char state[PATH_MAX], run[PATH_MAX], socket_path[PATH_MAX], self[PATH_MAX];
     char harness_start[192], harness_ticks[32], boot[128];
     char inbox_socket[PATH_MAX], token[1024];
+    long long inbox_started_at;
     char writer_lock[PATH_MAX];
     pid_t harness_pid;
     int refusals;
@@ -494,6 +495,7 @@ static int child_register(child_state *child) {
     if (child->transcript[0]) jb_field(&reg, "transcript_path", child->transcript);
     if (child->inbox_socket[0]) jb_field(&reg, "inbox_socket", child->inbox_socket);
     jb_field(&reg, "inbox_token", child->token[0] ? "present" : "absent");
+    if (child->inbox_started_at > 0) jb_number(&reg, "inbox_started_at", child->inbox_started_at);
     const char *claude = getenv("CLAUDE_CONFIG_DIR"), *codex = getenv("CODEX_HOME");
     if (claude && claude[0] == '/') jb_field(&reg, "claude_config_dir", claude);
     /* Where the conversation runs. An Orca chat tab drives the harness itself;
@@ -677,7 +679,7 @@ static int child_read(child_state *child, char *buffer, size_t *buffered) {
 /* Identify the process hosting this session: the parent, or the grandparent
  * through a shell that did not exec. Claude is recognised by its own session
  * descriptor naming this session at that process's start; Codex by its name. */
-static int claude_descriptor_matches(const char *session, const proc_record *candidate, char *socket, size_t socket_size) {
+static int claude_descriptor_matches(const char *session, const proc_record *candidate, char *socket, size_t socket_size, long long *started_at) {
     char config[PATH_MAX], file[PATH_MAX], text[65536];
     const char *configured = getenv("CLAUDE_CONFIG_DIR");
     if (configured && configured[0] == '/') snprintf(config, sizeof(config), "%s", configured);
@@ -703,6 +705,8 @@ static int claude_descriptor_matches(const char *session, const proc_record *can
     int same_start = !strcmp(start, expected) || (candidate->ticks[0] && !strcmp(start, candidate->ticks));
     if (strcmp(named, session) || strtol(pid, NULL, 10) != (long)candidate->pid || !same_start) return 0;
     if (socket && json_field(text, (size_t)n, "messagingSocketPath", socket, socket_size) != 1) socket[0] = 0;
+    char epoch[32];
+    if (started_at) *started_at = json_field(text, (size_t)n, "startedAt", epoch, sizeof(epoch)) == 2 ? strtoll(epoch, NULL, 10) : 0;
     return 1;
 }
 
@@ -727,8 +731,8 @@ static int identify_harness(child_state *child) {
         /* Claude can start its hooks before it publishes the descriptor. */
         char descriptor_socket[PATH_MAX];
         for (int attempt = 0; attempt < 80 && !chosen; attempt++) {
-            if (claude_descriptor_matches(child->session, &parent, descriptor_socket, sizeof(descriptor_socket))) chosen = &parent;
-            else if (through_shell && claude_descriptor_matches(child->session, &grandparent, descriptor_socket, sizeof(descriptor_socket)))
+            if (claude_descriptor_matches(child->session, &parent, descriptor_socket, sizeof(descriptor_socket), &child->inbox_started_at)) chosen = &parent;
+            else if (through_shell && claude_descriptor_matches(child->session, &grandparent, descriptor_socket, sizeof(descriptor_socket), &child->inbox_started_at))
                 chosen = &grandparent;
             if (!chosen) {
                 struct timespec pause = { 0, 250 * 1000000L };
@@ -742,6 +746,36 @@ static int identify_harness(child_state *child) {
     snprintf(child->harness_ticks, sizeof(child->harness_ticks), "%s", chosen->ticks);
     format_identity(chosen, child->harness_start, sizeof(child->harness_start));
     return child->harness_start[0] != 0;
+}
+
+/* An exec keeps the harness PID and kernel start, but rotates Claude's inbox
+ * token. Retire only this harness's verified resident and let this new hook
+ * become its child with the fresh exported token. No token goes through the
+ * hub or a file. Older residents have a two-field lock; their process birth
+ * distinguishes an inbox recreated later, and SessionStart covers an exec
+ * within that same second. */
+static int replace_stale_child(child_state *child, int lock) {
+    if (strcmp(child->harness, "claude-code") || !identify_harness(child) || child->inbox_started_at <= 0) return 0;
+    char record[160];
+    ssize_t n = pread(lock, record, sizeof(record) - 1, 0);
+    record[n > 0 ? n : 0] = 0;
+    long resident_pid = 0, harness_pid = 0;
+    long long epoch = 0;
+    int fields = sscanf(record, "%ld %ld %lld", &resident_pid, &harness_pid, &epoch);
+    if (fields < 2 || resident_pid <= 1 || harness_pid != (long)child->harness_pid ||
+        (fields == 3 && epoch == child->inbox_started_at && strcmp(child->event, "SessionStart"))) return 0;
+    proc_record resident, parent, current;
+    if (!proc_lookup((pid_t)resident_pid, &resident) || !proc_lookup(getpid(), &current) || strcmp(resident.comm, current.comm)) return 0;
+    int own = resident.ppid == child->harness_pid ||
+        (proc_lookup(resident.ppid, &parent) && is_shell(parent.comm) && parent.ppid == child->harness_pid);
+    if (!own || (fields < 3 && strcmp(child->event, "SessionStart") && child->inbox_started_at < (resident.start + 1) * 1000)) return 0;
+    if (kill((pid_t)resident_pid, SIGHUP)) return 0;
+    for (int attempt = 0; attempt < 60; attempt++) {
+        if (!flock(lock, LOCK_EX | LOCK_NB)) return 1;
+        struct timespec pause = { 0, 100 * 1000000L };
+        nanosleep(&pause, NULL);
+    }
+    return 0;
 }
 
 static int read_input(char **out, size_t *length) {
@@ -862,13 +896,13 @@ static int session_child_main(int argc, char **argv, const char *self, const cha
             >= (int)sizeof(child.writer_lock)) return 0;
     child.writer = open(child.writer_lock, O_RDWR | O_CREAT | O_CLOEXEC, 0600);
     if (child.writer < 0) { child.writer_lock[0] = 0; return 0; }
-    if (flock(child.writer, LOCK_EX | LOCK_NB)) {
+    if (flock(child.writer, LOCK_EX | LOCK_NB) && !replace_stale_child(&child, child.writer)) {
         child.writer_lock[0] = 0;
         child_hint(&child);
         return 0;
     }
     child.lock = open(lock_path, O_RDWR | O_CREAT | O_CLOEXEC, 0600);
-    if (child.lock >= 0 && flock(child.lock, LOCK_EX | LOCK_NB)) {
+    if (child.lock >= 0 && flock(child.lock, LOCK_EX | LOCK_NB) && !replace_stale_child(&child, child.lock)) {
         /* Another child holds the session. One from an earlier build that
          * serves this very process needs only a hint; any other serves
          * another process, and this child is one more writer. */
@@ -888,7 +922,7 @@ static int session_child_main(int argc, char **argv, const char *self, const cha
     if (!strcmp(child.event, "Interrupt")) { child.writer_lock[0] = 0; child_hint(&child); return 0; }
     if (!identify_harness(&child) || child.harness_pid != expected) { child.writer_lock[0] = 0; return 0; }
     char record[128];
-    int record_length = snprintf(record, sizeof(record), "%ld %ld\n", (long)getpid(), (long)child.harness_pid);
+    int record_length = snprintf(record, sizeof(record), "%ld %ld %lld\n", (long)getpid(), (long)child.harness_pid, child.inbox_started_at);
     if (ftruncate(child.writer, 0) == 0) write_all(child.writer, record, (size_t)record_length);
     if (child.lock >= 0 && ftruncate(child.lock, 0) == 0) write_all(child.lock, record, (size_t)record_length);
     boot_identity(child.boot, sizeof(child.boot));

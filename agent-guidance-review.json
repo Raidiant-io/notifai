@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "behavior_digest": "sha256:8319c13dccbb144caaf32fa8d9d933e722f2fb353a79581e7974b3554554e6b1",
+  "behavior_digest": "sha256:4b470098236ac3d4e053f41bc3639386e82f3f8e746616a6726095499dc2870a",
   "outcome": "guidance-updated",
   "surfaces_reviewed": [
     "lifecycle-hooks",
@@ -9,5 +9,5 @@
     "cli-readiness",
     "domain-terms"
   ],
-  "reason": "Reviewed lifecycle hooks, the Notifai skill, harness setup, CLI readiness and domain terms. Three output fixes from a review of real sessions; the skill, topics and hooks are unchanged. The guidance gate keeps up to 8 reads per Agent Session, each with the folder it was read for, so a read in each folder keeps counting; a refusal names the folder the command ran in and the folder last read, with the exact cd-and-read command, after a coordinator reading guidance in its Project and sending from a projectless folder was refused for two hours. A send that prints anything after it went out now starts with `Sent <request id>.` and prints its advice after, after an agent took a naming nudge for a failure and sent twice. The Project naming nudge is shown only when the service holds no display name, and its command passes --project so it works from any folder. A guidance change note tells running sessions."
+  "reason": "Reviewed lifecycle hooks, the Notifai skill, harness setup, CLI readiness and domain terms against the inbox restart and overdue-notice changes. The Session Child refreshes its own inbox token after an in-place Claude restart; the Hub holds writes until that child reconnects and replaces the old content-free wake. Question admission, picker linking, acknowledgement obligations, setup and User-owned inbound-message policy are unchanged. A waiting-input notice now carries the question title, Agent Session label and original Project, without the answer text. The existing instructions to use supplied input first, receive once for an empty wake, and acknowledge before resuming remain correct. Real Claude Code default and bypass sessions, a same-PID restart, native ownership/token regressions and notice-draft checks supply the behavioral evidence. Preserved the incoming review and authored change note for folder-scoped guidance refusals, outcome-first send output and the missing-Project-name nudge; the skill, topics and hook definitions remain unchanged in the combined source."
 }
