@@ -171,6 +171,14 @@ it is already registered with your title, Body and images, and a reworded
 form is a second question. A form you open yourself carries only its own
 fields. Promise nothing about a form closing.
 
+**`optional_form`:** If `request_user_input_async` is one of your tools, say
+what each answer will make you do, then open it with `optional_form.input`
+in this turn: it presents this registered question. Keep its text exactly as
+returned: what each answer will make you do goes in your message, never in
+the form. Otherwise show the question once as ordinary conversation text and
+explain what each answer will change. Either way, open no other question form
+for it.
+
 **Registering is not the end of the turn.** Say what each answer will make
 you do before you open a handed-back form or start a wait. A handed-back form
 is your question in the conversation: never also ask it in prose. Otherwise

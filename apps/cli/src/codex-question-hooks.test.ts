@@ -4,6 +4,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { afterEach,expect,it,vi } from 'vitest'
+import { codexCardAnswerHeld } from './codex-card-handback.js'
 import type { ApiClient } from './client.js'
 import { prepareCommandGuidanceRead,recordCommandGuidanceRead } from './command-guidance.js'
 import { askCommand } from './commands-ask.js'
@@ -339,14 +340,14 @@ it('refuses only the exact card of a hand-back that was already answered', async
   expect(decision.permissionDecisionReason).toContain(`${asked} was already answered`)
 })
 
-it('hands back the card from ask without a route that closes it, and links that card to the same question', async () => {
+async function readyToAsk(proved = false) {
   const h = setup()
   ;(h.env as NodeJS.ProcessEnv)['CODEX_THREAD_ID'] = SESSION
   appendFileSync(h.envelope.transcript_path, JSON.stringify({ type: 'turn_context', payload: { turn_id: TURN, model: 'gpt-6-sol' } }) + '\n')
-  // A tool callback and an earlier card callback in this turn prove the hooks and the card tool.
+  // The ordinary callback proves root ownership; the optional card callback proves the tool.
   await hookRunCommand(h.deps, 'post-tool-use', async () => JSON.stringify({ ...h.envelope, hook_event_name: 'PostToolUse',
     tool_name: 'shell', tool_use_id: 'call_shell', tool_input: { command: ['true'] }, tool_response: 'ok' }), 'codex')
-  await hookRunCommand(h.deps, 'pre-tool-use', async () => JSON.stringify({ ...h.envelope, tool_use_id: 'call_probe',
+  if (proved) await hookRunCommand(h.deps, 'pre-tool-use', async () => JSON.stringify({ ...h.envelope, tool_use_id: 'call_probe',
     tool_input: { questions: [{ title: 'Unrelated?' }] } }), 'codex')
   h.output.length = 0
   expect(recordCommandGuidanceRead(h.deps, prepareCommandGuidanceRead(h.deps))).toBe(true)
@@ -354,11 +355,26 @@ it('hands back the card from ask without a route that closes it, and links that 
   writeSessionState(SESSION, h.env, { ...readSessionState(SESSION, h.env),
     codex_stop_definition_fingerprint: codexStopDefinitionFingerprint(codexInstalls, h.env)! })
   h.output.length = 0
+  return h
+}
+
+it.each([false, true])('offers the exact card without a closing route and links it once (tool proved: %s)', async proved => {
+  const h = await readyToAsk(proved)
   const code = await askCommand(h.deps, 'Which environment?', { title: 'Deploy target', choice: ['Staging', 'Production'], json: true })
   expect(code).toBe(0)
   const result = JSON.parse(h.output.filter(line => line.trimStart().startsWith('{')).join('\n'))
   expect(result.native_question_unavailable).toBeUndefined()
-  expect(result.open_form).toEqual({ tool: 'request_user_input_async', input: CARD })
+  expect(result[proved ? 'open_form' : 'optional_form']).toEqual({ tool: 'request_user_input_async', input: CARD,
+    ...(proved ? {} : { when: 'tool_available' }) })
+  expect(result[proved ? 'optional_form' : 'open_form']).toBeUndefined()
+  expect(codexCardAnswerHeld(readSessionState(SESSION, h.env), result.question_id)).toBe(false)
+  expect(result.next.in_this_turn).toContain('exactly as returned')
+  if (!proved) expect(result.next.in_this_turn).toContain('If `request_user_input_async` is one of your tools')
+  h.output.length = 0
+  await askCommand(h.deps, 'Which environment?', { title: 'Deploy target', choice: ['Staging', 'Production'], json: true })
+  const retried = JSON.parse(h.output.filter(line => line.trimStart().startsWith('{')).join('\n'))
+  expect(retried.question_id).toBe(result.question_id)
+  expect(retried[proved ? 'open_form' : 'optional_form']).toEqual(result[proved ? 'open_form' : 'optional_form'])
   h.output.length = 0
   await hookRunCommand(h.deps, 'pre-tool-use', async () => JSON.stringify(h.envelope), 'codex')
   expect(h.output.join('')).not.toContain('permissionDecision')
@@ -368,4 +384,49 @@ it('hands back the card from ask without a route that closes it, and links that 
   expect(state.pending!.map(question => question.question_id)).toEqual([result.question_id])
   expect(state.codex_question_bindings!.find(item => item.question_id === result.question_id))
     .toMatchObject({ card_call_id: 'call_card', questions: [expect.objectContaining({ verified: true })] })
+  h.output.length = 0
+  await askCommand(h.deps, 'Which environment?', { title: 'Deploy target', choice: ['Staging', 'Production'], json: true })
+  const adopted = JSON.parse(h.output.filter(line => line.trimStart().startsWith('{')).join('\n'))
+  expect(adopted.question_id).toBe(result.question_id)
+  expect(adopted.open_form).toBeUndefined()
+  expect(adopted.optional_form).toBeUndefined()
+  expect(adopted.next.in_this_turn).toContain('do not open another one')
+})
+
+
+it('keeps two first-card offers independent and accepts only the invoked exact card', async () => {
+  const h = await readyToAsk()
+  const results = []
+  for (const question of ['Which environment?', 'Which region?']) {
+    h.output.length = 0
+    expect(await askCommand(h.deps, question, { title: 'Deployment', choice: ['Staging', 'Production'], json: true })).toBe(0)
+    results.push(JSON.parse(h.output.filter(line => line.trimStart().startsWith('{')).join('\n')))
+  }
+  expect(results[0].question_id).not.toBe(results[1].question_id)
+  expect(readSessionState(SESSION, h.env).pending).toHaveLength(2)
+  expect(readSessionState(SESSION, h.env).codex_question_bindings!.every(binding =>
+    !codexCardAnswerHeld(readSessionState(SESSION, h.env), binding.question_id) && binding.card_call_id === undefined)).toBe(true)
+  const second = { ...h.envelope, tool_use_id: 'call_second', tool_input: results[1].optional_form.input }
+  await hookRunCommand(h.deps, 'pre-tool-use', async () => JSON.stringify(second), 'codex')
+  await hookRunCommand(h.deps, 'post-tool-use', async () => JSON.stringify({ ...second,
+    hook_event_name: 'PostToolUse', tool_response: { accepted: true } }), 'codex')
+  const state = readSessionState(SESSION, h.env)
+  expect(state.pending).toHaveLength(2)
+  expect(state.codex_question_bindings!.find(binding => binding.question_id === results[0].question_id)!.card_call_id).toBeUndefined()
+  expect(state.codex_question_bindings!.find(binding => binding.question_id === results[1].question_id))
+    .toMatchObject({ card_call_id: 'call_second', questions: [expect.objectContaining({ verified: true })] })
+})
+
+it('keeps an unaccepted conditional offer on ordinary delivery without another registration', async () => {
+  const h = await readyToAsk()
+  await askCommand(h.deps, 'Which environment?', { title: 'Deployment', choice: ['Staging', 'Production'], json: true })
+  const result = JSON.parse(h.output.filter(line => line.trimStart().startsWith('{')).join('\n'))
+  await hookRunCommand(h.deps, 'pre-tool-use', async () => JSON.stringify(h.envelope), 'codex')
+  await hookRunCommand(h.deps, 'post-tool-use', async () => JSON.stringify({ ...h.envelope,
+    hook_event_name: 'PostToolUse', tool_response: { accepted: false } }), 'codex')
+  const state = readSessionState(SESSION, h.env)
+  expect(state.pending!.map(question => question.question_id)).toEqual([result.question_id])
+  expect(state.codex_question_bindings![0]!.ordinary_only).toBe(true)
+  expect(state.codex_question_bindings![0]!.questions.some(binding => binding.verified)).toBe(false)
+  expect(codexCardAnswerHeld(state, result.question_id)).toBe(false)
 })

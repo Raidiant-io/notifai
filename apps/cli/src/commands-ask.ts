@@ -521,7 +521,7 @@ function recordRegisteredQuestion(
   // A wait ends the turn, and Codex drops every open card at turn end, so a
   // waiting ask never links one. Codex offers no subagent the card at all.
   if (wait || rootKey !== undefined || asker !== undefined) return ordinary()
-  if (!codexCardAsks(deps, sessionId) || built.questions.length > 10 || formsDisabledInProject(deps, sessionId)) return ordinary()
+  if (codexCardOwner(deps, sessionId) === null || built.questions.length > 10 || formsDisabledInProject(deps, sessionId)) return ordinary()
   if (built.questions.some(question => question.multi === true)) return ordinary()
   const local = currentCodexQuestionContext(readSessionState(sessionId, deps.env), sessionId, deps.env)
   if (local === null) return ordinary()
@@ -556,13 +556,36 @@ function codexCardOwner(deps: CommandDeps, sessionId: string): string | null {
 }
 
 /**
- * Whether `ask` should hand this question to the Codex card instead. Only
- * when the card hooks are ready and this session has proved it can call the
- * card: an agent sent to a tool it does not have cannot ask at all.
+ * Only a callback under the current model makes the offer unconditional.
+ * Preparing exact input alone neither proves tool availability nor holds an
+ * answer; the existing pre/post callbacks bind an actual accepted card.
  */
 function codexCardAsks(deps: CommandDeps, sessionId: string): boolean {
   const owner = codexCardOwner(deps, sessionId)
   return owner !== null && codexCardToolOffered(readSessionState(sessionId, deps.env), owner, sessionId, deps.env)
+}
+
+function codexCardOffer(deps: CommandDeps, sessionId: string, questionId: string) {
+  const state = readSessionState(sessionId, deps.env)
+  const context = currentCodexQuestionContext(state, sessionId, deps.env)
+  if (context === null || !state.pending?.some(question => question.question_id === questionId)) return undefined
+  const binding = state.codex_question_bindings?.find(item => item.question_id === questionId &&
+    item.card_handback === true && item.ordinary_only !== true && item.terminated !== true &&
+    item.card_call_id === undefined && item.owner_key === context.owner_key &&
+    item.registration_turn_id === context.snapshot.latest.id)
+  return binding === undefined ? undefined : {
+    tool: 'request_user_input_async', input: cardHandbackInput(binding),
+    ...(codexCardAsks(deps, sessionId) ? {} : { when: 'tool_available' as const }),
+  }
+}
+
+function codexCardAlreadyPresented(deps: CommandDeps, sessionId: string, questionId: string): boolean {
+  const state = readSessionState(sessionId, deps.env)
+  const context = currentCodexQuestionContext(state, sessionId, deps.env)
+  return context !== null && state.codex_question_bindings?.some(item => item.question_id === questionId &&
+    item.owner_key === context.owner_key && item.registration_turn_id === context.snapshot.latest.id &&
+    item.terminated !== true && item.dismissed !== true && item.card_call_id !== undefined &&
+    item.questions.every(binding => binding.verified === true)) === true
 }
 
 const KEEP_SESSION_OPEN = 'Your assignment is incomplete while your question waits: report it as waiting, never done. Closing, clearing or switching this Agent Session ends the question, so keep it open until you have done the work the answer unblocks.'
@@ -588,7 +611,40 @@ const ON_ANSWER = 'The answer comes back to this Agent Session, so you act on it
  * agent waits as it would without Notifai, by ending its turn, and the answer
  * wakes it.
  */
-const END_TURN = 'Ask it in the conversation, say what each answer will make you do, then end your turn. The answer arrives as your next message.'
+const END_TURN = 'This question is already registered. Show it once as ordinary conversation text and say what each answer will make you do; do not open another question form for it. Then end your turn: the answer arrives as your next message.'
+
+/**
+ * A registered question with no exact native presentation to open. Its one
+ * authoring action has happened, so the conversation shows it as text: a
+ * question form opened for it would be a second, separately registered
+ * question unless its text matched exactly. Not used on Codex, whose plain
+ * ask keeps the card path until its first-question offer exists.
+ */
+const SHOW_ONCE = 'This question is already registered. Show it once as ordinary conversation text and explain what each answer will change; do not open another question form for it.'
+
+
+const ALREADY_PRESENTED = 'A question form already presents this question: do not open another one or ask it again in prose. Its answer comes back into this Agent Session; continue independent work.'
+
+const KEEP_WORKING = 'Continue independent work; dependent work waits for the answer.'
+
+/** Codex's plain ask without a handed-back card, unchanged until its first-question offer exists. */
+const CODEX_ASK_IN_CONVERSATION = 'Ask the question in the conversation and explain what each answer will change.'
+
+/**
+ * Every handed-back native form: the question text it carries is the
+ * registered one, so a consequence written into it makes a different question.
+ */
+const CONSEQUENCES_IN_MESSAGE = 'Keep its text exactly as returned: what each answer will make you do goes in your message, never in the form.'
+
+const CODEX_OPEN_FORM_INSTRUCTION = `Open the handed-back card unchanged after saying what each answer will make you do. ${CONSEQUENCES_IN_MESSAGE} It is your question in the conversation; never also ask it in prose. Notifai records a terminal answer itself; acknowledge a device answer with the command it carries.`
+
+/**
+ * The instruction for a Codex card offered before this owner has proved the
+ * card tool is available (`optional_form`). Opening it presents the registered
+ * question; without the tool, the conversation shows it once.
+ */
+export const CODEX_OPTIONAL_FORM_INSTRUCTION = 'If `request_user_input_async` is one of your tools, say what each answer will make you do, then open it with optional_form.input in this turn: it presents this registered question. ' +
+  `${CONSEQUENCES_IN_MESSAGE} Otherwise show the question once as ordinary conversation text and explain what each answer will change. Either way, open no other question form for it.`
 
 /**
  * A Codex subagent asks on its root's behalf (`codex-subagent.ts`): the
@@ -643,9 +699,9 @@ function printWorkerNext(deps: CommandDeps, built: BuiltQuestions, questionId: s
 const END_TURN_HUMAN = 'Then end your turn: the answer arrives as your next message.'
 
 /** The picker wait: Claude Code's own form asks the registered question and returns its answer. */
-const OPEN_FORM = `Say what each answer will make you do, then open ${CLAUDE_QUESTION_TOOL} with open_form.input unchanged, in this turn. It is your question in the conversation: never also ask it in prose.`
+const OPEN_FORM = `Say what each answer will make you do, then open ${CLAUDE_QUESTION_TOOL} with open_form.input unchanged, in this turn. ${CONSEQUENCES_IN_MESSAGE} It is your question in the conversation: never also ask it in prose.`
 
-const OPEN_FORM_HUMAN = `Then open ${CLAUDE_QUESTION_TOOL} with this input unchanged, in this turn. It is your question in the conversation: never also ask it in prose.`
+const OPEN_FORM_HUMAN = `Then open ${CLAUDE_QUESTION_TOOL} with this input unchanged, in this turn. ${CONSEQUENCES_IN_MESSAGE} It is your question in the conversation: never also ask it in prose.`
 
 const OPEN_FORM_UNAVAILABLE = `If ${CLAUDE_QUESTION_TOOL} is unavailable, end your turn instead: the answer arrives as your next message.`
 
@@ -706,11 +762,18 @@ function reportAlreadyOpen(
     ? `This question is already open in the root Agent Session as ${questionId}: nothing new was registered, and a new Body or images were not applied. Its answer arrives in the root Agent Session, not to you.`
     : `This question is already open in this Agent Session as ${questionId}: nothing new was registered, and a new Body or images were not applied. Its answer comes back into this Agent Session.`
   const handBack = wait && !worker && open !== undefined ? claudeHandBack(deps, sessionId, open) : null
+  const cardOffer = wait || worker ? undefined : codexCardOffer(deps, sessionId, questionId)
+  const alreadyPresented = !wait && !worker && codexCardAlreadyPresented(deps, sessionId, questionId)
   const inThisTurn = handBack !== null
     ? `${OPEN_FORM} ${OPEN_FORM_UNAVAILABLE}`
     : wait
       ? END_TURN
-      : 'Ask the question in the conversation and explain what each answer will change, then continue independent work; dependent work waits for the answer.'
+      : alreadyPresented ? ALREADY_PRESENTED
+        : cardOffer !== undefined
+          ? cardOffer.when === 'tool_available' ? CODEX_OPTIONAL_FORM_INSTRUCTION : CODEX_OPEN_FORM_INSTRUCTION
+          : readSessionState(sessionId, deps.env).harness === 'codex'
+            ? `${CODEX_ASK_IN_CONVERSATION} ${KEEP_WORKING}`
+            : `${SHOW_ONCE} ${KEEP_WORKING}`
   const answeredOutside = closeIt(questionId)
   if (json) {
     deps.io.out(JSON.stringify({
@@ -725,6 +788,8 @@ function reportAlreadyOpen(
         ...(entry.multi === true ? { multi: true } : {}),
       })),
       ...(handBack === null ? {} : { open_form: { tool: CLAUDE_QUESTION_TOOL, input: handBack } }),
+      ...(cardOffer === undefined ? {} : cardOffer.when === 'tool_available'
+        ? { optional_form: cardOffer } : { open_form: cardOffer }),
       status: `notifai status ${questionId}`,
       close: `notifai close ${questionId}`,
       next: worker ? workerNext(questionId) : {
@@ -755,6 +820,12 @@ function reportAlreadyOpen(
   deps.io.out(`${inThisTurn} Inspect \`notifai status ${questionId}\` for submission evidence; never register a replacement to check this question.`)
   deps.io.out(KEEP_SESSION_OPEN)
   deps.io.out(answeredOutside)
+  if (cardOffer !== undefined) {
+    deps.io.out(cardOffer.when === 'tool_available'
+      ? CODEX_OPTIONAL_FORM_INSTRUCTION.replace('optional_form.input', 'this input')
+      : CODEX_OPEN_FORM_INSTRUCTION)
+    deps.io.out(JSON.stringify(cardOffer.input))
+  }
   return EXIT.ok
 }
 
@@ -851,8 +922,9 @@ function persistRegisteredQuestion(
   const native = readSessionState(sessionId, deps.env).codex_question_bindings?.find(binding =>
     binding.question_id === questionId && binding.card_handback === true && binding.ordinary_only !== true &&
     binding.owner_key === readSessionIncarnation(sessionId, deps.env)?.key)
-  const nativeInstruction = 'Open the handed-back card unchanged after saying what each answer will make you do. It is your question in the conversation; never also ask it in prose. Notifai records a terminal answer itself; acknowledge a device answer with the command it carries.'
-  const openForm = native === undefined ? undefined : { tool: 'request_user_input_async', input: cardHandbackInput(native) }
+  const cardOffer = codexCardOffer(deps, sessionId, questionId)
+  const openForm = cardOffer?.when === undefined ? cardOffer : undefined
+  const optionalForm = cardOffer?.when === 'tool_available' ? cardOffer : undefined
   const handBack = wait && !worker
     ? claudeHandBack(deps, sessionId, {
       question_id: questionId, title: draft.presentation.title, questions: built.questions,
@@ -881,6 +953,7 @@ function persistRegisteredQuestion(
             ...(entry.multi === true ? { multi: true } : {}),
           })),
           ...(openForm === undefined ? {} : { open_form: openForm }),
+          ...(optionalForm === undefined ? {} : { optional_form: optionalForm }),
           ...(handBack === null ? {} : { open_form: { tool: CLAUDE_QUESTION_TOOL, input: handBack } }),
           status: `notifai status ${questionId}`,
           close: `notifai close ${questionId}`,
@@ -890,7 +963,7 @@ function persistRegisteredQuestion(
               ? `${OPEN_FORM} ${OPEN_FORM_UNAVAILABLE} ${nextStep}`
               : wait
                 ? `${END_TURN} ${nextStep}`
-                : `${native === undefined ? 'Ask the question in the conversation and explain what each answer will change.' : nativeInstruction} ${nextStep}`,
+                : `${optionalForm !== undefined ? CODEX_OPTIONAL_FORM_INSTRUCTION : openForm !== undefined ? CODEX_OPEN_FORM_INSTRUCTION : harness === 'codex' ? CODEX_ASK_IN_CONVERSATION : SHOW_ONCE} ${nextStep}`,
             route_neutral: ROUTE_NEUTRAL,
             keep_session_open: KEEP_SESSION_OPEN,
             on_answer: ON_ANSWER,
@@ -931,8 +1004,10 @@ function persistRegisteredQuestion(
   deps.io.out(handBack !== null
     ? 'Say what each answer will make you do:'
     : wait
-      ? 'Ask it in the conversation and say what each answer will make you do:'
-      : native === undefined ? 'Ask in the conversation and explain what each answer will change:' : 'Before opening the card, explain what each answer will change:')
+      ? 'This question is already registered. Show it once as ordinary conversation text, open no other question form for it, and say what each answer will make you do:'
+      : native !== undefined ? 'Before opening the card, explain what each answer will change:'
+        : harness === 'codex' ? 'Ask in the conversation and explain what each answer will change:'
+          : 'This question is already registered. Show it once as ordinary conversation text, open no other question form for it, and explain what each answer will change:')
   for (const [index, entry] of built.questions.entries()) {
     const questionPrefix = built.questions.length > 1 ? `Question ${index + 1}, ` : ''
     if (entry.choices !== undefined) {
@@ -967,10 +1042,10 @@ function persistRegisteredQuestion(
     deps.io.out(END_TURN_HUMAN)
     return EXIT.ok
   }
-  if (native !== undefined) {
-    deps.io.out(nativeInstruction)
-    deps.io.out(`Open ${openForm!.tool} with this input:`)
-    deps.io.out(JSON.stringify(openForm!.input))
+  if (cardOffer !== undefined) {
+    deps.io.out(optionalForm === undefined ? CODEX_OPEN_FORM_INSTRUCTION : CODEX_OPTIONAL_FORM_INSTRUCTION.replace('optional_form.input', 'this input'))
+    deps.io.out(optionalForm === undefined ? `Open ${cardOffer.tool} with this input:` : 'If request_user_input_async is one of your tools, open it with this input:')
+    deps.io.out(JSON.stringify(cardOffer.input))
   } else {
     deps.io.out(closeIt(questionId))
   }

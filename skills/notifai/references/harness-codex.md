@@ -60,6 +60,14 @@ never refused: it becomes a question of its own, and its tool context names
 the handed-back question that stays open. Codex offers the card only with some
 models, in the terminal and the apps alike.
 
+**`optional_form`:** If `request_user_input_async` is one of your tools, say
+what each answer will make you do, then open it with `optional_form.input`
+in this turn: it presents this registered question. Keep its text exactly as
+returned: what each answer will make you do goes in your message, never in
+the form. Otherwise show the question once as ordinary conversation text and
+explain what each answer will change. Either way, open no other question form
+for it.
+
 `request_user_input` (no `_async`) is not linked to Notifai: where Codex
 accepts it, it waits in Codex, where an away User never sees it. Use
 `ask` for those questions too. In an app around Codex that shows each
