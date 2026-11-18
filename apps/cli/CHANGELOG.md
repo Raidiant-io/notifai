@@ -8,6 +8,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 This project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 and [Conventional Commits](https://www.conventionalcommits.org/en/v1.0.0/).
 
+## [14.7.4-beta.3](https://github.com/Raidiant-io/notifai/compare/v14.7.3...v14.7.4-beta.3) (2026-11-18)
+
+### Bug Fixes
+
+* In Claude Code, a session that held or missed an earlier Notifai wake no longer leaves your later answers and notes waiting until you type in it. Once the session has gone idle after a turn, Notifai wakes it again and your input reaches the agent; you no longer get a "Not delivered yet" notice for it.
+* In an Orca chat, an answer you give on your phone to one of a Codex agent's question cards now reaches the agent at once, even while another of its cards is still unanswered. Orca's chat stops showing that other card, as it does when you answer one card there, but its question stays open on your devices and the agent is told so; your later answer to it still reaches the agent.
+
 ## [14.7.3](https://github.com/Raidiant-io/notifai/compare/v14.7.2...v14.7.3) (2026-11-18)
 
 ### Bug Fixes
