@@ -8,6 +8,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 This project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 and [Conventional Commits](https://www.conventionalcommits.org/en/v1.0.0/).
 
+## [14.7.3-beta.1](https://github.com/Raidiant-io/notifai/compare/v14.7.2...v14.7.3-beta.1) (2026-11-18)
+
+### Bug Fixes
+
+* After Claude Code restarts in place, answers and notes from your phone reach the restarted session instead of waiting unseen, and the notice about waiting input names its question and session.
+
 ## [14.7.2](https://github.com/Raidiant-io/notifai/compare/v14.7.1...v14.7.2) (2026-11-18)
 
 ### Bug Fixes
