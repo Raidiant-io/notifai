@@ -217,6 +217,7 @@ export function claimGuidanceChange(sessionId: string, env: NodeJS.ProcessEnv, d
       const changes = changesSince(prior, options.text)
       if (options.compacted) {
         delete prior.read
+        delete prior.reads
         save(file, { ...prior, digest, generation: generation + 1 })
         return compactedNotice(options.skill, changes, options.needsToken)
       }
@@ -227,9 +228,16 @@ export function claimGuidanceChange(sessionId: string, env: NodeJS.ProcessEnv, d
   } catch { return undefined }
 }
 
+/** One printed read: the exact guidance digest, and the folder it was read for. */
+export interface GuidanceReadRecord { digest: string; folder?: string }
+/** Reads kept per session, so a session working in several folders keeps each one's read. */
+const READS_KEPT = 8
+const FOLDER_MAX = 1024
+
 interface GuidanceReceipt {
   digest?: string
   read?: string
+  reads?: GuidanceReadRecord[]
   generation?: number | undefined
   readRelease?: string
   readTopics?: Record<string, string>
@@ -239,11 +247,11 @@ const validDigest = (value: unknown): value is string => typeof value === 'strin
 /** Reject legacy text-bearing, oversized and malformed receipts in their entirety. */
 function readReceipt(file: string): GuidanceReceipt {
   try {
-    if (statSync(file).size > 24_000) return {}
+    if (statSync(file).size > 48_000) return {}
     const value: unknown = JSON.parse(readFileSync(file, 'utf8'))
     if (value === null || typeof value !== 'object' || Array.isArray(value)) return {}
     const record = value as Record<string, unknown>
-    if (Object.keys(record).some(key => !['digest', 'read', 'generation', 'readRelease', 'readTopics'].includes(key))) return {}
+    if (Object.keys(record).some(key => !['digest', 'read', 'reads', 'generation', 'readRelease', 'readTopics'].includes(key))) return {}
     if (record['digest'] !== undefined && record['digest'] !== GUIDANCE_NOT_GIVEN && !validDigest(record['digest'])) return {}
     for (const key of ['read', 'readRelease']) if (record[key] !== undefined && !validDigest(record[key])) return {}
     if (!Number.isSafeInteger(record['generation']) || (record['generation'] as number) < 0) return {}
@@ -251,6 +259,12 @@ function readReceipt(file: string): GuidanceReceipt {
       const topics = record['readTopics']
       if (topics === null || typeof topics !== 'object' || Array.isArray(topics) || Object.keys(topics).length > 128 ||
         Object.entries(topics).some(([key, digest]) => !/^[a-f0-9]{64}$/.test(key) || !validDigest(digest))) return {}
+    }
+    if (record['reads'] !== undefined) {
+      const reads = record['reads']
+      if (!Array.isArray(reads) || reads.length > READS_KEPT || reads.some(entry => entry === null || typeof entry !== 'object' || Array.isArray(entry) ||
+        Object.keys(entry).some(key => key !== 'digest' && key !== 'folder') || !validDigest((entry as GuidanceReadRecord).digest) ||
+        ((entry as GuidanceReadRecord).folder !== undefined && (typeof (entry as GuidanceReadRecord).folder !== 'string' || (entry as GuidanceReadRecord).folder!.length > FOLDER_MAX)))) return {}
     }
     return record as GuidanceReceipt
   } catch { return {} }
@@ -264,8 +278,14 @@ export function guidanceRead(sessionId: string, env: NodeJS.ProcessEnv): string 
   return readReceipt(recordFile(sessionId, env)).read
 }
 
-/** Called only after the CLI printed freshly resolved guidance. */
-export function recordGuidanceRead(sessionId: string, env: NodeJS.ProcessEnv, digest: string, text?: GuidanceSnapshot, generation = guidanceGeneration(sessionId, env)): boolean {
+/** Every read this session still holds, most recent last. */
+export function guidanceReads(sessionId: string, env: NodeJS.ProcessEnv): GuidanceReadRecord[] {
+  const receipt = readReceipt(recordFile(sessionId, env))
+  return receipt.reads ?? (receipt.read === undefined ? [] : [{ digest: receipt.read }])
+}
+
+/** Called only after the CLI printed freshly resolved guidance, for `folder` when given. */
+export function recordGuidanceRead(sessionId: string, env: NodeJS.ProcessEnv, digest: string, text?: GuidanceSnapshot, generation = guidanceGeneration(sessionId, env), folder?: string): boolean {
   try {
     if (!validDigest(digest)) return false
     const file = recordFile(sessionId, env)
@@ -273,7 +293,9 @@ export function recordGuidanceRead(sessionId: string, env: NodeJS.ProcessEnv, di
     return withTargetFileLock(file, () => {
       const prior = readReceipt(file)
       if (generation !== (prior.generation ?? 0)) return false
-      save(file, { ...prior, read: digest, generation: (prior.generation ?? 0) + 1,
+      const earlier = (prior.reads ?? (prior.read === undefined ? [] : [{ digest: prior.read }])).filter(entry => entry.digest !== digest)
+      const read: GuidanceReadRecord = folder === undefined || folder.length > FOLDER_MAX ? { digest } : { digest, folder }
+      save(file, { ...prior, read: digest, reads: [...earlier, read].slice(-READS_KEPT), generation: (prior.generation ?? 0) + 1,
         ...(text?.release === undefined ? {} : { readRelease: text.release }),
         ...(text === undefined ? {} : { readTopics: Object.fromEntries(text.topics.slice(0, 128).map(topic => [hash(topic.name), topic.digest])) }),
       })
@@ -289,6 +311,7 @@ export function invalidateGuidanceRead(sessionId: string, env: NodeJS.ProcessEnv
     return withTargetFileLock(file, () => {
       const prior = readReceipt(file)
       delete prior.read
+      delete prior.reads
       atomicWriteFileSync(file, `${JSON.stringify({ ...prior, generation: (prior.generation ?? 0) + 1 })}\n`, { mode: 0o600 })
       return true
     })

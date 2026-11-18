@@ -181,6 +181,41 @@ describe('trusted change delivery', () => {
     }
   })
 
+  it('admits a read from any folder whose guidance matches, and names both folders when it does not', async () => {
+    const { root, cwd, env } = setup()
+    env.CODEX_THREAD_ID = 'two-folders'
+    const dir = personalProjectGuidanceDir(cwd, env)
+    mkdirSync(dir, { recursive: true })
+    writeFileSync(path.join(dir, 'questions.md'), '# Questions\n\nThe User\'s own rule.\n')
+    const loose = path.join(root, 'loose')
+    mkdirSync(loose)
+    const at = (folder: string) => ({ cwd: folder, env, io: { out: () => undefined, err: () => undefined } }) as unknown as CommandDeps
+    expect(await guidanceShowCommand(at(cwd), {})).toBe(0)
+    expect(currentCommandGuidance(at(cwd))).toBeNull()
+
+    const refusal = currentCommandGuidance(at(loose))
+    expect(refusal?.code).toBe('guidance_required')
+    expect(refusal?.message).toContain(`This command runs in ${loose} (no Project)`)
+    expect(refusal?.message).toContain(`read in ${cwd} (Project "project")`)
+    expect(refusal?.remedy).toContain(`cd '${loose}' && notifai guidance`)
+
+    // Reading the other folder admits it without losing the first folder's read.
+    expect(await guidanceShowCommand(at(loose), {})).toBe(0)
+    expect(currentCommandGuidance(at(loose))).toBeNull()
+    expect(currentCommandGuidance(at(cwd))).toBeNull()
+
+    // A subfolder shows the same guidance as its Project root, so the root's read admits it.
+    const sub = path.join(cwd, 'src')
+    mkdirSync(sub)
+    expect(currentCommandGuidance(at(sub))).toBeNull()
+
+    // Changed guidance where it was read: no folder to switch to, just read again.
+    writeFileSync(path.join(dir, 'questions.md'), '# Questions\n\nThe User\'s changed rule.\n')
+    const changed = currentCommandGuidance(at(cwd))
+    expect(changed?.message).toContain('changed after this Agent Session read it')
+    expect(changed?.remedy).not.toContain('cd ')
+  })
+
   it('does not mark a concurrent User edit read when it was never printed', async () => {
     const { cwd, env } = setup()
     env.CODEX_THREAD_ID = 'updated'

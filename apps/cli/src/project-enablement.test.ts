@@ -9,6 +9,7 @@ enableProject,
 enableProjectNoting,
 projectBinding,
 projectNameNudge,
+  projectNameNudgeUnlessNamed,
 suggestedProjectName,
 projectDisabled,
 projectEnabled,
@@ -69,9 +70,16 @@ describe('Project enablement', () => {
     expect(suggestedProjectName('the-beacon')).toBe('The Beacon')
     expect(suggestedProjectName('api_gateway.v2')).toBe('Api Gateway V2')
     const nudge = projectNameNudge('the-beacon')
-    expect(nudge).toContain("notifai project set --name 'The Beacon'")
+    expect(nudge).toContain("notifai project set --project 'the-beacon' --name 'The Beacon'")
     expect(nudge).toContain('never pick a colour')
     expect(nudge).toContain('already set')
+  })
+
+  it('asks for a name only when the service holds none, and still asks when it cannot tell', async () => {
+    expect(await projectNameNudgeUnlessNamed(async () => ({ display_name: 'Furanku Skills' }), 'furanku-skills')).toBeNull()
+    expect(await projectNameNudgeUnlessNamed(async () => ({ display_name: null }), 'furanku-skills')).toContain('has no display name')
+    expect(await projectNameNudgeUnlessNamed(async () => { throw new Error('offline') }, 'furanku-skills')).toContain('has no display name')
+    expect(await projectNameNudgeUnlessNamed(null, 'furanku-skills')).toContain('has no display name')
   })
 
 })

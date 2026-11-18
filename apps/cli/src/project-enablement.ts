@@ -158,16 +158,34 @@ export function suggestedProjectName(identifier: string): string {
 /**
  * The one line that asks the agent to name a newly set-up Project in one
  * command. A good name is the product's own name, one to three words in title
- * case, with no "Project" or "App" suffix. An icon is optional.
+ * case, with no "Project" or "App" suffix. An icon is optional. The command
+ * names the Project, so it works from any folder.
  */
 export function projectNameNudge(project: string): string {
-  const quoted = suggestedProjectName(project).replaceAll("'", "'\\''")
+  const quote = (text: string): string => `'${text.replaceAll("'", "'\\''")}'`
   return (
     `New Project "${project}" has no display name. Name it once, now, with one command: ` +
-    `notifai project set --name '${quoted}' (the product's own name, 1-3 words in title case, no "Project" or "App" suffix; ` +
+    `notifai project set --project ${quote(project)} --name ${quote(suggestedProjectName(project))} (the product's own name, 1-3 words in title case, no "Project" or "App" suffix; ` +
     'fix the suggestion if it is wrong). Add --icon <id> only if an icon obviously fits (`notifai project icons` lists them); ' +
     'never pick a colour or design an avatar. If the command reports a name already set, leave it.'
   )
+}
+
+/**
+ * `projectNameNudge`, unless the service already holds a display name for the
+ * Project, as it does when another checkout of it was named. A failed lookup
+ * still nudges: `project set` refuses to replace a name.
+ */
+export async function projectNameNudgeUnlessNamed(
+  lookup: ((project: string) => Promise<{ display_name: string | null }>) | null,
+  project: string,
+): Promise<string | null> {
+  if (lookup !== null) {
+    try {
+      if ((await lookup(project)).display_name !== null) return null
+    } catch { /* nudge anyway */ }
+  }
+  return projectNameNudge(project)
 }
 
 /** Record that the User disabled this Project; only `enableProject` lifts it. */

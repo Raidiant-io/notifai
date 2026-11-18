@@ -41,7 +41,7 @@ import { cardHandbackInput, cardShown } from './codex-card-handback.js'
 import { codexCardHooksReady, codexCardToolOffered } from './codex-card-capability.js'
 import { activeOpenclawGeneration } from './openclaw-session-access.js'
 import { openclawGatewayReady } from './openclaw-gateway-readiness.js'
-import { enableProjectNoting, inferredProjectName, projectBinding, projectDisabled, projectNameNudge } from './project-enablement.js'
+import { enableProjectNoting, inferredProjectName, projectBinding, projectDisabled, projectNameNudgeUnlessNamed } from './project-enablement.js'
 import { spawnQuestionSettlement } from './question-settlement-process.js'
 import { answerCannotReturnRemedy, heldAskWait, heldWaitRoute } from './commands-ask-wait.js'
 import { opencodeHandBack } from './opencode-hand-back.js'
@@ -1042,6 +1042,24 @@ export function askCommand(
   question: string | undefined,
   flags: AskFlags,
 ): number | Promise<number> {
+  const naming: { nudge: Promise<string | null> | null } = { nudge: null }
+  const result = askCommandOutcome(deps, question, flags, naming)
+  if (naming.nudge === null) return result
+  // Advice about the Project follows the ask's own outcome, never precedes it.
+  const nudge = naming.nudge
+  return Promise.resolve(result).then(async (code) => {
+    const text = await nudge
+    if (text !== null) deps.io.err(text)
+    return code
+  })
+}
+
+function askCommandOutcome(
+  deps: CommandDeps,
+  question: string | undefined,
+  flags: AskFlags,
+  naming: { nudge: Promise<string | null> | null },
+): number | Promise<number> {
   if (rejectExcludedWorkspace(deps, flags.json)) return EXIT.usage
   // Validate before route discovery. A malformed question belongs to the
   // caller and should not be hidden behind whichever harness setup issue
@@ -1074,6 +1092,7 @@ export function askCommand(
   }
   const explicitProject = flags.project ?? explicitUseConfig.project.value ?? inferredProjectName(deps.cwd, deps.env)
   const explicitBinding = explicitProject === null ? null : projectBinding(deps.cwd, deps.env, explicitProject)
+  let projectToName: string | null = null
   if (explicitBinding !== null) {
     let decision: 'enabled' | 'disabled'
     let firstEnable = false
@@ -1106,7 +1125,7 @@ export function askCommand(
         'if the User asked for Notifai here, run `notifai project enable`, then ask again; otherwise ask in the conversation, as you would without Notifai',
       )
     }
-    if (firstEnable) deps.io.err(projectNameNudge(explicitBinding.project))
+    if (firstEnable) projectToName = explicitBinding.project
   }
   const credential = deps.store.load()
   if (credential === null) {
@@ -1119,6 +1138,10 @@ export function askCommand(
       'run `notifai init --json`',
       EXIT.auth,
     )
+  }
+  if (projectToName !== null) {
+    const authed = authedClient(deps, explicitUseConfig)
+    naming.nudge = projectNameNudgeUnlessNamed(authed === null ? null : (project) => authed.client.registerProject(project), projectToName)
   }
   // An agent calling this gets no hook payload. Harness-native environment
   // markers identify the active owner, while UserPromptSubmit adds the hook's

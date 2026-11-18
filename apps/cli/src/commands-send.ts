@@ -20,7 +20,7 @@ import { inspectQuestionState, type QuestionStateView } from './hook-question-st
 import { selectedForClaimedDelivery } from './hook-question-retirement.js'
 import { readSessionState, recordSessionNotified } from './hook-session-state.js'
 import { questionsAwaitingAnswer } from './native-answer-operation.js'
-import { enableProjectNoting, inferredProjectName, projectBinding, projectDisabled, projectNameNudge } from './project-enablement.js'
+import { enableProjectNoting, inferredProjectName, projectBinding, projectDisabled, projectNameNudge, projectNameNudgeUnlessNamed } from './project-enablement.js'
 import {
   buildDraft,
   contentLengthNotes,
@@ -105,18 +105,34 @@ export const SEND_WAIT_DEPRECATED =
 export const REPLIES_WAIT_DEPRECATED =
   'notifai: `replies --wait` is deprecated and will be removed; `notifai replies` reads once, and `notifai ask --wait` waits for an answer.'
 
-export async function sendCommand(
-  deps: CommandDeps,
-  flags: SendFlags & {
-    json?: boolean
-    /** How long to wait for provider outcomes; 0 returns at acceptance. */
-    deliveryTimeout?: number
-    replyTimeout?: number
-    idempotencyKey?: string
-    retry?: boolean
-    baseUrl?: string
-  },
-): Promise<number> {
+type SendCommandFlags = SendFlags & {
+  json?: boolean
+  /** How long to wait for provider outcomes; 0 returns at acceptance. */
+  deliveryTimeout?: number
+  replyTimeout?: number
+  idempotencyKey?: string
+  retry?: boolean
+  baseUrl?: string
+}
+
+/** Advice a send holds back until its outcome is printed, so a send that went out always says so first. */
+interface SendAdvice { notes: string[]; projectToName: string | null; printed: boolean }
+
+export async function sendCommand(deps: CommandDeps, flags: SendCommandFlags): Promise<number> {
+  const advice: SendAdvice = { notes: [], projectToName: null, printed: false }
+  try {
+    return await sendOutcome(deps, flags, advice)
+  } finally {
+    // A send that stopped early still passes on its advice, after its error.
+    if (!advice.printed) {
+      for (const note of advice.notes) deps.io.err(note)
+      if (advice.projectToName !== null) deps.io.err(projectNameNudge(advice.projectToName))
+    }
+  }
+}
+
+async function sendOutcome(deps: CommandDeps, flags: SendCommandFlags, advice: SendAdvice): Promise<number> {
+  const { notes } = advice
   if (rejectExcludedWorkspace(deps, flags.json)) return EXIT.usage
   if (flags.retry === true && flags.idempotencyKey !== undefined) {
     deps.io.err('Pass --retry or --idempotency-key, not both.')
@@ -216,9 +232,10 @@ export async function sendCommand(
     else deps.io.err(`${currency.message}\n${currency.guidance}\n${currency.remedy}`)
     return EXIT.usage
   }
+  const noting: CommandDeps = { ...deps, io: Object.create(deps.io, { err: { value: (line: string) => { notes.push(line) } } }) as CommandDeps['io'] }
   const activeSession = sourceContextHarnessSession(deps.env, deps.cwd, (deps.now ?? Date.now)())
   const source = resolveDraftInvocation(
-    deps,
+    noting,
     flags,
     activeSession,
   )
@@ -257,7 +274,7 @@ export async function sendCommand(
       )
       return EXIT.usage
     }
-    if (binding !== null && enablement?.first === true) deps.io.err(projectNameNudge(binding.project))
+    if (binding !== null && enablement?.first === true) advice.projectToName = binding.project
   }
   const authed = authedClient(deps, config)
   if (!authed) return EXIT.auth
@@ -308,7 +325,7 @@ export async function sendCommand(
     return EXIT.usage
   }
   for (const warning of validation.warnings) {
-    deps.io.err(`Heads up (${warning.path}): ${warning.message}`)
+    notes.push(`Heads up (${warning.path}): ${warning.message}`)
   }
   let serverCapabilities: CapabilityDocument
   try {
@@ -323,12 +340,12 @@ export async function sendCommand(
     ? activeSession.sessionId : null
   const foregroundGeneration = foregroundSession === null ? null
     : activeOpenclawGeneration(foregroundSession, deps.env)
-  emitSendWarnings(deps, flags, config)
+  emitSendWarnings(notes, flags, config)
   if (
     !flags.reply &&
     (flags.title.trim().endsWith('?') || flags.summary.trim().endsWith('?'))
   ) {
-    deps.io.err(
+    notes.push(
       'Heads up: this notification ends with a question, but it cannot be answered. Use `notifai ask` for a question the User should answer.',
     )
   }
@@ -396,10 +413,10 @@ export async function sendCommand(
       : undefined
     recordSessionNotified(notifiedSession, deps.env, (deps.now ?? Date.now)(), codexThread)
     const hooksNotice = codexThread === undefined ? null : codexHooksSendNotice(deps, notifiedSession)
-    if (hooksNotice !== null) deps.io.err(hooksNotice)
+    if (hooksNotice !== null) notes.push(hooksNotice)
   }
   const receiptExit = receiptExitCode(receipt)
-  for (const note of contentLengthNotes(flags.summary ?? '', flags.body)) deps.io.err(note)
+  notes.push(...contentLengthNotes(flags.summary ?? '', flags.body))
   // The single most useful line in the log: it ties the local invocation to
   // the server-side request id, which is what every later question about this
   // notification ("did it arrive?", "which device?") is asked in terms of.
@@ -429,13 +446,22 @@ export async function sendCommand(
     ...(receipt.warnings.length > 0 ? { warnings: receipt.warnings } : {}),
   })
   if (receiptExit === EXIT.failed) deps.io.err(`provider_rejected_all: no provider accepted request ${receipt.request_id}; run notifai status ${receipt.request_id} for the rejection reasons.`)
+  if (advice.projectToName !== null) {
+    const nudge = receiptExit === EXIT.failed ? projectNameNudge(advice.projectToName)
+      : await projectNameNudgeUnlessNamed((project) => authed.client.registerProject(project), advice.projectToName)
+    if (nudge !== null) notes.push(nudge)
+  }
   if (!flags.json) {
     const quietOrdinarySuccess =
       !flags.reply &&
       receipt.overall === 'provider_accepted_all' &&
       receipt.warnings.length === 0
+    // An agent reads advice alone as a failure and sends again; the first line settles it.
+    if (receiptExit !== EXIT.failed && (!quietOrdinarySuccess || notes.length > 0)) deps.io.out(sentLine(receipt))
     if (!quietOrdinarySuccess) deps.io.out(formatReceipt(receipt))
   }
+  for (const note of notes) deps.io.err(note)
+  advice.printed = true
 
   // A zero wait can no longer reach here: --reply guarantees a positive one.
   if (!flags.reply || receiptExit !== EXIT.ok) {
@@ -581,18 +607,25 @@ export function replyWindowDue(receipt: SubmissionReceipt, submittedAt: number, 
   return due < asked - Math.min(60_000, (windowSeconds * 1000) / 2) ? asked : due
 }
 
+/** The first line of any send output once the request went out. */
+export function sentLine(receipt: Pick<SubmissionReceipt, 'request_id' | 'replayed'>): string {
+  return receipt.replayed
+    ? `Already sent as ${receipt.request_id}; this retry sent nothing new.`
+    : `Sent ${receipt.request_id}.`
+}
+
 function emitSendWarnings(
-  deps: CommandDeps,
+  notes: string[],
   flags: SendFlags,
   config: ReturnType<typeof loadConfig>,
 ): void {
   if (flags.title.length > 40) {
-    deps.io.err(
+    notes.push(
       `Heads up: this title is ${flags.title.length} characters; notification titles work best around 40 characters or fewer.`,
     )
   }
   if (/^(?:update|done|question|failed|blocked)\s*(?:[·:—-]|$)/i.test(flags.title.trim())) {
-    deps.io.err(
+    notes.push(
       'Heads up: keep the title to the specific substance. Put notification type in --kind; Project identity is inferred separately.',
     )
   }
@@ -601,12 +634,12 @@ function emitSendWarnings(
     config.collapse_key.value !== null &&
     config.collapse_key.source.startsWith('global:')
   ) {
-    deps.io.err(
+    notes.push(
       'Heads up: collapse_key comes from machine-global config, so unrelated notifications may replace each other. Prefer a project or command-specific --collapse-key.',
     )
   }
   if (flags.ttl !== undefined && flags.ttl > 259_200) {
-    deps.io.err(
+    notes.push(
       'Heads up: this explicit --ttl is longer than 72 hours; stale notifications may arrive after they are useful.',
     )
   }

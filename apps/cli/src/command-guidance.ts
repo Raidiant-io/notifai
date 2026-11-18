@@ -1,9 +1,12 @@
 import { claudeSessionHasSubagents } from './claude-subagent.js'
 import type { CommandDeps } from './commands-core.js'
 import { sourceContextHarnessSession } from './commands-harness-context.js'
-import { conversationToken, guidanceGeneration, guidanceRead, installedSkill, pendingGuidanceChanges, recordGuidanceRead } from './guidance-currency.js'
+import path from 'node:path'
+import { conversationToken, guidanceGeneration, guidanceReads, installedSkill, pendingGuidanceChanges, recordGuidanceRead } from './guidance-currency.js'
 import { resolveGuidance } from './guidance.js'
 import { renderGuidance } from './guidance-render.js'
+import { inferredProjectName } from './project-enablement.js'
+import { shellQuote } from './reopen-terminal.js'
 import { rootGuidanceDigest, rootGuidanceText } from './session-activation.js'
 
 export function guidanceSessionNeedsToken(deps: Pick<CommandDeps, 'cwd' | 'env' | 'now'>): boolean {
@@ -42,25 +45,49 @@ export function recordCommandGuidanceRead(deps: CommandDeps, read: ReturnType<ty
     return false
   }
   if (session === null) return true
-  const recorded = recordGuidanceRead(session, deps.env, read.digest, read.text, read.generation)
+  const recorded = recordGuidanceRead(session, deps.env, read.digest, read.text, read.generation, path.resolve(deps.cwd))
   if (!recorded) deps.io.err('Guidance changed while this read printed, so it was not recorded. Run `notifai guidance` again.')
   return recorded
 }
 
-/** Before any upload, registration or send. Notices cannot satisfy this check. */
+/** "/x/app (Project "app")" or "/tmp/y (no Project)": where a read or a command applies. */
+function folderLabel(folder: string, env: NodeJS.ProcessEnv): string {
+  let project: string | null = null
+  try { project = inferredProjectName(folder, env) } catch { /* a vanished folder names no Project */ }
+  return `${folder} (${project === null ? 'no Project' : `Project ${JSON.stringify(project)}`})`
+}
+
+/**
+ * Before any upload, registration or send. Notices cannot satisfy this check.
+ * Any read this session holds of the exact guidance in force here admits the
+ * command, wherever it was read. A refusal says which folder the command runs
+ * in, where the session last read guidance, and the one command that reads it here.
+ */
 export function currentCommandGuidance(deps: CommandDeps, token?: string): { code: string; message: string; guidance: string; remedy: string } | null {
   const session = commandGuidanceSession(deps, token)
   if (session === null && !guidanceSessionNeedsToken(deps) && token === undefined) return null // ordinary scripts
   const digest = rootGuidanceDigest(deps.cwd, deps.env)
-  if (session !== null && guidanceRead(session, deps.env) === digest) return null
+  const reads = session === null ? [] : guidanceReads(session, deps.env)
+  if (reads.some(read => read.digest === digest)) return null
   const skill = installedSkill(deps.cwd, deps.env)
+  const here = path.resolve(deps.cwd)
+  const readHere = reads.some(read => read.folder === here)
+  const elsewhere = readHere ? undefined : reads.findLast(read => read.folder !== undefined)?.folder
+  const read = `notifai guidance${token === undefined ? '' : ` --session-token ${token}`}`
+  const retry = `retry the same command${token === undefined ? '' : ` with --guidance-token ${token}`}`
   return {
     code: 'guidance_required',
-    message: 'Current Notifai guidance must be read in this Agent Session before this Notification Request. Nothing was sent or registered.',
+    message: elsewhere !== undefined
+      ? `This command runs in ${folderLabel(here, deps.env)}, where Notifai guidance differs from what this Agent Session read in ${folderLabel(elsewhere, deps.env)}. Nothing was sent or registered.`
+      : readHere
+        ? `Notifai guidance for ${folderLabel(here, deps.env)} changed after this Agent Session read it. Nothing was sent or registered.`
+        : 'Current Notifai guidance must be read in this Agent Session before this Notification Request. Nothing was sent or registered.',
     guidance: renderGuidance(resolveGuidance({ cwd: deps.cwd, env: deps.env })),
     remedy: session === null
       ? 'Run `notifai guidance check`, read its skill_file when present, run its read_command, then retry this command with the returned --guidance-token.'
-      : `${skill.file === null ? 'Repair the Notifai skill with `notifai init --skills`, then load its verified copy' : `Read ${JSON.stringify(skill.file)}`}; run \`notifai guidance${token === undefined ? '' : ` --session-token ${token}`}\`, then retry the same command${token === undefined ? '' : ` with --guidance-token ${token}`}.`,
+      : elsewhere !== undefined
+        ? `Read the guidance for this folder: run \`cd ${shellQuote(here)} && ${read}\`, then ${retry} from ${here}. If this Notification Request belongs to the work in ${elsewhere}, run it from there instead.`
+        : `${skill.file === null ? 'Repair the Notifai skill with `notifai init --skills`, then load its verified copy' : `Read ${JSON.stringify(skill.file)}`}; run \`${read}\`${readHere ? '' : ` in ${here}`}, then ${retry}.`,
   }
 }
 

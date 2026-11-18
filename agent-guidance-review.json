@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "behavior_digest": "sha256:31d0687639e212bd7d58acc4cff60bafe3891721b458ac04fab9a863894fb234",
+  "behavior_digest": "sha256:8319c13dccbb144caaf32fa8d9d933e722f2fb353a79581e7974b3554554e6b1",
   "outcome": "guidance-updated",
   "surfaces_reviewed": [
     "lifecycle-hooks",
@@ -9,5 +9,5 @@
     "cli-readiness",
     "domain-terms"
   ],
-  "reason": "Reviewed lifecycle hooks, the Notifai skill, harness setup, CLI readiness and domain terms. The root pending-question reminder is removed: Claude Code and Codex Stop no longer push a reminder through the wake channel (Claude Code inbox, Codex queue), which started an extra turn per open question presented as a message from another session. The synchronous Claude Code SubagentStop hold for the asking worker stays, and hook definitions are unchanged. The skill, topics and ask output still say asking work stays unfinished while its question is open. A guidance change note tells running sessions."
+  "reason": "Reviewed lifecycle hooks, the Notifai skill, harness setup, CLI readiness and domain terms. Three output fixes from a review of real sessions; the skill, topics and hooks are unchanged. The guidance gate keeps up to 8 reads per Agent Session, each with the folder it was read for, so a read in each folder keeps counting; a refusal names the folder the command ran in and the folder last read, with the exact cd-and-read command, after a coordinator reading guidance in its Project and sending from a projectless folder was refused for two hours. A send that prints anything after it went out now starts with `Sent <request id>.` and prints its advice after, after an agent took a naming nudge for a failure and sent twice. The Project naming nudge is shown only when the service holds no display name, and its command passes --project so it works from any folder. A guidance change note tells running sessions."
 }

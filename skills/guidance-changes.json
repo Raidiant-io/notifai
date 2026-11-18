@@ -1,5 +1,5 @@
 {
-  "current": "b3dcec99ab7608d3c8c7ada6cd8ecd6425bacc67b15a581278da1395f06ee5ab",
+  "current": "3fd30fc02cad04f1da92972735cd10434c0a0ca91ccd6cd4b7b54ad6c1a38f79",
   "releases": [
     {
       "digest": "3e47b01bc6bbfb43e910c660b9964fab6459d75148c3c02dcbcd0be64cfb2963",
@@ -408,6 +408,10 @@
     {
       "digest": "b3dcec99ab7608d3c8c7ada6cd8ecd6425bacc67b15a581278da1395f06ee5ab",
       "note": "Notifai no longer wakes you with a reminder about your own open question after your turn ends; that reminder arrived as an extra turn that looked like a message from another session. Your open question still keeps the work it unblocks unfinished, and a Claude Code subagent that asked is still held once before it reports."
+    },
+    {
+      "digest": "3fd30fc02cad04f1da92972735cd10434c0a0ca91ccd6cd4b7b54ad6c1a38f79",
+      "note": "Three fixes to command output; nothing changes in what you do.\n\n- A guidance refusal now names the folder the command ran in and the folder where this session read guidance, and gives the one `cd … && notifai guidance` command that reads it there. Guidance you read in one folder still counts in another folder that shows the same guidance, and a read in each folder keeps counting when you switch between them.\n- When `notifai send` prints anything after the request went out, the first line is `Sent <request id>.`; what follows is advice, not a failure, so never send it again.\n- The Project naming request appears only for a Project with no display name, and its `notifai project set --project <id> …` command works from any folder."
     }
   ]
 }

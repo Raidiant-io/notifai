@@ -577,6 +577,60 @@ describe('command contracts', () => {
   })
 })
 
+describe('what a send prints', () => {
+  async function sendIn(displayName: string | null, flags: { title: string; body?: string }) {
+    const root = mkdtempSync(path.join(os.tmpdir(), 'notifai-send-output-'))
+    const cwd = path.join(root, 'furanku-skills')
+    mkdirSync(cwd)
+    execFileSync('git', ['init', '-q', cwd])
+    const lines: string[] = []
+    const io = Object.assign(new CapturedIo(), { out: (line: string) => lines.push(`out ${line}`), err: (line: string) => lines.push(`err ${line}`) })
+    const looked: string[] = []
+    const client = {
+      submit: async () => receipt,
+      registerProject: async (identifier: string) => { looked.push(identifier); return { identifier, display_name: displayName } },
+    } as unknown as ApiClient
+    const deps = { ...makeDeps(io, client), cwd, env: isolatedEnv(root) }
+    try {
+      expect(await sendCommand(deps, { kind: 'update', ...flags })).toBe(EXIT.ok)
+      return { lines, looked }
+    } finally { rmSync(root, { recursive: true, force: true }) }
+  }
+
+  it('opens with the request id whenever it prints advice, and asks to name only a Project without a name', async () => {
+    const named = await sendIn('Furanku Skills', { title: 'The catalog architecture map is ready for review now' })
+    expect(named.looked).toEqual(['furanku-skills'])
+    expect(named.lines[0]).toBe('out Sent req_reply_test.')
+    expect(named.lines.slice(1).every(line => line.startsWith('err Heads up'))).toBe(true)
+    expect(named.lines.join('\n')).not.toContain('display name')
+
+    const unnamed = await sendIn(null, { title: 'Catalog map ready' })
+    expect(unnamed.lines[0]).toBe('out Sent req_reply_test.')
+    expect(unnamed.lines[1]).toContain("has no display name. Name it once, now, with one command: notifai project set --project 'furanku-skills' --name 'Furanku Skills'")
+  })
+
+  it('passes its advice on after the error when the send stops early', async () => {
+    const root = mkdtempSync(path.join(os.tmpdir(), 'notifai-send-early-'))
+    const cwd = path.join(root, 'the-beacon')
+    mkdirSync(cwd)
+    execFileSync('git', ['init', '-q', cwd])
+    const io = new CapturedIo()
+    const client = { submit: async () => { throw new ApiCallError(403, 'no_active_plan', 'Notifai needs an active plan.', 'Choose one.') } } as unknown as ApiClient
+    try {
+      expect(await sendCommand({ ...makeDeps(io, client), cwd, env: isolatedEnv(root) }, { kind: 'update', title: 'The beacon build finished with all checks green' })).toBe(EXIT.failed)
+      expect(io.errLines[0]).toMatch(/^no_active_plan:/)
+      expect(io.errLines.some(line => line.startsWith('Heads up: this title is'))).toBe(true)
+      expect(io.errLines.at(-1)).toContain("notifai project set --project 'the-beacon'")
+      expect(io.outLines).toEqual([])
+    } finally { rmSync(root, { recursive: true, force: true }) }
+  })
+
+  it('stays silent on an ordinary success with nothing to add', async () => {
+    const quiet = await sendIn('Furanku Skills', { title: 'Catalog map ready' })
+    expect(quiet.lines).toEqual([])
+  })
+})
+
 describe('credential origin pinning', () => {
   it('never sends the machine bearer to a flag or env origin override', async () => {
     const io = new CapturedIo()
@@ -1722,7 +1776,7 @@ describe('asking before the hooks have ever run', () => {
       for (const name of ['hooks.json', 'config.toml']) symlinkSync(path.join(codexHome, name), path.join(shadow, name))
       env.CODEX_HOME = shadow
       // Source-home approval must not admit a question in a different home.
-      expect(askCommand(deps, 'Ship it?', { title: 'Decision', json: true })).toBe(EXIT.usage)
+      expect(await askCommand(deps, 'Ship it?', { title: 'Decision', json: true })).toBe(EXIT.usage)
       expect(JSON.parse(io.outLines.at(-1)!)).toMatchObject({
         code: 'codex_hook_approval_required',
         remedy: expect.stringContaining('ask this question in the conversation instead and carry on'),
@@ -1738,7 +1792,7 @@ describe('asking before the hooks have ever run', () => {
     writeProjectSession(cwd, env, 'claude-concurrent', 43, 'claude-code')
     io.outLines = []
 
-    expect(askCommand(deps, 'Ship it?', { title: 'Decision' })).toBe(EXIT.ok)
+    expect(await askCommand(deps, 'Ship it?', { title: 'Decision' })).toBe(EXIT.ok)
     expect(io.outLines.some((line) => line.startsWith('Question registered (q_'))).toBe(true)
     expect(readSessionState('codex-current-thread', env).pending?.[0]?.source).toMatchObject({
       session_id: 'codex-current-thread',
@@ -1753,7 +1807,7 @@ describe('asking before the hooks have ever run', () => {
     expect(readSessionState('codex-current-thread', env).pending?.[0]?.title).toBe('Decision')
     // An agent on an older skill passes no --title: the question still registers,
     // titled by the Agent Session name, with one note naming --title.
-    expect(askCommand(deps, 'Ship it now?', {})).toBe(EXIT.ok)
+    expect(await askCommand(deps, 'Ship it now?', {})).toBe(EXIT.ok)
     expect(readSessionState('codex-current-thread', env).pending?.[1]?.title).toBe('Gentle Salmon')
     expect(io.errLines).toContain(MISSING_TITLE_NOTE)
     expect(settingsFile('codex', env)).toBe(path.join(env.CODEX_HOME, 'hooks.json'))
