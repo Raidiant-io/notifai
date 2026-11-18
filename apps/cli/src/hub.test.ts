@@ -505,7 +505,9 @@ async function registered(env: NodeJS.ProcessEnv, sessionId: string, pid: number
   lastHelloPid = pid
   const child = await connectChild(env, pid)
   child.send(registration(sessionId, overrides))
-  await until(() => child.frames.length > 0 || child.closed)
+  // The hub inspects the host processes before it answers; under a loaded
+  // integration run that alone has exceeded the 3s default. Passing runs return at once.
+  await until(() => child.frames.length > 0 || child.closed, 15_000)
   return child
 }
 
