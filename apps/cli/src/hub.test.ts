@@ -7,6 +7,7 @@ CompatibilityResponse,
 MachineSetupIssue,
 } from '@raidiant/notifai-protocol'
 import { spawn,type ChildProcess } from 'node:child_process'
+import { once } from 'node:events'
 import { appendFileSync,mkdirSync,mkdtempSync,readFileSync,rmSync,utimesSync,writeFileSync } from 'node:fs'
 import { createConnection,createServer,type Socket } from 'node:net'
 import path from 'node:path'
@@ -804,7 +805,9 @@ describe('hub end confirmation and writers', () => {
   async function standIn(): Promise<StandIn> {
     const proc = spawn('sleep', ['60'], { stdio: 'ignore' })
     standIns.push(proc)
-    await until(() => processStartTime(proc.pid!) !== null)
+    await once(proc, 'spawn')
+    // Reading a start runs `ps`, which is slow while the whole suite runs.
+    await until(() => processStartTime(proc.pid!) !== null, 15_000)
     return { pid: proc.pid!, start: processStartTime(proc.pid!)!, process: proc }
   }
 
@@ -2421,7 +2424,9 @@ describe('hub: conversations stopped by their app or the machine', () => {
   async function standIn(): Promise<StandIn> {
     const proc = spawn('sleep', ['60'], { stdio: 'ignore' })
     standIns.push(proc)
-    await until(() => processStartTime(proc.pid!) !== null)
+    await once(proc, 'spawn')
+    // Reading a start runs `ps`, which is slow while the whole suite runs.
+    await until(() => processStartTime(proc.pid!) !== null, 15_000)
     return { pid: proc.pid!, start: processStartTime(proc.pid!)!, process: proc }
   }
 
@@ -2805,7 +2810,9 @@ describe('hub: Codex conversations stopped by their app or the machine, Orca pan
   async function standIn(): Promise<StandIn> {
     const proc = spawn('sleep', ['60'], { stdio: 'ignore' })
     standIns.push(proc)
-    await until(() => processStartTime(proc.pid!) !== null)
+    await once(proc, 'spawn')
+    // Reading a start runs `ps`, which is slow while the whole suite runs.
+    await until(() => processStartTime(proc.pid!) !== null, 15_000)
     return { pid: proc.pid!, start: processStartTime(proc.pid!)!, process: proc }
   }
 
