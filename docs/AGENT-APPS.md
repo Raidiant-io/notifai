@@ -100,10 +100,6 @@ Cursor documents `cursor-agent` and `~/.local/bin` in its
 
 The standalone Windows Codex command location is documented in OpenAI's
 [Windows deployment guide](https://learn.chatgpt.com/docs/enterprise/windows-deployment).
-**Known detection gap:** a Windows ChatGPT app whose bundled Codex is not
-available through one of these command locations remains undetected. Its
-[Windows app guide](https://learn.chatgpt.com/docs/app/windows) confirms a
-native Codex agent, but does not provide a stable bundled-executable path.
 Discovery does not guess versioned WindowsApps or extracted-cache locations;
 a configuration or cache directory alone cannot establish installation.
 
