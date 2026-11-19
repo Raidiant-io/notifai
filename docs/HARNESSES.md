@@ -13,7 +13,7 @@ What Notifai does in each agent harness. For commands and setup, see
 | OpenCode | Yes | Yes | Coming soon | Coming soon |
 | OpenClaw | Yes | Yes | Yes | Yes |
 | Hermes | Yes | Yes | Yes | Yes |
-| Grok | Yes | Yes | Partly | Coming soon |
+| Grok | Yes | Yes | Partly | Partly |
 
 **Send notes** means you can steer a running agent with a short message from
 your phone. **Shows who's running** means your devices show whether each Agent
@@ -28,8 +28,9 @@ In **Claude Code, Codex, OpenClaw and Hermes** the agent keeps working while
 you decide. Your answer goes back to the exact Agent Session that asked, even
 if it went idle in the meantime.
 
-In **Cursor, OpenCode and Grok** the agent waits for your answer, then carries
-on.
+In **Cursor and OpenCode** the agent waits for your answer, then carries on.
+**Grok** does the same unless the session was started with `grok --leader`
+on macOS or Linux; then it keeps working like Claude Code.
 
 Closing an Agent Session ends its questions, so an answer that arrives after
 that reaches nobody, and your devices say so.
@@ -73,9 +74,12 @@ answer in the asking command.
 Linux, through a native plugin. Answers and notes come back into the running
 session.
 
-**Grok.** Grok holds the session at the end of its turn until your answer
-arrives, then continues. Notes reach a session started with `grok --leader`,
-except on Windows.
+**Grok.** A session started with `grok --leader` on macOS or Linux is
+attended through its leader: answers, answer edits and notes reach it even
+while it is idle, and your devices show it running until it closes. Without
+the leader (and on Windows), Grok holds the session at the end of its turn
+until your answer arrives, then continues, and your devices do not show
+whether it is running.
 
 ## What setup installs
 

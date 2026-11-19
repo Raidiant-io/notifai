@@ -56,6 +56,29 @@ On POSIX the launcher uses `exec`, preserving the process identity, arguments,
 streams, and exit status. On Windows it assigns the child to a Job Object at
 creation and retains ownership until child exit.
 
+## Hook ingress
+
+On macOS and Linux a generated Claude Code or Codex hook runs the stable
+launcher. For the frequent hook events, the launcher first offers the
+invocation to the running per-user hub over an owner-only socket, so a quiet
+session's hook needs no runtime start (`launcher/hook-ingress.h`,
+`src/hub-ingress.ts`). Ownership moves in one step:
+
+1. The launcher reads the hook input and sends it to the hub.
+2. Until the hub answers `accepted`, the launcher owns the hook. A missing,
+   slow or declining hub, or any unexpected frame, makes the launcher start
+   the runtime with the same input replayed on its stdin.
+3. On `accepted` the launcher replies `go`. From then on the hub runs the hook
+   handler in-process and the launcher only relays its `out` frames and final
+   `exit` code.
+4. If the connection ends after `go`, the launcher checks whether it has
+   written any hook output. Before any output it still falls back to the
+   runtime; after output it treats the hook as served and exits 0, so the
+   harness never sees a hook's output twice.
+
+The Session Child launch (`hook attend` for Claude Code and Codex) never takes
+this path: that launcher process is the session's resident itself.
+
 ## Candidate CI
 
 To check a branch on every native target without releasing it, dispatch

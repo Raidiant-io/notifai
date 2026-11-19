@@ -122,9 +122,9 @@ No npm token, in any form, may ever appear in this repository: not in
 `.npmrc`, not in `.env` files, not in scripts, docs, tests, or commit
 messages. Agents never ask for, echo, or store a token, and never run
 `npm login`, `npm adduser`, `npm token`, or credential-writing
-`npm config set`. When the maintainer publishes, auth lives in their
-user-level npm credential store or a run-time environment variable, and CI
-uses OIDC trusted publishing or a workflow secret — never anything in-tree.
+`npm config set`. Packages publish only from `publish.yml` through OIDC
+trusted publishing; [RELEASING.md](docs/RELEASING.md#provider-contract) owns
+that contract.
 
 ## Layout
 

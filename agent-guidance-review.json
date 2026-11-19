@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "behavior_digest": "sha256:c848adca54d821e25d57169a2ed1a89dc4b37e3710c988a2414b87ea6118817b",
+  "behavior_digest": "sha256:933a5dd2d8c7e35d415961aaf1028b3f69e8251d90b2717781895ed81de2ca6f",
   "outcome": "reviewed-no-impact",
   "surfaces_reviewed": [
     "lifecycle-hooks",
@@ -9,5 +9,5 @@
     "cli-readiness",
     "domain-terms"
   ],
-  "reason": "Reviewed lifecycle hooks, the Notifai skill, harness setup, CLI readiness and domain terms against the Claude Code wake recovery change: a queued wake Claude Code never showed (held as an unattested peer message, or written into an inbox Claude has since replaced) is now abandoned once Claude's inbox is newer than it, or once a prompt ran after it and the session settled idle, and the hub or hubless attendant sends a fresh content-free wake for input still waiting. The wake text, the instructions to use supplied input first and run notifai receive once for an empty wake, acknowledgement obligations, hook definitions, setup, readiness output, domain terms and the User's inbound-message settings are unchanged, so no surface needed an edit; a session that runs no turn still gets no series of wakes. A release-authored guidance change note records the delivery change for running sessions. Evidence: hub tests for a turn since the held wake, a replaced inbox, and no turn since; a real Claude Code 2.1.327 rig where one bypass-mode process held the pre-fix build's wake and replacement, current main left the next note pending until wake-not-taken, and the fixed build delivered and acknowledged it after a hub restart with nobody typing."
+  "reason": "docs/HARNESSES.md only: the Grok row and paragraph now state that a session started with grok --leader on macOS or Linux is attended through its leader (answers, answer edits and notes reach it while idle, and devices show it running), and that without the leader Grok holds the turn end. This matches the shipped skill's harness-grok.md and the CLI's Grok leader route; no skill, hook, setup or CLI readiness text changes. Reviewed lifecycle hooks, the Notifai skill, harness setup, CLI readiness and domain terms."
 }

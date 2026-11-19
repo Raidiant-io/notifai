@@ -43,9 +43,9 @@ any device that receives a notification, so they reveal no server secret.
   tokens, credentials — regardless of whether they look expired or
   "not really secret". This includes npm registry auth in every form: a
   tracked `.npmrc` or `.env` carrying `_authToken`, a token pasted into a
-  script, doc, test fixture, or commit message. Publishing auth lives in
-  the maintainer's user-level credential store or CI OIDC/secrets, never
-  in-tree (see `AGENTS.md`).
+  script, doc, test fixture, or commit message. Packages publish only
+  through OIDC trusted publishing from `publish.yml`
+  ([RELEASING.md](RELEASING.md#provider-contract)), never with in-tree auth.
 - Companion App Apple project configuration: `.xcconfig`, entitlements, team
   or bundle identifiers, App Store metadata. The public CLI's standalone Bun
   entitlement profile is client build source, not Companion App configuration.

@@ -54,10 +54,15 @@ forwards selectors:
 
 ```sh
 pnpm check:boundary
-pnpm build
+pnpm --filter @raidiant/notifai... build
+pnpm --filter @raidiant/notifai typecheck
+pnpm exec eslint apps/cli/src/trust-policy.test.ts
 pnpm --filter @raidiant/notifai test -- src/trust-policy.test.ts
-pnpm lint && pnpm -r typecheck
 ```
+
+Use the packages and files you changed. `--filter <package>...` builds the package with its dependencies. Whole-workspace
+runs (`pnpm build`, `pnpm -r typecheck`, `pnpm -r test`) are release gates;
+[AGENTS.md](AGENTS.md) says when they apply.
 
 Run `pnpm check:boundary:self-test` when you change the boundary scanner or
 its allowlist. Changes to shipped agent guidance (the skill, hooks, setup

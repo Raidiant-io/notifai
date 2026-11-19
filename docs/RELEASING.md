@@ -14,6 +14,29 @@ in one release branch/PR, with the stable manifest unchanged. Close a completed
 beta PR without merging beta metadata into main. Ordinary product changes land
 before the release. Review notes against the previous stable tag.
 
+### When Release Please proposes the wrong scope
+
+Compare the generated PR with the authorized scope before using it. Use the
+metadata-only fallback below instead when either holds:
+
+- the PR proposes versions or packages nobody authorized, such as a major CLI
+  version or a protocol release replayed from already-released history; or
+- the dispatch is refused because `main` moved past `expected_sha`, and
+  dispatching at the new `main` would pull unreviewed commits into the release.
+
+Close the generated PR unmerged. From the frozen candidate commit, push a
+`release/cli-<version>` branch with one commit, `chore: release cli
+<version>`, that changes only `apps/cli/package.json`, `apps/cli/CHANGELOG.md`,
+`.release-please-manifest.json` and the README version marker. Protocol,
+dependency and lockfile inputs stay as the candidate has them. Open it as the
+only active Release PR, labelled `autorelease: pending`. Before tagging, read
+back that its diff from the candidate touches only those four files and that
+`pnpm check:release` passes on its head. The tag below goes on that head
+commit. After promotion, merge the PR and relabel it `autorelease: tagged`, or
+the label blocks the next Release PR.
+
+### Publish
+
 Freeze the candidate commit, create its exact `v<version>` tag, then dispatch
 **publish.yml** on that tag. Native publication creates the tag's draft GitHub
 Release from its CHANGELOG section when none exists, and keeps the oldest of
@@ -52,7 +75,22 @@ one registry-verified npm adapter, acquires its exact signed native product,
 and checks both process identity and skill refresh in that installation.
 
 Use **Re-run failed jobs** (`gh run rerun <run-id> --failed`). Successful targets
-and their immutable artifacts stay in the run. Do not start a new version or
+and their immutable artifacts stay in the run.
+
+The npm job can fail after publication succeeded: its byte verification gets
+HTTP 404 for the version or its tarball while the registry propagates, and the
+version metadata appears before the tarball does. A rerun started during that
+window fails the same way. Before rerunning, read the exact version back until
+its tarball serves and matches the published integrity:
+
+```sh
+npm view @raidiant/notifai@<version> dist.tarball dist.integrity
+curl -fsSLo notifai.tgz "<dist.tarball>" && echo "sha512-$(openssl dgst -sha512 -binary notifai.tgz | base64)"
+```
+
+The printed digest must equal `dist.integrity`. After a rerun, judge the run
+by its latest attempt (`gh run view <run-id> --attempt <n>`): every job of that
+attempt must have succeeded before the artifact and channel read-backs. Do not start a new version or
 rebuild successful signed bytes to recover an acquisition failure. The workflow
 never replaces assets. Interrupted promotion resumes the same version and reads
 back both providers; npm and GitHub are not an atomic transaction.
