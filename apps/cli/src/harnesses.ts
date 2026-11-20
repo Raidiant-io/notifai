@@ -135,7 +135,7 @@ export const HERMES_CLASSIC_CLI_QUESTION_CAPABILITY: HarnessCapability = {
 export const HERMES_QUESTION_ROUTING_UNAVAILABLE: HarnessCapability = {
   stopContinuation: 'unsupported',
   deliveryRoutes: ['unsupported'],
-  deliveryContract: 'Hermes Question Routing is available only in an attended local classic CLI session; use `notifai ask --wait` on other Hermes surfaces',
+  deliveryContract: 'The Hermes plugin can return an answer after the turn only in an attended local classic CLI session. With a gateway-owned turn or another Hermes surface, use `notifai ask --wait` to receive the answer in the command.',
 }
 
 /**

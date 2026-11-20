@@ -16,11 +16,12 @@ it.skipIf(process.platform === 'win32')('uses one scoped host operation for setu
   writeFileSync(host, `#!${process.execPath}
 const fs = require('node:fs'), path = require('node:path'), url = require('node:url');
 const args = process.argv.slice(2), target = path.join(process.env.HERMES_HOME, 'plugins', 'notifai');
-if (args[0] === '--version') console.log('Hermes Agent v0.21.5');
+if (args[0] === '--version') console.log('Hermes Agent v' + (process.env.NOTIFAI_TEST_HERMES_VERSION || '0.21.5'));
 else if (args[1] === 'list') { if (fs.existsSync(target)) console.log('enabled local 1.0.0 notifai'); }
 else if (args[1] === 'install') {
   if (process.env.NOTIFAI_TEST_HOST_FAIL) process.exit(1);
   if (args.includes('--force')) process.exit(2);
+  if (process.env.NOTIFAI_TEST_HERMES_VERSION === '0.23.3' && args.includes('--no-deps')) process.exit(3);
   fs.mkdirSync(target, { recursive: true });
   for (const name of ['__init__.py', 'plugin.yaml']) fs.copyFileSync(path.join(url.fileURLToPath(args[2]), name), path.join(target, name));
 } else if (args[1] === 'remove') fs.rmSync(target, { recursive: true, force: true });
@@ -45,6 +46,12 @@ else if (args[1] === 'install') {
   expect(() => installHermesPlugin('/stable/adapter', { ...env, NOTIFAI_TEST_HOST_FAIL: '1' }, undefined, publish)).toThrow(/Hermes/)
   const retained = sources.at(-1)!; roots.push(retained)
   expect(existsSync(path.join(retained, '__init__.py'))).toBe(true)
+  const modern = { ...env, NOTIFAI_TEST_HERMES_VERSION: '0.23.3' }
+  expect(installHermesPlugin('/stable/adapter', modern)).toBe(installed)
+  expect(readFileSync(path.join(installed, 'plugin.yaml'), 'utf8')).toContain('requires_hermes: ">=0.21.5"')
+  expect(() => installHermesPlugin('/stable/adapter', { ...env, NOTIFAI_TEST_HERMES_VERSION: '0.20.6' })).toThrow(/0\.20\.6.*0\.21\.5/)
+  expect(() => installHermesPlugin('/stable/adapter', { ...env, NOTIFAI_TEST_HERMES_VERSION: '0.24.0' })).toThrow(/0\.24\.0.*0\.23\.3/)
+  expect(() => installHermesPlugin('/stable/adapter', { ...env, NOTIFAI_TEST_HERMES_VERSION: '0.23.3+canary' })).toThrow(/0\.23\.3\+canary/)
 })
 
 it('leaves a foreign Hermes plugin with the same name untouched', () => {

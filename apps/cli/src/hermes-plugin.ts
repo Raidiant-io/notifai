@@ -9,6 +9,7 @@ import { accountHome } from './platform.js'
 import { createHash } from 'node:crypto'
 import { atomicWriteFileSync } from './atomic-file.js'
 import type { IntegrationPublication } from './native-installation.js'
+import { compareVersions, isSemVer } from './version.js'
 
 export const HERMES_PLUGIN_ID = 'notifai'
 export const HERMES_PLUGIN_MARKER = '# notifai managed hermes plugin v1'
@@ -23,11 +24,10 @@ export function hermesPluginSource(adapterPath: string, nodePath?: string, integ
   return stampIntegrationSource(`${HERMES_PLUGIN_MARKER}
 """Notifai activation and Session Attendant for a local Hermes CLI session.
 
-Only Hermes's public plugin surface is used. The session and its activity come
-from the plugin's own hooks, and every write goes through ctx.inject_message
-with that exact session as its explicit target. Acceptance is admission into
-the session's input, never completion, and an injection is held while Hermes
-waits on an approval, so a write can never answer a confirmation prompt.
+In an attached classic CLI, the plugin attends the exact live session and
+uses ctx.inject_message with that session as its target. When the gateway
+owns the CLI turn, the plugin supplies guidance only: gateway injection can
+accept a write for asynchronous dispatch and later drop it.
 """
 import atexit
 import json
@@ -60,8 +60,10 @@ TWO_SECTIONS_SINCE = (0, 21, 5)
 _two_sections = None
 _attendants = {}
 _lock = threading.RLock()
-# The latest rendered session and its guidance section.
-_sections = {"session": "", "guidance": ""}
+# Hermes renders both sections on the same thread with the same info object.
+_sections = threading.local()
+# Each gateway conversation gets its own pending compaction notice.
+_gateway_sessions = {}
 # Each session's history length at its last turn. Hermes keeps the system
 # prompt, Notifai's sections included, through compression; a shorter history
 # is how a turn learns that what the session read was summarized away.
@@ -114,13 +116,12 @@ def _on_turn_start(session_id=None, platform=None, parent_session_id=None, conve
             _history[current] = length
     return _guidance_change(current, previous is not None and length is not None and length < previous)
 
-def _guidance_change(session_id, compacted, worker=False):
-    # What this session must reload, told once with this turn's message:
-    # guidance that changed since its system prompt was built, which Hermes
-    # keeps for the whole session, or what a compaction summarized away.
-    if not _classic_cli():
-        return None
-    cwd = _session_cwd({})
+def _guidance_change(session_id, compacted, worker=False, cwd=None):
+    # What this session must reload, told once with this turn's message.
+    if cwd is None:
+        if not _classic_cli():
+            return None
+        cwd = _session_cwd({})
     if not cwd:
         return None
     envelope = {"session_id": session_id, "cwd": cwd, "hook_event_name": "GuidanceCheck"}
@@ -393,12 +394,48 @@ def _render(session_id, cwd, worker, two):
         return None
     return {"activation": str(parts["activation"]).strip(), "guidance": str(parts.get("guidance") or "").strip()}
 
+def _gateway_cli():
+    # The gateway shares its process across local and messaging sessions.
+    # The task-local host context tells us which client owns this callback.
+    return (_ctx.session_surface() == "cli" and
+            os.environ.get("TERMINAL_ENV", "").lower() in ("", "local"))
+
+def _on_gateway_turn(session_id=None, platform=None, parent_session_id=None, **_):
+    worker = platform == "subagent"
+    if not session_id or platform not in ("cli", "subagent") or not _gateway_cli():
+        return None
+    if parent_session_id and not worker:
+        return None
+    cwd = _ctx.session_cwd()
+    if not cwd or not os.path.isdir(cwd):
+        return None
+    with _lock:
+        compacted = _gateway_sessions.get(session_id, False)
+        _gateway_sessions[session_id] = False
+    return _guidance_change(session_id, compacted, worker, cwd)
+
+def _on_compaction(session_id=None, old_session_id=None, kind=None, **_):
+    # Tool-result pruning and micro-compaction do not replace guidance text.
+    if not session_id or kind not in ("summarize", "provider_native"):
+        return
+    with _lock:
+        if old_session_id in _gateway_sessions or session_id in _gateway_sessions:
+            _gateway_sessions.pop(old_session_id, None)
+            _gateway_sessions[session_id] = True
+
+def _forget_gateway_session(session_id=None, deleted_ids=None, **_):
+    with _lock:
+        _gateway_sessions.pop(session_id, None)
+        for deleted_id in deleted_ids or ():
+            _gateway_sessions.pop(deleted_id, None)
+
 def _activation(info):
+    _sections.pending = None
     platform = str(info.get("platform") or "")
     session_id = str(info.get("session_id") or "").strip()
-    with _lock:
-        _sections.update({"session": session_id, "guidance": ""})
-    if platform not in ("cli", "subagent") or not _classic_cli() or not session_id:
+    if platform not in ("cli", "subagent") or not session_id:
+        return ""
+    if not (_gateway_cli() if _gateway_managed else _classic_cli()):
         return ""
     cwd = _session_cwd(info)
     if not cwd:
@@ -407,25 +444,30 @@ def _activation(info):
     parts = _render(session_id, cwd, worker, _use_two_sections())
     if parts is None:
         return ""
-    with _lock:
-        if _sections["session"] == session_id:
-            _sections["guidance"] = parts["guidance"]
-    if not worker:
+    _sections.pending = (info, parts["guidance"])
+    if not worker and not _gateway_managed:
         _start_attendant(_ctx, session_id, cwd)
     return parts["activation"]
 
 def _guidance(info):
-    session_id = str(info.get("session_id") or "").strip()
-    with _lock:
-        return _sections["guidance"] if session_id and session_id == _sections["session"] else ""
+    pending = getattr(_sections, "pending", None)
+    _sections.pending = None
+    return pending[1] if pending is not None and pending[0] is info else ""
 
 def register(ctx):
-    global _ctx
+    global _ctx, _gateway_managed
     _ctx = ctx
+    _gateway_managed = callable(getattr(ctx, "session_surface", None))
     ctx.register_system_prompt_section(ACTIVATION_SECTION, _activation,
                                        position="after_memory", max_chars=4000)
     ctx.register_system_prompt_section(GUIDANCE_SECTION, _guidance,
                                        position="after_memory", max_chars=4000)
+    if _gateway_managed:
+        ctx.register_hook("pre_llm_call", _on_gateway_turn)
+        ctx.register_hook("post_compaction", _on_compaction)
+        ctx.register_hook("on_session_finalize", _forget_gateway_session)
+        ctx.register_hook("on_session_delete", _forget_gateway_session)
+        return
     ctx.register_hook("pre_llm_call", _on_turn_start)
     ctx.register_hook("post_llm_call", _on_turn_end)
     ctx.register_hook("pre_tool_call", _counter("tools", 1))
@@ -459,13 +501,21 @@ function hermesCommand(args: string[], env: NodeJS.ProcessEnv): string {
     env, encoding: 'utf8', timeout: 30_000, maxBuffer: 256 * 1024,
   })
   if (result.error || result.status !== 0) {
-    throw new Error(`Hermes plugin command failed: ${result.error?.message ?? result.stderr?.trim() ?? result.stdout?.trim() ?? 'unknown error'}`)
+    throw new Error(`Hermes plugin command failed: ${result.error?.message || result.stderr?.trim() || result.stdout?.trim() || 'unknown error'}`)
   }
   return result.stdout
 }
 
-/** The one Hermes release whose plugin activation path was proven; install refuses any other. */
-export const HERMES_SUPPORTED_VERSION = '0.21.5'
+export const HERMES_MIN_VERSION = '0.21.5'
+export const HERMES_MAX_VERSION = '0.23.3'
+export const HERMES_VERSION_RANGE = `v${HERMES_MIN_VERSION} through v${HERMES_MAX_VERSION}`
+
+export function isSupportedHermesVersion(version: string): boolean {
+  if (!isSemVer(version) || /[-+]/.test(version)) return false
+  const floor = compareVersions(version, HERMES_MIN_VERSION)
+  const ceiling = compareVersions(version, HERMES_MAX_VERSION)
+  return (floor === 'equal' || floor === 'after') && (ceiling === 'equal' || ceiling === 'before')
+}
 
 /** A failed probe is not evidence that the installed release is unsupported. */
 export function probeHermesVersion(env: NodeJS.ProcessEnv = process.env):
@@ -478,19 +528,10 @@ export function probeHermesVersion(env: NodeJS.ProcessEnv = process.env):
       (result.signal ? `terminated by ${result.signal}` : `exit status ${result.status}`)
     return { version: null, error: `hermes --version failed: ${cause}` }
   }
-  const version = /^Hermes Agent v(\d+\.\d+\.\d+)\b/m.exec(result.stdout)?.[1]
+  const version = /^Hermes Agent v(\d+\.\d+\.\d+(?:[-+][\w.-]+)?)(?=\s|$)/m.exec(result.stdout)?.[1]
   return version === undefined
     ? { version: null, error: 'could not parse the version reported by hermes --version' }
     : { version, error: null }
-}
-
-/** The version `hermes --version` reports, or null when it cannot be read. */
-export function hermesVersion(env: NodeJS.ProcessEnv = process.env): string | null {
-  return probeHermesVersion(env).version
-}
-
-export function hermesVersionSupported(env: NodeJS.ProcessEnv = process.env): boolean {
-  return hermesVersion(env) === HERMES_SUPPORTED_VERSION
 }
 
 export function hermesPluginListed(env: NodeJS.ProcessEnv = process.env): boolean {
@@ -499,25 +540,28 @@ export function hermesPluginListed(env: NodeJS.ProcessEnv = process.env): boolea
     .some(line => /^enabled\s+\S+\s+\S+\s+notifai\s*$/.test(line))
 }
 
-export function preflightHermesPlugin(env: NodeJS.ProcessEnv = process.env): void {
+export function preflightHermesPlugin(env: NodeJS.ProcessEnv = process.env): string {
   const installed = hermesPluginDir(env)
   if (existsSync(installed) && !isOurHermesPlugin(installed)) {
     throw new Error('Hermes already has a foreign plugin named notifai; leave it unchanged')
   }
-  if (!hermesVersionSupported(env)) {
-    throw new Error(`Hermes v${HERMES_SUPPORTED_VERSION} is required for the proven Notifai plugin integration`)
+  const probe = probeHermesVersion(env)
+  if (probe.version === null) throw new Error(probe.error)
+  if (!isSupportedHermesVersion(probe.version)) {
+    throw new Error(`Hermes v${probe.version} is installed. The Notifai plugin supports stable releases from ${HERMES_VERSION_RANGE}.`)
   }
   if (!existsSync(installed) && hermesCommand(['list', '--plain'], env)
     .split(/\r?\n/)
     .some(line => /^(?:enabled|disabled|not enabled)\s+\S+\s+\S+\s+notifai\s*$/.test(line))) {
     throw new Error('Hermes already discovers a foreign plugin named notifai; leave it unchanged')
   }
+  return probe.version
 }
 
 export function installHermesPlugin(adapterPath: string, env: NodeJS.ProcessEnv = process.env, nodePath?: string,
   publish: IntegrationPublication = action => action()): string {
   const installed = hermesPluginDir(env)
-  preflightHermesPlugin(env)
+  const version = preflightHermesPlugin(env)
   const source = hermesPluginSource(adapterPath, nodePath, path.join(installed, '__init__.py'))
   if (existsSync(installed)) {
     publish(() => refreshHermesPlugin(adapterPath, env, nodePath), installed)
@@ -528,7 +572,20 @@ export function installHermesPlugin(adapterPath: string, env: NodeJS.ProcessEnv 
     const temp = mkdtempSync(path.join(os.tmpdir(), 'notifai-hermes-plugin-'))
     let started = false, completed = false
     try {
-      writeFileSync(path.join(temp, 'plugin.yaml'), 'name: notifai\nversion: "1.0.0"\ndescription: "Notifai activation and Session Attendant"\nprovides_hooks:\n  - pre_llm_call\n  - post_llm_call\n  - pre_tool_call\n  - post_tool_call\n  - pre_api_request\n  - post_api_request\n  - api_request_error\n  - pre_approval_request\n  - post_approval_response\n  - pre_command\n  - on_session_finalize\n  - on_session_reset\n')
+      const hooks = compareVersions(version, '0.22.3') === 'before'
+        ? ['pre_llm_call', 'post_llm_call', 'pre_tool_call', 'post_tool_call',
+            'pre_api_request', 'post_api_request', 'api_request_error', 'pre_approval_request',
+            'post_approval_response', 'pre_command', 'on_session_finalize', 'on_session_reset']
+        : ['pre_llm_call', 'post_compaction', 'on_session_finalize', 'on_session_delete']
+      writeFileSync(path.join(temp, 'plugin.yaml'), [
+        'name: notifai',
+        'version: "1.0.0"',
+        'description: "Notifai activation and Session Attendant"',
+        `requires_hermes: ">=${HERMES_MIN_VERSION}"`,
+        'provides_hooks:',
+        ...hooks.map(hook => `  - ${hook}`),
+        '',
+      ].join('\n'))
       writeFileSync(path.join(temp, '__init__.py'), source)
       const git = (args: string[]) => {
         const result = spawnSync('git', args, { cwd: temp, env, encoding: 'utf8', timeout: 10_000 })
@@ -539,7 +596,11 @@ export function installHermesPlugin(adapterPath: string, env: NodeJS.ProcessEnv 
       git(['-c', 'user.name=Notifai', '-c', 'user.email=notifai@example.invalid', 'commit', '-qm', 'plugin'])
       const install = () => {
         started = true
-        hermesCommand(['install', pathToFileURL(temp).href, '--enable', '--no-deps'], env)
+        // Hermes 0.22+ treats --no-deps as install disabled. This plugin has
+        // no dependencies, so Hermes can enable it in the install operation.
+        const args = ['install', pathToFileURL(temp).href, '--enable']
+        if (compareVersions(version, '0.22.0') === 'before') args.push('--no-deps')
+        hermesCommand(args, env)
         verifyInstallation()
       }
       if (publish.host) publish.host({ scope: installed, operation: 'install', revision: createHash('sha256').update(source).digest('hex'), source: temp }, install)

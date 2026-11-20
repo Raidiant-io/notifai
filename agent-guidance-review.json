@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "behavior_digest": "sha256:fdd11c366e4ce764849f027bf8fbff82b388f8091411d2dde2117ba93d38a689",
+  "behavior_digest": "sha256:5f58b0a4d20a5211b5e79e677b27fd1c5293156732def5192a5fe7eda58af085",
   "outcome": "guidance-updated",
   "surfaces_reviewed": [
     "lifecycle-hooks",
@@ -9,5 +9,5 @@
     "cli-readiness",
     "domain-terms"
   ],
-  "reason": "Reviewed the OpenCode lifecycle hooks, Notifai skill, harness setup, CLI readiness and domain terms. Doctor describes the compatibility check and directs agents to confirm activation. The OpenCode reference explains policy blocks and using the native question tool alongside Code Mode."
+  "reason": "Reviewed the OpenCode lifecycle hooks, Notifai skill, harness setup, CLI readiness and domain terms. Doctor describes the compatibility check and directs agents to confirm activation. The OpenCode reference explains policy blocks and using the native question tool alongside Code Mode. Reviewed lifecycle hooks, the Notifai skill, harness setup, CLI readiness and domain terms for Hermes compatibility. Stable supported releases can install the plugin through Hermes. The setup reference and doctor explain that gateway-owned classic CLI turns receive answers through the waiting command. Attached classic CLI sessions keep their exact-session writer. The gateway uses its scoped callback for guidance and rechecks it after a committed compaction. An isolated Hermes 0.23.3 run installed and activated the plugin, sent a notification, returned an emulated device answer in the asking tool result, and received fresh guidance after a real compaction. A Hermes 0.21.5 run received an emulated device answer in its next model turn."
 }

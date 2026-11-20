@@ -70,9 +70,11 @@ reaches your devices, and you can answer it in either place. Notes are coming.
 Gateway into the same session. On Linux and WSL2, the agent waits for your
 answer in the asking command.
 
-**Hermes.** Supports Hermes v0.21.5 in its local classic CLI, on macOS and
-Linux, through a native plugin. Answers and notes come back into the running
-session.
+**Hermes.** The plugin supports stable releases from v0.21.5 through v0.23.3
+in the local classic CLI on macOS and Linux. When Hermes owns the turn in its
+gateway, use `notifai ask --wait` to receive the answer in the same command.
+On releases where the classic CLI runs the turn itself, answers and notes can
+return to the running session after the asking command exits.
 
 **Grok.** A session started with `grok --leader` on macOS or Linux is
 attended through its leader: answers, answer edits and notes reach it even

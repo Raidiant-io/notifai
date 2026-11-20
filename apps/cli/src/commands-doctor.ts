@@ -16,7 +16,7 @@ import {
   type RoutableDevice,
 } from '@raidiant/notifai-protocol'
 import { existsSync } from 'node:fs'
-import { HERMES_SUPPORTED_VERSION, hermesPluginListed, probeHermesVersion } from './hermes-plugin.js'
+import { HERMES_MAX_VERSION, HERMES_MIN_VERSION, HERMES_VERSION_RANGE, hermesPluginListed, isSupportedHermesVersion, probeHermesVersion } from './hermes-plugin.js'
 import { inspectClaudeInbox, systemClaudeWakeAdapters } from './claude-wake.js'
 import { ApiCallError, NetworkError, type ApiClient } from './client.js'
 import { codexHome as codexQueueHomeDirectory, inspectCodexQueue } from './codex-wake.js'
@@ -1500,7 +1500,7 @@ function hookChecks(deps: CommandDeps, codexTrust: CodexTrust): HookCheck[] {
 
   if (installations.some((installation) => installation.harness === 'hermes')) {
     const { version, error: versionError } = probeHermesVersion(deps.env)
-    if (version !== null && version !== HERMES_SUPPORTED_VERSION) {
+    if (version !== null && !isSupportedHermesVersion(version)) {
       // Which Hermes is installed is the User's business, and enabling the
       // plugin cannot make another version supported, so this is a limit.
       checks.push({
@@ -1508,8 +1508,8 @@ function hookChecks(deps: CommandDeps, codexTrust: CodexTrust): HookCheck[] {
         harnesses: ['hermes'],
         ok: false,
         informational: 'harness-capability',
-        detail: `Hermes v${version} is installed; Notifai's Hermes plugin supports Hermes v${HERMES_SUPPORTED_VERSION} only, so Notifai cannot vouch for its activation or Question Routing in this Hermes and has nothing to repair`,
-        technical: { hermes_version: version, supported_version: HERMES_SUPPORTED_VERSION },
+        detail: `Hermes v${version} is installed. Notifai's Hermes plugin supports stable releases from ${HERMES_VERSION_RANGE}. Use a supported release to connect Hermes.`,
+        technical: { hermes_version: version, minimum_version: HERMES_MIN_VERSION, maximum_version: HERMES_MAX_VERSION },
       })
     } else {
       let enabled = false
@@ -1518,14 +1518,14 @@ function hookChecks(deps: CommandDeps, codexTrust: CodexTrust): HookCheck[] {
         pluginError = error instanceof Error ? error.message : String(error)
       }
       const pluginDetail = pluginError ?? (enabled
-        ? 'Hermes lists the Notifai plugin as enabled; an enabled local classic CLI session starts the writer for Questions, Notes, and Answer Edits'
+        ? 'Hermes lists the Notifai plugin as enabled. Check Question Routing from the active session. When Hermes runs the turn in its gateway, use \`notifai ask --wait\` to wait for an answer in the command.'
         : 'Hermes does not list the Notifai plugin as enabled')
       checks.push({
         name: 'hooks (hermes plugin)',
         harnesses: ['hermes'],
         ok: versionError === null && enabled,
         detail: versionError === null ? pluginDetail : `${versionError}; ${pluginDetail}`,
-        technical: { hermes_version: version, supported_version: HERMES_SUPPORTED_VERSION,
+        technical: { hermes_version: version, minimum_version: HERMES_MIN_VERSION, maximum_version: HERMES_MAX_VERSION,
           version_error: versionError, plugin_enabled: enabled, plugin_error: pluginError },
         ...(versionError !== null ? {
           remedy: {

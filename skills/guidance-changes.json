@@ -1,5 +1,5 @@
 {
-  "current": "6eb7b3a34a234324a9eff83c4ec70bae372bed054d94b7da3600aef2009c219f",
+  "current": "a68e16e249233bd042c2a439ab316b485ecf1bf06f9161fbee7f2301a56075d4",
   "releases": [
     {
       "digest": "3e47b01bc6bbfb43e910c660b9964fab6459d75148c3c02dcbcd0be64cfb2963",
@@ -440,6 +440,10 @@
     {
       "digest": "6eb7b3a34a234324a9eff83c4ec70bae372bed054d94b7da3600aef2009c219f",
       "note": "OpenCode: use a fresh prompt to verify plugin activation after Doctor checks compatibility. If OpenCode policy blocks activation, follow the policy. Call `question` as a direct native tool when using Code Mode."
+    },
+    {
+      "digest": "a68e16e249233bd042c2a439ab316b485ecf1bf06f9161fbee7f2301a56075d4",
+      "note": "Notifai can connect stable Hermes releases from v0.21.5 through v0.23.3. When Hermes runs your classic CLI turn in its gateway, use `notifai ask --wait` to receive the answer in the command. Attached classic CLI sessions keep their existing answer route."
     }
   ]
 }
