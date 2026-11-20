@@ -498,8 +498,10 @@ describe('pending-question turn-end reminder', () => {
     const event = { session_id: 'parent', agent_id: 'child', hook_event_name: 'SubagentStop', cwd: h.deps.cwd }
     expect(await hookRunCommand(h.deps, 'stop', stdin(event), 'claude-code')).toBe(0)
     const reminder = JSON.parse(h.io.outLines.join(''))
-    expect(reminder.decision).toBe('block')
-    expect(reminder.reason).toContain('Choose a colour')
+    // The child-only pending-question gate is the other permitted Stop block,
+    // alongside delivery of a User answer or its owed acknowledgement.
+    expect(reminder).toEqual({ decision: 'block', reason: expect.stringContaining('Choose a colour') })
+    expect(reminder.reason).not.toContain('You own Notification Requests')
     expect(reminder.reason).toMatch(/not finished|incomplete/)
     expect(reminder.reason).toMatch(/parent.*waiting/i)
     expect(readSessionState('parent', h.env).last_stop_at).toBeUndefined()
@@ -1544,7 +1546,10 @@ describe('escalation waiter delivery seam', () => {
       else break
     }
     expect(blocks).toHaveLength(3)
-    expect(blocks[0]).toContain('req_answered')
+    for (const block of blocks) {
+      expect(JSON.parse(block)).toEqual({ decision: 'block', reason: expect.stringContaining('req_answered') })
+      expect(block).not.toContain('You own Notification Requests')
+    }
     expect(readSessionState('unacknowledged', h.env).acknowledgement_due).toBeUndefined()
   })
 

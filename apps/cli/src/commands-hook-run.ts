@@ -650,17 +650,14 @@ export async function hookRunCommand(
   // Grok's startup and prompt output never reaches the model, so the notices
   // other harnesses get at SessionStart ride on its activation instead, and a
   // later fault on the next tool result. Each is claimed only if printed.
-  const grokNotices = (): { update: PendingNotice | undefined; fault: PendingNotice | undefined } => ({
-    update: pendingAgentUpdateNotice({ env: deps.env, now: now(), updateCommand: updateCliCommand(deps) }),
-    fault: pendingIntegrationFaultNotice({ ...deps, cwd }, 'grok'),
-  })
   if (harness === 'grok' && (event === 'post-tool-use' || event === 'post-compact')) {
     start({ cwd })
     let context: string | undefined
     try {
       if (event === 'post-compact') resetGrokActivation(envelope.session_id!, deps.env, true)
       else if (lifecycleEnabled()) {
-        const { update, fault } = grokNotices()
+        const update = pendingAgentUpdateNotice({ env: deps.env, now: now(), updateCommand: updateCliCommand(deps) })
+        const fault = pendingIntegrationFaultNotice({ ...deps, cwd }, 'grok')
         context = claimGrokActivation(envelope, cwd, deps.env, [update, fault].filter((notice): notice is PendingNotice => notice !== undefined))
         if (context === undefined && !grokWorker(envelope)) context = claimNow(fault)
       }
@@ -679,28 +676,6 @@ export async function hookRunCommand(
       logger.error('hook.end', { hook: event, outcome: 'ignored', ...failureData(err) })
     }
     return EXIT.ok
-  }
-  // A tool-free first turn has no context-bearing tool hook. One genuine Stop
-  // continuation activates it; teardown and cancellation can never do so.
-  if (harness === 'grok' && event === 'stop' && typeof envelope.promptId === 'string' && lifecycleEnabled()) {
-    try {
-      // An activation block also sets stopHookActive. Never let that stand in
-      // for delivery of a question answer that is already queued or accepted.
-      const state = readSessionState(envelope.session_id!, deps.env)
-      const hasQuestion = (state.pending?.length ?? 0) > 0 || state.accepted !== undefined ||
-        (state.acknowledgement_due?.length ?? 0) > 0
-      const { update, fault } = grokNotices()
-      const context = hasQuestion ? undefined
-        : claimGrokActivation(envelope, cwd, deps.env, [update, fault].filter((notice): notice is PendingNotice => notice !== undefined))
-      if (context !== undefined) {
-        start({ cwd })
-        deps.io.out(JSON.stringify({ decision: 'block', reason: context }))
-        logger.info('hook.end', { hook: event, outcome: 'context-added', decided: true })
-        return EXIT.ok
-      }
-    } catch (err) {
-      logger.error('hook.gate', { stage: 'grok-activation', outcome: 'ignored', ...failureData(err) })
-    }
   }
   // Generation fencing alone decides ownership. SessionStart records a
   // generation in every Project, so disabling never strands owed answers.

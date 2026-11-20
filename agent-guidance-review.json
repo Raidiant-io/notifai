@@ -1,7 +1,7 @@
 {
   "version": 1,
-  "behavior_digest": "sha256:933a5dd2d8c7e35d415961aaf1028b3f69e8251d90b2717781895ed81de2ca6f",
-  "outcome": "reviewed-no-impact",
+  "behavior_digest": "sha256:cbab0d758f7fc36573d306773df2c8dacd0f1d5f691262a249b9b171904dd1b3",
+  "outcome": "guidance-updated",
   "surfaces_reviewed": [
     "lifecycle-hooks",
     "notifai-skill",
@@ -9,5 +9,5 @@
     "cli-readiness",
     "domain-terms"
   ],
-  "reason": "docs/HARNESSES.md only: the Grok row and paragraph now state that a session started with grok --leader on macOS or Linux is attended through its leader (answers, answer edits and notes reach it while idle, and devices show it running), and that without the leader Grok holds the turn end. This matches the shipped skill's harness-grok.md and the CLI's Grok leader route; no skill, hook, setup or CLI readiness text changes. Reviewed lifecycle hooks, the Notifai skill, harness setup, CLI readiness and domain terms."
+  "reason": "Reviewed the Grok hook lifecycle, shipped skill, setup reference, CLI diagnostics and domain terms. Grok carries activation on its first tool result, including a failed tool, and can end a tool-free turn immediately. Question delivery and the question-card gate retain their existing routes."
 }

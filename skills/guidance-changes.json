@@ -1,5 +1,5 @@
 {
-  "current": "29108b3ac8d3d93613c8f4f986e5a56f42cc9207ee492bfa5ea9bba85f1edc2e",
+  "current": "e3b765052cd4162a308aa85060e4a8a7aaa6251c40399edf01a0433c574be87c",
   "releases": [
     {
       "digest": "3e47b01bc6bbfb43e910c660b9964fab6459d75148c3c02dcbcd0be64cfb2963",
@@ -428,6 +428,10 @@
     {
       "digest": "29108b3ac8d3d93613c8f4f986e5a56f42cc9207ee492bfa5ea9bba85f1edc2e",
       "note": "No change to what agents must do. When Claude Code never showed an earlier Notifai wake (it held it, or restarted its inbox), answers and notes that arrive later now get a fresh wake while the session is idle, instead of waiting for the next prompt. Use any input supplied with a wake turn, or run `notifai receive` once if none was supplied, as before."
+    },
+    {
+      "digest": "e3b765052cd4162a308aa85060e4a8a7aaa6251c40399edf01a0433c574be87c",
+      "note": "Grok now adds Notifai guidance with the first tool result, including after resume or compaction. Tool-free turns can finish immediately."
     }
   ]
 }

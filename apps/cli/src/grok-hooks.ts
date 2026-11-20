@@ -1,5 +1,5 @@
 /** Native Grok hook identity and model-visible activation. Passive startup and
- * prompt hooks never carry context; tool results and genuine Stop do. */
+ * prompt hooks never carry activation. Tool results carry it when one occurs. */
 import { createHash } from 'node:crypto'
 import type { ContinuationEvent, EscalationDeliveryRoute, HookEnvelope } from './hook-types.js'
 import { updateSessionState } from './hook-session-state.js'
