@@ -8,6 +8,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 This project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 and [Conventional Commits](https://www.conventionalcommits.org/en/v1.0.0/).
 
+## [14.7.5-beta.2](https://github.com/Raidiant-io/notifai/compare/v14.7.4...v14.7.5-beta.2) (2026-11-20)
+
+### Bug Fixes
+
+* Claude Code workers can report a waiting question and return to their parent in one turn. The parent receives the answer with the worker’s identity and the work it resumes.
+* Grok can finish a tool-free turn immediately. Notifai adds guidance to the first tool result, including after resume or compaction.
+
 ## [14.7.4](https://github.com/Raidiant-io/notifai/compare/v14.7.3...v14.7.4) (2026-11-18)
 
 ### Bug Fixes
