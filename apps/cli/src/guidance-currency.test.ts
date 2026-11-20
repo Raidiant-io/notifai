@@ -103,42 +103,44 @@ it('advertises only verified global skill bytes or the verified bundle, never re
 })
 
 
-it.each(['cursor', 'claude-code'] as const)('recovers through the public CLI parser in %s with enablement unset', harness => {
-  for (const explicit of [false, true]) for (const projectless of [false, true]) {
-    const { cwd, env } = setup()
-    mkdirSync(path.dirname(globalConfigPath(env)), { recursive: true })
-    writeFileSync(globalConfigPath(env), `[guidance]\nrequire_project_enablement = ${explicit}\n`)
-    if (harness === 'cursor') env.CURSOR_AGENT = '1'
-    else {
-      env.CLAUDECODE = '1'
-      env.CLAUDE_CODE_SESSION_ID = 'public-recovery'
-      env.CLAUDE_CONFIG_DIR = path.join(env.HOME!, '.claude')
-      const children = path.join(env.CLAUDE_CONFIG_DIR, 'projects/p/public-recovery/subagents')
-      mkdirSync(children, { recursive: true })
-      writeFileSync(path.join(children, 'agent-worker.jsonl'), '')
-    }
-    const cli = (...args: string[]) => spawnSync(process.execPath, [fileURLToPath(new URL('../dist/main.js', import.meta.url)), ...args], {
-      cwd, env: { ...process.env, ...env, USERPROFILE: env.HOME, NOTIFAI_TEST_HOME: env.HOME, NOTIFAI_CREDENTIALS: 'file', NOTIFAI_BASE_URL: 'http://127.0.0.1:1' }, encoding: 'utf8', timeout: 15_000,
-    })
-    const request = ['send', '--kind', 'done', '--title', 'Recovery', '--summary', 'Finished.', '--json', ...(projectless ? ['--projectless'] : [])]
-    const first = cli(...request)
-    expect(first.stdout, first.stderr).not.toBe('')
-    expect(JSON.parse(first.stdout).code).toBe('guidance_required')
-    const check = cli('guidance', 'check')
-    expect(check.status).toBe(0)
-    const receipt = JSON.parse(check.stdout) as { read_command: string; request_flag: string; token: string; enabled: boolean; disabled?: boolean; context: string }
-    expect(receipt.enabled).toBe(!explicit)
-    expect(receipt.disabled).not.toBe(true)
-    if (explicit) expect(receipt.context).toBeUndefined()
-    else expect(receipt.context).not.toContain('Notifai is enabled for this Project.')
-    expect(receipt.token).toMatch(/^[a-f0-9]{48}$/)
-    expect(cli(...receipt.read_command.split(' ').slice(1)).status).toBe(0)
-    const recovered = cli(...request, ...receipt.request_flag.split(' '))
-    // The real parser and currency path now reach authentication. No credentials
-    // are installed here; command-boundary tests separately prove submission.
-    expect(recovered.status, recovered.stderr).toBe(4)
-    expect(recovered.stdout + recovered.stderr).not.toContain('guidance_required')
-  }
+describe.each(['cursor', 'claude-code'] as const)('public CLI guidance recovery in %s', harness => {
+  it.each([[false, false], [false, true], [true, false], [true, true]] as const)(
+    'recovers with enablement unset (explicit policy %s, Projectless %s)', (explicit, projectless) => {
+      const { cwd, env } = setup()
+      mkdirSync(path.dirname(globalConfigPath(env)), { recursive: true })
+      writeFileSync(globalConfigPath(env), `[guidance]\nrequire_project_enablement = ${explicit}\n`)
+      if (harness === 'cursor') env.CURSOR_AGENT = '1'
+      else {
+        env.CLAUDECODE = '1'
+        env.CLAUDE_CODE_SESSION_ID = 'public-recovery'
+        env.CLAUDE_CONFIG_DIR = path.join(env.HOME!, '.claude')
+        const children = path.join(env.CLAUDE_CONFIG_DIR, 'projects/p/public-recovery/subagents')
+        mkdirSync(children, { recursive: true })
+        writeFileSync(path.join(children, 'agent-worker.jsonl'), '')
+      }
+      const cli = (...args: string[]) => spawnSync(process.execPath, [fileURLToPath(new URL('../dist/main.js', import.meta.url)), ...args], {
+        cwd, env: { ...process.env, ...env, USERPROFILE: env.HOME, NOTIFAI_TEST_HOME: env.HOME, NOTIFAI_CREDENTIALS: 'file', NOTIFAI_BASE_URL: 'http://127.0.0.1:1' }, encoding: 'utf8', timeout: 15_000,
+      })
+      const request = ['send', '--kind', 'done', '--title', 'Recovery', '--summary', 'Finished.', '--json', ...(projectless ? ['--projectless'] : [])]
+      const first = cli(...request)
+      expect(first.stdout, first.stderr).not.toBe('')
+      expect(JSON.parse(first.stdout).code).toBe('guidance_required')
+      const check = cli('guidance', 'check')
+      expect(check.status).toBe(0)
+      const receipt = JSON.parse(check.stdout) as { read_command: string; request_flag: string; token: string; enabled: boolean; disabled?: boolean; context: string }
+      expect(receipt.enabled).toBe(!explicit)
+      expect(receipt.disabled).not.toBe(true)
+      if (explicit) expect(receipt.context).toBeUndefined()
+      else expect(receipt.context).not.toContain('Notifai is enabled for this Project.')
+      expect(receipt.token).toMatch(/^[a-f0-9]{48}$/)
+      expect(cli(...receipt.read_command.split(' ').slice(1)).status).toBe(0)
+      const recovered = cli(...request, ...receipt.request_flag.split(' '))
+      // The real parser and currency path now reach authentication. No credentials
+      // are installed here; command-boundary tests separately prove submission.
+      expect(recovered.status, recovered.stderr).toBe(4)
+      expect(recovered.stdout + recovered.stderr).not.toContain('guidance_required')
+    },
+  )
 })
 
 
