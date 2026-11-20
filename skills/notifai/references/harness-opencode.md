@@ -19,6 +19,14 @@ terminals share. Then start one fresh Agent Session, send one prompt, and run
 `notifai doctor`. Notifai owns its generated plugin file and will not
 overwrite a foreign one.
 
+Doctor's plugin compatibility check compares the installed OpenCode and plugin
+versions. OpenCode 2.3 can block a compatible plugin through a `plugin.use`
+policy. If activation is missing, inspect the affected directory's plugin
+inventory on the running OpenCode service with
+`opencode api plugin.list -H "x-opencode-directory:$PWD"`. If OpenCode policy
+blocks Notifai, follow that policy. Reinstalling the plugin leaves policy in
+place.
+
 A session with a parent is a worker: it reports to its parent and does not
 notify. When the plugin cannot tell, it treats the session as a worker. A
 worker explicitly delegated Notification Requests in its prompt loads the skill
@@ -38,9 +46,9 @@ conversation. In a worker, or with a plugin that cannot prove a root session
 or hand back the form, or with `--projectless` in a Project that is not
 disabled or outside a Project, it waits in the command instead, for at most
 110 seconds, then withdraws an unanswered question (exit 3). Keep the command running until it returns.
-Both OpenCode 1.19.4 and OpenCode 2.1.3 carry free-text questions
+OpenCode 1.19.6, 2.1.3, and 2.3.2 carry free-text questions
 (`options: []`) and forms of 1 to 10 questions. Notifai accepts 2 to 6 choices
-per question, with single or multiple selection. OpenCode 2.1.3's native
+per question, with single or multiple selection. The tested OpenCode 2 native
 schema has no upper question count or minimum option count; Notifai's
 10-question and 6-choice limits apply to device registration. A native form
 outside those limits, including one suggested choice with custom input, stays
@@ -70,6 +78,8 @@ form keeps your turn open and takes whichever answer comes first:
   the conversation.
 - **A question that expired on the devices** closes the form unanswered, with
   Notifai context that says so: carry on without it.
+
+When using Code Mode, call `question` as a separate native tool call.
 
 Closing OpenCode or deleting the session withdraws the device question; a
 later device answer reaches nobody. A form on a signed-out machine, with

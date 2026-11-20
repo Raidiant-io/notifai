@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "behavior_digest": "sha256:cbad6e60e38d47fc7edb2c0ba959494420a6a6c381bc842e4fe3bd464d48cbed",
+  "behavior_digest": "sha256:fdd11c366e4ce764849f027bf8fbff82b388f8091411d2dde2117ba93d38a689",
   "outcome": "guidance-updated",
   "surfaces_reviewed": [
     "lifecycle-hooks",
@@ -9,5 +9,5 @@
     "cli-readiness",
     "domain-terms"
   ],
-  "reason": "Reviewed Claude Code lifecycle hooks, question receipts, harness setup, CLI readiness and domain terms. The receipt directs the worker to report its waiting work once. The parent receives the answer with the worker identity. Updates retire the redundant child Stop handler."
+  "reason": "Reviewed the OpenCode lifecycle hooks, Notifai skill, harness setup, CLI readiness and domain terms. Doctor describes the compatibility check and directs agents to confirm activation. The OpenCode reference explains policy blocks and using the native question tool alongside Code Mode."
 }

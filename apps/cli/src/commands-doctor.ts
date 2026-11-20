@@ -1331,7 +1331,7 @@ const CHECK_TITLES: Readonly<Record<string, string>> = {
   'hooks (answer continuation)': 'How an answer returns',
   'hooks (wake route)': 'Direct wake route',
   'hooks (openclaw plugin)': 'OpenClaw plugin loadability',
-  'hooks (opencode plugin)': 'OpenCode plugin loadability',
+  'hooks (opencode plugin)': 'OpenCode plugin compatibility',
   'hooks (hermes plugin)': 'Hermes plugin activation',
   'hooks (claude remote pickers)': 'Pickers sent to Remote Control',
 }
@@ -1490,7 +1490,7 @@ function hookChecks(deps: CommandDeps, codexTrust: CodexTrust): HookCheck[] {
       ok: support.supported && mismatch === null,
       detail: support.problem ?? mismatch ?? (version === null
         ? `the OpenCode version could not be read (\`opencode --version\` did not answer); the installed plugin is for OpenCode ${installed ?? expected}`
-        : `OpenCode ${version} loads the installed Notifai plugin for OpenCode ${expected}`),
+        : `OpenCode ${version} matches the installed Notifai plugin for OpenCode ${expected}. Verify activation with a fresh prompt in OpenCode.`),
       technical: { opencode_version: version, opencode_plugin_line: installed, opencode_expected_line: expected },
       ...(!support.supported ? { remedy: { by: 'user-elsewhere' as const, summary: support.remedy } }
         : mismatch !== null ? { remedy: { summary: `write the plugin OpenCode ${version} loads`, command: 'notifai hooks install --harness opencode' } }

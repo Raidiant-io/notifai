@@ -46,8 +46,8 @@ import { MISSING_LIFECYCLE_GUIDANCE_CONTEXT, WORKER_ACTIVATION_CONTEXT } from '.
  */
 
 /**
- * The `question` tool's input as OpenCode 2.1.3 offers it to models (captured
- * from its `context` hook), plus Notifai's optional fields. OpenCode strips
+ * The `question` tool's input captured from the `context` hook on OpenCode
+ * 2.1.3 and checked on 2.3.2, plus Notifai's optional fields. OpenCode strips
  * every field its registered schema does not declare before any plugin hook
  * sees the call, so the extended schema replaces the registered one, and only
  * while the tool's input is still exactly `questions`.
