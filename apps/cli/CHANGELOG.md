@@ -8,6 +8,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 This project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 and [Conventional Commits](https://www.conventionalcommits.org/en/v1.0.0/).
 
+## [14.7.5-beta.1](https://github.com/Raidiant-io/notifai/compare/v14.7.4...v14.7.5-beta.1) (2026-11-20)
+
+### Bug Fixes
+
+* Grok can finish a turn without calling a tool. Notifai adds its guidance to the first tool result, so a simple reply no longer triggers a second turn asking the agent to load guidance.
+
 ## [14.7.4](https://github.com/Raidiant-io/notifai/compare/v14.7.3...v14.7.4) (2026-11-18)
 
 ### Bug Fixes
