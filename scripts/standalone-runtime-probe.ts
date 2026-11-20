@@ -27,7 +27,7 @@ if (mode === 'hook') {
       'native hook entry must capture its immediate caller, replacing inherited hook ancestry')
   }
   if (process.env.NOTIFAI_PROBE_HOOK_OUTPUT !== undefined) {
-    writeFileSync(process.env.NOTIFAI_PROBE_HOOK_OUTPUT, process.env.NOTIFAI_HOOK_SOURCE_PID!)
+    atomicWriteFileSync(process.env.NOTIFAI_PROBE_HOOK_OUTPUT, process.env.NOTIFAI_HOOK_SOURCE_PID!)
   }
   process.stdout.write('native hook command executed')
 } else if (mode === 'native-hooks') {

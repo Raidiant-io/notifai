@@ -42,7 +42,8 @@ describe('Windows npm manager custody', { skip: process.platform !== 'win32' }, 
     const marker = path.join(directory, 'started.json'), finish = path.join(directory, 'finish')
     const manager = path.join(directory, 'manager.cjs')
     writeFileSync(manager, `const fs = require('node:fs');
-fs.writeFileSync(process.argv[2], JSON.stringify({ args: process.argv.slice(4), input: fs.readFileSync(0, 'utf8') }));
+fs.writeFileSync(process.argv[2] + '.tmp', JSON.stringify({ args: process.argv.slice(4), input: fs.readFileSync(0, 'utf8') }));
+fs.renameSync(process.argv[2] + '.tmp', process.argv[2]);
 const poll = setInterval(() => { if (fs.existsSync(process.argv[3])) { clearInterval(poll); process.exit(23); } }, 10);
 setTimeout(() => process.exit(19), 15000).unref();
 `)
