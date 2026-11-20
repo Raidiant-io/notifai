@@ -69,7 +69,7 @@ import {
   type HookHarness,
   type HookOutcome,
 } from './hook-types.js'
-import { codexHandlerFingerprints, codexStopDefinitionFingerprint, findInstallations } from './install-hooks.js'
+import { codexHandlerFingerprints, codexStopDefinitionFingerprint, findInstallations, removeRetiredClaudeStop } from './install-hooks.js'
 import { logConfigResolved, logSettingsFrom } from './logging.js'
 import {
   observeOpenclawPrompt,
@@ -352,7 +352,11 @@ export async function hookRunCommand(
   let envelope = parseHookInput(raw)
   // Older Claude Code sessions can still call the retired child handler.
   // Keep their parent's waiter, turn state and answers untouched.
-  if (event === 'stop' && harness === 'claude-code' && envelope.hook_event_name === 'SubagentStop') return EXIT.ok
+  if (event === 'stop' && harness === 'claude-code' && envelope.hook_event_name === 'SubagentStop') {
+    try { removeRetiredClaudeStop(deps.env, deps.hookAdapterHome, deps.hookPlatform) }
+    catch { /* The child has no routing work, including when cleanup must wait. */ }
+    return EXIT.ok
+  }
   // Codex subagents share the root session_id and harness process, while
   // turn_id belongs to the child. They must never own the root's lifecycle
   // or consume its input. SubagentStart only teaches worker ownership and

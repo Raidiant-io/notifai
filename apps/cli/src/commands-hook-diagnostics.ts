@@ -11,7 +11,6 @@ import {
   questionRoutingCapability,
 } from './harnesses.js'
 import { inspectHookAdapter, type HookHostPlatform } from './hook-adapter.js'
-import { HOOK_EVENTS } from './hook-events.js'
 import { claimSessionHooksNotice, readSessionState } from './hook-session-state.js'
 import {
   codexStopDefinitionFingerprint,
@@ -20,6 +19,9 @@ import {
   findInstallations,
   separateCodexHome,
   handlerEvent,
+  harnessMarkerProblems,
+  isQuestionLifecycleHandler,
+  isQuestionStopHandler,
   type Installation,
 } from './install-hooks.js'
 import {
@@ -181,35 +183,38 @@ export function activeQuestionRouteProblems(
   const matching = installations.filter(
     (installation) => installation.harness === active.harness,
   )
-  if (matching.length > 1) {
-    problems.push(
-      `${matching.length} ${active.label} definitions are active (${matching.map((entry) => entry.file).join(', ')}); reinstall so exactly one remains`,
-    )
-  }
-  for (const installation of matching) {
-    for (const problem of installation.problems ?? []) {
-      problems.push(`${installation.file}: ${problem}`)
+  // Plugin hosts prove their active writer/generation in ask. For document
+  // hosts, inspect the route itself, never the installation's maintenance list.
+  if (limits.length) return problems
+  const adapter = inspectHookAdapter(deps.hookAdapterHome, deps.hookPlatform)
+  problems.push(...adapter.problems)
+  if (['claude-code', 'codex', 'grok'].includes(active.harness)) {
+    const nodePath = adapter.target?.kind === 'native' ? undefined : adapter.target?.execPath
+    const routes = matching.map(installation => ({
+      ...installation, handlers: installation.handlers.filter(handler =>
+        isQuestionLifecycleHandler(handler) ||
+        (installation.harness === 'grok' && handler.event === 'SubagentStop' && handlerEvent(handler.command) === 'stop')),
+    }))
+    const stops = routes.flatMap(route => route.handlers.filter(isQuestionStopHandler))
+    if (stops.length !== 1) {
+      problems.push(active.harness === 'codex' ? CODEX_STOP_DEFINITION_NOT_SINGULAR_PROBLEM :
+        `the active ${active.label} configuration needs exactly one Notifai Stop handler to return the answer`)
     }
-    for (const handler of installation.handlers) {
-      const event = handlerEvent(handler.command)
-      if (event !== null && !(HOOK_EVENTS as readonly string[]).includes(event)) {
-        problems.push(
-          `${handler.event} in ${installation.file} names the unsupported event ${event}; reinstall the ${active.label} hooks`,
-        )
-      }
+    for (const route of routes) {
+      problems.push(...harnessMarkerProblems(route.harness, route.handlers, deps.hookAdapterHome, {
+        ...(deps.hookPlatform === undefined ? {} : { platform: deps.hookPlatform }),
+        ...(nodePath === undefined ? {} : { nodePath }),
+      }).map(problem => `${route.file}: ${problem}`))
+      problems.push(...stopShapeProblems(route))
     }
+  } else {
+    for (const installation of matching) problems.push(...(installation.pluginRouteProblems ?? []))
   }
-  for (const problem of inspectHookAdapter(deps.hookAdapterHome, deps.hookPlatform).problems) {
-    problems.push(problem)
-  }
-  for (const installation of matching) problems.push(...stopShapeProblems(installation))
   problems.push(...codexRoutingTrustProblems(matching, deps.env))
   if (active.harness === 'codex' && active.sessionId !== undefined) {
     const state = readSessionState(active.sessionId, deps.env)
     const currentFingerprint = codexStopDefinitionFingerprint(matching, deps.env)
-    if (matching.length === 1 && currentFingerprint === undefined) {
-      problems.push(CODEX_STOP_DEFINITION_NOT_SINGULAR_PROBLEM)
-    } else if (
+    if (
       currentFingerprint !== undefined &&
       state.harness === 'codex' &&
       state.codex_stop_definition_fingerprint !== currentFingerprint

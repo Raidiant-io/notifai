@@ -1550,6 +1550,8 @@ export interface Installation {
   handlers: InstalledHandler[]
   /** Structural defects that require reinstalling this generated adapter. */
   problems?: string[]
+  /** Plugin-owned route cannot prove its adapter or continuation wiring. */
+  pluginRouteProblems?: string[]
   /** OpenCode only: the OpenCode major the generated plugin is written for. */
   opencodeLine?: OpencodePluginLine
 }
@@ -1667,7 +1669,7 @@ export function codexStopDefinitionFingerprint(
     .flatMap((installation) =>
       installation.handlers
         // The attend handler shares the Stop group; it is not the Stop definition.
-        .filter((handler) => handler.event === 'Stop' && handlerEvent(handler.command) !== 'attend')
+        .filter(isQuestionStopHandler)
         .map((handler) => ({ installation, handler })),
     )
   if (candidates.length !== 1) return undefined
@@ -1797,7 +1799,7 @@ export function codexRoutingTrustFindings(
   return codexTrustFindings(
     installations.map((installation) => ({
       ...installation,
-      handlers: installation.handlers.filter((handler) => !['attend', 'pre-tool-use', 'post-tool-use'].includes(handlerEvent(handler.command) ?? '')),
+      handlers: installation.handlers.filter(isQuestionLifecycleHandler),
     })),
     env,
   )
@@ -2038,14 +2040,9 @@ function collectInstallations(
         inspectionProblems?.push(`Unrecognized Notifai plugin contents: ${file}`)
         continue
       }
-      found.push({
-        harness,
-        file,
-        handlers: [],
-        ...(hermesPluginCurrent(adapterHome, env) ? {} : {
-          problems: ['Hermes plugin does not match the current Notifai adapter; rerun `notifai hooks install --harness hermes`'],
-        }),
-      })
+      const problems = hermesPluginCurrent(adapterHome, env) ? [] :
+        ['Hermes plugin does not match the current Notifai adapter; rerun `notifai hooks install --harness hermes`']
+      found.push({ harness, file, handlers: [], ...(problems.length ? { problems, pluginRouteProblems: problems } : {}) })
       continue
     }
     // OpenCode's adapter is a plugin module, not a settings document, so it
@@ -2081,6 +2078,7 @@ function collectInstallations(
         harness,
         file,
         ...(problems.length > 0 ? { problems } : {}),
+        ...(harness === 'openclaw' && problems.length ? { pluginRouteProblems: problems } : {}),
         ...(harness === 'opencode' && 'line' in target ? { opencodeLine: target.line as OpencodePluginLine } : {}),
         handlers: events.map(([event, hookEvent]) => ({
           event,
@@ -2131,7 +2129,22 @@ function collectInstallations(
   return found
 }
 
-function harnessMarkerProblems(
+/** Only these native event/command pairs activate the session, submit or return
+ * its answers, or retire them at session end. Other handlers can be repaired
+ * independently, even when installed beside these in the same matcher group. */
+export function isQuestionLifecycleHandler(handler: InstalledHandler): boolean {
+  const role = handlerEvent(handler.command)
+  return isQuestionStopHandler(handler) ||
+    (handler.event === 'SessionStart' && role === 'session-start') ||
+    (handler.event === 'UserPromptSubmit' && role === 'user-prompt-submit') ||
+    (handler.event === 'SessionEnd' && role === 'session-end')
+}
+
+export function isQuestionStopHandler(handler: InstalledHandler): boolean {
+  return handler.event === 'Stop' && handlerEvent(handler.command) === 'stop'
+}
+
+export function harnessMarkerProblems(
   harness: HookInstallableHarness,
   handlers: InstalledHandler[],
   adapterHome?: string,
@@ -2200,6 +2213,51 @@ function locateAllHandlers(document: SettingsDocument): InstalledHandler[] {
 
 function locateHandlers(document: SettingsDocument): InstalledHandler[] {
   return locateAllHandlers(document).filter((handler) => isNotifaiCommand(handler.command))
+}
+
+/** The old child callback used the same command as Stop, on a different event. */
+export function hasRetiredClaudeStop(installation: Installation): boolean {
+  return installation.harness === 'claude-code' && installation.handlers.some(handler =>
+    handler.event === 'SubagentStop' && isRetiredClaudeCommand(handler.command))
+}
+
+function isRetiredClaudeCommand(command: string): boolean {
+  return / hook stop --owner notifai --harness claude-code(?: --integration-revision [a-f0-9]{64})?$/.test(command)
+}
+
+/** Migrate only the selected home. Compare against the exact bytes read so a
+ * concurrent settings edit wins. A busy or unwritable file can wait for update. */
+export function removeRetiredClaudeStop(env: NodeJS.ProcessEnv, adapterHome?: string, platform: NodeJS.Platform | HookHostPlatform = process.platform): void {
+  const file = machineConfigTarget(settingsFile('claude-code', env, platform))
+  const adapterPath = hookAdapterPath(adapterHome, platform)
+  const target = inspectHookAdapter(adapterHome, platform).target
+  const nodePath = target?.kind === 'native' ? undefined : target?.execPath
+  const expected = hookCommand(adapterPath, 'stop', 'claude-code', {
+    platform, ...(nodePath === undefined ? {} : { nodePath }),
+  })
+  withTargetFileLock(file, () => {
+    const previous = readOptionalOwnedRegularFile(file)
+    if (previous === null) return
+    const document = JSON.parse(previous) as SettingsDocument
+    const groups = document.hooks?.['SubagentStop']
+    if (!Array.isArray(groups)) return
+    let changed = false
+    const kept = groups.flatMap(group => {
+      if (!Array.isArray(group.hooks)) return [group]
+      const hooks = group.hooks.filter(handler => {
+        if (handler.type !== 'command' || typeof handler.command !== 'string') return true
+        const command = handlerCommandLine(handler).replace(/ --integration-revision [a-f0-9]{64}$/, '')
+        return command !== expected
+      })
+      if (hooks.length === group.hooks.length) return [group]
+      changed = true
+      return hooks.length ? [{ ...group, hooks }] : []
+    })
+    if (!changed) return
+    if (kept.length) document.hooks!['SubagentStop'] = kept
+    else delete document.hooks!['SubagentStop']
+    preparePlan(file, document, previous)()
+  }, { waitMs: 0 })
 }
 
 /** The hook event a handler's command actually invokes, e.g. `stop`. */

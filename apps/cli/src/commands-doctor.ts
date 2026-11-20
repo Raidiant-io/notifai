@@ -97,6 +97,7 @@ import {
   resolveActiveHarness,
   type ActiveHarnessSession,
 } from './commands-harness-context.js'
+import { hasRetiredClaudeStop } from './install-hooks.js'
 import { stopShapeProblems } from './commands-hook-shape.js'
 import {
   CODEX_FRESH_SESSION_USER_ACTION,
@@ -1802,6 +1803,13 @@ function hookChecks(deps: CommandDeps, codexTrust: CodexTrust): HookCheck[] {
           },
         }),
   })
+
+  for (const installation of installations.filter(hasRetiredClaudeStop)) {
+    checks.push({
+      name: 'hooks (retired Claude Code reminder)', harnesses: ['claude-code'], ok: true,
+      detail: `${installation.file} still has the retired SubagentStop reminder. Questions can proceed. Run notifai update in this Claude Code home to remove it.`,
+    })
+  }
 
   const shapeHarnesses = installations
     .filter((installation) => stopShapeProblems(installation).length > 0)

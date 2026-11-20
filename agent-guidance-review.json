@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "behavior_digest": "sha256:5f58b0a4d20a5211b5e79e677b27fd1c5293156732def5192a5fe7eda58af085",
+  "behavior_digest": "sha256:1fa9a8119a21baee0112e39bfd42e43f860df333a2cd946881bc056e2a17974c",
   "outcome": "guidance-updated",
   "surfaces_reviewed": [
     "lifecycle-hooks",
@@ -9,5 +9,5 @@
     "cli-readiness",
     "domain-terms"
   ],
-  "reason": "Reviewed the OpenCode lifecycle hooks, Notifai skill, harness setup, CLI readiness and domain terms. Doctor describes the compatibility check and directs agents to confirm activation. The OpenCode reference explains policy blocks and using the native question tool alongside Code Mode. Reviewed lifecycle hooks, the Notifai skill, harness setup, CLI readiness and domain terms for Hermes compatibility. Stable supported releases can install the plugin through Hermes. The setup reference and doctor explain that gateway-owned classic CLI turns receive answers through the waiting command. Attached classic CLI sessions keep their exact-session writer. The gateway uses its scoped callback for guidance and rechecks it after a committed compaction. An isolated Hermes 0.23.3 run installed and activated the plugin, sent a notification, returned an emulated device answer in the asking tool result, and received fresh guidance after a real compaction. A Hermes 0.21.5 run received an emulated device answer in its next model turn."
+  "reason": "Reviewed lifecycle hooks, skill, harness setup, CLI readiness and domain terms. Claude Code agents can continue to ask in a profile with the retired child callback. Doctor identifies that profile and its cleanup command. The existing skill already describes asking and preserving exact-session routing."
 }

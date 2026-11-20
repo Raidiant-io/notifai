@@ -29,7 +29,6 @@ export function stopShapeProblems(installation: Installation): string[] {
     (entry) => handlerEvent(entry.command) === 'stop',
   )) {
     if (handler.event === 'SubagentStop' && installation.harness === 'claude-code') {
-      problems.push(`${installation.file} still installs the retired Claude Code SubagentStop reminder`)
       continue
     }
     if (stopHandlerIsDetached(installation.harness)) {

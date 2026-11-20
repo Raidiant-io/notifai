@@ -36,7 +36,7 @@ import { handBackInput, recordHandBack, type ClaudePickerInput } from './claude-
 import { processIdentityLiveness } from './process-identity.js'
 import { currentCodexQuestionContext, type NativeQuestionAdmission } from './codex-question-bindings.js'
 import { hermesQuestionRouteReady } from './session-attendant-state.js'
-import { codexRoutingTrustFindings, findInstallations, handlerEvent, summarizeCodexTrustFindings } from './install-hooks.js'
+import { codexRoutingTrustFindings, findInstallations, hasRetiredClaudeStop, removeRetiredClaudeStop, handlerEvent, summarizeCodexTrustFindings } from './install-hooks.js'
 import { cardHandbackInput, cardShown } from './codex-card-handback.js'
 import { codexCardHooksReady, codexCardToolOffered } from './codex-card-capability.js'
 import { activeOpenclawGeneration } from './openclaw-session-access.js'
@@ -1272,6 +1272,10 @@ function askCommandOutcome(
     const matchingInstallations = installations.filter(
       (installation) => installation.harness === active!.harness,
     )
+    if (matchingInstallations.some(hasRetiredClaudeStop)) {
+      try { removeRetiredClaudeStop(deps.env, deps.hookAdapterHome, deps.hookPlatform) }
+      catch { /* Doctor and update can retry. Registration does not depend on cleanup. */ }
+    }
     const trustFindings = active!.harness === 'codex'
       ? codexRoutingTrustFindings(matchingInstallations, deps.env)
       : []

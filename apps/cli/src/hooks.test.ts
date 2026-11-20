@@ -40,6 +40,7 @@ stateDir,
 updateProjectFolder
 } from './config.js'
 import { buildQuestions } from './commands-ask.js'
+import { activeQuestionRouteProblems } from './commands-hook-diagnostics.js'
 import { readClaudeSessionTitle } from './harness-session-title.js'
 import { hookAdapterPath,installHookAdapter } from './hook-adapter.js'
 import {
@@ -427,6 +428,44 @@ describe('lifecycle guidance policy', () => {
     } finally {
       if (decision === 'projectless') rmSync(cwd, { recursive: true, force: true })
     }
+  })
+})
+
+describe('Claude question admission in a selected profile', () => {
+  it('registers a question with the retired exec-form child handler and cleans only its profile', async () => {
+    const h = harness()
+    const session = 'claude-profile-question'
+    const profile = path.join(h.env.HOME!, 'profiles', 'selected', 'home')
+    mkdirSync(profile, { recursive: true })
+    const env = { ...h.env, CLAUDE_CONFIG_DIR: profile, CLAUDECODE: '1', CLAUDE_CODE_SESSION_ID: session }
+    const settings = path.join(profile, 'settings.json')
+    const defaultSettings = path.join(h.env.HOME!, '.claude', 'settings.json')
+    const foreign = { type: 'command', command: 'echo hook stop --owner notifai --harness claude-code' }
+    const retired = { type: 'command', command: hookAdapterPath(h.env.HOME),
+      args: ['hook', 'stop', '--owner', 'notifai', '--harness', 'claude-code', '--integration-revision', 'a'.repeat(64)], timeout: 5 }
+    const doc = JSON.parse(readFileSync(defaultSettings, 'utf8'))
+    doc.hooks.SubagentStop = [{ hooks: [retired, foreign] }]
+    for (const file of [defaultSettings, settings]) writeFileSync(file, JSON.stringify(doc))
+    persistSessionState(session, env, { harness: 'claude-code', last_prompt_at: NOW })
+    const code = await askCommand({ ...h.deps, env }, 'Which colour?', { title: 'Choose a colour', json: true })
+    expect(code, h.io.outLines.join(' ')).toBe(EXIT.ok)
+    expect(readSessionState(session, env).pending).toHaveLength(1)
+    expect(JSON.parse(readFileSync(settings, 'utf8'))).toEqual({ ...doc, hooks: { ...doc.hooks, SubagentStop: [{ hooks: [foreign] }] } })
+    expect(readFileSync(defaultSettings, 'utf8')).toBe(JSON.stringify(doc))
+  })
+
+  it('checks the actual route when a future optional hook carries a broken command or Stop shape', () => {
+    const h = harness()
+    const active = { harness: 'claude-code' as const, label: 'Claude Code', sessionId: 'profile' }
+    const original = findInstallations(h.env, h.env.HOME).find(i => i.harness === active.harness)!
+    const stop = original.handlers.find(handler => handler.event === 'Stop' && handler.command.includes('hook stop'))!
+    const optional = { ...stop, event: 'FutureEvent', command: '/obsolete hook stop', async: false }
+    const problems = (handlers: typeof original.handlers) => activeQuestionRouteProblems(h.deps, active,
+      [{ ...original, handlers, problems: ['future installation cleanup'] }])
+    expect(problems([...original.handlers, optional])).toEqual([])
+    expect(problems([optional]).join(' ')).toContain('exactly one Notifai Stop')
+    expect(problems([{ ...optional, event: 'Stop' }]).join(' ')).toContain('blocking Stop handler')
+    expect(problems([stop, stop]).join(' ')).toContain('exactly one Notifai Stop')
   })
 })
 
