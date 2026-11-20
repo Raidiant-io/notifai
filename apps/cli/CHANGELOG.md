@@ -8,6 +8,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 This project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 and [Conventional Commits](https://www.conventionalcommits.org/en/v1.0.0/).
 
+## [14.7.6](https://github.com/Raidiant-io/notifai/compare/v14.7.4...v14.7.6) (2026-11-20)
+
+### Bug Fixes
+
+* Claude Code agents can ask questions again in profiles that still have an old Notifai worker hook. Notifai cleans up that hook in the profile the agent is using and preserves other hooks.
+* The Hermes plugin supports stable releases from v0.21.5 through v0.23.3. When the gateway owns the turn, `notifai ask --wait` returns the answer in that command. When the classic CLI owns the turn, an answer can return to the session after the command exits.
+* OpenCode doctor reports whether the installed plugin matches the OpenCode version. A match is compatibility, not activation. OpenCode 2.3 can block a compatible plugin by policy, and installing the plugin again does not change that policy.
+* Claude Code workers can report a waiting question and return to their parent in one turn. The parent receives the answer with the worker’s identity and the work it resumes.
+* Grok can finish a tool-free turn immediately. Notifai adds guidance to the first tool result, including after resume or compaction.
+
 ## [14.7.4](https://github.com/Raidiant-io/notifai/compare/v14.7.3...v14.7.4) (2026-11-18)
 
 ### Bug Fixes
