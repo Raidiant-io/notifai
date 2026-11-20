@@ -1383,6 +1383,7 @@ describe('hub and Codex SessionEnd', () => {
       orcaStructured?: boolean
       codexThreadHeld?: HubOptions['codexThreadHeld']
       frame?: Record<string, unknown>
+      codexHostHoldsThread?: HubOptions['codexHostHoldsThread']
       codexThreadHolders?: HubOptions['codexThreadHolders']
       codexHomes?: HubOptions['codexHomes']
       orphanWakeRemoval?: HubOptions['orphanWakeRemoval']
@@ -1418,6 +1419,7 @@ describe('hub and Codex SessionEnd', () => {
         ...(options.orcaWatchMs === undefined ? {} : { orcaWatchMs: options.orcaWatchMs }),
         ...(options.interruptWake === undefined ? {} : { interruptWake: options.interruptWake }),
         ...(options.codexThreadHeld === undefined ? {} : { codexThreadHeld: options.codexThreadHeld }),
+        ...(options.codexHostHoldsThread === undefined ? {} : { codexHostHoldsThread: options.codexHostHoldsThread }),
         ...(options.codexThreadHolders === undefined ? {} : { codexThreadHolders: options.codexThreadHolders }),
         ...(options.codexHomes === undefined ? {} : { codexHomes: options.codexHomes }),
         ...(options.orphanWakeRemoval === undefined ? {} : { orphanWakeRemoval: options.orphanWakeRemoval }),
@@ -2119,14 +2121,19 @@ describe('hub and Codex SessionEnd', () => {
           return id
         } } as CodexWakeAdapters }
         const lookups: string[] = []
+        // Discovery and the safety tick must see the same simulated writer locks.
+        // The sleep processes are live owners only inside this fixture.
+        const holders = (home: string | null): number[] => {
+          if (options.both === true && where === 'B') return home === homeA ? [host.pid] : home === homeB ? [other.pid!] : []
+          return where === 'A' ? (home === homeA ? [host.pid] : []) : (home === homeB ? [other.pid!] : [])
+        }
         const run = await sharedServer({ state: () => ({ state: 'attached', confirmed: true, reason: 'terminal-live+joined' }), wake: r.wake, hostKind: () => 'other',
           codexHomes: () => [homeA, homeB],
           codexThreadHolders: (home) => {
             lookups.push(home === homeB ? 'B' : 'A')
-            // `both`: the recorded process keeps the thread in A while another process resumed it in B.
-            if (options.both === true && where === 'B') return home === homeA ? [host.pid] : home === homeB ? [other.pid!] : []
-            return where === 'A' ? (home === homeA ? [host.pid] : []) : (home === homeB ? [other.pid!] : [])
-          }, host,
+            return holders(home)
+          },
+          codexHostHoldsThread: (home, _id, pid) => holders(home).includes(pid), host,
           ...(clock === undefined ? {} : { clock }),
           orphanWakeRemoval: async (input) => { removals.push({ home: input.home, queuedId: input.queuedId }); return 'deleted' } })
         homeA = path.dirname(path.dirname(run.transcript))
