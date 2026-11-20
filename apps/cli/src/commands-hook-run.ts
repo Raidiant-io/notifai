@@ -1,5 +1,4 @@
 import { attendCursorStop } from './cursor-attendant.js'
-import { pendingQuestionReminder } from './hook-pending-reminder.js'
 import { recordOpenclawNativeSession } from './openclaw-native-session.js'
 import { stopAnswerOutput } from './hook-acknowledgements.js'
 import { observeCodexTerminalAnswers, reportCodexTerminalAnswers, takeCodexTerminalConflictContext } from './codex-terminal-answers.js'
@@ -351,15 +350,9 @@ export async function hookRunCommand(
   }
 
   let envelope = parseHookInput(raw)
-  // A child Stop must only speak to that child, never run the parent's
-  // question waiter, record its turn as ended, or consume its answers.
-  if (event === 'stop' && harness === 'claude-code' && envelope.hook_event_name === 'SubagentStop') {
-    try {
-      const reminder = pendingQuestionReminder(deps.env, envelope, deps.now ?? Date.now)
-      if (reminder?.claim()) deps.io.out(stopAnswerOutput(reminder.context))
-    } catch { /* A reminder must never prevent a worker from stopping. */ }
-    return EXIT.ok
-  }
+  // Older Claude Code sessions can still call the retired child handler.
+  // Keep their parent's waiter, turn state and answers untouched.
+  if (event === 'stop' && harness === 'claude-code' && envelope.hook_event_name === 'SubagentStop') return EXIT.ok
   // Codex subagents share the root session_id and harness process, while
   // turn_id belongs to the child. They must never own the root's lifecycle
   // or consume its input. SubagentStart only teaches worker ownership and

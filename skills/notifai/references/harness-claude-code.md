@@ -15,7 +15,7 @@ An ordinary subagent receives worker context: it reports to its parent and does
 not notify. A worker explicitly delegated Notification Requests in its prompt
 loads the skill and guidance as their owner.
 
-A subagent's question registers on the root Agent Session, and its answer arrives there; follow what `ask` prints.
+A subagent’s question registers on the root Agent Session. Follow the `ask` receipt: report the question ID and the work waiting on it, then end your turn. The root receives the answer and passes it back if you can take messages, or does the work itself.
 
 ## What arrives and what to do
 

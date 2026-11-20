@@ -430,11 +430,11 @@ describe('lifecycle guidance policy', () => {
   })
 })
 
-describe('pending-question turn-end reminder', () => {
+describe('turn end with an open question', () => {
   it('never wakes a root session to remind it of its own open question', async () => {
     // A reminder pushed through the wake channel starts an extra turn that
     // looks like a message from another session. Only answers and notes wake
-    // an Agent Session; the asking worker is held by its own SubagentStop.
+    // an Agent Session.
     const h = harness()
     const session = '12345678-1234-1234-1234-123456789abc'
     registerQuestion(session, h.env, { question: 'Which colour?', title: 'Choose a colour', request_id: 'req_colour', reply_deadline_at: NOW + 60_000 }, NOW)
@@ -444,70 +444,18 @@ describe('pending-question turn-end reminder', () => {
     expect(queued).toEqual([])
   })
 
-  it('is silent after the registered question is closed', async () => {
-    const h = harness()
-    registerQuestion('parent', h.env, { question: 'Which colour?', asked_by: { agent_id: 'child' } }, NOW)
-    const questionId = readSessionState('parent', h.env).pending![0]!.question_id!
-    await closeCommand(h.deps, questionId, {})
-    h.io.outLines.length = 0
-    await hookRunCommand(h.deps, 'stop', stdin({ session_id: 'parent', agent_id: 'child', hook_event_name: 'SubagentStop' }), 'claude-code')
-    expect(h.io.outLines).toEqual([])
-  })
-
-  it('does not spend a reminder on a recursive stop or another worker', async () => {
-    const h = harness()
-    registerQuestion('parent', h.env, { question: 'Which colour?', asked_by: { agent_id: 'child' } }, NOW)
-    const event = { session_id: 'parent', agent_id: 'child', hook_event_name: 'SubagentStop' }
-    for (const extra of [{ stop_hook_active: true }, { loop_count: 1 }, { agent_id: 'sibling' }]) {
-      await hookRunCommand(h.deps, 'stop', stdin({ ...event, ...extra }), 'claude-code')
-      expect(h.io.outLines).toEqual([])
-    }
-    await hookRunCommand(h.deps, 'stop', stdin(event), 'claude-code')
-    expect(JSON.parse(h.io.outLines[0]!).decision).toBe('block')
-  })
-
-  it.each(['none', 'expired', 'delivered'] as const)('is silent for %s questions', async (status) => {
-    const h = harness()
-    const pending = { question_id: 'q_colour', question: 'Which colour?', summary: 'Which colour?',
-      asked_by: { agent_id: 'child' }, request_id: 'req_colour', reply_deadline_at: NOW - 1 }
-    writeSessionState('parent', h.env, status === 'none' ? {}
-      : status === 'expired' ? { pending: [pending] }
-      : status === 'delivered' ? { pending: [ { ...pending, reply_deadline_at: NOW + 60_000 } ],
-          accepted: { answers: [{ pending, reply: reply(), replies: [reply()] }], remaining: 0, recorded_at: NOW, delivered_at: NOW } }
-      : {})
-    await hookRunCommand(h.deps, 'stop', stdin({ session_id: 'parent', agent_id: 'child', hook_event_name: 'SubagentStop' }), 'claude-code')
-    expect(h.io.outLines).toEqual([])
-  })
-
-  it('ignores a Codex worker stop without touching the root lifecycle', async () => {
+  it.each(['claude-code', 'codex'] as const)('ignores a %s worker stop without touching the root lifecycle', async harnessName => {
     const h = harness()
     registerQuestion('parent', h.env, {
       question: 'Which colour?', asked_by: { agent_id: 'child' },
     }, NOW)
     const before = readSessionState('parent', h.env)
-    await hookRunCommand(h.deps, 'stop', stdin({ session_id: 'parent', agent_id: 'child', hook_event_name: 'SubagentStop' }), 'codex')
-    expect(h.io.outLines).toEqual([])
-    expect(readSessionState('parent', h.env)).toEqual(before)
-  })
-
-  it('reminds the asking Claude Code worker once, without touching the parent lifecycle', async () => {
-    const h = harness()
-    registerQuestion('parent', h.env, {
-      question: 'Which colour?', title: 'Choose a colour', asked_by: { agent_id: 'child' },
-    }, NOW)
-    const event = { session_id: 'parent', agent_id: 'child', hook_event_name: 'SubagentStop', cwd: h.deps.cwd }
-    expect(await hookRunCommand(h.deps, 'stop', stdin(event), 'claude-code')).toBe(0)
-    const reminder = JSON.parse(h.io.outLines.join(''))
-    // The child-only pending-question gate is the other permitted Stop block,
-    // alongside delivery of a User answer or its owed acknowledgement.
-    expect(reminder).toEqual({ decision: 'block', reason: expect.stringContaining('Choose a colour') })
-    expect(reminder.reason).not.toContain('You own Notification Requests')
-    expect(reminder.reason).toMatch(/not finished|incomplete/)
-    expect(reminder.reason).toMatch(/parent.*waiting/i)
-    expect(readSessionState('parent', h.env).last_stop_at).toBeUndefined()
-    h.io.outLines.length = 0
-    await hookRunCommand(h.deps, 'stop', stdin(event), 'claude-code')
-    expect(h.io.outLines).toEqual([])
+    const event = { session_id: 'parent', agent_id: 'child', hook_event_name: 'SubagentStop' }
+    for (const extra of [{}, { stop_hook_active: true }, { agent_id: 'sibling' }]) {
+      expect(await hookRunCommand(h.deps, 'stop', stdin({ ...event, ...extra }), harnessName)).toBe(0)
+      expect(h.io.outLines).toEqual([])
+      expect(readSessionState('parent', h.env)).toEqual(before)
+    }
   })
 })
 

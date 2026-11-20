@@ -1,5 +1,5 @@
 {
-  "current": "e3b765052cd4162a308aa85060e4a8a7aaa6251c40399edf01a0433c574be87c",
+  "current": "05165edfa07d2322f19947bc2c4384226960aa257ff7b74840f815c880e1670c",
   "releases": [
     {
       "digest": "3e47b01bc6bbfb43e910c660b9964fab6459d75148c3c02dcbcd0be64cfb2963",
@@ -432,6 +432,10 @@
     {
       "digest": "e3b765052cd4162a308aa85060e4a8a7aaa6251c40399edf01a0433c574be87c",
       "note": "Grok now adds Notifai guidance with the first tool result, including after resume or compaction. Tool-free turns can finish immediately."
+    },
+    {
+      "digest": "05165edfa07d2322f19947bc2c4384226960aa257ff7b74840f815c880e1670c",
+      "note": "When a Claude Code subagent registers a question, follow the ask receipt and report the waiting work to the parent. End the turn after that report. The root receives the answer and can pass it back or complete the work."
     }
   ]
 }

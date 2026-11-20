@@ -26,8 +26,12 @@ import {
 export function stopShapeProblems(installation: Installation): string[] {
   const problems: string[] = []
   for (const handler of installation.handlers.filter(
-    (entry) => entry.event !== 'SubagentStop' && handlerEvent(entry.command) === 'stop',
+    (entry) => handlerEvent(entry.command) === 'stop',
   )) {
+    if (handler.event === 'SubagentStop' && installation.harness === 'claude-code') {
+      problems.push(`${installation.file} still installs the retired Claude Code SubagentStop reminder`)
+      continue
+    }
     if (stopHandlerIsDetached(installation.harness)) {
       const route = installation.harness === 'codex' ? 'session-queue' : 'inbox'
       if (handler.asyncRewake === true) {

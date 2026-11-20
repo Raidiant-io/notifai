@@ -72,7 +72,6 @@ describe('hook config', () => {
       'Interrupt attend: Recording the interrupt for Notifai',
     ]
     const claude = [...shared,
-      'SubagentStop stop: Sending questions and answers through Notifai',
       'PermissionRequest permission-request: Waiting for your answer in Notifai',
       'PostToolUse post-tool-use: Recording your answer for Notifai',
     ]
@@ -82,15 +81,6 @@ describe('hook config', () => {
     }
     expect(names('claude-code', 'darwin', 'exec').sort()).toEqual(claude.sort())
     expect(JSON.stringify(buildHookConfig({ adapterPath: ADAPTER, harness: 'grok', platform: 'darwin' }))).not.toContain('statusMessage')
-  })
-
-  it('installs the Claude Code worker reminder synchronously on the existing Stop command', () => {
-    const hooks = buildHookConfig({ adapterPath: ADAPTER, harness: 'claude-code' })
-    const child = hooks['SubagentStop']![0]!.hooks[0]!
-    const root = hooks['Stop']![0]!.hooks[0]!
-    expect(handlerCommandLine(child)).toBe(handlerCommandLine(root))
-    expect(child.async).not.toBe(true)
-    expect(child.timeout).toBeLessThanOrEqual(5)
   })
 
   it('pins the Codex definition: Codex skips every changed handler until the User approves it again', () => {

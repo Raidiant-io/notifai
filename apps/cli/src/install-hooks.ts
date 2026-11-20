@@ -453,12 +453,6 @@ export function buildHookConfig(options: BuildOptions): HookConfig {
       hooks[alias] = structuredClone(hooks[event]!)
     }
   }
-  if (options.harness === 'claude-code') {
-    // No child Stop handler existed. Reuse the same command synchronously:
-    // SubagentStop's block reason reaches the child, never the parent.
-    hooks['SubagentStop'] = [{ hooks: [{ type: 'command',
-      ...hookCommandFields(adapterPath, 'stop', options.harness, commandOptions), timeout: 5 }] }]
-  }
   if (installsSessionAttendant(options.harness)) {
     // A second handler in the same group, never folded into the first. The
     // harness waits for the synchronous handler, so the resident must be an
@@ -2209,19 +2203,6 @@ function locateHandlers(document: SettingsDocument): InstalledHandler[] {
 }
 
 /** The hook event a handler's command actually invokes, e.g. `stop`. */
-/**
- * Handlers a complete installation carries that the event table cannot name,
- * because they reuse another event's handler on a second document event:
- * Claude Code's synchronous SubagentStop runs `stop` for the asking worker.
- * Each counts as missing, so an update repairs an installation that predates
- * it and doctor reports it, instead of only fresh installs receiving it.
- */
-export function missingDocumentHandlers(installation: Pick<Installation, 'harness' | 'handlers'>): string[] {
-  if (installation.harness !== 'claude-code') return []
-  return installation.handlers.some((handler) => handler.event === 'SubagentStop' && handlerEvent(handler.command) === 'stop')
-    ? [] : ['SubagentStop stop']
-}
-
 export function handlerEvent(command: string): string | null {
   return / hook ([a-z-]+)/.exec((decodeWindowsCodexCommand(command) ?? command))?.[1] ?? null
 }

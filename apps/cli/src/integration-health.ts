@@ -13,7 +13,7 @@ import { withFileLock } from './file-lock.js'
 import { SOURCE_CONTEXT_HARNESSES, type HookInstallableHarness } from './harnesses.js'
 import { HOOK_EVENTS, requiredHookEvents } from './hook-events.js'
 import { hookAdapterTargetsArtifact, inspectHookAdapter, isNpxAdapterTarget, resolveHookAdapterHome } from './hook-adapter.js'
-import { codexTrustProblems, findInstallations, handlerEvent, missingDocumentHandlers, type Installation } from './install-hooks.js'
+import { codexTrustProblems, findInstallations, handlerEvent, type Installation } from './install-hooks.js'
 import { opencodePluginLineFault, opencodeVersionFor } from './opencode-version.js'
 import { inspectSkillCopies, skillDestination } from './native-skills.js'
 import { currentRuntimeBuild } from './launch-self.js'
@@ -33,7 +33,6 @@ export function installationFaults(installation: Installation, platform?: NodeJS
     ...(installation.problems ?? []),
     ...requiredHookEvents(installation.harness).filter(event => !events.includes(event))
       .map(event => `missing ${event}`),
-    ...missingDocumentHandlers(installation).map(handler => `missing ${handler}`),
     ...events.filter(event => event !== null && !(HOOK_EVENTS as readonly string[]).includes(event))
       .map(event => `unsupported ${event}`),
     ...stopShapeProblems(installation),
