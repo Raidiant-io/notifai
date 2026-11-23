@@ -1,10 +1,22 @@
 /** Foreground input consumption, shared by prompt hooks and an explicit wake. */
 import { resolveCommandSession } from './command-session.js'
 import { EXIT, makeClient, log, type CommandDeps } from './commands-core.js'
-import { readSessionIncarnation, sessionHasEnded } from './hook-session-state.js'
-import { currentProcessIdentity, processIdentityLiveness } from './process-identity.js'
+import { readSessionIncarnation, readSessionState, sessionHasEnded } from './hook-session-state.js'
+import { processAncestry } from './process-ancestry.js'
+import { currentProcessIdentity, processIdentityLiveness, type ProcessIdentity } from './process-identity.js'
 import { readAttendantLease } from './session-attendant-state.js'
 import { drainSessionInputs, forgetQueuedInputWake, hasSessionInputs } from './session-inputs.js'
+
+/**
+ * The Grok process a verified app route wakes, when this process runs under it.
+ * Grok records no harness process of its own; its attendant records this one.
+ */
+export function grokHostOwner(sessionId: string, env: NodeJS.ProcessEnv, incarnation: string | undefined,
+  ancestors: () => readonly { pid: number }[] | null = () => processAncestry()): ProcessIdentity | undefined {
+  const owner = readSessionState(sessionId, env).grok_host_owner
+  if (owner === undefined || incarnation === undefined || owner.incarnation !== incarnation) return undefined
+  return ancestors()?.slice(1).some((ancestor) => ancestor.pid === owner.pid) === true ? { pid: owner.pid, start: owner.start } : undefined
+}
 
 export async function receiveSessionInputs(
   deps: CommandDeps, sessionId: string, write: (text: string) => void,
@@ -12,7 +24,7 @@ export async function receiveSessionInputs(
 ): Promise<boolean> {
   const lease = readAttendantLease(sessionId, deps.env)
   const incarnation = readSessionIncarnation(sessionId, deps.env)
-  const owner = incarnation?.harness_process
+  const owner = incarnation?.harness_process ?? grokHostOwner(sessionId, deps.env, incarnation?.incarnation)
   if (!hasSessionInputs(sessionId, deps.env, lease)) return false
   const mayWrite = (): boolean => {
     const current = readAttendantLease(sessionId, deps.env)

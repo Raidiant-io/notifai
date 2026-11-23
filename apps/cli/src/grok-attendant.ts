@@ -1,15 +1,18 @@
 /** Grok has no asynchronous hooks. A short native hook starts this retained
- * observer. Only an existing leader's exact resident roster admits Session
+ * observer. An existing leader's exact resident roster admits Session
  * Messages. A session outside any leader (an ACP host such as an Orca chat
  * starts `grok agent stdio` itself) runs in its own Grok process, which then
- * hosts exactly this session: the observer attends it presence-only, so the
- * User sees it running and that it takes no notes. */
+ * hosts exactly this session. When the app that started that process can wake
+ * the exact chat or thread and the binding verifies (`grok-host-route.ts`),
+ * the observer stages notes and sends the app a content-free wake; the
+ * session reads them with `notifai receive`. Otherwise it attends
+ * presence-only, so the User sees it running and that it takes no notes. */
 import type { CommandDeps } from './commands-core.js'
 import { makeClient } from './commands-core.js'
 import { attendantGates } from './commands-hook-attend.js'
 import { GROK_NO_LEADER_REASON, GrokLeaderSession, hasGrokLeader } from './grok-leader.js'
 import { acquireClaimFile, claimHolderMayRun, processCommandLine, readClaimFile, releaseClaimFile } from './hook-question-lock.js'
-import { readSessionIncarnation, readSessionState, refreshSessionMarkers, rotateSessionIncarnation, sessionHasEnded, sessionNotified } from './hook-session-state.js'
+import { readSessionIncarnation, readSessionState, refreshSessionMarkers, rotateSessionIncarnation, sessionHasEnded, sessionNotified, updateSessionState } from './hook-session-state.js'
 import type { HookEnvelope } from './hook-types.js'
 import { launchSelf } from './launch-self.js'
 import type { Logger } from './logging.js'
@@ -20,6 +23,9 @@ import { retainSessionRuntime } from './runtime-build-retention.js'
 import { runSessionAttendant, systemAttendantClock, type HarnessProbe, type SessionAttendantOptions } from './session-attendant.js'
 import { attendantClaimPath, attendantStatusPath, writeAttendantStatus } from './session-attendant-state.js'
 import { handOffSessionMessages } from './session-message-handoff.js'
+import { grokHostCandidate, sendGrokHostWake, systemGrokHostSystem, verifyGrokHostRoute, type GrokHostSystem } from './grok-host-route.js'
+import { hasSessionInputs, stageSessionMessages, wakeSessionInputs } from './session-inputs.js'
+import { readDeliveryJournal } from './session-delivery.js'
 import type { ApiClient } from './client.js'
 import type { MachineCredential } from './credentials.js'
 
@@ -67,16 +73,26 @@ export function startGrokAttendant(envelope: HookEnvelope, cwd: string, env: Nod
   })
 }
 
-export async function grokAttendHook(deps: CommandDeps, envelope: HookEnvelope, cwd: string, logger: Logger): Promise<number> {
+/** How long a session must sit idle before an accepted but unseen wake counts as lost. */
+const IDLE_BEFORE_WAKE_REPLACEMENT_MS = 30_000
+
+export async function grokAttendHook(deps: CommandDeps, envelope: HookEnvelope, cwd: string, logger: Logger,
+  hostSystem: GrokHostSystem = systemGrokHostSystem(deps.env)): Promise<number> {
   const sessionId = envelope.session_id
   if (!sessionId || envelope.subagentType) return 0
+  const skipped = (reason: string): number => {
+    logger.info('hook.end', { hook: 'attend', outcome: 'skipped', reason })
+    return 0
+  }
   const record = readSessionIncarnation(sessionId, deps.env)
-  if (record === null || record.key !== envelope.grok_incarnation_key || sessionHasEnded(sessionId, deps.env)) return 0
+  if (record === null || record.key !== envelope.grok_incarnation_key) return skipped('incarnation-replaced')
+  if (sessionHasEnded(sessionId, deps.env)) return skipped('session-ended')
   const runningVersion = deps.runningVersion === undefined ? packageVersion() : deps.runningVersion
   const gate = () => attendantGates(deps, cwd, 'grok', runningVersion)
-  if (!gate().ok) return 0
+  const opened = gate()
+  if (!opened.ok) return skipped(opened.reason)
   const writer = currentProcessIdentity()
-  if (writer === null) return 0
+  if (writer === null) return skipped('writer-identity-unavailable')
   const leader = hasGrokLeader(deps.env) ? await GrokLeaderSession.discover(sessionId, cwd, deps.env) : null
   // Without the roster, only the session's own Grok process says it runs.
   const host = leader === null && envelope.grok_host?.role === 'session' &&
@@ -85,7 +101,19 @@ export async function grokAttendHook(deps: CommandDeps, envelope: HookEnvelope, 
     logger.info('hook.end', { hook: 'attend', outcome: 'unsupported', reason: 'grok-live-leader-unavailable' })
     return 0
   }
-  if (leader === null) logger.info('attendant.state', { messages: 'unavailable', reason: GROK_NO_LEADER_REASON })
+  // A leader-owned session never falls back to host mail: only a process that
+  // hosts exactly this session can say which chat or thread it runs in.
+  const candidate = leader === null && host !== null ? grokHostCandidate(deps.env) : null
+  const verified = candidate === null ? null : await verifyGrokHostRoute(candidate, sessionId, host!.pid, deps.env, hostSystem)
+  const hostRoute = verified !== null && 'kind' in verified ? verified : null
+  if (hostRoute !== null) {
+    // `notifai receive` hands input in only under this exact Grok process.
+    const owner = { incarnation: record.incarnation, pid: host!.pid, start: host!.start, route: hostRoute.kind }
+    updateSessionState(sessionId, deps.env, state => ({ ...state, grok_host_owner: owner }))
+  }
+  if (leader === null) logger.info('attendant.state', hostRoute !== null
+    ? { messages: 'host-wake', route: hostRoute.kind }
+    : { messages: 'unavailable', reason: verified !== null && 'unavailable' in verified ? verified.unavailable : GROK_NO_LEADER_REASON })
   const ownProbe = (): HarnessProbe => {
     if (host === null) return leader!.probe()
     if (processIdentityLiveness(host) === 'gone') return { state: 'ended', reason: 'harness-gone' }
@@ -94,7 +122,7 @@ export async function grokAttendHook(deps: CommandDeps, envelope: HookEnvelope, 
   }
   const claimFile = attendantClaimPath(sessionId, deps.env)
   let token = acquireClaimFile(claimFile, { incarnation: record.incarnation }, Date.now())
-  if (token === null) { leader?.close(); return 0 }
+  if (token === null) { leader?.close(); return skipped('claim-held') }
   let client: ApiClient | null = null
   let credential: MachineCredential | null = null
   const connect = (): ApiClient | null => {
@@ -104,6 +132,8 @@ export async function grokAttendHook(deps: CommandDeps, envelope: HookEnvelope, 
     client = next ? makeClient(deps, next.baseUrl, `Bearer nfm_${next.machineId}.${next.secret}`) : null
     return client
   }
+  let idleSince: number | null = null
+  const settledIdle = (): boolean => idleSince !== null && systemAttendantClock.monotonic() - idleSince >= IDLE_BEFORE_WAKE_REPLACEMENT_MS
   let signal!: () => void
   const signalled = new Promise<void>(resolve => { signal = resolve })
   const onSignal = (): void => signal()
@@ -119,6 +149,8 @@ export async function grokAttendHook(deps: CommandDeps, envelope: HookEnvelope, 
         if (next === null) return null
         releaseClaimFile(claimFile, token!)
         token = acquireClaimFile(claimFile, { incarnation: next.incarnation }, Date.now())
+        if (token !== null && hostRoute !== null) updateSessionState(sessionId, deps.env, state =>
+          state.grok_host_owner?.incarnation === expected ? { ...state, grok_host_owner: { ...state.grok_host_owner, incarnation: next.incarnation } } : state)
         return token === null ? null : next.incarnation
       },
       probe: () => sessionHasEnded(sessionId, deps.env)
@@ -128,8 +160,12 @@ export async function grokAttendHook(deps: CommandDeps, envelope: HookEnvelope, 
       gates: gate,
       client: connect,
       serverSupportsAttendance: async api => (await api.compatibility()).server_capabilities.includes('session_attendance'),
-      acceptsMessages: leader !== null,
-      ...(leader === null ? { messagesUnavailableReason: GROK_NO_LEADER_REASON } : {
+      acceptsMessages: leader !== null || hostRoute !== null,
+      onProbe: observed => {
+        if (observed.state === 'running' && observed.activity === 'idle') idleSince ??= systemAttendantClock.monotonic()
+        else idleSince = null
+      },
+      ...(leader !== null ? {
         publishProbeStatus: true,
         overdue: { env: deps.env, harness: 'grok', cwd, heldAnswers: true },
         onMessages: async (messages, attendant) => {
@@ -144,7 +180,36 @@ export async function grokAttendHook(deps: CommandDeps, envelope: HookEnvelope, 
             write: (text, begin, guard) => leader.write(text, begin, guard),
           })
         },
-      } satisfies Partial<SessionAttendantOptions>),
+      } satisfies Partial<SessionAttendantOptions> : hostRoute !== null ? {
+        overdue: { env: deps.env, harness: 'grok', cwd, heldAnswers: true },
+        onMessages: async (messages, attendant) => {
+          const generation = attendant.generation()
+          if (generation === null || !attendant.mayWrite()) return 'retry-soon'
+          const lease = { incarnation: attendant.incarnation(), generation }
+          stageSessionMessages(sessionId, deps.env, lease, messages)
+          if (!hasSessionInputs(sessionId, deps.env, lease)) return 'done'
+          await wakeSessionInputs(sessionId, deps.env, async (text, abort) => {
+            // Recheck just before the host accepts anything: the input may
+            // have been read since, and the chat or thread may have moved on.
+            if (!attendant.mayWrite() || !hasSessionInputs(sessionId, deps.env, lease)) return 'not-attempted'
+            // A live `notifai receive` holding a claim is presenting it now;
+            // a wake would only start an empty turn. A dead claimant's input
+            // is woken for as usual.
+            if (readDeliveryJournal(sessionId, deps.env).some(entry => entry.stage === 'claimed' && entry.reported === undefined &&
+              processIdentityLiveness(entry.writer) === 'alive')) return 'not-attempted'
+            const current = await verifyGrokHostRoute(candidate!, sessionId, host!.pid, deps.env, hostSystem)
+            if (!('kind' in current)) {
+              logger.info('delivery.handoff', { route: 'input-wake', stage: 'host-unverified', reason: current.unavailable })
+              return 'not-attempted'
+            }
+            if (abort.aborted || !attendant.mayWrite()) return 'not-attempted'
+            return sendGrokHostWake(current, text, deps.env, hostSystem, abort)
+          }, logger, { unique: true, replaceLost: settledIdle, now: () => systemAttendantClock.wall() })
+          return 'done'
+        },
+      } satisfies Partial<SessionAttendantOptions> : {
+        messagesUnavailableReason: verified !== null && 'unavailable' in verified ? verified.unavailable : GROK_NO_LEADER_REASON,
+      }),
       clock: systemAttendantClock, logger, signalled,
       writeStatus: status => writeAttendantStatus(sessionId, deps.env, status),
       heartbeat: () => refreshSessionMarkers(sessionId, deps.env, Date.now(), [claimFile, attendantStatusPath(sessionId, deps.env)]),

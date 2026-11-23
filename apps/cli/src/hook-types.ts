@@ -275,6 +275,12 @@ export interface SessionState {
   /** The Orca terminal a Codex terminal owner runs in, for waking it past a stop (`orca-terminal-wake.ts`). */
   orca_terminal?: { key: string; handle: string; user_data?: string }
   /**
+   * The Grok process a verified app route wakes (`grok-host-route.ts`), for
+   * this incarnation: `notifai receive` hands input in only below it. Grok
+   * records no `harness_process`.
+   */
+  grok_host_owner?: { incarnation: string; pid: number; start: string; route: 'orca-chat' | 't3-thread' }
+  /**
    * Card answers sent through Orca as the User's own answer message, matched
    * by the prompt's digest when that message reaches Codex. Never answer text.
    */

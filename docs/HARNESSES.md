@@ -78,14 +78,16 @@ return to the running session after the asking command exits.
 
 **Grok.** A session on Grok's shared leader on macOS or Linux is attended
 through its leader: answers, answer edits and notes reach it even while it is
-idle, and your devices show it running until it closes. Start Grok with
-`--leader`, or, where an app such as an Orca chat or T3 Code starts Grok for
-you, set `use_leader = true` under `[cli]` in Grok's `config.toml`; a new
-session then joins the leader. Notifai never changes that setting. Without the
-leader, Grok holds the session at the end of its turn until your answer
-arrives, then continues; on macOS and Linux your devices show the session
-running and say it doesn't take notes. On Windows they do not show whether it
-is running.
+idle, and your devices show it running until it closes. In a terminal, start
+Grok with `grok --leader` for that. On macOS, a Grok session that an Orca chat
+or a T3 Code thread runs gets notes and answer edits through that app without
+the leader: Notifai sends the chat or thread a short wake, and Grok reads what
+waits with `notifai receive`. An idle chat starts a turn; a busy one gets it
+after its current turn. In Orca the wake shows in the chat as mail from the
+chat itself. Notifai never changes Grok's config. Other sessions wait for
+your answer at the end of their turn, then continue; on macOS and Linux your
+devices show such a session running and say it doesn't take notes. On Windows
+they do not show whether it is running.
 
 ## What setup installs
 

@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "behavior_digest": "sha256:0898a4b8502c0b14bd9f55ebad9390b85eea7551b112dde7d8b56a8cad8a1f92",
+  "behavior_digest": "sha256:1b1cc593e94dac74e7c5999b027c017ccf388424a62bd09faec7503ac139cbc7",
   "outcome": "guidance-updated",
   "surfaces_reviewed": [
     "lifecycle-hooks",
@@ -9,5 +9,5 @@
     "cli-readiness",
     "domain-terms"
   ],
-  "reason": "Reviewed lifecycle hooks, skill, harness setup, CLI readiness and domain terms. A Grok session outside the shared leader, such as one an app starts with grok agent stdio, now gets a presence-only Session Attendant tied to its own Grok process: devices show it running and not taking notes. The Grok harness reference and HARNESSES.md now name the [cli] use_leader opt-in for app-started sessions and say Notifai never changes it; doctor explains the same. Question routing, lifecycle hook output and setup are unchanged; domain terms (Session Presence, Session Notes, Answer Edits, Companion App) are used as defined."
+  "reason": "Reviewed lifecycle hooks, skill, harness setup, CLI readiness and domain terms. On macOS a Grok session that an Orca chat or T3 Code thread runs without the shared leader now takes Session Notes and Answer Edits: the attendant sends the app a content-free Notifai wake and the agent claims input with notifai receive, as Claude Code and Codex wakes already instruct. The Grok harness reference and HARNESSES.md describe that route, tell the agent never to reply to the wake's Orca mail, and drop the use_leader recommendation; a terminal Grok is pointed at grok --leader, and doctor says the same. Lifecycle hook output, question routing and setup are unchanged; domain terms (Session Notes, Answer Edits, Session Presence, Companion App) are used as defined."
 }

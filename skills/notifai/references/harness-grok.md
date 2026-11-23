@@ -31,10 +31,9 @@ decisions with their owner.
 `notifai ask` schedules submission while independent work continues. After
 `notifai ask --wait`, end your turn; Grok's Stop hook keeps the session
 waiting and continues it with the answer. On Grok's shared leader, which the
-User chooses by starting Grok with `--leader` or by setting `use_leader = true`
-under `[cli]` in Grok's config (the only choice when an app such as an Orca
-chat or T3 Code starts Grok; a running session cannot switch), the answer
-arrives in the exact running session, however many questions follow.
+User chooses by starting Grok with `--leader` (a running session cannot
+switch), the answer arrives in the exact running session, however many
+questions follow.
 
 Without a leader, including headless runs, the Stop hook holds the session at
 the end of the turn until the answer arrives, after `ask` as after
@@ -52,18 +51,28 @@ Harness permission prompts stay in Grok.
 
 ## Session Notes and Answer Edits
 
-Only a live session on Grok's shared leader receives Session Notes and
-post-delivery Answer Edits. An idle session starts a turn and a busy one receives a steer. Acknowledge each message
-after reading it. Closing the session stops delivery.
+A live session on Grok's shared leader receives Session Notes and
+post-delivery Answer Edits directly. An idle session starts a turn and a busy
+one receives a steer.
 
-Ordinary local sessions, including those an app starts with `grok agent
-stdio`, headless sessions and hidden subagents get answers through Stop but no
-Notes or Edits; the User's devices show such a session running and say it
-doesn't take notes. Notifai never starts a leader, changes Grok's config or
-reopens saved history to deliver a message. Remote execution needs a local installation
-on that host. Notifai cannot use the leader on Windows. If the leader is
-unavailable or its protocol changes, message delivery stops rather than guess
-another session.
+On macOS, a session an Orca chat or a T3 Code thread runs without the leader
+receives a Notifai wake through that app instead; in Orca it arrives as mail
+from the chat itself. The wake carries no note, answer or approval: run
+`notifai receive` once and follow what it prints. Never reply to the wake's
+mail. A busy session gets the wake after its current turn. If `notifai
+receive` says nothing is pending, the input was already read: end that turn.
+
+Acknowledge each message after reading it. Closing the session stops
+delivery.
+
+Other local sessions, including a terminal Grok started without `--leader`,
+headless sessions and hidden subagents, get answers through Stop but no Notes
+or Edits; the User's devices show such a session running and say it doesn't
+take notes. Notifai never starts a leader, changes Grok's config or reopens
+saved history to deliver a message. Remote execution needs a local
+installation on that host. Notifai cannot use the leader on Windows. If the
+leader or the app is unavailable, or its protocol changes, message delivery
+stops rather than guess another session.
 
 ## Command approval
 

@@ -91,6 +91,7 @@ import { currentProcessIdentity } from './process-identity.js'
 import { attendantSupport } from './session-attendant-probe.js'
 import { proveWindowsCodexHookSource } from './windows-hook-source.js'
 import { grokAttendHook, startGrokAttendant } from './grok-attendant.js'
+import { grokPromptWake } from './grok-host-route.js'
 import { readAttendantEndingLease, readAttendantLease } from './session-attendant-state.js'
 import { openclawContinuationRoute } from './openclaw-continuation-bridge.js'
 import { listPendingOpenclawSessions } from './openclaw-pending.js'
@@ -1237,7 +1238,8 @@ export async function hookRunCommand(
     // A scripted run of a conversation another process hosts or held.
     let runElsewhere = false
     if (event === 'user-prompt-submit') {
-      if (envelope.session_id !== undefined) observeSessionInputWake(envelope.session_id, deps.env, envelope.prompt, (deps.now ?? Date.now)())
+      if (envelope.session_id !== undefined) observeSessionInputWake(envelope.session_id, deps.env,
+        harness === 'grok' ? grokPromptWake(envelope.prompt) : envelope.prompt, (deps.now ?? Date.now)())
       const enabled = harness !== undefined && PROMPT_CONTEXT_REACHES_MODEL.has(harness) && lifecycleEnabled()
       const notice = enabled ? cachedIntegrationFaultNotice({ ...deps, cwd }, harness) : undefined
       // A scripted run (`claude -p`, an SDK script, `codex exec`) of a conversation

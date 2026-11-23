@@ -69,6 +69,26 @@ export function readT3ThreadId(env: NodeJS.ProcessEnv, harness: SourceContextHar
   return readT3Thread(env, harness, sessionId, 'thread_id')
 }
 
+/**
+ * The thread a Grok wake may address: the same strict match, and also a
+ * thread that is not archived and whose active provider thread is still this
+ * native session (not one a newer provider session replaced).
+ */
+export function readT3ActiveGrokThread(env: NodeJS.ProcessEnv, sessionId: string): string | undefined {
+  return readColumn(path.join(configHome(env, 'T3CODE_HOME', '.t3'), 'userdata', 'statev2.sqlite'), `
+    SELECT DISTINCT t.thread_id
+    FROM orchestration_v2_projection_provider_threads p
+    JOIN orchestration_v2_projection_threads t ON t.thread_id = p.thread_id
+    WHERE p.driver = 'grok'
+      AND json_extract(p.payload_json, '$.nativeThreadRef.driver') = 'grok'
+      AND json_extract(p.payload_json, '$.nativeThreadRef.strength') = 'strong'
+      AND json_extract(p.payload_json, '$.nativeThreadRef.nativeId') = ?
+      AND t.active_provider_thread_id = p.provider_thread_id
+      AND t.deleted_at IS NULL
+      AND t.archived_at IS NULL
+    LIMIT 2`, [sessionId], 'thread_id')
+}
+
 function readT3Thread(env: NodeJS.ProcessEnv, harness: SourceContextHarness, sessionId: string, column: 'title' | 'thread_id'): string | undefined {
   const driver = T3_DRIVERS[harness]
   if (driver === undefined) return undefined
