@@ -69,24 +69,49 @@ export function readT3ThreadId(env: NodeJS.ProcessEnv, harness: SourceContextHar
   return readT3Thread(env, harness, sessionId, 'thread_id')
 }
 
+/** What T3 Code's record says of a Grok native session's thread, read now. */
+export type T3GrokThread = { thread: string } | 'none' | 'ambiguous' | 'unreadable'
+
 /**
  * The thread a Grok wake may address: the same strict match, and also a
- * thread that is not archived and whose active provider thread is still this
- * native session (not one a newer provider session replaced).
+ * thread that is not archived or deleted and whose active provider thread is
+ * still this native session (not one a newer provider session replaced).
+ * `none` is a readable record that names no such thread: the thread was
+ * archived, deleted or moved on (or is not recorded yet). `unreadable` says
+ * nothing either way.
  */
+export function readT3GrokThread(env: NodeJS.ProcessEnv, sessionId: string): T3GrokThread {
+  let db: TitleDatabase | undefined
+  try {
+    db = openReadOnly(path.join(configHome(env, 'T3CODE_HOME', '.t3'), 'userdata', 'statev2.sqlite'))
+    db.exec('PRAGMA query_only = ON; PRAGMA busy_timeout = 25;')
+    const rows = db.prepare(`
+      SELECT DISTINCT t.thread_id
+      FROM orchestration_v2_projection_provider_threads p
+      JOIN orchestration_v2_projection_threads t ON t.thread_id = p.thread_id
+      WHERE p.driver = 'grok'
+        AND json_extract(p.payload_json, '$.nativeThreadRef.driver') = 'grok'
+        AND json_extract(p.payload_json, '$.nativeThreadRef.strength') = 'strong'
+        AND json_extract(p.payload_json, '$.nativeThreadRef.nativeId') = ?
+        AND t.active_provider_thread_id = p.provider_thread_id
+        AND t.deleted_at IS NULL
+        AND t.archived_at IS NULL
+      LIMIT 2`).all(sessionId) as Array<Record<string, unknown> | null>
+    if (rows.length === 0) return 'none'
+    if (rows.length > 1) return 'ambiguous'
+    const thread = rows[0]?.['thread_id']
+    return typeof thread === 'string' && thread.trim() !== '' ? { thread } : 'unreadable'
+  } catch {
+    return 'unreadable'
+  } finally {
+    try { db?.close() } catch { /* Host metadata never blocks the caller. */ }
+  }
+}
+
+/** The thread a Grok wake may address, when the record names exactly one. */
 export function readT3ActiveGrokThread(env: NodeJS.ProcessEnv, sessionId: string): string | undefined {
-  return readColumn(path.join(configHome(env, 'T3CODE_HOME', '.t3'), 'userdata', 'statev2.sqlite'), `
-    SELECT DISTINCT t.thread_id
-    FROM orchestration_v2_projection_provider_threads p
-    JOIN orchestration_v2_projection_threads t ON t.thread_id = p.thread_id
-    WHERE p.driver = 'grok'
-      AND json_extract(p.payload_json, '$.nativeThreadRef.driver') = 'grok'
-      AND json_extract(p.payload_json, '$.nativeThreadRef.strength') = 'strong'
-      AND json_extract(p.payload_json, '$.nativeThreadRef.nativeId') = ?
-      AND t.active_provider_thread_id = p.provider_thread_id
-      AND t.deleted_at IS NULL
-      AND t.archived_at IS NULL
-    LIMIT 2`, [sessionId], 'thread_id')
+  const found = readT3GrokThread(env, sessionId)
+  return typeof found === 'object' ? found.thread : undefined
 }
 
 function readT3Thread(env: NodeJS.ProcessEnv, harness: SourceContextHarness, sessionId: string, column: 'title' | 'thread_id'): string | undefined {

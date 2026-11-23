@@ -23,7 +23,7 @@ import { retainSessionRuntime } from './runtime-build-retention.js'
 import { runSessionAttendant, systemAttendantClock, type HarnessProbe, type SessionAttendantOptions } from './session-attendant.js'
 import { attendantClaimPath, attendantStatusPath, writeAttendantStatus } from './session-attendant-state.js'
 import { handOffSessionMessages } from './session-message-handoff.js'
-import { grokHostCandidate, sendGrokHostWake, systemGrokHostSystem, verifyGrokHostRoute, type GrokHostSystem } from './grok-host-route.js'
+import { GrokHostRouteWatch, grokHostCandidate, sendGrokHostWake, systemGrokHostSystem, verifyGrokHostRoute, type GrokHostSystem } from './grok-host-route.js'
 import { hasSessionInputs, stageSessionMessages, wakeSessionInputs } from './session-inputs.js'
 import { readDeliveryJournal } from './session-delivery.js'
 import type { ApiClient } from './client.js'
@@ -77,7 +77,7 @@ export function startGrokAttendant(envelope: HookEnvelope, cwd: string, env: Nod
 const IDLE_BEFORE_WAKE_REPLACEMENT_MS = 30_000
 
 export async function grokAttendHook(deps: CommandDeps, envelope: HookEnvelope, cwd: string, logger: Logger,
-  hostSystem: GrokHostSystem = systemGrokHostSystem(deps.env)): Promise<number> {
+  hostSystem: GrokHostSystem = systemGrokHostSystem(deps.env), startupMs?: number): Promise<number> {
   const sessionId = envelope.session_id
   if (!sessionId || envelope.subagentType) return 0
   const skipped = (reason: string): number => {
@@ -101,28 +101,36 @@ export async function grokAttendHook(deps: CommandDeps, envelope: HookEnvelope, 
     logger.info('hook.end', { hook: 'attend', outcome: 'unsupported', reason: 'grok-live-leader-unavailable' })
     return 0
   }
+  // Claim first: verifying a starting session can take a while, and a later
+  // prompt must not start a second attendant meanwhile.
+  const claimFile = attendantClaimPath(sessionId, deps.env)
+  let token = acquireClaimFile(claimFile, { incarnation: record.incarnation }, Date.now())
+  if (token === null) { leader?.close(); return skipped('claim-held') }
   // A leader-owned session never falls back to host mail: only a process that
   // hosts exactly this session can say which chat or thread it runs in.
   const candidate = leader === null && host !== null ? grokHostCandidate(deps.env) : null
-  const verified = candidate === null ? null : await verifyGrokHostRoute(candidate, sessionId, host!.pid, deps.env, hostSystem)
-  const hostRoute = verified !== null && 'kind' in verified ? verified : null
+  const verifyNow = () => verifyGrokHostRoute(candidate!, sessionId, host!.pid, deps.env, hostSystem)
+  const started = candidate === null ? null : await GrokHostRouteWatch.start(verifyNow, () => systemAttendantClock.monotonic(),
+    ms => systemAttendantClock.sleep(ms, new AbortController().signal).catch(() => undefined), startupMs)
+  const watch = started instanceof GrokHostRouteWatch ? started : null
+  const hostRoute = watch?.route ?? null
   if (hostRoute !== null) {
     // `notifai receive` hands input in only under this exact Grok process.
     const owner = { incarnation: record.incarnation, pid: host!.pid, start: host!.start, route: hostRoute.kind }
     updateSessionState(sessionId, deps.env, state => ({ ...state, grok_host_owner: owner }))
   }
+  const unavailable = started !== null && !(started instanceof GrokHostRouteWatch) ? started.unavailable : GROK_NO_LEADER_REASON
   if (leader === null) logger.info('attendant.state', hostRoute !== null
     ? { messages: 'host-wake', route: hostRoute.kind }
-    : { messages: 'unavailable', reason: verified !== null && 'unavailable' in verified ? verified.unavailable : GROK_NO_LEADER_REASON })
+    : { messages: 'unavailable', reason: unavailable })
   const ownProbe = (): HarnessProbe => {
     if (host === null) return leader!.probe()
     if (processIdentityLiveness(host) === 'gone') return { state: 'ended', reason: 'harness-gone' }
+    // The app took the conversation away while Grok runs on: take no more notes.
+    if (watch?.lost() != null) return { state: 'ended', reason: 'session-replaced' }
     const state = readSessionState(sessionId, deps.env)
     return { state: 'running', activity: (state.last_prompt_at ?? 0) > (state.last_stop_at ?? 0) ? 'working' : 'idle' }
   }
-  const claimFile = attendantClaimPath(sessionId, deps.env)
-  let token = acquireClaimFile(claimFile, { incarnation: record.incarnation }, Date.now())
-  if (token === null) { leader?.close(); return skipped('claim-held') }
   let client: ApiClient | null = null
   let credential: MachineCredential | null = null
   const connect = (): ApiClient | null => {
@@ -133,6 +141,7 @@ export async function grokAttendHook(deps: CommandDeps, envelope: HookEnvelope, 
     return client
   }
   let idleSince: number | null = null
+  let lostLogged = false
   const settledIdle = (): boolean => idleSince !== null && systemAttendantClock.monotonic() - idleSince >= IDLE_BEFORE_WAKE_REPLACEMENT_MS
   let signal!: () => void
   const signalled = new Promise<void>(resolve => { signal = resolve })
@@ -164,6 +173,10 @@ export async function grokAttendHook(deps: CommandDeps, envelope: HookEnvelope, 
       onProbe: observed => {
         if (observed.state === 'running' && observed.activity === 'idle') idleSince ??= systemAttendantClock.monotonic()
         else idleSince = null
+        if (observed.state === 'running') void watch?.poll().then(() => {
+          const lost = watch.lost()
+          if (lost !== null && !lostLogged) { lostLogged = true; logger.info('attendant.state', { messages: 'host-route-lost', reason: lost }) }
+        })
       },
       ...(leader !== null ? {
         publishProbeStatus: true,
@@ -197,9 +210,11 @@ export async function grokAttendHook(deps: CommandDeps, envelope: HookEnvelope, 
             // is woken for as usual.
             if (readDeliveryJournal(sessionId, deps.env).some(entry => entry.stage === 'claimed' && entry.reported === undefined &&
               processIdentityLiveness(entry.writer) === 'alive')) return 'not-attempted'
-            const current = await verifyGrokHostRoute(candidate!, sessionId, host!.pid, deps.env, hostSystem)
-            if (!('kind' in current)) {
-              logger.info('delivery.handoff', { route: 'input-wake', stage: 'host-unverified', reason: current.unavailable })
+            const checked = await verifyNow()
+            const current = watch!.observe(checked)
+            if (current === null) {
+              logger.info('delivery.handoff', { route: 'input-wake', stage: 'host-unverified',
+                reason: 'unavailable' in checked ? checked.unavailable : 'host-route-lost', definite: watch!.lost() !== null })
               return 'not-attempted'
             }
             if (abort.aborted || !attendant.mayWrite()) return 'not-attempted'
@@ -208,7 +223,7 @@ export async function grokAttendHook(deps: CommandDeps, envelope: HookEnvelope, 
           return 'done'
         },
       } satisfies Partial<SessionAttendantOptions> : {
-        messagesUnavailableReason: verified !== null && 'unavailable' in verified ? verified.unavailable : GROK_NO_LEADER_REASON,
+        messagesUnavailableReason: unavailable,
       }),
       clock: systemAttendantClock, logger, signalled,
       writeStatus: status => writeAttendantStatus(sessionId, deps.env, status),

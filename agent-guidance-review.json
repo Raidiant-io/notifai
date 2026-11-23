@@ -1,7 +1,7 @@
 {
   "version": 1,
-  "behavior_digest": "sha256:1b1cc593e94dac74e7c5999b027c017ccf388424a62bd09faec7503ac139cbc7",
-  "outcome": "guidance-updated",
+  "behavior_digest": "sha256:d711d8a06bbac56e8c8158c749eaf9fc1bd83dd550499139915137d28b091649",
+  "outcome": "reviewed-no-impact",
   "surfaces_reviewed": [
     "lifecycle-hooks",
     "notifai-skill",
@@ -9,5 +9,5 @@
     "cli-readiness",
     "domain-terms"
   ],
-  "reason": "Reviewed lifecycle hooks, skill, harness setup, CLI readiness and domain terms. On macOS a Grok session that an Orca chat or T3 Code thread runs without the shared leader now takes Session Notes and Answer Edits: the attendant sends the app a content-free Notifai wake and the agent claims input with notifai receive, as Claude Code and Codex wakes already instruct. The Grok harness reference and HARNESSES.md describe that route, tell the agent never to reply to the wake's Orca mail, and drop the use_leader recommendation; a terminal Grok is pointed at grok --leader, and doctor says the same. Lifecycle hook output, question routing and setup are unchanged; domain terms (Session Notes, Answer Edits, Session Presence, Companion App) are used as defined."
+  "reason": "Reviewed lifecycle hooks, skill, harness setup, CLI readiness and domain terms. The Grok attendant on an Orca chat or T3 Code thread route now rechecks the binding while the session runs and ends attendance when the app definitively says the still-running Grok session is no longer the chat's or thread's; it also waits up to 20 s for a starting session to appear in the app's record. Agents do nothing differently: the Grok harness reference already says closing the session stops delivery and that delivery stops rather than guess another session, and notifai receive still hands input in only under the verified Grok process. Hook output, setup, doctor and domain terms are unchanged."
 }

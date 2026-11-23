@@ -26,7 +26,7 @@
 import { execFile } from 'node:child_process'
 import { accessSync, constants, readFileSync, statSync } from 'node:fs'
 import path from 'node:path'
-import { readT3ActiveGrokThread } from './host-title-store.js'
+import { readT3GrokThread, type T3GrokThread } from './host-title-store.js'
 import { processAncestry } from './process-ancestry.js'
 import { pidExists } from './process-identity.js'
 import { inputWakeToken, isSessionInputWake } from './session-inputs.js'
@@ -60,8 +60,8 @@ export interface GrokHostSystem {
   t3ServerPid(home: string): number | null
   /** The parent of a process. */
   parentOf(pid: number): number | null
-  /** The one live T3 thread whose active Grok provider thread is this native session. */
-  t3Thread(home: string, sessionId: string): string | null
+  /** T3 Code's record of the live thread whose active Grok provider thread is this native session. */
+  t3Thread(home: string, sessionId: string): T3GrokThread
   pause(ms: number): Promise<void>
 }
 
@@ -97,7 +97,7 @@ export function systemGrokHostSystem(env: NodeJS.ProcessEnv): GrokHostSystem {
       }
     },
     parentOf: (pid) => processAncestry(pid)?.[1]?.pid ?? null,
-    t3Thread: (home, sessionId) => readT3ActiveGrokThread({ ...env, T3CODE_HOME: home }, sessionId) ?? null,
+    t3Thread: (home, sessionId) => readT3GrokThread({ ...env, T3CODE_HOME: home }, sessionId),
     pause: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
   }
 }
@@ -134,13 +134,19 @@ export function grokHostCandidate(env: NodeJS.ProcessEnv, platform: NodeJS.Platf
   return null
 }
 
-/** Orca's answer, asked as this Grok session: the chat whose current provider session it is, or null. */
-async function orcaChatOfNative(cli: string, env: NodeJS.ProcessEnv, sessionId: string, system: GrokHostSystem): Promise<string | null> {
+/**
+ * Orca's answer, asked as this Grok session: the chat whose current provider
+ * session it is; `unknown` when Orca answered that it runs no such session
+ * (a `/clear` or a deleted chat); null when Orca could not be asked.
+ */
+async function orcaChatOfNative(cli: string, env: NodeJS.ProcessEnv, sessionId: string, system: GrokHostSystem): Promise<string | 'unknown' | null> {
   const result = await system.run(cli, ['status', '--json'], { env: { ...env, ORCA_AGENT_SESSION_ID: sessionId } })
   try {
     const caller = (JSON.parse(result.stdout) as { result?: { caller?: { live?: unknown; refusal?: { code?: unknown; message?: unknown } } } })
       .result?.caller
-    if (caller?.live !== false || caller.refusal?.code !== 'session_caller_provider_id' || typeof caller.refusal.message !== 'string') return null
+    if (caller?.live !== false) return null
+    if (caller.refusal?.code === 'session_caller_unknown') return 'unknown'
+    if (caller.refusal?.code !== 'session_caller_provider_id' || typeof caller.refusal.message !== 'string') return null
     const named = [...caller.refusal.message.matchAll(/orca_session_id:([0-9a-f-]{36})/gu)].map((match) => match[1]!)
     return named.length > 0 && named.every((id) => id === named[0]) ? named[0]! : null
   } catch {
@@ -155,20 +161,86 @@ export type GrokHostUnavailable =
   | 't3-thread-not-found'
 
 /**
+ * A route that is not available. `definite` when the host itself answered
+ * that this Grok session is no longer the chat's or thread's (Orca names
+ * another chat or no session; T3 Code's readable record names no open thread
+ * for it): no wake can reach it any more. Otherwise the host could not say.
+ */
+export type GrokHostRefusal = { unavailable: GrokHostUnavailable; definite: boolean }
+
+/**
  * Check the binding now. `hostPid` is the Grok process the hook ran under;
  * T3 Code must be its parent.
  */
 export async function verifyGrokHostRoute(candidate: GrokHostCandidate, sessionId: string, hostPid: number,
-  env: NodeJS.ProcessEnv, system: GrokHostSystem): Promise<GrokHostRoute | { unavailable: GrokHostUnavailable }> {
+  env: NodeJS.ProcessEnv, system: GrokHostSystem): Promise<GrokHostRoute | GrokHostRefusal> {
   if (candidate.kind === 'orca-chat') {
-    return await orcaChatOfNative(candidate.cli, env, sessionId, system) === candidate.chat
-      ? candidate : { unavailable: 'orca-chat-binding-unverified' }
+    const chat = await orcaChatOfNative(candidate.cli, env, sessionId, system)
+    return chat === candidate.chat ? candidate : { unavailable: 'orca-chat-binding-unverified', definite: chat !== null }
   }
   const server = system.t3ServerPid(candidate.home)
-  if (server === null || system.parentOf(hostPid) !== server) return { unavailable: 't3-server-not-parent' }
-  const thread = system.t3Thread(candidate.home, sessionId)
-  if (thread === null || !T3_THREAD.test(thread)) return { unavailable: 't3-thread-not-found' }
-  return { ...candidate, thread }
+  if (server === null || system.parentOf(hostPid) !== server) return { unavailable: 't3-server-not-parent', definite: false }
+  const found = system.t3Thread(candidate.home, sessionId)
+  if (typeof found !== 'object' || !T3_THREAD.test(found.thread)) {
+    return { unavailable: 't3-thread-not-found', definite: found === 'none' || found === 'ambiguous' || typeof found === 'object' }
+  }
+  return { ...candidate, thread: found.thread }
+}
+
+/** How long a starting session may take to appear in its host's record. */
+export const GROK_ROUTE_STARTUP_MS = 20_000
+const GROK_ROUTE_STARTUP_RETRY_MS = 1_000
+/** How often a running route is checked again: T3 Code's record is a local read, Orca's answer a CLI run. */
+export const GROK_ROUTE_RECHECK_MS: Readonly<Record<GrokHostRoute['kind'], number>> = { 'orca-chat': 15_000, 't3-thread': 5_000 }
+
+/**
+ * A verified route for the life of one attendant. The host can take the
+ * conversation away while the Grok process lives on (a T3 Code thread
+ * archived, an Orca chat that moved the session): once the host definitively
+ * says so, `lost()` names why and the attendant stops taking notes it could
+ * no longer wake for. A host that cannot be asked loses nothing.
+ */
+export class GrokHostRouteWatch {
+  private lostReason: GrokHostUnavailable | null = null
+  private checking = false
+  private checkedAt: number
+
+  private constructor(readonly route: GrokHostRoute, private readonly verify: () => Promise<GrokHostRoute | GrokHostRefusal>,
+    private readonly now: () => number) {
+    this.checkedAt = now()
+  }
+
+  /**
+   * Verify a starting session, retrying while its host may still be recording
+   * it. The last refusal when it never verifies.
+   */
+  static async start(verify: () => Promise<GrokHostRoute | GrokHostRefusal>, now: () => number, sleep: (ms: number) => Promise<void>,
+    startupMs = GROK_ROUTE_STARTUP_MS): Promise<GrokHostRouteWatch | GrokHostRefusal> {
+    const until = now() + startupMs
+    for (;;) {
+      const result = await verify()
+      if ('kind' in result) return new GrokHostRouteWatch(result, verify, now)
+      if (now() >= until) return result
+      await sleep(GROK_ROUTE_STARTUP_RETRY_MS)
+    }
+  }
+
+  lost(): GrokHostUnavailable | null { return this.lostReason }
+
+  /** Take a fresh answer, as a wake does just before it is sent: the route, or null. */
+  observe(result: GrokHostRoute | GrokHostRefusal): GrokHostRoute | null {
+    this.checkedAt = this.now()
+    if ('kind' in result) return this.lostReason === null ? result : null
+    if (result.definite) this.lostReason ??= result.unavailable
+    return null
+  }
+
+  /** Check again when due; never more than one check at a time. */
+  async poll(): Promise<void> {
+    if (this.lostReason !== null || this.checking || this.now() - this.checkedAt < GROK_ROUTE_RECHECK_MS[this.route.kind]) return
+    this.checking = true
+    try { this.observe(await this.verify()) } catch { this.checkedAt = this.now() } finally { this.checking = false }
+  }
 }
 
 /** `t3 thread send` met a busy database. */

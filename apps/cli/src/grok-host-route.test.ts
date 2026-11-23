@@ -5,8 +5,8 @@ import { DatabaseSync } from 'node:sqlite'
 import { describe, expect, it } from 'vitest'
 import { grokHostOwner } from './commands-receive.js'
 import { updateSessionState } from './hook-session-state.js'
-import { grokHostCandidate, grokPromptWake, sendGrokHostWake, verifyGrokHostRoute, type GrokHostSystem, type RunResult } from './grok-host-route.js'
-import { readT3ActiveGrokThread } from './host-title-store.js'
+import { GROK_ROUTE_RECHECK_MS, GrokHostRouteWatch, grokHostCandidate, grokPromptWake, sendGrokHostWake, verifyGrokHostRoute, type GrokHostRefusal, type GrokHostRoute, type GrokHostSystem, type RunResult } from './grok-host-route.js'
+import { readT3ActiveGrokThread, readT3GrokThread } from './host-title-store.js'
 import { sessionInputWake } from './session-inputs.js'
 
 const CHAT = '089a3738-b97c-4c0e-9542-f472251923db'
@@ -28,7 +28,7 @@ function system(replies: RunResult[], overrides: Partial<GrokHostSystem> = {}): 
     executable: any,
     t3ServerPid: () => 500,
     parentOf: () => 500,
-    t3Thread: () => 'mcp:fd4b9e5e-8572-47ca-a603-38ef0ee784b0',
+    t3Thread: () => ({ thread: 'mcp:fd4b9e5e-8572-47ca-a603-38ef0ee784b0' }),
     pause: async () => undefined,
     ...overrides,
   }
@@ -77,16 +77,20 @@ describe('verifyGrokHostRoute', () => {
     expect(host.calls[0]!.env['ORCA_AGENT_SESSION_ID']).toBe(NATIVE)
   })
 
-  it('refuses another chat, a live caller and an unreadable answer', async () => {
+  it('refuses another chat or a session Orca no longer runs, definitively, and a silent Orca only for now', async () => {
     const other = '11111111-2222-4333-8444-555555555555'
     const route = { kind: 'orca-chat' as const, chat: CHAT, cli: ORCA_CLI }
-    // A shared process: Orca knows this Grok session as another chat's.
+    // The session now belongs to another chat (moved or shared process).
     expect(await verifyGrokHostRoute(route, NATIVE, 42, orcaChat, system([providerRefusal(other)])))
-      .toEqual({ unavailable: 'orca-chat-binding-unverified' })
+      .toEqual({ unavailable: 'orca-chat-binding-unverified', definite: true })
+    // Orca 1.4.271 after the chat's /clear: the old native id is unknown.
+    const unknown = { code: 0, stderr: '', stdout: JSON.stringify({ ok: true, result: { caller: { live: false, refusal: {
+      code: 'session_caller_unknown', message: `No Orca agent session ${NATIVE} exists on this host. No effects were applied.` } } } }) }
+    expect(await verifyGrokHostRoute(route, NATIVE, 42, orcaChat, system([unknown]))).toEqual({ unavailable: 'orca-chat-binding-unverified', definite: true })
     const live = { code: 0, stderr: '', stdout: JSON.stringify({ ok: true, result: { caller: { orcaSessionId: `orca_session_id:${CHAT}`, live: true } } }) }
-    expect(await verifyGrokHostRoute(route, NATIVE, 42, orcaChat, system([live]))).toEqual({ unavailable: 'orca-chat-binding-unverified' })
+    expect(await verifyGrokHostRoute(route, NATIVE, 42, orcaChat, system([live]))).toEqual({ unavailable: 'orca-chat-binding-unverified', definite: false })
     expect(await verifyGrokHostRoute(route, NATIVE, 42, orcaChat, system([{ code: 1, stdout: 'not json', stderr: '' }])))
-      .toEqual({ unavailable: 'orca-chat-binding-unverified' })
+      .toEqual({ unavailable: 'orca-chat-binding-unverified', definite: false })
   })
 
   it('needs the T3 server to be the Grok process parent and one live thread', async () => {
@@ -94,11 +98,57 @@ describe('verifyGrokHostRoute', () => {
     expect(await verifyGrokHostRoute(candidate, NATIVE, 42, {}, system([])))
       .toEqual({ ...candidate, thread: 'mcp:fd4b9e5e-8572-47ca-a603-38ef0ee784b0' })
     expect(await verifyGrokHostRoute(candidate, NATIVE, 42, {}, system([], { t3ServerPid: () => null })))
-      .toEqual({ unavailable: 't3-server-not-parent' })
+      .toEqual({ unavailable: 't3-server-not-parent', definite: false })
     expect(await verifyGrokHostRoute(candidate, NATIVE, 42, {}, system([], { parentOf: () => 501 })))
-      .toEqual({ unavailable: 't3-server-not-parent' })
-    expect(await verifyGrokHostRoute(candidate, NATIVE, 42, {}, system([], { t3Thread: () => null })))
-      .toEqual({ unavailable: 't3-thread-not-found' })
+      .toEqual({ unavailable: 't3-server-not-parent', definite: false })
+    // Archived, deleted or replaced: T3's readable record names no thread.
+    expect(await verifyGrokHostRoute(candidate, NATIVE, 42, {}, system([], { t3Thread: () => 'none' })))
+      .toEqual({ unavailable: 't3-thread-not-found', definite: true })
+    expect(await verifyGrokHostRoute(candidate, NATIVE, 42, {}, system([], { t3Thread: () => 'ambiguous' })))
+      .toEqual({ unavailable: 't3-thread-not-found', definite: true })
+    expect(await verifyGrokHostRoute(candidate, NATIVE, 42, {}, system([], { t3Thread: () => 'unreadable' })))
+      .toEqual({ unavailable: 't3-thread-not-found', definite: false })
+  })
+})
+
+describe('GrokHostRouteWatch', () => {
+  const route: GrokHostRoute = { kind: 't3-thread', home: '/u/.t3', cli: '/u/.t3/bin/t3', thread: 'mcp:t' }
+  const lost: GrokHostRefusal = { unavailable: 't3-thread-not-found', definite: true }
+  const silent: GrokHostRefusal = { unavailable: 't3-server-not-parent', definite: false }
+
+  function clock() {
+    let t = 0
+    return { now: () => t, sleep: async (ms: number) => { t += ms }, advance: (ms: number) => { t += ms } }
+  }
+
+  it('waits for a starting session to appear in its host record, then gives up with the last refusal', async () => {
+    const c = clock()
+    const answers: Array<GrokHostRoute | GrokHostRefusal> = [lost, silent, route]
+    const watch = await GrokHostRouteWatch.start(async () => answers.shift()!, c.now, c.sleep, 20_000)
+    expect(watch).toBeInstanceOf(GrokHostRouteWatch)
+    expect((watch as GrokHostRouteWatch).route).toEqual(route)
+    const never = await GrokHostRouteWatch.start(async () => lost, c.now, c.sleep, 5_000)
+    expect(never).toEqual(lost)
+  })
+
+  it('loses the route only on a definite answer, and never gets it back', async () => {
+    const c = clock()
+    let answer: GrokHostRoute | GrokHostRefusal = route
+    let checks = 0
+    const watch = await GrokHostRouteWatch.start(async () => { checks += 1; return answer }, c.now, c.sleep) as GrokHostRouteWatch
+    answer = silent
+    c.advance(GROK_ROUTE_RECHECK_MS['t3-thread'])
+    await watch.poll()
+    expect(watch.lost()).toBeNull()
+    // Not due yet: no host call.
+    await watch.poll()
+    expect(checks).toBe(2)
+    answer = lost
+    c.advance(GROK_ROUTE_RECHECK_MS['t3-thread'])
+    await watch.poll()
+    expect(watch.lost()).toBe('t3-thread-not-found')
+    // A wake's own check cannot revive a lost route.
+    expect(watch.observe(route)).toBeNull()
   })
 })
 
@@ -171,16 +221,18 @@ describe('readT3ActiveGrokThread', () => {
   it('names the thread whose active provider thread is this Grok session', () => {
     const { env, db } = t3()
     expect(readT3ActiveGrokThread(env, NATIVE)).toBe('mcp:thread')
-    expect(readT3ActiveGrokThread(env, 'another-session')).toBeUndefined()
+    expect(readT3GrokThread(env, NATIVE)).toEqual({ thread: 'mcp:thread' })
+    expect(readT3GrokThread(env, 'another-session')).toBe('none')
+    expect(readT3GrokThread({ T3CODE_HOME: path.join(os.tmpdir(), 'notifai-no-such-t3-home') }, NATIVE)).toBe('unreadable')
     db.close()
   })
 
   it('refuses an archived thread and one a newer provider session replaced', () => {
     const { env, db } = t3()
     db.exec("UPDATE orchestration_v2_projection_threads SET active_provider_thread_id = 'provider-thread:2'")
-    expect(readT3ActiveGrokThread(env, NATIVE)).toBeUndefined()
+    expect(readT3GrokThread(env, NATIVE)).toBe('none')
     db.exec("UPDATE orchestration_v2_projection_threads SET active_provider_thread_id = 'provider-thread:1', archived_at = '2026-11-23T00:00:00Z'")
-    expect(readT3ActiveGrokThread(env, NATIVE)).toBeUndefined()
+    expect(readT3GrokThread(env, NATIVE)).toBe('none')
     db.close()
   })
 })
