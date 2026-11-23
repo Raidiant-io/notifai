@@ -10,8 +10,9 @@ Use one Release PR for version, changelog, README markers and lockfile changes.
 Dispatch `release-please.yml` by hand with `expected_sha` set to the exact
 current `main` commit; it prepares the combined stable PR and creates its tags
 after merge. It dispatches nothing else. Beta candidates use the same metadata
-in one release branch/PR, with the stable manifest unchanged. Close a completed
-beta PR without merging beta metadata into main. Ordinary product changes land
+on one `release/cli-<version>` branch, with the stable manifest unchanged. Push
+that branch and its tag without opening a PR: beta metadata never merges into
+main, and nothing reads a beta PR. Ordinary product changes land
 before the release. Review notes against the previous stable tag.
 
 ### When Release Please proposes the wrong scope
