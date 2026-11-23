@@ -8,6 +8,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 This project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 and [Conventional Commits](https://www.conventionalcommits.org/en/v1.0.0/).
 
+## [14.7.7-beta.2](https://github.com/Raidiant-io/notifai/compare/v14.7.6...v14.7.7-beta.2) (2026-11-23)
+
+### Bug Fixes
+
+* Grok sessions in an Orca chat or a T3 Code thread on macOS now receive your notes and answer edits without Grok's leader mode.
+* A Grok you start in a terminal still needs `grok --leader` to receive notes; Notifai no longer suggests setting use_leader in Grok's config.
+* When you clear, close or archive that chat or thread, Notifai stops sending it notes.
+
 ## [14.7.6](https://github.com/Raidiant-io/notifai/compare/v14.7.4...v14.7.6) (2026-11-20)
 
 ### Bug Fixes
