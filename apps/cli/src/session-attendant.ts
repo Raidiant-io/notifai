@@ -128,6 +128,8 @@ export interface SessionAttendantOptions {
   serverSupportsAttendance(client: ApiClient): Promise<boolean>
   /** Whether this attendant can hand Session Messages into the session. */
   acceptsMessages: boolean
+  /** Why a running session takes no Session Messages, for `notifai doctor`. */
+  messagesUnavailableReason?: string
   /**
    * Hands claimable Session Messages into the session. `retry-soon` asks for
    * the next exchange without holding it open: a message is waiting on
@@ -236,7 +238,7 @@ export async function runSessionAttendant(options: SessionAttendantOptions): Pro
         incarnation,
         generation,
         activity,
-        reason: phaseReason,
+        reason: phaseReason ?? (options.acceptsMessages ? null : options.messagesUnavailableReason ?? null),
         accepts_messages: options.acceptsMessages,
         ...(options.publishProbeStatus ? { writer_ready: probe.state === 'running' } : {}),
         updated_at: clock.wall(),

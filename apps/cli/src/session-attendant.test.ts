@@ -249,6 +249,15 @@ describe('Session Attendant', () => {
     await h.clock.advance(10)
   })
 
+  it('says why a running session takes no notes, until a phase has its own reason', async () => {
+    const h = startAttendant({ messagesUnavailableReason: 'grok-session-not-on-leader' })
+    await h.clock.advance(1)
+    expect(h.statuses.at(-1)).toMatchObject({ accepts_messages: false, reason: 'grok-session-not-on-leader' })
+    h.signal()
+    h.service.last().fail(new Error('gone'))
+    await h.clock.advance(10)
+  })
+
   it('never reports a session that ended before it notified', async () => {
     const h = startAttendant({}, { notified: false })
     await h.clock.advance(4_000)

@@ -1,5 +1,5 @@
 {
-  "current": "3e607f8fba4c7c739b9f4576853c0eb1906423450288daeb4b3ff2512f7de585",
+  "current": "cb487bc45d71381f44e29ec6f03097294263629496f1ac441fa83d6d4a00201c",
   "releases": [
     {
       "digest": "3e47b01bc6bbfb43e910c660b9964fab6459d75148c3c02dcbcd0be64cfb2963",
@@ -448,6 +448,10 @@
     {
       "digest": "3e607f8fba4c7c739b9f4576853c0eb1906423450288daeb4b3ff2512f7de585",
       "note": "In Claude Code, ask questions normally when an older profile still has the retired SubagentStop reminder. Notifai removes its old reminder from the active profile on the next question or child stop. Doctor also identifies which profile to update."
+    },
+    {
+      "digest": "cb487bc45d71381f44e29ec6f03097294263629496f1ac441fa83d6d4a00201c",
+      "note": "Grok: a session outside Grok's shared leader, such as one an Orca chat or T3 Code starts with `grok agent stdio`, now shows as running on the User's devices with notes unavailable, instead of showing no presence. Notes and Answer Edits still reach only a session on the leader; where an app starts Grok, the User opts in by setting `use_leader = true` under `[cli]` in Grok's config and starting a new session. `notifai doctor` names that setting. Notifai never changes it."
     }
   ]
 }

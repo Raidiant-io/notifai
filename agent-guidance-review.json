@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "behavior_digest": "sha256:1fa9a8119a21baee0112e39bfd42e43f860df333a2cd946881bc056e2a17974c",
+  "behavior_digest": "sha256:0898a4b8502c0b14bd9f55ebad9390b85eea7551b112dde7d8b56a8cad8a1f92",
   "outcome": "guidance-updated",
   "surfaces_reviewed": [
     "lifecycle-hooks",
@@ -9,5 +9,5 @@
     "cli-readiness",
     "domain-terms"
   ],
-  "reason": "Reviewed lifecycle hooks, skill, harness setup, CLI readiness and domain terms. Claude Code agents can continue to ask in a profile with the retired child callback. Doctor identifies that profile and its cleanup command. The existing skill already describes asking and preserving exact-session routing."
+  "reason": "Reviewed lifecycle hooks, skill, harness setup, CLI readiness and domain terms. A Grok session outside the shared leader, such as one an app starts with grok agent stdio, now gets a presence-only Session Attendant tied to its own Grok process: devices show it running and not taking notes. The Grok harness reference and HARNESSES.md now name the [cli] use_leader opt-in for app-started sessions and say Notifai never changes it; doctor explains the same. Question routing, lifecycle hook output and setup are unchanged; domain terms (Session Presence, Session Notes, Answer Edits, Companion App) are used as defined."
 }

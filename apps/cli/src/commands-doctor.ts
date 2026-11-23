@@ -127,6 +127,7 @@ import {
 import { skillReadiness } from './commands-skill.js'
 import { inferredProjectName, projectBinding, projectEnablementState } from './project-enablement.js'
 import { attendantSupport } from './session-attendant-probe.js'
+import { GROK_NO_LEADER_REASON } from './grok-leader.js'
 import { readHubReport } from './hub-client.js'
 import { describeHubHandover, hubHandoverReport } from './hub-handover.js'
 import { codexTurnObserved, hermesQuestionRouteReady, listAttendantReports, type AttendantReport } from './session-attendant-state.js'
@@ -2294,6 +2295,11 @@ function sessionHubCheck(deps: CommandDeps): HookCheck | null {
   }
 }
 
+/** What a Grok session outside the shared leader needs for Notes, in the User's words. */
+const GROK_LEADER_OPT_IN = 'Notes and Answer Edits reach only a session on Grok\'s shared leader, and once it notifies, the Companion App shows it running and not taking notes. ' +
+  'To receive them, the User can start Grok with `--leader` or, where an app such as an Orca chat or T3 Code starts Grok itself, set `use_leader = true` under `[cli]` in Grok\'s config.toml and start a new session; ' +
+  'Notifai never changes it. Questions still use the held Stop'
+
 /**
  * Session Attendants on this machine: which sessions are attended and in what
  * phase. Informational: presence is a convenience, never a routing gate.
@@ -2330,10 +2336,12 @@ function sessionAttendantCheck(
         ? active.harness === 'openclaw'
           ? 'this OpenClaw session has no attendant yet (the local Gateway service starts one after its first prompt)'
           : active.harness === 'grok'
-            ? 'this Grok session has no attendant; Notes and Answer Edits require a live shared-leader session (`grok --leader`), while questions still use the held Stop'
+            ? `this Grok session has no attendant yet (one starts with its next prompt); ${GROK_LEADER_OPT_IN}`
           : `this ${active.label} session has no attendant yet (one starts with the session or its next prompt)`
         : own.alive
-          ? `this session: ${describe(own)}`
+          ? active.harness === 'grok' && own.reason === GROK_NO_LEADER_REASON
+            ? `this session: ${describe(own)}; ${GROK_LEADER_OPT_IN}`
+            : `this session: ${describe(own)}`
           : active.harness === 'openclaw'
             ? `this session's attendant stopped (${describe(own)}); the local Gateway service starts another while the generation remains current`
             : `this session's attendant stopped (${describe(own)}); its next turn end or prompt starts another`,

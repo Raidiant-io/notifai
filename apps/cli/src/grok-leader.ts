@@ -135,6 +135,9 @@ function sockets(env: NodeJS.ProcessEnv): string[] {
   catch { return [] }
 }
 
+/** Why a Grok session outside a leader takes no notes; `notifai doctor` shows it. */
+export const GROK_NO_LEADER_REASON = 'grok-session-not-on-leader'
+
 export function hasGrokLeader(env: NodeJS.ProcessEnv): boolean { return sockets(env).length > 0 }
 
 /** Bounded local evidence, like the Hermes bridge's state stream. A delivery

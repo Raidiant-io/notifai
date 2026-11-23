@@ -290,7 +290,7 @@ function requestQuestionOwnerHandoff(file: string, expectedToken: string): boole
 }
 
 /** The full command line of a process (POSIX `ps`), or null. */
-function processCommandLine(pid: number): string | null {
+export function processCommandLine(pid: number): string | null {
   if (process.platform === 'win32') return null
   try {
     const output = execFileSync('ps', ['-o', 'command=', '-p', String(pid)], {

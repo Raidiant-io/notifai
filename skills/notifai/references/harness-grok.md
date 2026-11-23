@@ -31,9 +31,10 @@ decisions with their owner.
 `notifai ask` schedules submission while independent work continues. After
 `notifai ask --wait`, end your turn; Grok's Stop hook keeps the session
 waiting and continues it with the answer. On Grok's shared leader, which the
-User chooses by starting Grok with `--leader` (a running session cannot
-switch), the answer arrives in the exact running session, however many
-questions follow.
+User chooses by starting Grok with `--leader` or by setting `use_leader = true`
+under `[cli]` in Grok's config (the only choice when an app such as an Orca
+chat or T3 Code starts Grok; a running session cannot switch), the answer
+arrives in the exact running session, however many questions follow.
 
 Without a leader, including headless runs, the Stop hook holds the session at
 the end of the turn until the answer arrives, after `ask` as after
@@ -55,9 +56,11 @@ Only a live session on Grok's shared leader receives Session Notes and
 post-delivery Answer Edits. An idle session starts a turn and a busy one receives a steer. Acknowledge each message
 after reading it. Closing the session stops delivery.
 
-Ordinary local sessions, headless sessions and hidden subagents get answers
-through Stop but no Notes or Edits. Notifai never starts a leader or reopens
-saved history to deliver a message. Remote execution needs a local installation
+Ordinary local sessions, including those an app starts with `grok agent
+stdio`, headless sessions and hidden subagents get answers through Stop but no
+Notes or Edits; the User's devices show such a session running and say it
+doesn't take notes. Notifai never starts a leader, changes Grok's config or
+reopens saved history to deliver a message. Remote execution needs a local installation
 on that host. Notifai cannot use the leader on Windows. If the leader is
 unavailable or its protocol changes, message delivery stops rather than guess
 another session.

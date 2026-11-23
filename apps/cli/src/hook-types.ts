@@ -45,6 +45,8 @@ export interface HookEnvelope {
   sessionId?: string
   /** Private detached-observer handoff; must match the current local key. */
   grok_incarnation_key?: string
+  /** Private detached-observer handoff: the Grok process that ran the starting hook. */
+  grok_host?: { pid: number; start: string; role: 'session' | 'leader' }
   promptId?: string
   subagentType?: string
   subagentId?: string
