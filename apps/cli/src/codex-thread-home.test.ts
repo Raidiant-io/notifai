@@ -95,11 +95,30 @@ describe('who holds a thread', () => {
     // (Ubuntu 26.04's Rust coreutils exits at once).
     const codex = path.join(root, 'codex')
     try { linkSync(process.execPath, codex) } catch { copyFileSync(process.execPath, codex) }
-    const wait = ['-e', 'setTimeout(() => {}, 30_000)']
-    const runner = spawn(codex, wait, { stdio: 'ignore' })
-    const viewer = spawn(process.execPath, wait, { stdio: 'ignore' })
+    // Node can rename its main thread during startup on Linux. Publish the
+    // fixture's title after startup and wait for that title before the census.
+    const fixture = ['-e', `
+      process.title = process.argv[1]
+      process.send('ready')
+      setTimeout(() => {}, 30_000)
+    `]
+    const stdio: ('ignore' | 'ipc')[] = ['ignore', 'ignore', 'ignore', 'ipc']
+    const runner = spawn(codex, [...fixture, 'codex'], { stdio })
+    const viewer = spawn(process.execPath, [...fixture, 'viewer'], { stdio })
+    const awaitReady = async (child: ReturnType<typeof spawn>) => {
+      const controller = new AbortController()
+      const options = { signal: controller.signal }
+      try {
+        await Promise.race([
+          once(child, 'message', options),
+          once(child, 'exit', options).then(([code, signal]) => {
+            throw new Error(`Process fixture exited before readiness (${signal ?? `code ${code}`})`)
+          }),
+        ])
+      } finally { controller.abort() }
+    }
     try {
-      await Promise.all([once(runner, 'spawn'), once(viewer, 'spawn')])
+      await Promise.all([awaitReady(runner), awaitReady(viewer)])
       expect(await codexProcessesAmong([runner.pid!, viewer.pid!])).toEqual([runner.pid])
     } finally { runner.kill(); viewer.kill() }
   })
