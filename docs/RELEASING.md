@@ -64,6 +64,21 @@ current source, test, dependency and build input. Documentation outside shipped
 materials does not invalidate it. Exact tags, source revisions and final artifact
 hashes remain mandatory; current main need not stay at the release commit.
 
+Stable also looks up `vX.Y.Z-beta.N` tags for its version, newest first. It
+can reuse the Linux source job's lint, typecheck, unit tests and release-tool
+tests when that exact Beta completed both promotions and has retained
+six-target install evidence. The Git trees must match apart from CLI release
+notes, the CLI version in its package and release manifest, and its README
+version marker. The workflow reconstructs the Beta input digest and checks it
+against the authenticated source receipt. Stable's source receipt records the
+Beta tag, commit and run ID. Without a match, ordinary source checks apply.
+
+On a Beta receipt hit, Stable still builds and checks its own package through
+`pnpm check:release`, audits dependencies, verifies runtime source availability,
+and scans boundaries and secrets. Platform checks, all six native finalizations,
+macOS signing and notarization, OIDC publication and all six fresh installs
+run on the Stable candidate.
+
 Source boundaries are scanned once, package contents once. Native finalization
 runs runtime/storage checks on final bytes. macOS remains Developer ID signed
 and notarized, including the accepted-ticket retry. When a Mac's Gatekeeper

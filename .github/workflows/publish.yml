@@ -103,44 +103,48 @@ jobs:
           node scripts/check-secrets.mjs --mode tree
           node scripts/check-secrets.mjs --mode full
       - id: receipt
-        name: Reuse successful source tests only for identical inputs
+        name: Find exact-input or accepted Beta source tests
         env:
           GH_TOKEN: ${{ github.token }}
-        run: node scripts/release-receipt.mjs restore release-source.json
+        run: node scripts/release-receipt.mjs restore "$RUNNER_TEMP/release-source.json" "${{ inputs.channel }}"
       - name: Lint public packages
         run: pnpm lint
-        if: steps.receipt.outputs.reused != 'true'
+        if: steps.receipt.outputs.tests_reused != 'true'
       - name: Build public packages
         run: pnpm build
-        if: steps.receipt.outputs.reused != 'true'
+        if: steps.receipt.outputs.tests_reused != 'true'
       - name: Run public unit tests
         run: pnpm -r test
-        if: steps.receipt.outputs.reused != 'true'
+        if: steps.receipt.outputs.tests_reused != 'true'
       - name: Typecheck public packages
         run: pnpm -r typecheck
-        if: steps.receipt.outputs.reused != 'true'
+        if: steps.receipt.outputs.tests_reused != 'true'
       - name: Audit production dependencies
         run: pnpm audit --prod --audit-level moderate --ignore-registry-errors
-        if: steps.receipt.outputs.reused != 'true'
+        if: steps.receipt.outputs.exact != 'true'
       - name: Verify public boundary
         run: pnpm check:boundary && pnpm check:machine-paths
       - name: Verify release metadata and package contents
         run: pnpm check:release
-        if: steps.receipt.outputs.reused != 'true'
+        if: steps.receipt.outputs.exact != 'true'
       - name: Verify signed npm artifact validation tooling
         run: node --test scripts/verify-packed-install.test.mjs
-        if: steps.receipt.outputs.reused != 'true'
+        if: steps.receipt.outputs.tests_reused != 'true'
       - name: Verify release tooling once
-        run: node --test scripts/package-standalone.test.mjs scripts/sign-release-records.test.mjs scripts/assemble-native-release.test.mjs scripts/publish-native-assets.test.mjs scripts/advance-native-channel.test.mjs scripts/require-native-evidence.test.mjs scripts/native-finalization.test.mjs scripts/verify-runtime-sources.test.mjs scripts/release-receipt.test.mjs scripts/publication-receipt.test.mjs scripts/publish-npm-tarball.test.mjs && node scripts/verify-runtime-sources.mjs
+        run: node --test scripts/package-standalone.test.mjs scripts/sign-release-records.test.mjs scripts/assemble-native-release.test.mjs scripts/publish-native-assets.test.mjs scripts/advance-native-channel.test.mjs scripts/require-native-evidence.test.mjs scripts/native-finalization.test.mjs scripts/verify-runtime-sources.test.mjs scripts/release-receipt.test.mjs scripts/publication-receipt.test.mjs scripts/publish-npm-tarball.test.mjs
+        if: steps.receipt.outputs.tests_reused != 'true'
+      - name: Verify immutable runtime sources
+        run: node scripts/verify-runtime-sources.mjs
         env:
           GH_TOKEN: ${{ github.token }}
-        if: steps.receipt.outputs.reused != 'true'
+        if: steps.receipt.outputs.exact != 'true'
       - name: Record successful input-bound source evidence
-        run: node scripts/release-receipt.mjs write source release-source.json
+        if: steps.receipt.outputs.tests_reused != 'true'
+        run: node scripts/release-receipt.mjs write source "$RUNNER_TEMP/release-source.json"
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: release-source-${{ inputs.expected_sha }}
-          path: release-source.json
+          path: ${{ runner.temp }}/release-source.json
           if-no-files-found: error
           retention-days: 90
     permissions:

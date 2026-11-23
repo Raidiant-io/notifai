@@ -377,3 +377,20 @@ test('release acceptance cannot silently skip after the legacy admission branch'
     assert.notEqual(run({...base,'adapter-acceptance':{result}}).status, 0)
   }
 })
+
+test('Beta source reuse keeps Stable metadata, live checks, and boundary scans in the source job', () => {
+  const steps = publishWorkflow.jobs.source.steps
+  const step = name => steps.find(item => item.name === name)
+  assert.match(steps.find(item => item.id === 'receipt').run, /restore "\$RUNNER_TEMP\/release-source\.json" "\$\{\{ inputs.channel \}\}"/)
+  assert.match(step('Record successful input-bound source evidence').run, /write source "\$RUNNER_TEMP\/release-source\.json"/)
+  assert.equal(steps.at(-1).with.path, '${{ runner.temp }}/release-source.json')
+  for (const name of ['Run public unit tests', 'Lint public packages', 'Typecheck public packages',
+    'Verify signed npm artifact validation tooling', 'Verify release tooling once']) {
+    assert.equal(step(name).if, "steps.receipt.outputs.tests_reused != 'true'")
+  }
+  for (const name of ['Verify release metadata and package contents', 'Audit production dependencies', 'Verify immutable runtime sources']) {
+    assert.equal(step(name).if, "steps.receipt.outputs.exact != 'true'")
+  }
+  for (const name of ['Verify public boundary', 'Prove redacted detection and scan the release history']) assert.equal(step(name).if, undefined)
+  assert.equal(step('Verify release metadata and package contents').run, 'pnpm check:release')
+})
