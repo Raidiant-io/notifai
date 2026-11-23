@@ -85,26 +85,20 @@ describe('a wake left in the old home', () => {
 
 describe('who holds a thread', () => {
   it('counts only processes running Codex', async () => {
-    const { copyFileSync, linkSync } = await import('node:fs')
     const { spawn } = await import('node:child_process')
     const { once } = await import('node:events')
     const { codexProcessesAmong } = await import('./codex-session-end.js')
-    const root = mkdtempSync(path.join(os.tmpdir(), 'notifai-holders-')); roots.push(root)
-    // An executable file named codex: Node's own binary. A link to /bin/sleep is no
-    // such process where sleep is a multicall binary that refuses another name
-    // (Ubuntu 26.04's Rust coreutils exits at once).
-    const codex = path.join(root, 'codex')
-    try { linkSync(process.execPath, codex) } catch { copyFileSync(process.execPath, codex) }
-    // Node can rename its main thread during startup on Linux. Publish the
-    // fixture's title after startup and wait for that title before the census.
+    // Keep Node at its installed path so relative libraries still resolve.
+    // Give macOS ps an argv[0] name and set the title after Node's Linux
+    // main-thread rename. The IPC message makes both names ready for the census.
     const fixture = ['-e', `
       process.title = process.argv[1]
       process.send('ready')
       setTimeout(() => {}, 30_000)
     `]
     const stdio: ('ignore' | 'ipc')[] = ['ignore', 'ignore', 'ignore', 'ipc']
-    const runner = spawn(codex, [...fixture, 'codex'], { stdio })
-    const viewer = spawn(process.execPath, [...fixture, 'viewer'], { stdio })
+    const runner = spawn(process.execPath, [...fixture, 'codex'], { argv0: 'codex', stdio })
+    const viewer = spawn(process.execPath, [...fixture, 'viewer'], { argv0: 'viewer', stdio })
     const awaitReady = async (child: ReturnType<typeof spawn>) => {
       const controller = new AbortController()
       const options = { signal: controller.signal }
