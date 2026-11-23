@@ -75,21 +75,26 @@ proving the version never reached the registry. Each target then installs
 one registry-verified npm adapter, acquires its exact signed native product,
 and checks both process identity and skill refresh in that installation.
 
-Use **Re-run failed jobs** (`gh run rerun <run-id> --failed`). Successful targets
-and their immutable artifacts stay in the run.
+Diagnose the failure and file or link the fix before rerunning. If the blocking
+condition clears on the same candidate, use **Re-run failed jobs**
+(`gh run rerun <run-id> --failed`). Successful targets and their immutable
+artifacts stay in the run.
 
-The npm job can fail after publication succeeded: its byte verification gets
-HTTP 404 for the version or its tarball while the registry propagates, and the
-version metadata appears before the tarball does. A rerun started during that
-window fails the same way. Before rerunning, read the exact version back until
-its tarball serves and matches the published integrity:
+After publication, the npm verifier allows up to ten minutes for both the
+exact version metadata and the tarball to become readable. If repeated HTTP
+404s exceed that window, wait until the exact tarball serves and matches the
+published integrity before rerunning:
 
 ```sh
 npm view @raidiant/notifai@<version> dist.tarball dist.integrity
 curl -fsSLo notifai.tgz "<dist.tarball>" && echo "sha512-$(openssl dgst -sha512 -binary notifai.tgz | base64)"
 ```
 
-The printed digest must equal `dist.integrity`. After a rerun, judge the run
+The printed digest must equal `dist.integrity`. Native promotion also polls
+for the acknowledged commit to become visible and checks signed channel files
+at one immutable revision. If GitHub refuses the write or discovery moves to
+different channel bytes, inspect the provider error or observed revision before
+deciding whether the same candidate can recover. After a rerun, judge the run
 by its latest attempt (`gh run view <run-id> --attempt <n>`): every job of that
 attempt must have succeeded before the artifact and channel read-backs. Do not start a new version or
 rebuild successful signed bytes to recover an acquisition failure. The workflow

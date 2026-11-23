@@ -1,75 +1,66 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import {
-  isRegistryNotFound,
-  lookupPublishedTarball,
-  REGISTRY_LOOKUP_ATTEMPTS,
-} from './npm-registry.mjs'
+import { downloadPublishedTarball } from './npm-registry.mjs'
 
-function registry404() {
-  return Object.assign(new Error('npm view failed'), {
-    stderr: Buffer.from('npm error code E404\nnpm error 404 Not Found'),
-  })
+const NAME = '@raidiant/example'
+const VERSION = '1.2.3'
+const METADATA = 'https://registry.npmjs.org/%40raidiant%2Fexample/1.2.3'
+const TARBALL = 'https://registry.npmjs.org/@raidiant/example/-/example-1.2.3.tgz'
+
+function registry({ metadataAvailable = 0, tarballAvailable = 0, tarballStatus = 404, url = TARBALL } = {}) {
+  let now = 0
+  const requests = []
+  const options = {
+    now: () => now,
+    wait: async milliseconds => { now += milliseconds },
+    warn: () => {},
+    fetchImpl: async input => {
+      const endpoint = String(input)
+      requests.push({ endpoint, now })
+      if (endpoint === METADATA) {
+        return now < metadataAvailable ? new Response(null, { status: 404 }) : Response.json({ dist: { tarball: url } })
+      }
+      assert.equal(endpoint, TARBALL)
+      return now < tarballAvailable ? new Response(null, { status: tarballStatus }) : new Response('exact npm artifact')
+    },
+  }
+  return { requests, options }
 }
 
-test('npm E404 propagation failures retry with bounded exponential backoff', async () => {
-  let calls = 0
-  const waits = []
-  const retries = []
-  const tarball = await lookupPublishedTarball('@raidiant/example@1.2.3', {
-    lookup: () => {
-      calls += 1
-      if (calls < 3) throw registry404()
-      return 'https://registry.example/package.tgz'
-    },
-    wait: async milliseconds => waits.push(milliseconds),
-    onRetry: retry => retries.push(retry),
-  })
+test('waits past observed metadata lag and catches tarballs that appear in the final backoff interval', async () => {
+  const { requests, options } = registry({ metadataAvailable: 5 * 60_000, tarballAvailable: 590_000 })
 
-  assert.equal(tarball, 'https://registry.example/package.tgz')
-  assert.equal(calls, 3)
-  assert.deepEqual(waits, [1000, 2000])
-  assert.deepEqual(retries, [
-    {attempt: 1, delayMs: 1000},
-    {attempt: 2, delayMs: 2000},
-  ])
+  const bytes = await downloadPublishedTarball(NAME, VERSION, options)
+
+  assert.deepEqual(bytes, Buffer.from('exact npm artifact'))
+  assert.deepEqual(requests.slice(0, 3).map(request => request.now), [0, 1000, 3000])
+  assert.ok(requests.filter(request => request.endpoint === TARBALL).length > 1)
+  assert.ok(requests.at(-1).now >= 590_000 && requests.at(-1).now < 600_000)
 })
 
-test('a genuinely missing package fails after the bounded attempt ceiling', async () => {
-  let calls = 0
-  const waits = []
-  await assert.rejects(
-    lookupPublishedTarball('@raidiant/missing@1.2.3', {
-      lookup: () => {
-        calls += 1
-        throw registry404()
-      },
-      wait: async milliseconds => waits.push(milliseconds),
-      onRetry: () => {},
-    }),
-    error => isRegistryNotFound(error),
-  )
+test('persistent metadata and tarball 404s share one bounded deadline', async () => {
+  for (const [metadataAvailable, missing] of [[Infinity, 'version metadata'], [9 * 60_000, 'tarball']]) {
+    const { requests, options } = registry({ metadataAvailable, tarballAvailable: Infinity })
 
-  assert.equal(calls, REGISTRY_LOOKUP_ATTEMPTS)
-  assert.deepEqual(waits, [1000, 2000, 4000, 8000, 16000, ...Array(8).fill(30000)])
-  assert.equal(waits.reduce((sum, milliseconds) => sum + milliseconds, 0), 271000)
+    await assert.rejects(downloadPublishedTarball(NAME, VERSION, options), new RegExp(`${missing}.*HTTP 404`))
+
+    assert.ok(requests.at(-1).now >= 9.5 * 60_000)
+    assert.ok(requests.at(-1).now < 10 * 60_000)
+  }
 })
 
-test('non-propagation verification failures do not retry', async () => {
-  let calls = 0
-  const waits = []
-  await assert.rejects(
-    lookupPublishedTarball('@raidiant/example@1.2.3', {
-      lookup: () => {
-        calls += 1
-        throw new Error('registry authentication failed')
-      },
-      wait: async milliseconds => waits.push(milliseconds),
-      onRetry: () => {},
-    }),
-    /registry authentication failed/,
-  )
+test('a non-404 download failure stops on its first read', async () => {
+  const { requests, options } = registry({ tarballAvailable: Infinity, tarballStatus: 403 })
 
-  assert.equal(calls, 1)
-  assert.deepEqual(waits, [])
+  await assert.rejects(downloadPublishedTarball(NAME, VERSION, options), /HTTP 403/)
+
+  assert.deepEqual(requests, [{ endpoint: METADATA, now: 0 }, { endpoint: TARBALL, now: 0 }])
+})
+
+test('rejects metadata pointing at a foreign tarball origin before fetching it', async () => {
+  const { requests, options } = registry({ url: 'https://example.invalid/example.tgz' })
+
+  await assert.rejects(downloadPublishedTarball(NAME, VERSION, options), /canonical npm origin/)
+
+  assert.deepEqual(requests, [{ endpoint: METADATA, now: 0 }])
 })

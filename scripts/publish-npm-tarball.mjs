@@ -6,6 +6,7 @@ import { spawnSync } from 'node:child_process'
 import path from 'node:path'
 import { setTimeout as delay } from 'node:timers/promises'
 import { pathToFileURL } from 'node:url'
+import { readRegistryVersion } from './npm-registry.mjs'
 
 // npm signs provenance before it uploads the package. Its Sigstore client
 // retries a timed-out Rekor upload itself; when the first upload had landed,
@@ -16,11 +17,8 @@ export const PUBLISH_ATTEMPTS = 3
 const RETRY_DELAY_MS = 15_000
 
 export async function registryHasVersion(name, version, fetchImpl = fetch) {
-  const response = await fetchImpl(`https://registry.npmjs.org/${encodeURIComponent(name)}/${encodeURIComponent(version)}`,
-    { redirect: 'error', signal: AbortSignal.timeout(10_000), headers: { 'Cache-Control': 'no-cache' } })
-  if (response.status === 404) return false
-  if (response.status === 200) return true
-  throw new Error(`npm registry lookup failed (HTTP ${response.status})`)
+  const response = await readRegistryVersion(name, version, fetchImpl)
+  return response.status === 200
 }
 
 export async function publishTarball({ tarball, distTag, name, version,

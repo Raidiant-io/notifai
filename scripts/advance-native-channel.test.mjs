@@ -27,7 +27,8 @@ async function setup() {
   await publishNativeAssets(f.args)
   f.state.calls = []
   const git = { head: 'c'.repeat(40), trees: new Map([['d'.repeat(40), new Map([['README.md', 'preserve this metadata file']])]]),
-    commits: new Map([['c'.repeat(40), { tree: 'd'.repeat(40), parents: [] }]]), blobs: new Map(), calls: [], next: 1, race: false }
+    commits: new Map([['c'.repeat(40), { tree: 'd'.repeat(40), parents: [] }]]), blobs: new Map(), calls: [], next: 1,
+    refusal: null, staleReads: 0, missingContentsReads: 0, missingContentsAt: null, afterWrite: null, written: undefined }
   const id = () => (git.next++).toString(16).padStart(40, '0')
   const response = (value, status = 200) => new Response(JSON.stringify(value), { status })
   const fetchImpl = async (input, options = {}) => {
@@ -37,20 +38,34 @@ async function setup() {
       git.calls.push({ method, route, body })
       assert.equal(change.expectedHeadOid, git.head)
       assert.deepEqual(change.branch, { repositoryNameWithOwner: 'Raidiant-io/notifai', branchName: 'release-metadata' })
-      if (git.race) return response({ errors: [{ message: 'Expected head differs' }] })
+      if (git.refusal) return response({ errors: [git.refusal] })
       const tree = new Map(git.trees.get(git.commits.get(git.head).tree))
       for (const file of change.fileChanges.additions) tree.set(file.path, Buffer.from(file.contents, 'base64').toString())
       const treeId = id(), commitId = id()
       git.trees.set(treeId, tree); git.commits.set(commitId, { tree: treeId, parents: [git.head] }); git.head = commitId
+      git.written = commitId
+      git.afterWrite?.(tree, commitId)
       return response({ data: { createCommitOnBranch: { commit: { oid: commitId } } } })
     }
     if (!route.includes('release-metadata') && !route.startsWith('/contents/') &&
         !['/git/blobs', '/git/trees', '/git/commits', '/git/refs'].includes(route) && !route.startsWith('/git/commits/')) return f.args.fetchImpl(input, options)
     const body = options.body ? JSON.parse(options.body) : null
     git.calls.push({ method, route, body })
-    if (route === '/git/ref/heads/release-metadata') return git.head ? response({ object: { type: 'commit', sha: git.head } }) : response({}, 404)
+    if (route === '/git/ref/heads/release-metadata') {
+      let head = git.head
+      if (git.written && git.staleReads > 0) {
+        git.staleReads -= 1
+        head = git.commits.get(git.written).parents[0]
+      }
+      return head ? response({ object: { type: 'commit', sha: head } }) : response({}, 404)
+    }
     if (route.startsWith('/contents/')) {
-      const commit = git.commits.get(url.searchParams.get('ref')), contents = git.trees.get(commit.tree).get(route.slice('/contents/'.length))
+      const ref = url.searchParams.get('ref')
+      if (ref === (git.missingContentsAt ?? git.written) && git.missingContentsReads > 0) {
+        git.missingContentsReads -= 1
+        return response({}, 404)
+      }
+      const commit = git.commits.get(ref), contents = git.trees.get(commit.tree).get(route.slice('/contents/'.length))
       return contents === undefined ? response({}, 404) : response({ type: 'file', encoding: 'base64', size: Buffer.byteLength(contents), content: Buffer.from(contents).toString('base64') })
     }
     if (method === 'GET' && route.startsWith('/git/commits/')) return response({ tree: { sha: git.commits.get(route.split('/').at(-1)).tree } })
@@ -63,7 +78,7 @@ async function setup() {
     if (route === '/git/commits') { const sha = id(); git.commits.set(sha, body); return response({ sha }, 201) }
     if (route === '/git/refs' && method === 'POST') {
       assert.equal(body.ref, 'refs/heads/release-metadata')
-      if (git.race || git.head) return response({}, 422)
+      if (git.refusal || git.head) return response({}, 422)
       git.head = body.sha; return response({ object: { type: 'commit', sha: git.head } })
     }
     throw new Error(`Unexpected channel fixture request ${method} ${route}`)
@@ -78,7 +93,9 @@ async function setup() {
     files().set(`${channel}.bootstrap.tsv`, `retained ${channel} view`)
     return bytes
   }
-  return { git, files, seed, distribution, args: { ...f.args, fetchImpl, channel: 'stable', privateKey, trustedKeys, keyId: 'fixture' } }
+  const waits = []
+  return { git, files, seed, distribution, waits, args: { ...f.args, fetchImpl, channel: 'stable', privateKey,
+    trustedKeys, keyId: 'fixture', wait: async milliseconds => { waits.push(milliseconds) } } }
 }
 test('channel initialization is explicit; one commit publishes JSON and view while preserving other metadata; retries do not write', async () => {
   const f = await setup()
@@ -134,21 +151,77 @@ test('beta cannot be promoted below stable, and stable cannot reintroduce a beta
   await assert.rejects(advanceNativeChannel({ ...opposite.args, initialize: true, withdraw: ['1.1.0-beta.1'] }), /recommending a withdrawn/)
   assert.ok(opposite.git.calls.every(call => call.method === 'GET'))
 })
-test('a competing metadata ref update is not overwritten or retried with force', async () => {
+test('a GraphQL refusal reports the provider type and message without a second write', async () => {
   const f = await setup(), previousHead = f.git.head
-  f.git.race = true
-  await assert.rejects(advanceNativeChannel({ ...f.args, initialize: true }), /Channel head changed/)
+  f.git.refusal = { type: 'STALE_DATA', message: 'Expected head differs' }
+  await assert.rejects(advanceNativeChannel({ ...f.args, initialize: true }), /STALE_DATA.*Expected head differs/)
   assert.equal(f.git.head, previousHead)
   assert.equal(f.files().has('stable.json'), false)
   assert.equal(f.git.calls.filter(call => call.route === '/graphql').length, 1)
   assert.ok(f.git.calls.every(call => call.method !== 'PATCH'))
 })
 
+test('polls the previous discovery head and missing files before admitting the acknowledged commit', async () => {
+  const f = await setup()
+  f.git.staleReads = 2
+  f.git.missingContentsReads = 1
+
+  const promoted = await advanceNativeChannel({ ...f.args, initialize: true })
+
+  assert.equal(promoted.metadata_commit, f.git.written)
+  assert.equal(promoted.sequence, 1)
+  assert.equal(f.waits.length, 3)
+  assert.equal(f.git.calls.filter(call => call.route === '/graphql').length, 1)
+})
+
+test('fails a persistently stale discovery head after bounded reads without another write', async () => {
+  const f = await setup(), previousHead = f.git.head
+  f.git.staleReads = Infinity
+
+  await assert.rejects(advanceNativeChannel({ ...f.args, initialize: true }), new RegExp(`timed out.*${previousHead}`))
+
+  assert.ok(f.waits.length > 0 && f.waits.reduce((total, wait) => total + wait, 0) <= 120_000)
+  assert.equal(f.git.calls.filter(call => call.route === '/graphql').length, 1)
+})
+
+test('fails a competing change to channel files without polling or overwriting it', async () => {
+  const f = await setup()
+  f.git.afterWrite = (tree, commit) => {
+    const newer = 'a'.repeat(40), newerTree = 'b'.repeat(40)
+    f.git.trees.set(newerTree, new Map(tree).set('stable.bootstrap.tsv', 'another publication'))
+    f.git.commits.set(newer, { tree: newerTree, parents: [commit] })
+    f.git.head = newer
+  }
+
+  await assert.rejects(advanceNativeChannel({ ...f.args, initialize: true }), /Channel changed before publication readback/)
+
+  assert.deepEqual(f.waits, [])
+  assert.equal(f.files().get('stable.bootstrap.tsv'), 'another publication')
+  assert.equal(f.git.calls.filter(call => call.route === '/graphql').length, 1)
+})
+
+test('waits for files at a newer discovery head that preserves the published bytes', async () => {
+  const f = await setup(), newer = 'a'.repeat(40), newerTree = 'b'.repeat(40)
+  f.git.afterWrite = (tree, commit) => {
+    f.git.trees.set(newerTree, new Map(tree).set('README.md', 'an independent edit'))
+    f.git.commits.set(newer, { tree: newerTree, parents: [commit] })
+    f.git.head = newer
+    f.git.missingContentsAt = newer
+    f.git.missingContentsReads = 1
+  }
+
+  const promoted = await advanceNativeChannel({ ...f.args, initialize: true })
+
+  assert.equal(promoted.metadata_commit, newer)
+  assert.equal(f.waits.length, 1)
+  assert.equal(f.git.calls.filter(call => call.route === '/graphql').length, 1)
+})
+
 test('a missing metadata branch uses exclusive initial ref creation and never overwrites a concurrent creator', async () => {
   const first = await setup(); first.git.head = null
   assert.equal((await advanceNativeChannel({ ...first.args, initialize: true })).sequence, 1)
   assert.equal(first.distribution.verifyChannel(first.files().get('stable.json'), 'stable').version, '1.0.0')
-  const racing = await setup(); racing.git.head = null; racing.git.race = true
+  const racing = await setup(); racing.git.head = null; racing.git.refusal = true
   await assert.rejects(advanceNativeChannel({ ...racing.args, initialize: true }), /422/)
   assert.equal(racing.git.head, null)
 })

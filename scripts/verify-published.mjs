@@ -29,7 +29,7 @@ import os from 'node:os'
 import path from 'node:path'
 import process from 'node:process'
 import {repositoryRoot} from './cross-platform.mjs'
-import {lookupPublishedTarball} from './npm-registry.mjs'
+import { downloadPublishedTarball } from './npm-registry.mjs'
 import { expectedTarballFailure } from './tarball-integrity.mjs'
 import { releaseAdapterAccess } from './verify-packed-npm-adapter.mjs'
 import { assertPackedTarballs } from './check-packed-boundary.mjs'
@@ -118,28 +118,9 @@ for (const entry of selected) {
   const version = manifest.version
   const label = `${entry.name}@${version}`
 
-  let tarballUrl
-  try {
-    tarballUrl = await lookupPublishedTarball(label)
-  } catch (error) {
-    failures.push(`${label}: not published, or npm view failed (${String(error)})`)
-    continue
-  }
-  if (tarballUrl.length === 0) {
-    failures.push(`${label}: npm reported no tarball for this version`)
-    continue
-  }
-
   const scratch = mkdtempSync(path.join(os.tmpdir(), 'notifai-verify-'))
   try {
-    const registryUrl = new URL(tarballUrl)
-    if (registryUrl.origin !== 'https://registry.npmjs.org' || registryUrl.username || registryUrl.password) throw new Error('Registry tarball must use the canonical npm origin')
-    const response = await fetch(registryUrl, { redirect: 'error', signal: AbortSignal.timeout(120_000) })
-    if (!response.ok) {
-      failures.push(`${label}: could not download ${tarballUrl} (HTTP ${response.status})`)
-      continue
-    }
-    const publishedTarball = Buffer.from(await response.arrayBuffer())
+    const publishedTarball = await downloadPublishedTarball(entry.name, version)
     writeFileSync(path.join(scratch, 'package.tgz'), publishedTarball)
     if (expectedTarball !== undefined) {
       const integrityFailure = expectedTarballFailure(
