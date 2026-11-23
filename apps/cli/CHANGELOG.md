@@ -8,6 +8,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 This project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 and [Conventional Commits](https://www.conventionalcommits.org/en/v1.0.0/).
 
+## [14.7.7-beta.1](https://github.com/Raidiant-io/notifai/compare/v14.7.6...v14.7.7-beta.1) (2026-11-23)
+
+### Bug Fixes
+
+* Grok sessions that an app such as Orca chat or T3 Code starts now show as idle or working on your devices, and say plainly that they don't take notes instead of leaving a note undelivered.
+* To send notes to them, set `use_leader = true` under `[cli]` in Grok's `config.toml` and start a new session. `notifai doctor` explains how; Notifai never changes the setting for you.
+
 ## [14.7.6](https://github.com/Raidiant-io/notifai/compare/v14.7.4...v14.7.6) (2026-11-20)
 
 ### Bug Fixes
