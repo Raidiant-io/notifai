@@ -11,7 +11,8 @@ import { disableProject, enableProject, projectBinding } from './project-enablem
 import { readOpenclawGeneration } from './openclaw-generation.js'
 import { readSessionIncarnation } from './hook-session-state.js'
 
-describe('generated activation through the real isolated CLI', () => {
+// Each case starts the real CLI several times; a busy machine needs more than the default budget.
+describe('generated activation through the real isolated CLI', { timeout: 120_000 }, () => {
   it('keeps disabled OpenCode Projects silent and activates from the next User prompt in the same Agent Session', async () => {
     const root = mkdtempSync(path.join(os.tmpdir(), 'notifai-activation-boundary-'))
     const cwd = path.join(root, 'project')
