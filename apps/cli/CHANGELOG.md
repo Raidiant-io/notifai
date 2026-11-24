@@ -8,6 +8,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 This project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 and [Conventional Commits](https://www.conventionalcommits.org/en/v1.0.0/).
 
+## [14.7.7-beta.3](https://github.com/Raidiant-io/notifai/compare/v14.7.6...v14.7.7-beta.3) (2026-11-24)
+
+### Bug Fixes
+
+* Grok chats in Orca bots now show as running with notes unavailable. Question answers still reach the bot.
+* Not delivered yet notices show the status sentence once.
+
 ## [14.7.6](https://github.com/Raidiant-io/notifai/compare/v14.7.4...v14.7.6) (2026-11-20)
 
 ### Bug Fixes
