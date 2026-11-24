@@ -8,6 +8,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 This project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 and [Conventional Commits](https://www.conventionalcommits.org/en/v1.0.0/).
 
+## [14.7.7-beta.5](https://github.com/Raidiant-io/notifai/compare/v14.7.6...v14.7.7-beta.5) (2026-11-24)
+
+### Bug Fixes
+
+* When Orca puts an idle Claude Code or Codex chat to sleep, Notifai now wakes it for your answers and notes, and the same session receives them.
+* A chat that went to sleep before this update needs one message from you in Orca first. Turn waking off with notifai config set wake.orca_chat off.
+
 ## [14.7.6](https://github.com/Raidiant-io/notifai/compare/v14.7.4...v14.7.6) (2026-11-20)
 
 ### Bug Fixes
