@@ -1,5 +1,5 @@
 {
-  "current": "43eb799ff14d638b69ee7cf4200b580219c60b4e636aa1f8e086d1ecaf9953c2",
+  "current": "3acd52832cc13c3449015f946f11b8aceef3af7b1325f25a88074438175a36ed",
   "releases": [
     {
       "digest": "3e47b01bc6bbfb43e910c660b9964fab6459d75148c3c02dcbcd0be64cfb2963",
@@ -464,6 +464,10 @@
     {
       "digest": "43eb799ff14d638b69ee7cf4200b580219c60b4e636aa1f8e086d1ecaf9953c2",
       "note": "Grok sessions in Orca bot chats keep their running status and receive question answers at Stop. Session Notes and Answer Edits are unavailable in these chats. Regular Orca chats on macOS still receive the Notifai wake. A notice about an input waiting too long shows its status sentence once."
+    },
+    {
+      "digest": "3acd52832cc13c3449015f946f11b8aceef3af7b1325f25a88074438175a36ed",
+      "note": "On macOS, when Grok has no qualified leader or app wake, its tool-result instructions can start a persistent Notifai monitor. This lets Orca bot chats and standalone Grok terminals receive Session Notes and Answer Edits. Run notifai receive when the monitor wakes the session."
     }
   ]
 }

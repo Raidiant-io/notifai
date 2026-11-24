@@ -129,6 +129,7 @@ import { inferredProjectName, projectBinding, projectEnablementState } from './p
 import { attendantSupport } from './session-attendant-probe.js'
 import { GROK_NO_LEADER_REASON } from './grok-leader.js'
 import { GROK_ORCA_BOT_REASON } from './grok-host-route.js'
+import { GROK_MONITOR_UNAVAILABLE } from './grok-monitor.js'
 import { readHubReport } from './hub-client.js'
 import { describeHubHandover, hubHandoverReport } from './hub-handover.js'
 import { codexTurnObserved, hermesQuestionRouteReady, listAttendantReports, type AttendantReport } from './session-attendant-state.js'
@@ -2201,7 +2202,7 @@ function wakeRouteCheck(
       ok: false,
       reportOnly: true,
       technical: { direct_wake_optional: true },
-      detail: 'Grok waits for answers at Stop. Shared-leader sessions receive claimed answer interjections, Notes and Answer Edits; on macOS a regular Orca chat or T3 Code thread is woken through that app for Notes and Answer Edits; other sessions use native Stop continuations within Grok\'s per-turn limit',
+      detail: 'Grok waits for answers at Stop. Shared-leader sessions receive claimed answer interjections, Notes and Answer Edits. On macOS, regular Orca chats and T3 Code threads can wake through their app. Other eligible sessions can wake for Notes and Answer Edits through a live Grok monitor.',
     }
   }
   return null
@@ -2298,16 +2299,14 @@ function sessionHubCheck(deps: CommandDeps): HookCheck | null {
 
 /**
  * Where a Grok session takes Notes, in the User's words: on Grok's shared
- * leader, or, on macOS, in a regular Orca chat or T3 Code thread through that app.
- * A terminal Grok joins the leader only when the User starts it with
- * `--leader`; Notifai recommends no Grok config change.
+ * leader, or on macOS through a verified host or a live Grok monitor.
  */
-const GROK_NOTES_ROUTES = 'Notes and Answer Edits reach a Grok session on Grok\'s shared leader, or, on macOS, one a regular Orca chat or a T3 Code thread runs, through that app; ' +
-  'once it notifies, the Companion App shows any other session running and not taking notes. ' +
-  'In a terminal, the User can start Grok with `grok --leader` to receive them; Notifai never changes Grok\'s config. Questions still use the held Stop'
+const GROK_NOTES_ROUTES = 'Notes and Answer Edits reach Grok through its shared leader, a verified Orca or T3 Code chat, or a live Grok monitor. ' +
+  'On macOS, an Orca bot or standalone Grok terminal can start its monitor when the first tool result supplies the instructions. Questions still use the held Stop'
 
 /** Why an app-hosted Grok session has no notes route, in the User's words. */
 const GROK_HOST_UNVERIFIED: Record<string, string> = {
+  [GROK_MONITOR_UNAVAILABLE]: 'This session can receive Notes and Answer Edits when its Notifai monitor is running. Questions still use the held Stop',
   [GROK_ORCA_BOT_REASON]: 'Orca bot chats show as running and receive question answers at Stop. Session Notes and Answer Edits are unavailable',
   'orca-chat-binding-unverified': 'Orca did not confirm that this Grok session is the chat it runs in, so Notifai sends no notes there',
   't3-server-not-parent': 'the T3 Code server that started this Grok session is not running, so Notifai sends no notes there',

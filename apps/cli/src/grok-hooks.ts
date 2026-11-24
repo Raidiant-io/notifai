@@ -8,6 +8,7 @@ import { claimGuidanceChange, invalidateGuidanceRead, recordGuidanceGiven } from
 import type { PendingNotice } from './pending-notice.js'
 import { stopAnswerOutput } from './hook-acknowledgements.js'
 import { GrokLeaderSession } from './grok-leader.js'
+import { grokMonitorReady } from './grok-monitor.js'
 
 export function grokHookEnvelope(input: HookEnvelope): HookEnvelope | null {
   const native = input.sessionId
@@ -35,6 +36,7 @@ export function resetGrokActivation(sessionId: string, env: NodeJS.ProcessEnv, c
   updateSessionState(sessionId, env, current => {
     const next = { ...current }
     delete next.grok_activation_context
+    if (!compacted || !grokMonitorReady(sessionId, env, current)) delete next.grok_monitor
     if (compacted) next.grok_compacted = true
     else delete next.grok_compacted
     return next

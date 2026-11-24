@@ -127,7 +127,7 @@ export interface SessionAttendantOptions {
   /** Whether the service advertises Session Attendance. */
   serverSupportsAttendance(client: ApiClient): Promise<boolean>
   /** Whether this attendant can hand Session Messages into the session. */
-  acceptsMessages: boolean
+  acceptsMessages: boolean | (() => boolean)
   /** Why a running session takes no Session Messages, for `notifai doctor`. */
   messagesUnavailableReason?: string
   /**
@@ -212,6 +212,8 @@ export async function runSessionAttendant(options: SessionAttendantOptions): Pro
   let leaseEndsAt: number | null = null
   let probe: HarnessProbe = options.probe()
   let activity: SessionActivity | null = probe.state === 'running' ? probe.activity : null
+  const messagesReady = typeof options.acceptsMessages === 'function' ? options.acceptsMessages : () => options.acceptsMessages === true
+  let acceptsMessages = messagesReady()
   let phase: AttendantPhase = 'dormant'
   let phaseReason: string | null = null
   let networkStarted = false
@@ -238,8 +240,8 @@ export async function runSessionAttendant(options: SessionAttendantOptions): Pro
         incarnation,
         generation,
         activity,
-        reason: phaseReason ?? (options.acceptsMessages ? null : options.messagesUnavailableReason ?? null),
-        accepts_messages: options.acceptsMessages,
+        reason: phaseReason ?? (acceptsMessages ? null : options.messagesUnavailableReason ?? null),
+        accepts_messages: acceptsMessages,
         ...(options.publishProbeStatus ? { writer_ready: probe.state === 'running' } : {}),
         updated_at: clock.wall(),
       })
@@ -322,14 +324,17 @@ export async function runSessionAttendant(options: SessionAttendantOptions): Pro
       }
       return false
     }
+    const ready = messagesReady()
+    const readinessChanged = acceptsMessages !== ready
+    acceptsMessages = ready
     const changed = activity !== probe.activity
     activity = probe.activity
     if (changed) {
       logger.info('attendant.state', { phase, activity, reason: 'activity-changed', generation })
-      writeStatus()
     }
-    if (previous.state !== 'running' || changed) {
-      // A held exchange carries the old activity; cut it so the next one reports this.
+    if (changed || readinessChanged) writeStatus()
+    if (previous.state !== 'running' || changed || readinessChanged) {
+      // Cut a held exchange that carries old activity or writer readiness.
       exchange?.abort()
       nudge()
     }
@@ -522,7 +527,7 @@ export async function runSessionAttendant(options: SessionAttendantOptions): Pro
       state: 'running',
       // Set by the successful refresh above.
       activity: activity ?? 'idle',
-      accepts_messages: options.acceptsMessages,
+      accepts_messages: acceptsMessages,
       ...(cursor === undefined ? {} : { message_cursor: cursor }),
     }
     const current = new AbortController()
@@ -585,7 +590,7 @@ export async function runSessionAttendant(options: SessionAttendantOptions): Pro
       let handedOff: 'done' | 'retry-soon' = 'done'
       // What the service still offers: a handed-in note is gone from the next exchange.
       offeredMessages = response.messages.length
-      if (options.acceptsMessages && options.onMessages !== undefined) {
+      if (acceptsMessages && options.onMessages !== undefined) {
         try {
           handedOff = await options.onMessages(response.messages, handle)
         } catch (err) {

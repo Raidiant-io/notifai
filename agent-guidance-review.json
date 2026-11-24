@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "behavior_digest": "sha256:134826822968beb95110f70605b4c60109a793073da6e63d992879042b580e9b",
+  "behavior_digest": "sha256:2ed58bf68c32c17e83ceba21f7a428aba5527900c5ab65e22b8961b189ddc600",
   "outcome": "guidance-updated",
   "surfaces_reviewed": [
     "lifecycle-hooks",
@@ -9,5 +9,5 @@
     "cli-readiness",
     "domain-terms"
   ],
-  "reason": "Orca bot chats run the Grok attendant for presence and take question answers in the held Stop. The Grok skill reference, harness documentation and doctor now identify regular Orca chats as eligible for notes. Lifecycle hook placement, setup and domain terms require no edits. Overdue notices use the Body for question and session details."
+  "reason": "Grok's passive tool-result hook offers the native monitor when an exact session has no qualified leader or host wake. The Grok skill reference, harness documentation and doctor describe monitor behavior and the held Stop question route. The existing setup and domain terms still apply."
 }

@@ -258,6 +258,34 @@ describe('Session Attendant', () => {
     await h.clock.advance(10)
   })
 
+  it('updates notes capability on the same lease when the writer starts and stops', async () => {
+    let ready = false
+    const h = startAttendant({ acceptsMessages: () => ready })
+    await h.clock.advance(1)
+    expect(h.service.last().body.accepts_messages).toBe(false)
+    h.service.last().respond(h.service.attending(7))
+    await flush()
+
+    const beforeStart = h.service.last()
+    ready = true
+    await h.clock.advance(2_000)
+    expect(beforeStart.aborted).toBe(true)
+    expect(h.service.last().body).toMatchObject({ generation: 7, state: 'running', accepts_messages: true })
+    expect(h.statuses.at(-1)?.accepts_messages).toBe(true)
+
+    const beforeStop = h.service.last()
+    ready = false
+    await h.clock.advance(2_000)
+    expect(beforeStop.aborted).toBe(true)
+    expect(h.service.last().body).toMatchObject({ generation: 7, state: 'running', accepts_messages: false })
+    expect(h.statuses.at(-1)?.accepts_messages).toBe(false)
+
+    h.signal()
+    await flush()
+    h.service.last().respond({ status: 'withdrawn' })
+    await h.result
+  })
+
   it('never reports a session that ended before it notified', async () => {
     const h = startAttendant({}, { notified: false })
     await h.clock.advance(4_000)

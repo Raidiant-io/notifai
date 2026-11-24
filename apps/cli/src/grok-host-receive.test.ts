@@ -14,6 +14,7 @@ import { afterEach, describe, expect, it } from 'vitest'
 import type { ApiClient } from './client.js'
 import type { CommandDeps } from './commands-core.js'
 import { receiveCommand } from './commands-receive.js'
+import { recordGrokTerminalStart } from './grok-terminal-session.js'
 import { beginSessionIncarnation, lifecycleStamp, updateSessionState } from './hook-session-state.js'
 import { acquireClaimFile } from './hook-question-lock.js'
 import { processStartTime } from './process-identity.js'
@@ -117,6 +118,24 @@ describe('notifai receive under a Grok host route', () => {
     updateSessionState(A, h.env, (state) => ({ ...state, grok_host_owner: { incarnation: record.incarnation, ...ownGrok(), route: 'orca-chat' } }))
     const next = h.open(A, null)
     stageSessionMessages(A, h.env, next, [note('sm_next')])
+    expect(await h.receiveAs(A)).toContain('could not be handed over yet')
+    expect(h.claims).toEqual([])
+  })
+
+  it('refuses the previous terminal conversation while its Grok process is still alive', async () => {
+    const h = setup()
+    const owner = ownGrok()
+    const old = h.open(A, owner)
+    const first = beginSessionIncarnation(A, h.env, { stamp: lifecycleStamp() })
+    recordGrokTerminalStart(owner, h.env, first)
+    updateSessionState(A, h.env, state => ({ ...state, grok_host_owner: {
+      ...owner, incarnation: first.incarnation, route: 'monitor', terminal: true,
+    } }))
+    stageSessionMessages(A, h.env, old, [note('sm_before_clear')])
+
+    const replacement = beginSessionIncarnation(B, h.env, { stamp: lifecycleStamp() })
+    recordGrokTerminalStart(owner, h.env, replacement)
+    recordGrokTerminalStart(owner, h.env, first) // A callback from the old actor arrives late.
     expect(await h.receiveAs(A)).toContain('could not be handed over yet')
     expect(h.claims).toEqual([])
   })

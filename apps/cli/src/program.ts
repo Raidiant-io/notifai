@@ -99,7 +99,7 @@ function version(): string {
  * The full command path, e.g. `config set`, so a filter on `cmd` distinguishes
  * subcommands that share a leaf name.
  */
-const INTERNAL_COMMANDS = new Set(['hook', 'hub', 'activation-plan', 'attendant-resume'])
+const INTERNAL_COMMANDS = new Set(['hook', 'hub', 'activation-plan', 'attendant-resume', 'grok-watch'])
 
 const ADDITIVE_GUIDANCE_HELP = 'A new topic name adds to shipped guidance without replacing it and outranks it where they conflict.'
 
@@ -550,6 +550,12 @@ export function buildProgram(deps: CommandDeps, options: BuildProgramOptions = {
   // Owned updater subprocess; never an agent-facing lifecycle or session-creation API.
   program.command('attendant-resume <session-id> <incarnation-key>', { hidden: true })
     .action(async (sessionId: string, key: string) => { exit(await resumeAttendantCommand(deps, sessionId, key)) })
+
+  program.command('grok-watch <session-id> <ticket>', { hidden: true })
+    .action(async (sessionId: string, ticket: string) => {
+      const { grokWatchCommand } = await import('./grok-monitor.js')
+      exit(await grokWatchCommand(deps, sessionId, ticket))
+    })
 
   const project = program
     .command('project')

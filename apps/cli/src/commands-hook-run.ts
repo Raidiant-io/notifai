@@ -92,6 +92,7 @@ import { attendantSupport } from './session-attendant-probe.js'
 import { proveWindowsCodexHookSource } from './windows-hook-source.js'
 import { grokAttendHook, startGrokAttendant } from './grok-attendant.js'
 import { grokPromptWake } from './grok-host-route.js'
+import { grokMonitorContext } from './grok-monitor.js'
 import { readAttendantEndingLease, readAttendantLease } from './session-attendant-state.js'
 import { openclawContinuationRoute } from './openclaw-continuation-bridge.js'
 import { listPendingOpenclawSessions } from './openclaw-pending.js'
@@ -654,10 +655,13 @@ export async function hookRunCommand(
     try {
       if (event === 'post-compact') resetGrokActivation(envelope.session_id!, deps.env, true)
       else if (lifecycleEnabled()) {
+        startGrokAttendant(envelope, cwd, deps.env)
         const update = pendingAgentUpdateNotice({ env: deps.env, now: now(), updateCommand: updateCliCommand(deps) })
         const fault = pendingIntegrationFaultNotice({ ...deps, cwd }, 'grok')
         context = claimGrokActivation(envelope, cwd, deps.env, [update, fault].filter((notice): notice is PendingNotice => notice !== undefined))
         if (context === undefined && !grokWorker(envelope)) context = claimNow(fault)
+        const monitor = grokMonitorContext(envelope, deps.env)
+        if (monitor !== undefined) context = [context, monitor].filter(Boolean).join('\n\n')
       }
       if (event === 'post-tool-use') {
         const form = unlinkedQuestionFormContext(deps, envelope, harness, cwd)
@@ -948,7 +952,7 @@ export async function hookRunCommand(
         if (harness !== 'codex') recordSessionStart(envelope.session_id, deps.env, harness, cwd, undefined, invokedAt)
         if (harness === 'grok') {
           resetGrokActivation(envelope.session_id, deps.env)
-          startGrokAttendant(envelope, cwd, deps.env)
+          startGrokAttendant(envelope, cwd, deps.env, true)
         }
         observeIntegration()
         if (harness === 'codex') {

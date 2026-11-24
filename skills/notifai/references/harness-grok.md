@@ -65,14 +65,19 @@ receive` says nothing is pending, the input was already read: end that turn.
 Acknowledge each message after reading it. Closing the session stops
 delivery.
 
-Other local sessions, including Orca bot chats, a terminal Grok started without
-`--leader`, headless sessions and hidden subagents, get answers through Stop but no Notes
-or Edits; the User's devices show such a session running and say it doesn't
-take notes. Notifai never starts a leader, changes Grok's config or reopens
-saved history to deliver a message. Remote execution needs a local
-installation on that host. Notifai cannot use the leader on Windows. If the
-leader or the app is unavailable, or its protocol changes, message delivery
-stops rather than guess another session.
+On macOS, Orca bot chats and standalone terminal sessions can use Grok's
+native persistent monitor when no other wake route is qualified. Follow the
+tool-result instructions to start it once and leave it running. If Grok asks
+for permission, let the User decide there. When it wakes the session, run
+`notifai receive` once and follow the result. If the User ends the monitor,
+leave it stopped. The app offers notes while the monitor is running.
+In Orca, stop the monitor before clearing the bot conversation with
+`/clear`. Closing the bot's tab leaves its conversation running in Activity.
+
+One-shot sessions and hidden subagents get answers through Stop. Remote
+execution needs a local installation on that host. Notifai cannot use the
+leader on Windows. When there is no live route, a running session shows
+that it does not take notes.
 
 ## Command approval
 
