@@ -134,10 +134,7 @@ export async function reportInputOverdue(notice: InputOverdueNotice): Promise<vo
       summary = summary.replace('Your answer', `Your answer to “${truncateContext(identity.titles[0]!, 64)}”`)
     }
     if (identity?.session_label) summary = summary.replace('the agent yet', `“${truncateContext(identity.session_label, 48)}” yet`)
-    const body = identity === undefined ? undefined : [summary,
-      ...identity.titles.map(title => `Question: ${title}`),
-      ...(identity.session_label ? [`Agent Session: ${identity.session_label}`] : [])].join('\n\n')
-    const outcome = await sendNotice(notice, { summary, ...(body === undefined ? {} : { body }),
+    const outcome = await sendNotice(notice, { summary,
       ...(identity === undefined ? {} : { identity }), idempotencyKey: `overdue-${tracked.since}-${sessionId}`, collapseKey })
     if (outcome.kind !== 'no-service') mark(outcome.kind, outcome.kind === 'sent' ? { request_id: outcome.requestId, collapse_key: collapseKey } : null)
   } catch (err) {
@@ -150,21 +147,21 @@ type SentNotice = { request_id: string; collapse_key: string }
 type NoticeOutcome = { kind: 'sent'; requestId: string } | { kind: 'no-service' | 'project-disabled' | 'not-built' }
 
 async function sendNotice(notice: NoticeContext, options: { summary: string; idempotencyKey: string; collapseKey?: string;
-  lifecycle?: LifecycleT; title?: string; kind?: NotificationKind; body?: string; identity?: InputOverdueNotice['identity'] }): Promise<NoticeOutcome> {
+  lifecycle?: LifecycleT; title?: string; kind?: NotificationKind; identity?: InputOverdueNotice['identity'] }): Promise<NoticeOutcome> {
   const { summary, idempotencyKey, lifecycle } = options
   const collapseKey = options.collapseKey ?? `notifai-overdue-${randomBytes(8).toString('base64url')}`
   const { sessionId, env } = notice
   const cwd = notice.cwd ?? process.cwd()
   const config = loadConfig({ cwd, env, sessionId })
   const binding = projectBinding(cwd, env, config.project.value)
-  const body = options.body ?? (options.identity === undefined ? undefined : [summary,
+  const body = options.identity === undefined ? '' : [
     ...options.identity.titles.map(title => `Question: ${title}`),
-    ...(options.identity.session_label ? [`Agent Session: ${options.identity.session_label}`] : [])].join('\n\n'))
+    ...(options.identity.session_label ? [`Agent Session: ${options.identity.session_label}`] : [])].join('\n\n')
   // A retirement is not news: it only takes down what was already shown.
   if (lifecycle === undefined && binding !== null && projectEnablementState(binding) === 'disabled') return { kind: 'project-disabled' }
   if (notice.client === null) return { kind: 'no-service' }
   const build = buildDraft(config, { title: options.title ?? INPUT_OVERDUE_TITLE, summary, kind: options.kind ?? 'blocked', collapseKey,
-    ...(body === undefined ? {} : { body }),
+    ...(body === '' ? {} : { body }),
     ...(options.identity?.project === null ? { projectless: true }
       : options.identity?.project === undefined ? {} : { project: options.identity.project }),
     ...(lifecycle === undefined ? {} : { lifecycle }) }, { inferredProject: binding?.project ?? null,

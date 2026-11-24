@@ -1,5 +1,5 @@
 {
-  "current": "9072d07a796e6ff0538c8db547ede1dd4e9ac8198cc440c1ac3db201d3d7fcaa",
+  "current": "43eb799ff14d638b69ee7cf4200b580219c60b4e636aa1f8e086d1ecaf9953c2",
   "releases": [
     {
       "digest": "3e47b01bc6bbfb43e910c660b9964fab6459d75148c3c02dcbcd0be64cfb2963",
@@ -460,6 +460,10 @@
     {
       "digest": "9072d07a796e6ff0538c8db547ede1dd4e9ac8198cc440c1ac3db201d3d7fcaa",
       "note": "Grok: when an Orca chat or T3 Code thread stops running a Grok session whose process is still alive (the chat moved to another session, or the thread was archived or deleted), Notifai stops taking Session Notes and Answer Edits for that session and withdraws its presence. Nothing changes in what the agent does."
+    },
+    {
+      "digest": "43eb799ff14d638b69ee7cf4200b580219c60b4e636aa1f8e086d1ecaf9953c2",
+      "note": "Grok sessions in Orca bot chats keep their running status and receive question answers at Stop. Session Notes and Answer Edits are unavailable in these chats. Regular Orca chats on macOS still receive the Notifai wake. A notice about an input waiting too long shows its status sentence once."
     }
   ]
 }

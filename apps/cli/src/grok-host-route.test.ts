@@ -59,6 +59,14 @@ describe('grokHostCandidate', () => {
     expect(grokHostCandidate(orcaChat, 'darwin', () => false)).toBeNull()
   })
 
+  it('does not qualify an Orca bot chat for self-mail, even with a normal chat id and CLI', () => {
+    expect(grokHostCandidate({ ...orcaChat, ORCA_BOT_TOOLS_TOKEN: 'bot-marker' }, 'darwin', any)).toBeNull()
+  })
+
+  it('rejects an unknown Orca surface even when other chat identity fields match', () => {
+    expect(grokHostCandidate({ ...orcaChat, ORCA_STRUCTURED_SESSION: 'unknown' }, 'darwin', any)).toBeNull()
+  })
+
   it('names the T3 Code data directory and CLI, and nothing for a terminal', () => {
     expect(grokHostCandidate({ T3CODE_HOME: '/u/.t3', T3CODE_CLI_PATH: '/u/.t3/bin/t3' }, 'darwin', any))
       .toEqual({ kind: 't3-thread', home: '/u/.t3', cli: '/u/.t3/bin/t3' })
@@ -161,8 +169,16 @@ describe('sendGrokHostWake', () => {
     expect(host.calls[0]).toMatchObject({ command: ORCA_CLI, input: wake,
       args: ['orchestration', 'send', '--to', `orca_session_id:${CHAT}`, '--subject', 'Notifai', '--body-file', '-', '--json'] })
     expect(host.calls[0]!.env['ORCA_AGENT_SESSION_ID']).toBe(CHAT)
-    expect(await sendGrokHostWake({ kind: 'orca-chat', chat: CHAT, cli: ORCA_CLI }, wake, orcaChat,
-      system([{ code: 1, stderr: 'error', stdout: '{"ok":false,"error":{"code":"session_caller_not_live"}}' }]))).toBe('failed')
+  })
+
+  it('logs only the exit and structured error code when Orca refuses a wake', async () => {
+    const events: unknown[] = []
+    const host = system([{ code: 1, stderr: 'private diagnostic', stdout: '{"ok":false,"error":{"code":"runtime_error","message":"private diagnostic"}}' }])
+    const log = { info: (event: string, data?: Record<string, unknown>) => { events.push({ event, data }) } }
+    expect(await sendGrokHostWake({ kind: 'orca-chat', chat: CHAT, cli: ORCA_CLI }, wake, orcaChat, host, undefined, log)).toBe('failed')
+    expect(events).toEqual([{ event: 'delivery.handoff', data: {
+      route: 'input-wake', stage: 'host-send-failed', host: 'orca-chat', exit_code: 1, orca_error_code: 'runtime_error',
+    } }])
   })
 
   it('retries a busy T3 database, never a refusal', async () => {

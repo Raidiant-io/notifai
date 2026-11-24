@@ -23,7 +23,7 @@ import { retainSessionRuntime } from './runtime-build-retention.js'
 import { runSessionAttendant, systemAttendantClock, type HarnessProbe, type SessionAttendantOptions } from './session-attendant.js'
 import { attendantClaimPath, attendantStatusPath, writeAttendantStatus } from './session-attendant-state.js'
 import { handOffSessionMessages } from './session-message-handoff.js'
-import { GrokHostRouteWatch, grokHostCandidate, sendGrokHostWake, systemGrokHostSystem, verifyGrokHostRoute, type GrokHostSystem } from './grok-host-route.js'
+import { GROK_ORCA_BOT_REASON, GrokHostRouteWatch, grokHostCandidate, isOrcaBotChat, sendGrokHostWake, systemGrokHostSystem, verifyGrokHostRoute, type GrokHostSystem } from './grok-host-route.js'
 import { hasSessionInputs, stageSessionMessages, wakeSessionInputs } from './session-inputs.js'
 import { readDeliveryJournal } from './session-delivery.js'
 import type { ApiClient } from './client.js'
@@ -119,7 +119,8 @@ export async function grokAttendHook(deps: CommandDeps, envelope: HookEnvelope, 
     const owner = { incarnation: record.incarnation, pid: host!.pid, start: host!.start, route: hostRoute.kind }
     updateSessionState(sessionId, deps.env, state => ({ ...state, grok_host_owner: owner }))
   }
-  const unavailable = started !== null && !(started instanceof GrokHostRouteWatch) ? started.unavailable : GROK_NO_LEADER_REASON
+  const unavailable = started !== null && !(started instanceof GrokHostRouteWatch) ? started.unavailable
+    : isOrcaBotChat(deps.env) ? GROK_ORCA_BOT_REASON : GROK_NO_LEADER_REASON
   if (leader === null) logger.info('attendant.state', hostRoute !== null
     ? { messages: 'host-wake', route: hostRoute.kind }
     : { messages: 'unavailable', reason: unavailable })
@@ -218,7 +219,7 @@ export async function grokAttendHook(deps: CommandDeps, envelope: HookEnvelope, 
               return 'not-attempted'
             }
             if (abort.aborted || !attendant.mayWrite()) return 'not-attempted'
-            return sendGrokHostWake(current, text, deps.env, hostSystem, abort)
+            return sendGrokHostWake(current, text, deps.env, hostSystem, abort, logger)
           }, logger, { unique: true, replaceLost: settledIdle, now: () => systemAttendantClock.wall() })
           return 'done'
         },

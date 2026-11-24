@@ -1,7 +1,7 @@
 {
   "version": 1,
-  "behavior_digest": "sha256:d711d8a06bbac56e8c8158c749eaf9fc1bd83dd550499139915137d28b091649",
-  "outcome": "reviewed-no-impact",
+  "behavior_digest": "sha256:134826822968beb95110f70605b4c60109a793073da6e63d992879042b580e9b",
+  "outcome": "guidance-updated",
   "surfaces_reviewed": [
     "lifecycle-hooks",
     "notifai-skill",
@@ -9,5 +9,5 @@
     "cli-readiness",
     "domain-terms"
   ],
-  "reason": "Reviewed lifecycle hooks, skill, harness setup, CLI readiness and domain terms. The Grok attendant on an Orca chat or T3 Code thread route now rechecks the binding while the session runs and ends attendance when the app definitively says the still-running Grok session is no longer the chat's or thread's; it also waits up to 20 s for a starting session to appear in the app's record. Agents do nothing differently: the Grok harness reference already says closing the session stops delivery and that delivery stops rather than guess another session, and notifai receive still hands input in only under the verified Grok process. Hook output, setup, doctor and domain terms are unchanged."
+  "reason": "Orca bot chats run the Grok attendant for presence and take question answers in the held Stop. The Grok skill reference, harness documentation and doctor now identify regular Orca chats as eligible for notes. Lifecycle hook placement, setup and domain terms require no edits. Overdue notices use the Body for question and session details."
 }

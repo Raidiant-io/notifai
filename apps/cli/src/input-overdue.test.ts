@@ -50,8 +50,9 @@ it('tells the User once, in plain words, when a note waits too long', async () =
   h.check(1_000 + INPUT_OVERDUE_MS)
   await h.settled()
   expect(h.submit).toHaveBeenCalledTimes(1)
-  const submission = h.submit.mock.calls[0] as unknown as [{ draft: { presentation: { summary: string }; kind: string; source: { session_id: string } } }]
+  const submission = h.submit.mock.calls[0] as unknown as [{ draft: { presentation: { summary: string; body?: string }; kind: string; source: { session_id: string } } }]
   expect(submission[0].draft.presentation.summary).toBe("Your note hasn't reached the agent yet. Type anything in its session to deliver it.")
+  expect(submission[0].draft.presentation.body).toBeUndefined()
   expect(submission[0].draft.kind).toBe('blocked')
   expect(submission[0].draft.source.session_id).toBe(SESSION)
   expect(readSessionState(SESSION, h.env).input_wake_fault?.kind).toBe('overdue')
@@ -160,6 +161,7 @@ it.each([
   expect(Array.from(request.draft.presentation.summary).length).toBeLessThanOrEqual(240)
   expect(request.draft.presentation.body).toContain(title)
   expect(request.draft.presentation.body).toContain(label)
+  expect(request.draft.presentation.body).not.toContain(request.draft.presentation.summary)
   expect(request.draft.presentation.body).not.toContain('Keep the extension data')
 })
 

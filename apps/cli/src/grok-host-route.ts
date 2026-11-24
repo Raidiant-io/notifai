@@ -1,6 +1,6 @@
 /**
  * Waking a Grok session an app hosts, through that app, when no Grok leader
- * serves it: an Orca chat gets Orca mail addressed to itself, a T3 Code thread
+ * serves it: an ordinary Orca chat gets Orca mail addressed to itself, a T3 Code thread
  * gets `t3 thread send`. Both start a new turn in an idle chat or thread and
  * queue behind a working one. The wake is `sessionInputWake`: it carries no
  * User words and no approval; the session reads its input with
@@ -27,6 +27,7 @@ import { execFile } from 'node:child_process'
 import { accessSync, constants, readFileSync, statSync } from 'node:fs'
 import path from 'node:path'
 import { readT3GrokThread, type T3GrokThread } from './host-title-store.js'
+import type { Logger } from './logging.js'
 import { processAncestry } from './process-ancestry.js'
 import { pidExists } from './process-identity.js'
 import { inputWakeToken, isSessionInputWake } from './session-inputs.js'
@@ -109,6 +110,13 @@ function underWsl(platform: NodeJS.Platform): boolean {
 
 const set = (env: NodeJS.ProcessEnv, name: string): string => env[name]?.trim() ?? ''
 
+export const GROK_ORCA_BOT_REASON = 'orca-bot-notes-unavailable'
+
+/** Orca marks its bot chats with this variable. Its value is a credential. */
+export function isOrcaBotChat(env: NodeJS.ProcessEnv): boolean {
+  return env['ORCA_BOT_TOOLS_TOKEN'] !== undefined
+}
+
 /**
  * The app the hook's environment names, read from the Grok process's own
  * environment. An Orca chat sets `ORCA_STRUCTURED_SESSION=1` and its
@@ -119,6 +127,9 @@ const set = (env: NodeJS.ProcessEnv, name: string): string => env[name]?.trim() 
 export function grokHostCandidate(env: NodeJS.ProcessEnv, platform: NodeJS.Platform = process.platform,
   executable: (file: string) => boolean = isExecutable): GrokHostCandidate | null {
   if (!VERIFIED_PLATFORMS.has(platform) || underWsl(platform)) return null
+  // Orca refuses both chat and bot addresses for mail from a bot chat to itself.
+  // Only the two proven host surfaces below can become candidates.
+  if (isOrcaBotChat(env)) return null
   if (set(env, 'ORCA_STRUCTURED_SESSION') === '1') {
     const chat = set(env, 'ORCA_AGENT_SESSION_ID')
     if (!ORCA_SESSION.test(chat) || set(env, 'ORCA_ENVIRONMENT') !== '' || set(env, 'ORCA_REMOTE_PAIRING') !== '' ||
@@ -253,17 +264,20 @@ function busy(detail: string): boolean {
  * it, nothing more; `failed` means it may or may not have been accepted.
  */
 export async function sendGrokHostWake(route: GrokHostRoute, text: string, env: NodeJS.ProcessEnv, system: GrokHostSystem,
-  signal?: AbortSignal): Promise<'written' | 'failed'> {
+  signal?: AbortSignal, logger?: Pick<Logger, 'info'>): Promise<'written' | 'failed'> {
   if (route.kind === 'orca-chat') {
     // Sent as the chat itself: the inherited ORCA_AGENT_SESSION_ID is this chat.
     const result = await system.run(route.cli, ['orchestration', 'send', '--to', `orca_session_id:${route.chat}`,
       '--subject', 'Notifai', '--body-file', '-', '--json'], { env: { ...env, ORCA_AGENT_SESSION_ID: route.chat }, input: text, ...(signal === undefined ? {} : { signal }) })
-    try {
-      const reply = JSON.parse(result.stdout) as { ok?: unknown; result?: { messageId?: unknown } }
-      return result.code === 0 && reply.ok === true && typeof reply.result?.messageId === 'string' ? 'written' : 'failed'
-    } catch {
-      return 'failed'
-    }
+    type OrcaSendReply = { ok?: unknown; result?: { messageId?: unknown }; error?: { code?: unknown } }
+    let reply: OrcaSendReply | null = null
+    try { reply = JSON.parse(result.stdout) as OrcaSendReply | null } catch { /* Orca did not return JSON. */ }
+    if (result.code === 0 && reply?.ok === true && typeof reply.result?.messageId === 'string') return 'written'
+    const code = reply?.error?.code
+    logger?.info('delivery.handoff', { route: 'input-wake', stage: 'host-send-failed', host: route.kind,
+      exit_code: result.code,
+      ...(typeof code === 'string' && /^[a-z][a-z0-9_]{0,63}$/u.test(code) ? { orca_error_code: code } : {}) })
+    return 'failed'
   }
   const childEnv: NodeJS.ProcessEnv = { ...env, T3CODE_HOME: route.home }
   for (let attempt = 1; attempt <= T3_SEND_TRIES; attempt += 1) {
