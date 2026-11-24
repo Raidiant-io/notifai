@@ -8,6 +8,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 This project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 and [Conventional Commits](https://www.conventionalcommits.org/en/v1.0.0/).
 
+## [14.7.7-beta.6](https://github.com/Raidiant-io/notifai/compare/v14.7.6...v14.7.7-beta.6) (2026-11-24)
+
+### Bug Fixes
+
+* Fixed an update that could stop after you used Grok in a terminal.
+* If an update reports a continuity error, run the recovery command that notifai update --channel beta --json prints; your session files stay in place.
+
 ## [14.7.6](https://github.com/Raidiant-io/notifai/compare/v14.7.4...v14.7.6) (2026-11-20)
 
 ### Bug Fixes
