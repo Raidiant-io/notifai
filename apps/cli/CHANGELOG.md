@@ -8,6 +8,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 This project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 and [Conventional Commits](https://www.conventionalcommits.org/en/v1.0.0/).
 
+## [14.7.7-beta.4](https://github.com/Raidiant-io/notifai/compare/v14.7.6...v14.7.7-beta.4) (2026-11-24)
+
+### Features
+
+* On macOS, Grok in an Orca bot chat or in a terminal (no --leader needed) now receives your notes and answer edits through a small Notifai monitor. Restart an open Grok session to pick this up.
+* In an Orca bot chat, stop that monitor before /clear; Orca refuses /clear while it runs. New Home Chat still works.
+
 ## [14.7.6](https://github.com/Raidiant-io/notifai/compare/v14.7.4...v14.7.6) (2026-11-20)
 
 ### Bug Fixes
