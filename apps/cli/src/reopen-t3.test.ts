@@ -37,6 +37,7 @@ function rig(t3: Partial<T3Host> = {}) {
     codexPostures: () => null,
     queueCodexWake: async () => undefined,
     open: async () => 'no window in a T3 reopen',
+    orca: { reach: async () => 'unavailable', wake: async () => 'refused' },
     codexApp: { platform: 'linux', launcher: null, alive: () => false, bundleOf: () => null, hasOpenUnder: () => false, processesOf: () => 'unknown',
       holders: () => 'unknown', originator: () => ({ place: 'unknown', originator: null }), lastTurnInterrupted: () => null, queuedWake: () => null,
       sendEvent: async () => 'failed', openUrl: async () => 'not here' },

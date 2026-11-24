@@ -56,6 +56,11 @@ terminal: it finds the Codex homes where Notifai's hooks wait and opens
 Codex's own review in each, with no sign-in. Notifai never approves its hooks
 for you. `notifai doctor` names any that still wait for approval.
 
+**Orca chats.** When Orca releases an idle Claude Code or Codex Agent Session,
+a note or answer starts another turn in that same open chat. The wake appears
+as Orca mail. Closing or clearing the chat expires its questions. Use
+`notifai config set wake.orca_chat off` to wait for your next message instead.
+
 **Cursor.** Questions wait in the asking command (`notifai ask --wait`). In
 the Cursor terminal agent on macOS, notes reach a conversation between turns,
 and your devices show it while it waits for you. Hosts built on the Cursor SDK,

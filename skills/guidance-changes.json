@@ -1,5 +1,5 @@
 {
-  "current": "3acd52832cc13c3449015f946f11b8aceef3af7b1325f25a88074438175a36ed",
+  "current": "40b944ac4d3885984c0cc86b224fc69926934e506c3ca93c8dd71678304fa03b",
   "releases": [
     {
       "digest": "3e47b01bc6bbfb43e910c660b9964fab6459d75148c3c02dcbcd0be64cfb2963",
@@ -468,6 +468,10 @@
     {
       "digest": "3acd52832cc13c3449015f946f11b8aceef3af7b1325f25a88074438175a36ed",
       "note": "On macOS, when Grok has no qualified leader or app wake, its tool-result instructions can start a persistent Notifai monitor. This lets Orca bot chats and standalone Grok terminals receive Session Notes and Answer Edits. Run notifai receive when the monitor wakes the session."
+    },
+    {
+      "digest": "40b944ac4d3885984c0cc86b224fc69926934e506c3ca93c8dd71678304fa03b",
+      "note": "After Orca releases an idle Claude Code or Codex chat, a Session Note or answer can wake that same open chat. The agent receives the input and acknowledges it as usual. You can disable this with `notifai config set wake.orca_chat off`."
     }
   ]
 }

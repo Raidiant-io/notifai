@@ -1,5 +1,6 @@
 import type { OrcaBlockingRegistration } from './orca-blocking-questions.js'
 import type { StopScreen } from './orca-terminal-wake.js'
+import type { OrcaChatFacts } from './reopen-orca-chat.js'
 
 /** The apps that can start a stopped Codex turn themselves. */
 export type InterruptRoute = 'codex-app' | 'orca-chat' | 'orca-terminal' | 't3'
@@ -214,7 +215,7 @@ export interface SessionState {
    * the T3 Code thread it runs in (`T3CODE_THREAD_ID`, `T3CODE_CLI_PATH`).
    */
   reopen_launch?: { terminal: string | null; terminal_seen: string | null; orca_pane: boolean; permission_mode: string | null;
-    t3?: { thread: string; cli: string | null; home: string | null } }
+    t3?: { thread: string; cli: string | null; home: string | null }; orca?: OrcaChatFacts }
   /**
    * The Claude Code picker now on screen: the device question it registered,
    * the digest of the questions it shows, and the hook process waiting on its

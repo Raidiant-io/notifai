@@ -408,6 +408,16 @@ const INFO: Record<ConfigKey, Omit<ConfigKeyInfo, 'key'>> = {
       'On (the default), when you stop a Codex agent in an Orca terminal and an answer or note arrives for it, Notifai types its short wake message into that terminal through Orca, as if you had sent it, so the agent gets what arrived right away. It types only while Codex is at rest, its message box is empty and the screen is the one you stopped it on. It never types over something you started writing: the answer then arrives with your next message.\n\nOff, a stopped agent in an Orca terminal gets what arrived with your next message. `on` and `off` are accepted as well as `true` and `false`. If this file cannot be read, Notifai does not type.',
     example: 'false',
   },
+  'wake.orca_chat': {
+    label: 'Wake idle chats in Orca',
+    group: 'wake',
+    integration: 'orca',
+    kind: 'boolean',
+    machineOnly: true,
+    summary: 'Whether a note or answer wakes an open Orca chat after Orca stops its agent',
+    detail: 'On by default. Orca restarts the same open chat to receive the input. Turning this setting off leaves the input waiting for your next message in the chat.',
+    example: 'false',
+  },
   'wake.codex_app_background': {
     label: 'Wake stopped Codex app conversations in the background',
     group: 'wake',

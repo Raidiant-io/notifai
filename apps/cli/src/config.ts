@@ -139,6 +139,7 @@ export interface CliConfig {
    * `machineSwitch`, which fails toward off.
    */
   'wake.orca_terminal': ResolvedValue<boolean>
+  'wake.orca_chat': ResolvedValue<boolean>
   /**
    * Running a stopped Codex app conversation's next turn in the background
    * when no app window has it open (`codex-app-hosted-turn.ts`). Machine-wide,
@@ -189,6 +190,7 @@ export const CONFIG_KEYS = [
   'reopen.focus',
   'reopen.permission_mode',
   'wake.orca_terminal',
+  'wake.orca_chat',
   'wake.codex_app_background',
   'wake.t3',
 ] as const
@@ -202,13 +204,13 @@ export type ConfigKey = (typeof CONFIG_KEYS)[number]
  * runs on it.
  */
 export const MACHINE_ONLY_CONFIG_KEYS: readonly ConfigKey[] = ['guidance.require_project_enablement', 'updates.automatic', 'reopen.automatic', 'reopen.terminal', 'reopen.codex_app',
-  'reopen.t3', 'reopen.terminal_app', 'reopen.terminal_command', 'reopen.focus', 'reopen.permission_mode', 'wake.orca_terminal', 'wake.codex_app_background', 'wake.t3']
+  'reopen.t3', 'reopen.terminal_app', 'reopen.terminal_command', 'reopen.focus', 'reopen.permission_mode', 'wake.orca_terminal', 'wake.orca_chat', 'wake.codex_app_background', 'wake.t3']
 
 /** The apps around an agent that settings concern, and the keys concerning each one (for per-app views). */
 export const INTEGRATIONS = [{ id: 'orca', name: 'Orca' }, { id: 'codex_app', name: 'Codex app' }, { id: 't3', name: 'T3 Code' }] as const
 export type IntegrationId = (typeof INTEGRATIONS)[number]['id']
 export const INTEGRATION_CONFIG_KEYS: Readonly<Record<IntegrationId, readonly ConfigKey[]>> = {
-  orca: ['wake.orca_terminal'],
+  orca: ['wake.orca_terminal', 'wake.orca_chat'],
   codex_app: ['wake.codex_app_background'],
   t3: ['wake.t3'],
 }
@@ -217,10 +219,10 @@ export const INTEGRATION_CONFIG_KEYS: Readonly<Record<IntegrationId, readonly Co
 export const ORIGIN_LIST_CONFIG_KEYS: readonly ConfigKey[] = ['media_origins', 'approve_origins']
 
 /** Keys whose TOML value must parse as a boolean; used by `config set`. */
-export const BOOLEAN_CONFIG_KEYS: readonly ConfigKey[] = ['ask_notifications', 'guidance.require_project_enablement', 'updates.automatic', 'reopen.automatic', 'wake.orca_terminal', 'wake.codex_app_background', 'wake.t3']
+export const BOOLEAN_CONFIG_KEYS: readonly ConfigKey[] = ['ask_notifications', 'guidance.require_project_enablement', 'updates.automatic', 'reopen.automatic', 'wake.orca_terminal', 'wake.orca_chat', 'wake.codex_app_background', 'wake.t3']
 
 /** Machine-wide switches that also read naturally as `on` and `off`. */
-export const ON_OFF_CONFIG_KEYS: readonly ConfigKey[] = ['guidance.require_project_enablement', 'updates.automatic', 'reopen.automatic', 'wake.orca_terminal', 'wake.codex_app_background', 'wake.t3']
+export const ON_OFF_CONFIG_KEYS: readonly ConfigKey[] = ['guidance.require_project_enablement', 'updates.automatic', 'reopen.automatic', 'wake.orca_terminal', 'wake.orca_chat', 'wake.codex_app_background', 'wake.t3']
 
 /** Keys whose TOML value must parse as an integer within its configured bounds. */
 export const NUMERIC_CONFIG_KEYS: readonly ConfigKey[] = [
@@ -299,6 +301,7 @@ const DEFAULTS = {
   'reopen.permission_mode': 'same',
   // On by default ("as a setting you can turn off? ON by default", 2026-11-05).
   'wake.orca_terminal': true,
+  'wake.orca_chat': true,
   // On by default (2026-11-05: "This should also be a preference that's on by default").
   'wake.codex_app_background': true,
   // On by default (2026-11-05: "Yes, use it").
@@ -780,6 +783,7 @@ export function loadConfig(options: {
     'reopen.focus': resolve('reopen.focus'),
     'reopen.permission_mode': resolve('reopen.permission_mode'),
     'wake.orca_terminal': resolve('wake.orca_terminal'),
+    'wake.orca_chat': resolve('wake.orca_chat'),
     'wake.codex_app_background': resolve('wake.codex_app_background'),
     'wake.t3': resolve('wake.t3'),
   }

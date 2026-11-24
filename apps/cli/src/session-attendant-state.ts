@@ -105,14 +105,18 @@ export function hermesQuestionRouteReady(
  * The lease a writer beside the attendant (the answer waiter) may claim under:
  * the generation the live attendant of this session holds right now, or null.
  * The service still decides; a stale read is refused as `generation_fenced`.
+ * Scheduling also recognizes a hub watching an Orca-released chat. That hub
+ * uses Orca mail to wake it and grants no write authority while it is released.
  */
-export function readAttendantLease(sessionId: string, env: NodeJS.ProcessEnv): DeliveryLease | null {
+export function readAttendantLease(sessionId: string, env: NodeJS.ProcessEnv, purpose: 'write' | 'schedule' = 'write'): DeliveryLease | null {
   try {
     const status = JSON.parse(readFileSync(attendantStatusPath(sessionId, env), 'utf8')) as Record<string, unknown>
     const generation = status['generation']
     const incarnation = status['incarnation']
+    const adoption = status['adoption'] as { stopped?: { orca_released?: unknown } | null } | null
+    const releasedOrcaOwner = purpose === 'schedule' && status['reason'] === 'stopped' && adoption?.stopped?.orca_released === true
     if (
-      status['phase'] !== 'attending' ||
+      (status['phase'] !== 'attending' && !releasedOrcaOwner) ||
       typeof generation !== 'number' ||
       !Number.isInteger(generation) ||
       generation < 1 ||

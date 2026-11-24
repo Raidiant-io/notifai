@@ -16,7 +16,8 @@
  *   `reopen-terminal.ts`), `reopen.codex_app` (the Codex app runs the
  *   thread's queued wake while it is running, see `reopen-codex-app.ts`) and
  *   `reopen.t3` (T3 Code's thread gets a Notifai wake while T3 Code runs,
- *   see `reopen-t3.ts`). Every other place waits.
+ *   see `reopen-t3.ts`) and `wake.orca_chat` (Orca wakes the same open chat
+ *   through local mail, see `reopen-orca-chat.ts`). Every other place waits.
  *
  * Rules that no setting changes:
  * - Notifai never moves a conversation: it reopens only in the place the
@@ -75,6 +76,8 @@ import {
   type TerminalProbe,
 } from './reopen-terminal.js'
 import { sendT3Wake, systemT3Host, t3Plan, type T3Host, type T3Wait } from './reopen-t3.js'
+import { systemOrcaReopenHost, type OrcaChatFacts, type OrcaReopenHost } from './reopen-orca-chat.js'
+import { sessionInputWake } from './session-inputs.js'
 import type { SessionPlace } from './session-place.js'
 
 /** A reopen not confirmed by the conversation coming back within this long counts as no response (Proposal). */
@@ -101,6 +104,7 @@ export interface ReopenSettings {
   terminal: ReopenTerminalPolicy
   codexApp: ReopenCodexAppPolicy
   t3: ReopenT3Policy
+  orcaChat: boolean
   terminalApp: ReopenTerminalApp
   terminalCommand: string | null
   focus: ReopenFocus
@@ -114,6 +118,7 @@ export function reopenSettings(env: NodeJS.ProcessEnv): ReopenSettings {
     terminal: machineSetting('reopen.terminal', env).value,
     codexApp: machineSetting('reopen.codex_app', env).value,
     t3: machineSetting('reopen.t3', env).value,
+    orcaChat: machineSetting('wake.orca_chat', env).value,
     terminalApp: machineSetting('reopen.terminal_app', env).value,
     terminalCommand: machineSetting('reopen.terminal_command', env).value,
     focus: machineSetting('reopen.focus', env).value,
@@ -122,12 +127,13 @@ export function reopenSettings(env: NodeJS.ProcessEnv): ReopenSettings {
 }
 
 /** The adapter that may reopen a place, and whether its policy lets it; null for a place that always waits. */
-export type ReopenAdapterId = 'terminal' | 'codex-app' | 't3'
+export type ReopenAdapterId = 'terminal' | 'codex-app' | 't3' | 'orca-chat'
 
 export function placeAdapter(place: SessionPlace): ReopenAdapterId | null {
   if (place === 'terminal') return 'terminal'
   if (place === 'codex-app') return 'codex-app'
   if (place === 't3') return 't3'
+  if (place === 'orca-chat') return 'orca-chat'
   return null
 }
 
@@ -135,6 +141,7 @@ export function placeAdapter(place: SessionPlace): ReopenAdapterId | null {
 export function adapterAllowed(settings: ReopenSettings, adapter: ReopenAdapterId): boolean {
   if (!settings.automatic) return false
   if (adapter === 'terminal') return settings.terminal === 'automatic'
+  if (adapter === 'orca-chat') return settings.orcaChat
   return adapter === 'codex-app' ? settings.codexApp !== 'off' : settings.t3 !== 'off'
 }
 
@@ -301,6 +308,7 @@ export interface HookLaunchFacts {
   orca_pane: boolean
   permission_mode: string | null
   t3?: T3ThreadFacts | null
+  orca?: OrcaChatFacts | null
 }
 
 /** One stopped conversation, as the hub knows it. */
@@ -396,6 +404,7 @@ export interface ReopenHost {
   codexApp: CodexAppHost
   /** T3 Code's own CLI, for its threads. */
   t3: T3Host
+  orca: OrcaReopenHost
 }
 
 /** The real machine, for the hub. */
@@ -422,6 +431,7 @@ export function systemReopenHost(env: NodeJS.ProcessEnv, logger: Logger, launche
     open: (launch, cwd, display) => openWindow(launch, cwd, { ...env, ...display }),
     codexApp: systemCodexAppHost(launcher),
     t3: systemT3Host(env),
+    orca: systemOrcaReopenHost(env),
     ...overrides,
   }
 }
@@ -584,6 +594,10 @@ export class SessionReopen {
     return this.inFlight.size > 0
   }
 
+  orcaReach(chat: OrcaChatFacts, sessionId: string, harness: ReopenTarget['harness']): ReturnType<OrcaReopenHost['reach']> {
+    return this.host.orca.reach(chat, sessionId, harness)
+  }
+
   /**
    * An answer or note waits for a stopped conversation: reopen it in place
    * if the settings, the place and the machine allow; otherwise it waits for
@@ -624,6 +638,20 @@ export class SessionReopen {
       }
       // A Codex thread also gets the wake the hub queued in its own queue: whichever runs first hands the input in, and the prompt hook blocks the other.
       if (adapter === 't3') return await this.t3Reopen(target, trigger, record, fresh, now, waiting)
+      if (adapter === 'orca-chat') {
+        const chat = target.hooks?.orca
+        if (chat == null) return waiting('place-waits')
+        if (await this.orcaReach(chat, target.sessionId, target.harness) !== 'open') return { outcome: 'skipped', reason: 'in-progress' }
+        if (target.harness === 'claude-code') {
+          const defaultHome = path.join(accountHome(env), '.claude')
+          if (this.host.claudeLive([target.claudeConfigDir ?? defaultHome, defaultHome], target.sessionId)) return waiting('live-elsewhere')
+        } else {
+          const holders = this.host.codexHolders(target.codexHome, target.sessionId)
+          if (holders === 'unknown' || holders.length > 0) return { outcome: 'skipped', reason: 'in-progress' }
+        }
+        return await this.hostChatReopen(target, trigger, record, fresh, now, 'orca-chat',
+          async () => await this.host.orca.wake(chat, sessionInputWake()) !== 'refused', waiting)
+      }
       const plan = await this.terminalPlan(target, settings)
       if ('wait' in plan) return waiting(plan.wait)
       const token = randomBytes(16).toString('hex')
@@ -817,23 +845,28 @@ export class SessionReopen {
     }
     const plan = t3Plan(target.hooks?.t3 ?? null, { harness: target.harness, sessionId: target.sessionId }, env, this.host.t3)
     if ('wait' in plan) return waiting(plan.wait)
+    return await this.hostChatReopen(target, trigger, record, fresh, now, T3_CODE, () => sendT3Wake(plan, this.host.t3), waiting)
+  }
+
+  private async hostChatReopen(target: ReopenTarget, trigger: ReopenTrigger, record: SessionRecord, fresh: string[], now: number,
+    surface: string, send: () => Promise<true | false | string>, waiting: (reason: ReopenWait) => ReopenOutcome): Promise<ReopenOutcome> {
     const token = randomBytes(16).toString('hex')
     const before = { attempts: record.attempts, seen: record.seen, last: record.last }
     record.attempts += 1
     record.seen = [...record.seen, ...fresh].slice(-200)
-    record.last = { at: now, trigger, outcome: 'launched', token, terminal: T3_CODE, items: fresh.slice(0, 50) }
+    record.last = { at: now, trigger, outcome: 'launched', token, terminal: surface, items: fresh.slice(0, 50) }
     record.updated_at = now
     // Recorded before the send: the conversation can come back before it returns.
     this.save(record)
-    const sent = await sendT3Wake(plan, this.host.t3)
+    const sent = await send()
     if (sent !== true) {
       Object.assign(record, before)
-      this.host.logger.info('hub.reopen', { event: 'launch-failed', session: target.sessionId, terminal: T3_CODE, detail: sent })
+      this.host.logger.info('hub.reopen', { event: 'launch-failed', session: target.sessionId, terminal: surface, detail: sent })
       return waiting('launch-failed')
     }
-    this.host.logger.info('hub.reopen', { event: 'launched', session: target.sessionId, trigger, harness: target.harness, terminal: T3_CODE,
+    this.host.logger.info('hub.reopen', { event: 'launched', session: target.sessionId, trigger, harness: target.harness, terminal: surface,
       attempt: record.attempts })
-    return { outcome: 'launched', token, terminal: T3_CODE }
+    return { outcome: 'launched', token, terminal: surface }
   }
 
   /** The terminal adapter's preflight and its launch, or why it waits. */

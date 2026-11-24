@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "behavior_digest": "sha256:2ed58bf68c32c17e83ceba21f7a428aba5527900c5ab65e22b8961b189ddc600",
+  "behavior_digest": "sha256:5846ca7e15cd23c9a66a4d042d968ee5870fb12ad313e50cc9924128b5fa2298",
   "outcome": "guidance-updated",
   "surfaces_reviewed": [
     "lifecycle-hooks",
@@ -9,5 +9,5 @@
     "cli-readiness",
     "domain-terms"
   ],
-  "reason": "Grok's passive tool-result hook offers the native monitor when an exact session has no qualified leader or host wake. The Grok skill reference, harness documentation and doctor describe monitor behavior and the held Stop question route. The existing setup and domain terms still apply."
+  "reason": "The Orca harness guide and release note describe idle chat wake and its machine setting. The wake uses existing receipt and acknowledgement instructions, and the existing hook setup and Agent Session terminology apply."
 }

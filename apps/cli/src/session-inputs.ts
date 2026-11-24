@@ -358,7 +358,7 @@ export function sessionInputRoute(sessionId: string, env: NodeJS.ProcessEnv, rou
     // case where no more tool callbacks occur. Preserve return when absent.
     if (wakeOwner === 'attendant') {
       const owner = readSessionIncarnation(sessionId, env)
-      const lease = readAttendantLease(sessionId, env)
+      const lease = readAttendantLease(sessionId, env, 'schedule')
       if (owner !== null && lease?.incarnation === owner.incarnation) return
     }
     await wakeSessionInputs(sessionId, env, async (text, signal) => {

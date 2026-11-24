@@ -21,6 +21,7 @@ import os from 'node:os'
 import path from 'node:path'
 import type { ReopenFocus, ReopenPermissionMode, ReopenTerminalApp } from './config.js'
 import { readSessionState, updateSessionState } from './hook-session-state.js'
+import { orcaReopenFacts, readOrcaChatFacts, type OrcaChatFacts } from './reopen-orca-chat.js'
 
 /** A terminal app Notifai can open a window in. */
 export type TerminalApp = Exclude<ReopenTerminalApp, 'auto' | 'custom'> | 'xterm' | 'x-terminal-emulator' | 'xdg-terminal-exec'
@@ -143,17 +144,19 @@ export function recordReopenLaunch(sessionId: string, env: NodeJS.ProcessEnv, pe
   const mode = typeof permissionMode === 'string' && /^[A-Za-z]{1,32}$/.test(permissionMode) ? permissionMode : null
   const current = readSessionState(sessionId, env).reopen_launch
   const t3 = t3ThreadOf(env)
+  const orca = orcaReopenFacts(env, platform)
   const next = { terminal: seen.app, terminal_seen: seen.seen, orca_pane: seen.orcaPane, permission_mode: mode ?? current?.permission_mode ?? null,
-    ...(t3 === null ? {} : { t3 }) }
+    ...(t3 === null ? {} : { t3 }), ...(orca === null ? {} : { orca }) }
   if (current !== undefined && current.terminal === next.terminal && current.terminal_seen === next.terminal_seen &&
       current.orca_pane === next.orca_pane && current.permission_mode === next.permission_mode &&
-      JSON.stringify(current.t3 ?? null) === JSON.stringify(t3)) return
+      JSON.stringify(current.t3 ?? null) === JSON.stringify(t3) &&
+      JSON.stringify(current.orca ?? null) === JSON.stringify(orca)) return
   updateSessionState(sessionId, env, (state) => ({ ...state, reopen_launch: next }))
 }
 
 /** The recorded facts, validated. */
 export function readReopenLaunch(value: unknown): { terminal: TerminalApp | null; terminal_seen: string | null; orca_pane: boolean; permission_mode: string | null;
-  t3: T3ThreadFacts | null } | null {
+  t3: T3ThreadFacts | null; orca: OrcaChatFacts | null } | null {
   if (typeof value !== 'object' || value === null) return null
   const record = value as Record<string, unknown>
   const terminal = typeof record['terminal'] === 'string' && TERMINAL_APPS.has(record['terminal']) ? record['terminal'] as TerminalApp : null
@@ -162,7 +165,8 @@ export function readReopenLaunch(value: unknown): { terminal: TerminalApp | null
   const rawT3 = typeof record['t3'] === 'object' && record['t3'] !== null ? record['t3'] as Record<string, unknown> : null
   const t3 = rawT3 !== null && typeof rawT3['thread'] === 'string' && T3_THREAD.test(rawT3['thread'])
     ? { thread: rawT3['thread'], cli: t3Cli(rawT3['cli']), home: t3Home(rawT3['home']) } : null
-  return { terminal, terminal_seen: seen, orca_pane: record['orca_pane'] === true, permission_mode: mode, t3 }
+  return { terminal, terminal_seen: seen, orca_pane: record['orca_pane'] === true, permission_mode: mode, t3,
+    orca: readOrcaChatFacts(record['orca']) }
 }
 
 const MAC_APPS: Readonly<Partial<Record<TerminalApp, string>>> = {

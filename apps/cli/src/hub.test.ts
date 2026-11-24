@@ -2883,6 +2883,71 @@ describe('hub: Codex conversations stopped by their app or the machine, Orca pan
   }
   const queueing = (queued: string[]): CodexWakeAdapters => ({ available: () => true, queue: async (threadId) => { queued.push(threadId) } })
 
+  it.each(['closed', 'empty'] as const)('wakes an idle-released Orca chat for a note and ends the old session when the chat is %s', async (endedReach) => {
+    const env = hubEnv()
+    const transcript = rollout(env, SESSION, 'orca_desktop')
+    const server = await standIn()
+    recordSessionNotified(SESSION, env, Date.now())
+    const chat = { chat: OTHER, cli: '/opt/orca/bin/orca', user_data: '/tmp/orca-profile' }
+    updateSessionState(SESSION, env, state => ({ ...state,
+      reopen_launch: { terminal: null, terminal_seen: null, orca_pane: false, permission_mode: null, orca: chat } }))
+    let offerNote = false
+    let open = true
+    let shift = 0
+    const wakes: string[] = []
+    const events: unknown[] = []
+    const service = fakeService({
+      capabilities: ['session_attendance', 'session_attendance_batch', 'session_stopped_hold', 'session_confirmed_end'],
+      batch: body => ({ message_cursor: 'c1', sessions: body.sessions.map(entry => entry.state === 'running'
+        ? { session_id: entry.session_id, status: 'attending', generation: 1, lease_remaining_ms: 120_000, message_cursor: 'c1',
+            messages: offerNote && entry.accepts_messages ? [{ message_id: 'sm_orca', kind: 'note', body: 'A note',
+              created_at: new Date().toISOString(), agent_acknowledgement_text_required: true }] : [] }
+        : { session_id: entry.session_id, status: 'withdrawn' }) }),
+    })
+    const peers = new Map<number, PeerCredentials>()
+    const { hub, done } = startHub(env, service, peers, memoryStore(), 50, { codexHostKind: () => 'app-server' }, {
+      powerWatch: false, runHook: noHook, clock: { monotonic: () => performance.now() + shift, wall: () => Date.now() },
+      logger: { ...nullLogger(), info: (event, data) => { events.push({ event, data }) }, error: (event, data) => { events.push({ event, data }) } },
+      reopen: { codexHolders: () => [], orca: {
+        reach: async () => open ? 'open' : endedReach,
+        wake: async (target, text) => {
+          expect(text).toBe(sessionInputWake())
+          wakes.push(target.chat)
+          return 'sent'
+        },
+      } },
+    })
+    await hubListening(env)
+    const child = await codexChild(env, peers, 900622, server, transcript, { orca_structured: '1' })
+    try {
+      await until(() => renewals(service) >= 1)
+      exit(child, server)
+      await until(() => hub.sessions.get(SESSION)?.stopped?.orca_released === true)
+      const before = service.batches.length
+      offerNote = true
+      service.release()
+      hub.driver.poke()
+      await expect.poll(() => {
+        service.release()
+        return { wakes, events: events.slice(-5), lastBatch: service.batches.at(-1)?.body.sessions }
+      }, { timeout: 5_000 }).toMatchObject({ wakes: [OTHER] })
+      expect(service.batches.slice(before).flatMap(batch => batch.body.sessions)).toContainEqual(expect.objectContaining({
+        session_id: SESSION, state: 'running', activity: 'idle', accepts_messages: true,
+      }))
+      expect(hub.sessions.get(SESSION)?.writerAvailable()).toBe(false)
+      expect(readAttendantLease(SESSION, env)).toBeNull()
+      expect(readAttendantLease(SESSION, env, 'schedule')).toMatchObject({ generation: 1 })
+      expect(wakes).toEqual([OTHER])
+      open = false
+      shift = 5_100
+      await until(() => ended(service))
+      expect(wakes).toEqual([OTHER])
+    } finally {
+      child.socket.destroy()
+      await stopHub(hub, service, done)
+    }
+  })
+
   it('keeps a T3 thread stopped 31 minutes after its last activity while T3 runs, queues one wake, and delivers at the next send', async () => {
     const env = hubEnv()
     recordSessionNotified(SESSION, env, Date.now())

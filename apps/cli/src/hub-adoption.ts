@@ -33,6 +33,7 @@ export interface StoppedRecord {
   cause: 'app' | 'machine'
   boot: string | null
   watch: StoppedWatch
+  orca_released?: true
 }
 
 /**
@@ -117,7 +118,8 @@ function stoppedOf(value: unknown): AdoptionRecord['stopped'] {
   const cause = stopped['cause']
   if (typeof since !== 'number' || !Number.isFinite(since) || (cause !== 'app' && cause !== 'machine')) return null
   const watch = stopped['watch']
-  return { since, cause, boot: text(stopped['boot']), watch: watch === 'harness' || watch === 'host-app' ? watch : null }
+  return { since, cause, boot: text(stopped['boot']), watch: watch === 'harness' || watch === 'host-app' ? watch : null,
+    ...(stopped['orca_released'] === true ? { orca_released: true } : {}) }
 }
 
 const text = (value: unknown): string | null => typeof value === 'string' && value.length > 0 && value.length <= 4096 ? value : null

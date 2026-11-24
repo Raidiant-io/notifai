@@ -176,6 +176,8 @@ import { readReopenLaunch } from './reopen-terminal.js'
 import {
   exactProcessArguments,
   launchRecordOf,
+  reopenSettings,
+  adapterAllowed,
   SessionReopen,
   systemReopenHost,
   type LaunchRecord,
@@ -637,6 +639,9 @@ class HubSession implements AttendedSession {
    * of reach) but its fencing identity is kept.
    */
   stopped: StoppedRecord | null = null
+  /** A fresh Orca observation can stand in for a writer for presence, never for handoff. */
+  orcaReachable = false
+  nextOrcaReachCheck = 0
   /** Wall-clock milliseconds of the last hook the hub saw for this conversation. */
   lastActivity: number
   /** Later hooks at which a fork's parent is looked for again; 0 when not a fork. */
@@ -914,8 +919,7 @@ class HubSession implements AttendedSession {
     if (!this.notified || now < this.lease.pausedUntil) return false
     if (this.lease.phase === 'withdrawn' || this.lease.phase === 'exited' || this.lease.phase === 'unsupported') return false
     if (!this.claimHeld()) return false
-    // Stopped: nothing hosts it until it comes back in place.
-    if (this.stopped !== null) return false
+    if (this.stopped !== null) return this.orcaReachable
     const probe = this.probe()
     if (probe.state === 'ended') { this.hub.closing(this, probe.reason); return false }
     if (probe.state === 'uncertain') {
@@ -929,15 +933,19 @@ class HubSession implements AttendedSession {
   }
 
   activity(): SessionActivity {
-    return this.activityValue
+    return this.orcaReachable ? 'idle' : this.activityValue
   }
 
   acceptsMessages(): boolean {
-    return this.writerAvailable()
+    return this.orcaReachable || this.writerAvailable()
   }
 
   async attended(messages: AttendanceMessage[]): Promise<'done' | 'retry-soon'> {
     this.writeStatus()
+    if (this.stopped !== null) {
+      if (this.orcaReachable && messages.length > 0) this.holdMessages(messages)
+      return 'done'
+    }
     if (!this.writerAvailable()) return 'done'
     return this.hub.handing(() => this.harness === 'claude-code' ? this.handClaude(messages) : this.handCodex(messages))
   }
@@ -950,18 +958,18 @@ class HubSession implements AttendedSession {
       return
     }
     if (outcome.kind === 'successor-refused') { this.hub.successorRefused(this, outcome.successor); return }
-    if (outcome.kind === 'stopped') {
-      const held = outcome.messages.map((message) => ({ message_id: message.message_id, created_at: message.created_at }))
-      const changed = held.length !== this.held.length || held.some((message, index) => message.message_id !== this.held[index]?.message_id)
-      this.held = held
-      if (changed) {
-        this.hub.logger.info('hub.session', { event: 'stopped-held', session: this.id, messages: held.length })
-        this.hub.touch()
-        if (held.length > 0) void this.hub.reopenStopped(this, 'note')
-      }
-    }
+    if (outcome.kind === 'stopped') this.holdMessages(outcome.messages)
     if (outcome.kind === 'stop-refused') this.hub.logger.info('hub.session', { event: 'stopped-not-held', session: this.id })
     this.writeStatus()
+  }
+
+  private holdMessages(messages: readonly AttendanceMessage[]): void {
+    const held = messages.map(({ message_id, created_at }) => ({ message_id, created_at }))
+    if (held.length === this.held.length && held.every((message, index) => message.message_id === this.held[index]?.message_id)) return
+    this.held = held
+    this.hub.logger.info('hub.session', { event: 'stopped-held', session: this.id, messages: held.length })
+    this.hub.touch()
+    if (held.length > 0) void this.hub.reopenStopped(this, 'note')
   }
 
   // -- activity --------------------------------------------------------------
@@ -1037,7 +1045,7 @@ class HubSession implements AttendedSession {
     // and the conversation reopens in place where it can.
     if (this.stopped !== null) {
       void this.hub.reopenStopped(this, 'answer')
-      if (this.harness === 'codex') void this.hub.stoppedWake(this)
+      if (this.harness === 'codex' && this.stopped.orca_released !== true) void this.hub.stoppedWake(this)
       // A stopped conversation waits for its app or the User by design; the clock starts when it is back.
       trackInputWaiting(this.id, this.env, false, this.hub.clock.wall())
       return
@@ -1257,7 +1265,7 @@ class HubSession implements AttendedSession {
 
   writeStatus(force = false): void {
     // The last activity counts by the minute: the next hub needs it only for a 30-minute idle stop.
-    const phase = `${this.lease.phase}|${this.lease.reason}|${this.lease.generation}|${this.activityValue}|${this.writerAvailable()}|` +
+    const phase = `${this.lease.phase}|${this.lease.reason}|${this.lease.generation}|${this.activity()}|${this.acceptsMessages()}|` +
       `${Math.floor(this.lastActivity / 60_000)}|${this.transcriptSeen}|${this.endCandidate?.since ?? null}|${this.harnessProcess.pid}|${this.stopped?.cause ?? null}`
     if (!force && phase === this.lastPhaseWritten) return
     try {
@@ -1267,9 +1275,9 @@ class HubSession implements AttendedSession {
         phase: this.lease.phase === 'withdrawn' || (this.stopped !== null && this.lease.phase !== 'exited') ? 'exited' : this.lease.phase,
         incarnation: this.lease.incarnation,
         generation: this.lease.generation,
-        activity: this.activityValue,
+        activity: this.activity(),
         reason: this.stopped !== null && this.lease.phase !== 'exited' ? 'stopped' : this.lease.reason,
-        accepts_messages: this.writerAvailable(),
+        accepts_messages: this.acceptsMessages(),
         updated_at: this.hub.clock.wall(),
         adoption: this.adoptionRecord(),
       })
@@ -2312,6 +2320,14 @@ export class Hub {
       registration.inboxStartedAt ??= descriptor.startedAt
     }
     this.placeOf(registration, frame, owner.pid)
+    if (registration.harness === 'claude-code' && registration.place === 'unknown' &&
+        frame['orca_structured'] === '1' && frame['entrypoint'] === 'orca' && this.reopen !== null) {
+      const chat = readReopenLaunch(readSessionState(registration.sessionId, env).reopen_launch)?.orca
+      if (chat != null && await this.reopen.orcaReach(chat, registration.sessionId, registration.harness) === 'open') {
+        registration.place = 'orca-chat'
+        this.logger.info('hub.session', { event: 'place-classified', session: registration.sessionId, place: 'orca-chat', reason: 'verified-orca-chat' })
+      }
+    }
     const existing = this.sessions.get(registration.sessionId)
     if (existing !== undefined) {
       // The earlier incarnation still owes its `ended` report and holds the
@@ -2609,6 +2625,7 @@ export class Hub {
     // An answer whose window ended while it was stopped is never handed in.
     session.dropExpiredAnswers()
     session.stopped = null
+    session.orcaReachable = false
     session.held = []
     session.lease.holdStopped = false
     // A service holding it as stopped takes it back only from a new
@@ -2929,6 +2946,7 @@ export class Hub {
     // connection to a User's server: its wake is only detached.
     session.wasStopped = session.stopped !== null
     session.stopped = null
+    session.orcaReachable = false
     session.reloadedAt = null
     session.lease.holdStopped = false
     // Continued: its records wait for the service to move its questions, and
@@ -3018,6 +3036,7 @@ export class Hub {
       if (probe.state === 'ended' && probe.reason === 'session-replaced') { this.endSession(session, 'session-replaced'); return }
       // The machine is going down: the next boot decides (machine down); a cancellation, this hub.
       if (this.holdForShutdown(session, candidate)) return
+      if (await this.resolveOrcaEnd(session)) return
       const verdict = this.classifyClaudeStop(session, candidate.since)
       this.logger.info('hub.session', { event: 'end-classified', session: session.id, verdict: verdict.cause === 'app' ? 'stopped' : 'closed',
         reason: verdict.reason, place: session.registration.place })
@@ -3059,6 +3078,7 @@ export class Hub {
       return
     }
     if (this.holdForShutdown(session, candidate)) return
+    if (await this.resolveOrcaEnd(session)) return
     const { verdict, evidence } = this.classifyCodexStop(session, candidate)
     this.logger.info('hub.session', { event: 'end-classified', session: session.id, verdict: verdict.cause === 'app' ? 'stopped' : 'closed',
       reason: verdict.reason, place: evidence.place, originator: evidence.originator, host: evidence.host, host_kind: evidence.hostKind,
@@ -3141,17 +3161,71 @@ export class Hub {
     return classifyClaudeEnd({ place, transcript, desktop: { appAlive, record, pauseLogged } })
   }
 
+  /** Orca keeps the conversation when it releases an idle provider process. */
+  private async resolveOrcaEnd(session: HubSession): Promise<boolean> {
+    const chat = this.orcaChatFor(session)
+    if (chat === null || this.reopen === null) return false
+    const child = session.child
+    const reach = await this.reopen.orcaReach(chat, session.id, session.harness)
+    if (this.exiting || this.sessions.get(session.id) !== session || session.child !== child ||
+        session.endCandidate !== null || session.stopped !== null || session.ending !== null) return true
+    if (reach === 'unavailable' || reach === 'empty') return false
+    if (reach === 'closed' || reach === 'replaced') {
+      this.endSession(session, reach === 'closed' ? 'confirmed-close' : 'session-replaced')
+      return true
+    }
+    session.registration.place = 'orca-chat'
+    this.stopSession(session, 'app', 'orca-released')
+    return true
+  }
+
+  private orcaChatFor(session: HubSession) {
+    const place = session.registration.place
+    return place === 'orca-chat' || place === 'unknown'
+      ? readReopenLaunch(readSessionState(session.id, session.env).reopen_launch)?.orca ?? null : null
+  }
+
+  private async refreshOrcaStop(session: HubSession, trigger: ReopenTrigger): Promise<void> {
+    const chat = this.orcaChatFor(session)
+    const stopped = session.stopped
+    if (this.reopen === null || chat === null || stopped === null || session.nextOrcaReachCheck > this.clock.monotonic()) return
+    session.nextOrcaReachCheck = this.clock.monotonic() + 5_000
+    const reach = await this.reopen.orcaReach(chat, session.id, session.harness)
+    if (this.exiting || this.handingOver || this.sessions.get(session.id) !== session || session.stopped !== stopped || session.ending !== null) return
+    if (reach === 'closed' || reach === 'replaced' || (reach === 'empty' && stopped.orca_released === true)) {
+      this.endSession(session, reach === 'closed' ? 'confirmed-close' : 'session-replaced')
+      return
+    }
+    if (reach === 'open') {
+      stopped.orca_released = true
+      session.registration.place = 'orca-chat'
+    }
+    const reachable = reach === 'open' && adapterAllowed(reopenSettings(this.env), 'orca-chat')
+    if (session.orcaReachable !== reachable) {
+      session.orcaReachable = reachable
+      session.lease.holdStopped = !reachable
+      session.lease.resumedFromStop = reachable && session.lease.stopReported
+      session.lease.needsFresh = true
+      session.writeStatus(true)
+      this.driver.poke()
+    }
+    if (reachable) void this.reopenStopped(session, trigger)
+  }
+
   /**
    * Its app or the machine stopped this conversation; the User did not close
    * it. Its questions stay open for their windows and what is answered
-   * meanwhile waits for it to come back in place. The lease is no longer
-   * renewed (the phone shows it out of reach) but its fencing identity is
-   * kept, on disk too, so a later end can still be reported.
+   * meanwhile waits for it to come back in place. A verified released Orca
+   * chat keeps idle attendance. Other stops hold their fencing identity
+   * without renewing the lease, so a later end can still be reported.
    */
   stopSession(session: HubSession, cause: StopCause, reason: string, since = this.clock.wall(), watch: StoppedWatch = null): void {
     if (session.ending !== null || session.stopped !== null) return
     if (session.endCandidate !== null) { clearTimeout(session.endCandidate.timer); session.endCandidate = null }
-    session.stopped = { since, cause, boot: (this.options.bootIdentity ?? currentBootIdentity)(), watch }
+    const orcaReleased = reason === 'orca-released'
+    session.stopped = { since, cause, boot: (this.options.bootIdentity ?? currentBootIdentity)(), watch,
+      ...(orcaReleased ? { orca_released: true } : {}) }
+    session.orcaReachable = orcaReleased && adapterAllowed(reopenSettings(this.env), 'orca-chat')
     // Nothing is written through its process any more.
     for (const writer of [session.primary(), ...session.standbys]) if (writer !== null && !writer.child.closed) writer.child.send({ type: 'bye' })
     session.standbys = []
@@ -3161,7 +3235,7 @@ export class Hub {
     session.lease.lose()
     // Where the service holds stopped sessions, it is told, and the session
     // stays in the exchange to see notes sent to it meanwhile.
-    session.lease.holdStopped = true
+    session.lease.holdStopped = !session.orcaReachable
     session.lease.needsFresh = true
     // A Claude Code wake written into the process that went never shows; the
     // next place gets its own. A Codex wake waits in the thread's own queue
@@ -3178,8 +3252,8 @@ export class Hub {
     }
     session.writeStatus(true)
     this.logger.info('hub.session', { event: 'stopped', session: session.id, cause, reason, place: session.registration.place })
-    if (!session.stoppedOwes(this.clock.wall())) { this.endSession(session, 'window-over'); return }
-    if (session.harness === 'codex') void this.stoppedWake(session)
+    if (!session.orcaReachable && !session.stoppedOwes(this.clock.wall())) { this.endSession(session, 'window-over'); return }
+    if (session.harness === 'codex' && !orcaReleased) void this.stoppedWake(session)
     void this.reopenStopped(session, 'answer')
     this.driver.poke()
     this.touch()
@@ -3195,7 +3269,12 @@ export class Hub {
     if (stopped === null) return
     this.reopen?.check(session.id)
     session.dropExpiredAnswers()
-    if (!session.stoppedOwes(this.clock.wall())) { this.endSession(session, 'window-over'); return }
+    void this.refreshOrcaStop(session, trigger).catch(err => this.logger.error('hub.reopen',
+      { event: 'failed', session: session.id, message: err instanceof Error ? err.message : String(err) }))
+    if (!session.orcaReachable && stopped.orca_released !== true && !session.stoppedOwes(this.clock.wall())) {
+      this.endSession(session, 'window-over')
+      return
+    }
     const record = this.recordPresent(session)
     if (record === 'archived') { this.endSession(session, 'session-archived'); return }
     if (session.registration.place === 'claude-desktop') {
@@ -3204,7 +3283,7 @@ export class Hub {
       if (typeof desktop === 'object' && desktop.archived) { this.endSession(session, 'session-archived'); return }
     }
     // Losing the host is not evidence that the User closed the conversation.
-    if (session.harness === 'codex') void this.stoppedWake(session)
+    if (session.harness === 'codex' && stopped.orca_released !== true) void this.stoppedWake(session)
     void this.reopenStopped(session, trigger)
   }
 
@@ -4867,7 +4946,7 @@ export class Hub {
         activity: session.activity(),
         child: session.child !== null && !session.child.closed,
         watching: session.harnessAlive(),
-        accepts_messages: session.writerAvailable(),
+        accepts_messages: session.acceptsMessages(),
         writers: (session.child !== null && !session.child.closed ? 1 : 0) + session.standbys.length,
         end_pending: session.endCandidate !== null,
         stopped: session.stopped?.cause ?? null,
