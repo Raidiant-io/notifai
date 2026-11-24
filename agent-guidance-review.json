@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "behavior_digest": "sha256:5846ca7e15cd23c9a66a4d042d968ee5870fb12ad313e50cc9924128b5fa2298",
+  "behavior_digest": "sha256:b49834193820be62f3220f1d032725ae0e3aabdfa0f6642b6f670fa479725600",
   "outcome": "guidance-updated",
   "surfaces_reviewed": [
     "lifecycle-hooks",
@@ -9,5 +9,5 @@
     "cli-readiness",
     "domain-terms"
   ],
-  "reason": "The Orca harness guide and release note describe idle chat wake and its machine setting. The wake uses existing receipt and acknowledgement instructions, and the existing hook setup and Agent Session terminology apply."
+  "reason": "The update note describes activation with Grok terminal markers and preservation of Agent Session state. The existing staged recovery command, lifecycle hooks, skill and harness setup procedures still apply."
 }

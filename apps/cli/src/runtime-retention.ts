@@ -5,7 +5,7 @@ import { atomicWriteFileSync } from './atomic-file.js'
 import { installationAccess, type InstallationAccess } from './installation-access.js'
 import { withFileLock } from './file-lock.js'
 import { canonicalPath } from './local-path.js'
-import { sanitizeSessionId } from './config.js'
+import { isSessionFileStem, sanitizeSessionId } from './config.js'
 import { processIdentityLiveness, type ProcessIdentity } from './process-identity.js'
 import { LIFECYCLE_END_STATES } from '@raidiant/notifai-protocol'
 import { validRuntimeBuildReference, type RuntimeBuildReference } from './launch-self.js'
@@ -301,6 +301,7 @@ export class RuntimeRetention {
           for (const name of readdirSync(owners)) {
             const owner = this.read(path.join(owners, name)), file = owner?.['session_file']
             if (!this.ownedRecord(owner) || typeof file !== 'string' || !path.isAbsolute(file) ||
+                !file.endsWith('.json') || !isSessionFileStem(path.basename(file, '.json')) ||
                 canonicalPath(file) !== file || createHash('sha256').update(file).digest('hex') + '.json' !== name) {
               throw new Error('Uncertain owner index')
             }
@@ -328,10 +329,12 @@ export class RuntimeRetention {
         if (!stat.isDirectory() || stat.isSymbolicLink() || (typeof process.getuid === 'function' &&
             (stat.uid !== process.getuid() || (stat.mode & 0o022) !== 0))) throw new Error('Uncertain session directory')
         this.checkState(directory, true)
-        const entries = readdirSync(directory)
+        // This directory also contains harness metadata such as Grok's terminal
+        // start marker. Only a name a session writer can emit can claim work.
+        const entries = readdirSync(directory).filter(name => isSessionFileStem(name.split('.', 1)[0]!)).sort()
         // Claims are independent files; losing a main session JSON must not
         // hide a resident. This is inventory only, never a stale-claim cleanup.
-        for (const name of entries.sort()) {
+        for (const name of entries) {
           if (!/^[A-Za-z0-9_-]+(?:\.attendant|\.claim|\.delivering|\.json\.submission)(?:\.guard)?$/.test(name)) continue
           if (name.endsWith('.guard')) throw new Error('Resident claim publication is in progress')
           const file = path.join(directory, name)

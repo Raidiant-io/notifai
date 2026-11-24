@@ -20,9 +20,10 @@ import { globalConfigPath,stateDir } from './config.js'
 import { activeBytes } from './installation.js'
 import { HISTORICAL_LOCAL_CONTINUITY, LOCAL_CONTINUITY } from './local-continuity.js'
 import type { CommandDeps } from './commands-core.js'
-import { nativeUpdateCommand } from './commands-native-installation.js'
+import { nativeInstallCommand,nativeUpdateCommand } from './commands-native-installation.js'
 import { releaseChannelCommand } from './commands-release-channel.js'
-import { beginSessionIncarnation,lifecycleStamp,readSessionState,writeSessionState } from './hook-session-state.js'
+import { beginSessionIncarnation,lifecycleStamp,readSessionState,sessionStatePath,writeSessionState } from './hook-session-state.js'
+import { grokTerminalStartPath,recordGrokTerminalStart } from './grok-terminal-session.js'
 import { Installation } from './installation.js'
 import { nullLogger } from './logging.js'
 import { processStartTime } from './process-identity.js'
@@ -143,6 +144,68 @@ const install = (f: Fixture) => f.installation.inspect()
 
 
 describe('automatic updates', () => {
+  it('activates with a Grok terminal start marker and other non-session files in the sessions directory', async () => {
+    const f = fixture()
+    await f.publish('1.0.0'); f.point('stable', '1.0.0')
+    await f.publish('1.1.0-beta.1'); await f.install('1.1.0-beta.1', 'beta')
+    await f.publish('1.1.0-beta.2'); f.point('beta', '1.1.0-beta.2')
+    const sessionId = 'grok-session'
+    const owner = { pid: process.pid, start: processStartTime(process.pid)! }
+    const incarnation = beginSessionIncarnation(sessionId, f.env, { stamp: lifecycleStamp(), harnessProcess: owner })
+    writeSessionState(sessionId, f.env, { harness: 'grok' })
+    recordGrokTerminalStart(owner, f.env, incarnation)
+    const marker = grokTerminalStartPath(owner, f.env)
+    const markerBytes = readFileSync(marker)
+    writeFileSync(path.join(f.options.sessionsDirectory, 'unrelated.json'), 'unrelated contents')
+
+    expect(await attemptAutomaticUpdate(host(f).host)).toEqual({
+      outcome: 'activated', from: '1.1.0-beta.1', to: '1.1.0-beta.2',
+    })
+    expect(install(f)).toMatchObject({ pending: false, channel: 'beta', active: { generation: 2 } })
+    expect(readFileSync(marker)).toEqual(markerBytes)
+    expect(readSessionState(sessionId, f.env)).toEqual({ harness: 'grok' })
+  })
+
+  it('lets the exact staged candidate recover an update without altering a Grok start marker', async () => {
+    const f = fixture()
+    await f.publish('1.0.0'); await f.install('1.0.0', 'stable')
+    await f.publish('1.1.0'); f.point('stable', '1.1.0')
+    const owner = { pid: process.pid, start: processStartTime(process.pid)! }
+    const incarnation = beginSessionIncarnation('grok-session', f.env, { stamp: lifecycleStamp(), harnessProcess: owner })
+    recordGrokTerminalStart(owner, f.env, incarnation)
+    const marker = grokTerminalStartPath(owner, f.env)
+    const markerBytes = readFileSync(marker)
+    const waiting = new Installation({ ...f.options, externalWriters: () => 'Previous updater could not establish continuity.' })
+    const reports: Record<string, unknown>[] = []
+    const deps: CommandDeps = { cwd: f.root, env: { ...f.env, HOME: f.root, USERPROFILE: f.root }, hookAdapterHome: f.root,
+      io: { out: output => { reports.push(JSON.parse(output)) }, err() {}, confirm: async () => false, openUrl() {} },
+      store: { load: () => null, save() {}, clear() {}, describe: () => 'test' } }
+    expect(await nativeUpdateCommand(deps, { json: true }, { installation: waiting, prepareHooks: () => true })).toBe(1)
+    const candidate = f.installation.pendingRelease()!
+    expect(reports.at(-1)).toMatchObject({ code: 'continuity_pending', recovery_command: expect.stringContaining(candidate.launcher) })
+
+    const code = await nativeInstallCommand(deps, { upgrade: true, channel: candidate.channel, version: candidate.version,
+      directory: path.dirname(candidate.launcher), init: false, path: false, json: true }, { installation: f.installation })
+    expect(reports.at(-1), String(reports.at(-1)?.['message'])).toMatchObject({ ok: true, version: '1.1.0', setup_skipped: true })
+    expect(code).toBe(0)
+    expect(install(f)).toMatchObject({ pending: false, channel: 'stable', active: { generation: 2 } })
+    expect(readFileSync(marker)).toEqual(markerBytes)
+  })
+
+  it('keeps waiting if a file in the session namespace has an uncertain identity', async () => {
+    const f = fixture()
+    await f.publish('1.0.0'); await f.install('1.0.0', 'stable')
+    await f.publish('1.1.0'); f.point('stable', '1.1.0')
+    const active = install(f).active
+    const sessionId = 'session-with-uncertain-identity'
+    writeSessionState(sessionId, f.env, { harness: 'grok' })
+    writeFileSync(sessionStatePath(sessionId, f.env), '{}')
+
+    expect(await attemptAutomaticUpdate(host(f).host)).toMatchObject({ outcome: 'waiting', waiting_for: ['continuity'] })
+    expect(() => f.installation.recover()).toThrow('Uncertain session identity')
+    expect(install(f)).toMatchObject({ active, activation_waiting: true })
+  })
+
   it('reports a contract-changing staged update as waiting until the pending session settles', async () => {
     const f = fixture()
     await f.publish('1.0.0', HISTORICAL_LOCAL_CONTINUITY); await f.historicalInstall('1.0.0')

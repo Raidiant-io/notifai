@@ -1,5 +1,5 @@
 {
-  "current": "40b944ac4d3885984c0cc86b224fc69926934e506c3ca93c8dd71678304fa03b",
+  "current": "a1ec7b1286aacd02f7da5fc0bbc3263742986dda6d1077f517b2e1cbfd1485b2",
   "releases": [
     {
       "digest": "3e47b01bc6bbfb43e910c660b9964fab6459d75148c3c02dcbcd0be64cfb2963",
@@ -472,6 +472,10 @@
     {
       "digest": "40b944ac4d3885984c0cc86b224fc69926934e506c3ca93c8dd71678304fa03b",
       "note": "After Orca releases an idle Claude Code or Codex chat, a Session Note or answer can wake that same open chat. The agent receives the input and acknowledges it as usual. You can disable this with `notifai config set wake.orca_chat off`."
+    },
+    {
+      "digest": "a1ec7b1286aacd02f7da5fc0bbc3263742986dda6d1077f517b2e1cbfd1485b2",
+      "note": "CLI updates now activate when a standalone Grok terminal has left a start marker. Notifai preserves that marker and the Agent Session state."
     }
   ]
 }

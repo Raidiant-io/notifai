@@ -354,6 +354,11 @@ export function sanitizeSessionId(sessionId: string): string {
   return readable === '' ? digest : `${readable}-${digest}`
 }
 
+/** The filename namespace produced by sanitizeSessionId, before any suffix. */
+export function isSessionFileStem(stem: string): boolean {
+  return /^(?:[A-Za-z0-9_-]{1,32}-)?[a-f0-9]{16}$/.test(stem)
+}
+
 /**
  * Pointer from a Project directory to the Agent Session currently working in
  * it, written by the UserPromptSubmit hook. Without it `notifai ask` has no way
