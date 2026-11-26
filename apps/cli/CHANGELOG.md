@@ -8,6 +8,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 This project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 and [Conventional Commits](https://www.conventionalcommits.org/en/v1.0.0/).
 
+## [14.7.7](https://github.com/Raidiant-io/notifai/compare/v14.7.6...v14.7.7) (2026-11-26)
+
+### Bug Fixes
+
+* Windows release checks now use the same process lookup as installed Notifai; nothing changes for you.
+
 ## [14.7.6](https://github.com/Raidiant-io/notifai/compare/v14.7.4...v14.7.6) (2026-11-20)
 
 ### Bug Fixes
