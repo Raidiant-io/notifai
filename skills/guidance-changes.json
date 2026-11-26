@@ -1,5 +1,5 @@
 {
-  "current": "a1ec7b1286aacd02f7da5fc0bbc3263742986dda6d1077f517b2e1cbfd1485b2",
+  "current": "08667d10ed6ee1fc808674d7dafbe9a651a00f3e0a0b4eb8ec72e9811a17f05d",
   "releases": [
     {
       "digest": "3e47b01bc6bbfb43e910c660b9964fab6459d75148c3c02dcbcd0be64cfb2963",
@@ -476,6 +476,10 @@
     {
       "digest": "a1ec7b1286aacd02f7da5fc0bbc3263742986dda6d1077f517b2e1cbfd1485b2",
       "note": "CLI updates now activate when a standalone Grok terminal has left a start marker. Notifai preserves that marker and the Agent Session state."
+    },
+    {
+      "digest": "08667d10ed6ee1fc808674d7dafbe9a651a00f3e0a0b4eb8ec72e9811a17f05d",
+      "note": "Windows Codex hook ancestry is proven through the native launcher. Windows release checks exercise the same kernel process lookup."
     }
   ]
 }

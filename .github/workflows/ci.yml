@@ -224,6 +224,10 @@ jobs:
           "pnpm=$(pnpm --version)"
           "powershell=$($PSVersionTable.PSVersion)"
           git --version
+      - name: Configure the native Windows access-check compiler
+        uses: ilammy/msvc-dev-cmd@0b201ec74fa43914dc39ae48a89fd1d8cb592756 # v1
+        with:
+          arch: x64
       - name: Run native Windows boundaries
         shell: bash
         run: |
@@ -235,10 +239,6 @@ jobs:
             --testNamePattern Windows
           pnpm --filter @raidiant/notifai test -- \
             src/process-identity.test.ts src/claude-wake.test.ts src/windows-hook-source.test.ts
-      - name: Configure the native Windows access-check compiler
-        uses: ilammy/msvc-dev-cmd@0b201ec74fa43914dc39ae48a89fd1d8cb592756 # v1
-        with:
-          arch: x64
       # The artifact tests start Windows PowerShell under a time bound; its first
       # start on a fresh hosted runner can exceed that bound.
       - name: Warm Windows PowerShell

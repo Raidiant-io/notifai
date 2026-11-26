@@ -27,10 +27,13 @@ export function physicalCliPath(file: string): { path: string; physical_path: st
     return { path: file, physical_path: physical, file_id: stat.ino > 0n ? `${stat.dev}:${stat.ino}` : null }
   } catch { return { path: file, physical_path: physical, file_id: null } }
 }
-export function windowsProcessDomain(pid: number): WindowsProcessDomain | null {
-  if (process.platform !== 'win32' || buildIdentity() === null || !Number.isSafeInteger(pid) || pid < 1) return null
+export function windowsProcessDomain(
+  pid: number,
+  launcher = buildIdentity() === null ? null : path.join(path.dirname(process.execPath), 'notifai.exe'),
+): WindowsProcessDomain | null {
+  if (process.platform !== 'win32' || launcher === null || !Number.isSafeInteger(pid) || pid < 1) return null
   try {
-    const output = execFileSync(path.join(path.dirname(process.execPath), 'notifai.exe'), ['--internal-process-domain', String(pid)],
+    const output = execFileSync(launcher, ['--internal-process-domain', String(pid)],
       { encoding: 'utf8', windowsHide: true, timeout: 2_000, maxBuffer: 256 * 1024, stdio: ['ignore', 'pipe', 'ignore'] })
     const [start, executable, family, parentText, extra] = output.trimEnd().split(/\r?\n/)
     const parent = Number(parentText)

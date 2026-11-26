@@ -22,10 +22,8 @@
  * Anything else leaves the declared pid in place, which no session's Codex
  * process matches: the card stays in the terminal, as it did before.
  */
-import { execFileSync } from 'node:child_process'
 import path from 'node:path'
 import { windowsProcessDomain } from './cli-execution-domain.js'
-import { buildIdentity } from './distribution.js'
 import { sameLocalPath } from './local-path.js'
 import { windowsCodexHookShell } from './windows-codex-command.js'
 
@@ -84,28 +82,11 @@ export function proveWindowsCodexHookSource(
 }
 
 /**
- * One process's table row. A native installation asks its launcher, which
- * reads creation time, image and parent from the kernel; a source or npm
- * installation asks CIM through the system PowerShell, about a fifth of a
- * second, once per hook.
+ * Read creation time, image and parent from the kernel via the native launcher.
+ * A Node source run without a launcher cannot prove Windows hook ancestry.
  */
-export function readWindowsProcessLink(pid: number): WindowsProcessLink | null {
-  if (!Number.isSafeInteger(pid) || pid <= 0) return null
-  if (buildIdentity() !== null) {
-    const domain = windowsProcessDomain(pid)
-    return domain === null ? null
-      : { pid, created: BigInt(domain.start.slice('windows-filetime:'.length)), executable: domain.executable, parent: domain.parent }
-  }
-  try {
-    const output = execFileSync(windowsCodexHookShell(process.env), ['-NoProfile', '-NonInteractive', '-Command',
-      `$p = Get-CimInstance Win32_Process -Filter 'ProcessId = ${pid}' -ErrorAction Stop; ` +
-      'if ($p) { "$($p.CreationDate.ToFileTimeUtc())"; "$($p.ParentProcessId)"; $p.ExecutablePath }'],
-    { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], timeout: 5_000, windowsHide: true })
-    const [created, parent, executable, extra] = output.trim().split(/\r?\n/)
-    if (extra !== undefined || !created || !/^\d+$/.test(created) || !parent || !/^\d+$/.test(parent) ||
-        !executable || !path.win32.isAbsolute(executable)) return null
-    return { pid, created: BigInt(created), executable, parent: Number(parent) }
-  } catch {
-    return null
-  }
+export function readWindowsProcessLink(pid: number, launcher?: string): WindowsProcessLink | null {
+  const domain = windowsProcessDomain(pid, launcher)
+  return domain === null ? null
+    : { pid, created: BigInt(domain.start.slice('windows-filetime:'.length)), executable: domain.executable, parent: domain.parent }
 }

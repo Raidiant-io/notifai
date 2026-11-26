@@ -693,6 +693,10 @@ jobs:
           "pnpm=$(pnpm --version)"
           "powershell=$($PSVersionTable.PSVersion)"
           git --version
+      - name: Configure the native Windows access-check compiler
+        uses: ilammy/msvc-dev-cmd@0b201ec74fa43914dc39ae48a89fd1d8cb592756
+        with:
+          arch: x64
       - name: Run native Windows boundaries
         shell: bash
         run: |
@@ -703,10 +707,6 @@ jobs:
             --testNamePattern Windows
           pnpm --filter @raidiant/notifai test -- \
             src/process-identity.test.ts src/claude-wake.test.ts src/windows-hook-source.test.ts
-      - name: Configure the native Windows access-check compiler
-        uses: ilammy/msvc-dev-cmd@0b201ec74fa43914dc39ae48a89fd1d8cb592756
-        with:
-          arch: x64
       - name: Warm Windows PowerShell
         shell: pwsh
         run: powershell.exe -NoProfile -NonInteractive -Command '(Get-Process -Id $PID).StartTime.ToFileTimeUtc(); Get-CimInstance Win32_Process -Filter "ProcessId = $PID" | Out-Null'

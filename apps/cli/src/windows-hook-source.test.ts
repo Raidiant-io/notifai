@@ -1,11 +1,12 @@
-import { spawn } from 'node:child_process'
+import { execFileSync,spawn } from 'node:child_process'
 import { copyFileSync,existsSync,mkdtempSync,readFileSync,rmSync,writeFileSync } from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import { describe,expect,it } from 'vitest'
+import { fileURLToPath } from 'node:url'
+import { afterAll,beforeAll,describe,expect,it } from 'vitest'
 import { buildHookConfig } from './install-hooks.js'
 import { windowsCodexHookShell } from './windows-codex-command.js'
-import { windowsCodexHookSource,type WindowsProcessLink } from './windows-hook-source.js'
+import { readWindowsProcessLink,windowsCodexHookSource,type WindowsProcessLink } from './windows-hook-source.js'
 
 const ENV = { SystemRoot: 'C:\\Windows' }
 const POWERSHELL = 'C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe'
@@ -36,6 +37,22 @@ describe('Windows Codex hook source', () => {
 })
 
 describe.runIf(process.platform === 'win32')('Windows Codex hook source on a real Windows host', () => {
+  let launcherDir: string | undefined
+  let launcher: string
+
+  beforeAll(() => {
+    launcherDir = mkdtempSync(path.join(os.tmpdir(), 'nfhs-launcher-'))
+    const build = fileURLToPath(new URL('../../../scripts/build-launcher.mjs', import.meta.url))
+    execFileSync(process.execPath, [build, launcherDir], { windowsHide: true })
+    launcher = path.join(launcherDir, 'notifai.exe')
+  })
+
+  afterAll(() => {
+    if (launcherDir !== undefined) rmSync(launcherDir, { recursive: true, force: true })
+  })
+
+  const read = (pid: number) => readWindowsProcessLink(pid, launcher)
+
   /**
    * A stand-in Codex (a copy of node.exe named codex.exe) runs Notifai's own
    * Windows Codex hook command through a session shell, exactly as Codex
@@ -68,7 +85,8 @@ describe.runIf(process.platform === 'win32')('Windows Codex hook source on a rea
       const { codex, declared, root } = await runHook(shell)
       try {
         expect(declared).not.toBe(codex)
-        expect(windowsCodexHookSource(declared, process.env)).toBe(codex)
+        expect(windowsCodexHookSource(declared, process.env, read)).toBe(codex)
+        if (shell === 'cmd') expect(windowsCodexHookSource(declared, process.env)).toBeNull()
       } finally {
         spawn('taskkill', ['/pid', String(codex), '/t', '/f'], { stdio: 'ignore', windowsHide: true })
         await new Promise((resolve) => setTimeout(resolve, 1_000))
@@ -77,7 +95,7 @@ describe.runIf(process.platform === 'win32')('Windows Codex hook source on a rea
     }, 60_000)
   }
 
-  it('proves nothing for a PowerShell no Codex started', () => {
-    expect(windowsCodexHookSource(process.pid, process.env)).toBeNull()
+  it('rejects a declared process that is not the hook PowerShell', () => {
+    expect(windowsCodexHookSource(process.pid, process.env, read)).toBeNull()
   })
 })
