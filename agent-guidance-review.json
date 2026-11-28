@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "behavior_digest": "sha256:44e2102d2c9f5f85c16f73d9179f623e2048e0884800643707662bd66572b64d",
+  "behavior_digest": "sha256:3d5bdf7ae6ee9159dca27e9bc1e2e6c959537685f2fb584e27ccadd1c8c455ed",
   "outcome": "guidance-updated",
   "surfaces_reviewed": [
     "lifecycle-hooks",
@@ -9,5 +9,5 @@
     "cli-readiness",
     "domain-terms"
   ],
-  "reason": "The update note explains native Windows Codex ancestry proof. Installed hooks already use the native launcher, so lifecycle guidance, skill instructions, setup, readiness and terminology still describe the installed behavior."
+  "reason": "The Orca harness guide and the release-authored guidance note say that a released Orca bot chat now wakes through a chat message, because Orca refuses a bot's mail to its own chat. The wake text, receipt and acknowledgement instructions, hook setup, readiness checks and Agent Session terms are unchanged."
 }

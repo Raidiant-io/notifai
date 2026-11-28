@@ -20,10 +20,13 @@ export function readOrcaChatFacts(value: unknown): OrcaChatFacts | null {
     ? { chat, cli, user_data: userData } : null
 }
 
-/** A candidate from a main-session hook. The host later proves the native binding. */
+/**
+ * A candidate from a main-session hook. The host later proves the native
+ * binding. A bot's own chat qualifies too: it refuses mail from itself, so
+ * its wake goes in as a chat message instead (`systemOrcaReopenHost`).
+ */
 export function orcaReopenFacts(env: NodeJS.ProcessEnv, platform: NodeJS.Platform): OrcaChatFacts | null {
-  if (env['ORCA_STRUCTURED_SESSION'] !== '1' || env['ORCA_BOT_TOOLS_TOKEN'] !== undefined ||
-      env['ORCA_AGENT_HOOKS_DISABLED'] === '1' ||
+  if (env['ORCA_STRUCTURED_SESSION'] !== '1' || env['ORCA_AGENT_HOOKS_DISABLED'] === '1' ||
       ['ORCA_ENVIRONMENT', 'ORCA_REMOTE_PAIRING', 'ORCA_PAIRING_CODE'].some(key => Boolean(env[key]?.trim()))) return null
   if (platform === 'linux') {
     try { if (/microsoft/iu.test(readFileSync('/proc/version', 'utf8'))) return null } catch { return null }
@@ -70,30 +73,66 @@ export async function orcaChatReach(chat: OrcaChatFacts, sessionId: string, harn
     ? 'open' : 'unavailable'
 }
 
+/**
+ * What a wake did: `sent` (Orca took it), `refused` (nothing was sent) or
+ * `unknown` (no receipt, so it may have been sent). `detail` names the route
+ * that took it or why each route refused, for the log: never command output
+ * or the wake text.
+ */
+export interface OrcaWakeResult { outcome: 'sent' | 'refused' | 'unknown'; detail: string }
+
 export interface OrcaReopenHost {
   reach(chat: OrcaChatFacts, sessionId: string, harness: 'claude-code' | 'codex'): Promise<OrcaChatReach>
-  wake(chat: OrcaChatFacts, text: string): Promise<'sent' | 'refused' | 'unknown'>
+  wake(chat: OrcaChatFacts, text: string): Promise<OrcaWakeResult>
 }
 
-export function systemOrcaReopenHost(env: NodeJS.ProcessEnv, runtime?: OrcaRuntime | null): OrcaReopenHost {
+type MailReply = { ok?: unknown; result?: { messageId?: unknown }; error?: { code?: unknown } } | null
+
+function mailReply(stdout: string): MailReply {
+  try { return JSON.parse(stdout) as MailReply } catch { return null } // A missing receipt cannot prove the mail was refused.
+}
+
+type MailResult = { outcome: 'sent' | 'refused' | 'unknown'; exit: number | null; code: string | null }
+
+/** Orca mail to the chat itself, as the chat. Orca allows local commands from released chats. */
+function mailWake(chat: OrcaChatFacts, text: string, env: NodeJS.ProcessEnv): Promise<MailResult> {
+  return new Promise(resolve => {
+    // Only this chat's own Orca profile and caller ID belong on the invocation.
+    const childEnv = Object.fromEntries(Object.entries(env).filter(([key]) => !key.startsWith('ORCA_')))
+    childEnv['ORCA_USER_DATA_PATH'] = chat.user_data
+    childEnv['ORCA_AGENT_SESSION_ID'] = chat.chat
+    execFile(chat.cli, ['orchestration', 'send', '--to', `orca_session_id:${chat.chat}`,
+      '--subject', 'Notifai', '--body', text, '--json'],
+    { env: childEnv, timeout: 8_000, maxBuffer: 256 * 1024, windowsHide: true }, (error, stdout) => {
+      const exit = error === null ? 0 : typeof error.code === 'number' ? error.code : null
+      const reply = mailReply(stdout)
+      const raw = reply?.error?.code
+      const code = typeof raw === 'string' && /^[a-z0-9_.-]{1,64}$/u.test(raw) ? raw : null
+      if (error === null && reply?.ok === true && typeof reply.result?.messageId === 'string') resolve({ outcome: 'sent', exit, code })
+      else resolve({ outcome: reply?.ok === false ? 'refused' : 'unknown', exit, code })
+    })
+  })
+}
+
+export function systemOrcaReopenHost(env: NodeJS.ProcessEnv, runtime?: OrcaRuntime | null, wall: () => number = Date.now): OrcaReopenHost {
   return {
     reach: (chat, sessionId, harness) => orcaChatReach(chat, sessionId, harness, runtime),
-    wake: (chat, text) => new Promise(resolve => {
-      // Orca allows local commands from released chats. Only this chat's
-      // own Orca profile and caller ID belong on the invocation.
-      const childEnv = Object.fromEntries(Object.entries(env).filter(([key]) => !key.startsWith('ORCA_')))
-      childEnv['ORCA_USER_DATA_PATH'] = chat.user_data
-      childEnv['ORCA_AGENT_SESSION_ID'] = chat.chat
-      execFile(chat.cli, ['orchestration', 'send', '--to', `orca_session_id:${chat.chat}`,
-        '--subject', 'Notifai', '--body', text, '--json'],
-      { env: childEnv, timeout: 8_000, maxBuffer: 256 * 1024, windowsHide: true }, (error, stdout) => {
-        try {
-          const reply = JSON.parse(stdout) as { ok?: unknown; result?: { messageId?: unknown } } | null
-          if (error === null && reply?.ok === true && typeof reply.result?.messageId === 'string') { resolve('sent'); return }
-          if (reply?.ok === false) { resolve('refused'); return }
-        } catch { /* A missing receipt cannot prove the mail was refused. */ }
-        resolve('unknown')
-      })
-    }),
+    wake: async (chat, text) => {
+      const mail = await mailWake(chat, text, env)
+      if (mail.outcome === 'sent') return { outcome: 'sent', detail: 'mail' }
+      const mailed = `mail-${mail.outcome}:${mail.code ?? 'no-code'}:exit-${mail.exit ?? 'none'}`
+      if (mail.outcome === 'unknown') return { outcome: 'unknown', detail: mailed }
+      // Nothing was sent. A bot refuses mail from its own chat ("You are
+      // already in that chat"), so the wake goes in as a chat message, as the
+      // User typing it there would: Orca brings the released chat back for
+      // it, in the same provider session.
+      // Loaded only here: the chat-answer module is heavy, and most importers of this one never wake a chat.
+      const { sendOrcaChatWake } = await import('./orca-chat-answers.js')
+      const deadline = performance.now() + 10_000
+      const sent = await sendOrcaChatWake({ env, chat: { session_id: chat.chat, user_data: chat.user_data }, text, wall,
+        remainingMs: () => deadline - performance.now(),
+        runtime: runtime !== undefined ? runtime : orcaRuntime({ ORCA_USER_DATA_PATH: chat.user_data }) })
+      return { outcome: sent === 'sent' ? 'sent' : sent === 'unknown' ? 'unknown' : 'refused', detail: `${mailed};chat-message-${sent}` }
+    },
   }
 }

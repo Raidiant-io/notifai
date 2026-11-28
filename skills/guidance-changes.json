@@ -1,5 +1,5 @@
 {
-  "current": "08667d10ed6ee1fc808674d7dafbe9a651a00f3e0a0b4eb8ec72e9811a17f05d",
+  "current": "ed4c33704ced916a497e76c8489de229f67a42d79e3968a05b3e64c13284b810",
   "releases": [
     {
       "digest": "3e47b01bc6bbfb43e910c660b9964fab6459d75148c3c02dcbcd0be64cfb2963",
@@ -480,6 +480,10 @@
     {
       "digest": "08667d10ed6ee1fc808674d7dafbe9a651a00f3e0a0b4eb8ec72e9811a17f05d",
       "note": "Windows Codex hook ancestry is proven through the native launcher. Windows release checks exercise the same kernel process lookup."
+    },
+    {
+      "digest": "ed4c33704ced916a497e76c8489de229f67a42d79e3968a05b3e64c13284b810",
+      "note": "After Orca releases an idle Claude Code or Codex chat in an Orca bot, a Session Note or answer now wakes that same chat too. Orca refuses a bot's mail to its own chat, so the wake goes in as a chat message. The agent receives the input and acknowledges it as usual."
     }
   ]
 }

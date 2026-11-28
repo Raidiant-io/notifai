@@ -649,8 +649,10 @@ export class SessionReopen {
           const holders = this.host.codexHolders(target.codexHome, target.sessionId)
           if (holders === 'unknown' || holders.length > 0) return { outcome: 'skipped', reason: 'in-progress' }
         }
-        return await this.hostChatReopen(target, trigger, record, fresh, now, 'orca-chat',
-          async () => await this.host.orca.wake(chat, sessionInputWake()) !== 'refused', waiting)
+        return await this.hostChatReopen(target, trigger, record, fresh, now, 'orca-chat', async () => {
+          const woken = await this.host.orca.wake(chat, sessionInputWake())
+          return woken.outcome === 'refused' ? woken.detail : { route: woken.detail }
+        }, waiting)
       }
       const plan = await this.terminalPlan(target, settings)
       if ('wait' in plan) return waiting(plan.wait)
@@ -849,7 +851,7 @@ export class SessionReopen {
   }
 
   private async hostChatReopen(target: ReopenTarget, trigger: ReopenTrigger, record: SessionRecord, fresh: string[], now: number,
-    surface: string, send: () => Promise<true | false | string>, waiting: (reason: ReopenWait) => ReopenOutcome): Promise<ReopenOutcome> {
+    surface: string, send: () => Promise<true | false | string | { route: string }>, waiting: (reason: ReopenWait) => ReopenOutcome): Promise<ReopenOutcome> {
     const token = randomBytes(16).toString('hex')
     const before = { attempts: record.attempts, seen: record.seen, last: record.last }
     record.attempts += 1
@@ -859,13 +861,13 @@ export class SessionReopen {
     // Recorded before the send: the conversation can come back before it returns.
     this.save(record)
     const sent = await send()
-    if (sent !== true) {
+    if (sent !== true && typeof sent !== 'object') {
       Object.assign(record, before)
       this.host.logger.info('hub.reopen', { event: 'launch-failed', session: target.sessionId, terminal: surface, detail: sent })
       return waiting('launch-failed')
     }
     this.host.logger.info('hub.reopen', { event: 'launched', session: target.sessionId, trigger, harness: target.harness, terminal: surface,
-      attempt: record.attempts })
+      attempt: record.attempts, ...(typeof sent === 'object' ? { route: sent.route } : {}) })
     return { outcome: 'launched', token, terminal: surface }
   }
 

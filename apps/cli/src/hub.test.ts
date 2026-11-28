@@ -2913,7 +2913,7 @@ describe('hub: Codex conversations stopped by their app or the machine, Orca pan
         wake: async (target, text) => {
           expect(text).toBe(sessionInputWake())
           wakes.push(target.chat)
-          return 'sent'
+          return { outcome: 'sent', detail: 'mail' }
         },
       } },
     })
