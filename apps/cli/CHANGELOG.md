@@ -8,6 +8,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 This project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 and [Conventional Commits](https://www.conventionalcommits.org/en/v1.0.0/).
 
+## [14.7.8](https://github.com/Raidiant-io/notifai/compare/v14.7.7...v14.7.8) (2026-11-28)
+
+### Bug Fixes
+
+* In an Orca bot chat that Orca put to sleep, your notes and answers now wake that same chat. The wake shows up as a short Notifai message in the chat.
+
 ## [14.7.7](https://github.com/Raidiant-io/notifai/compare/v14.7.6...v14.7.7) (2026-11-26)
 
 ### Bug Fixes
